@@ -16,7 +16,8 @@ from services.agent_policy import conditions
 from services.agent_policy.registry import RegistrySnapshot
 
 _SCHEMA = json.loads((Path(__file__).with_name("hard-policy-2.schema.json")).read_text())
-_VALIDATOR = Draft202012Validator(_SCHEMA)
+# The schema says "format": "date"; without a format checker that is only a comment.
+_VALIDATOR = Draft202012Validator(_SCHEMA, format_checker=Draft202012Validator.FORMAT_CHECKER)
 
 
 def validate(doc: Dict[str, Any], registry: RegistrySnapshot) -> List[str]:

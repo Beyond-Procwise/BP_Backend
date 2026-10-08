@@ -15,6 +15,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from services import output_safety as osafe
 from services.agent_policy import contract, readiness
 from services.agent_policy.compiler import compile_policy
 from services.agent_policy.registry import load_registry
@@ -40,6 +41,29 @@ class InvalidTransition(Exception):
 
 
 _activation_problems = readiness.activation_problems
+
+CONTRACT_FAILED = ("The generated policy failed its final check. "
+                   "An administrator can see the details in the technical view.")
+WITHHELD = [{"field": "form", "code": "withheld_text",
+             "message": "Some text could not be shown, so nothing was saved. Reload the policy and try again."}]
+
+
+def _holds_withheld_text(value: Any) -> bool:
+    """Does any string anywhere in the form equal what the output-safety scrubber puts in place
+    of text it would not show? Such a form was loaded through a scrubbed answer; saving it
+    would write the marker into an immutable version as if a person had typed it."""
+    if isinstance(value, str):
+        return value in (osafe.SAFE_FIELD, osafe.SAFE_REPLY)
+    if isinstance(value, dict):
+        return any(_holds_withheld_text(k) or _holds_withheld_text(v) for k, v in value.items())
+    if isinstance(value, (list, tuple)):
+        return any(_holds_withheld_text(v) for v in value)
+    return False
+
+
+def _refuse_withheld(form: Dict[str, Any]) -> None:
+    if _holds_withheld_text(form):
+        raise NotReady([dict(p) for p in WITHHELD])
 _contract_problems = contract.validate
 
 
@@ -77,6 +101,11 @@ def _area(cur, name: Optional[str]) -> Dict[str, Any]:
     cur.execute("SELECT area_name, never_suggest FROM proc.bp_business_area WHERE is_unassigned")
     row = cur.fetchone()
     return {"area_name": row[0], "never_suggest": row[1]}
+
+
+def never_suggest_for(conn, area_name: Optional[str]) -> bool:
+    """The business area's never_suggest, resolved exactly as a save resolves it."""
+    return bool(_area(conn.cursor(), area_name)["never_suggest"])
 
 
 def _real_area(cur, name: Optional[str]) -> Optional[str]:
@@ -123,6 +152,7 @@ def _txn(conn):
 
 
 def create_draft(conn, form: Dict[str, Any], *, actor: str) -> Dict[str, Any]:
+    _refuse_withheld(form)
     cur = _txn(conn)
     try:
         form = attribute_confirmation(form, None, actor=actor, now_iso=_now_iso())
@@ -152,6 +182,7 @@ def save_version(conn, policy_key: str, form: Dict[str, Any], *, base_version: i
                  actor: str, change_note: str, document_text: Optional[str] = None) -> Dict[str, Any]:
     if intent not in ("draft", "activate"):
         raise ValueError(intent)
+    _refuse_withheld(form)
     cur = _txn(conn)
     try:
         row = _lock(cur, policy_key)
@@ -168,12 +199,14 @@ def save_version(conn, policy_key: str, form: Dict[str, Any], *, base_version: i
         if intent == "activate":
             settings, registry = load_settings(conn), load_registry(conn)
             problems = list(_activation_problems(form, registry, settings))
-            _, contract_problems, _ = _compile(cur, policy_key, version, "live", form, document_text)
-            seen = set()
-            for m in contract_problems:
-                if m not in seen:
-                    seen.add(m)
-                    problems.append({"field": "registry", "message": m, "routeTo": "administrator"})
+            if not problems:
+                # The final check only speaks when the form itself is ready: its findings restate
+                # the form's problems in the compiled document's terms, and a person can act on
+                # neither. One problem, counted; the details are in the Admin technical view.
+                _, contract_problems, _ = _compile(cur, policy_key, version, "live", form, document_text)
+                if contract_problems:
+                    problems.append({"field": "registry", "code": "contract", "count": len(set(contract_problems)),
+                                     "routeTo": "administrator", "message": CONTRACT_FAILED})
             if problems:
                 raise NotReady(problems)   # the full list, in one go; nothing written
             _write_version(cur, policy_key, version, "live", form, actor, change_note, document_text)

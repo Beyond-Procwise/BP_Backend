@@ -91,15 +91,29 @@ def _count(conn, key):
     return cur.fetchone()[0]
 
 
-def test_activate_refused_with_readiness_and_contract_problems_in_one_list(conn, monkeypatch):
+def test_contract_problems_wait_until_the_form_is_ready_then_arrive_as_one(conn, monkeypatch):
     key = repo.create_draft(conn, {"name": "Both"}, actor="test")["policyKey"]
-    monkeypatch.setattr(repo, "_activation_problems", lambda f, r, s: [{"field": "outcome", "message": "r1", "routeTo": "author"}])
+    monkeypatch.setattr(repo, "_activation_problems",
+                        lambda f, r, s: [{"field": "outcome", "code": "outcome_required", "message": "r1"}])
     monkeypatch.setattr(repo, "_contract_problems", lambda d, r: ["c1", "c2", "c1"])
     with pytest.raises(repo.NotReady) as err:
         repo.save_version(conn, key, {"name": "Both"}, base_version=1, intent="activate", actor="t", change_note="")
-    msgs = [p["message"] for p in err.value.problems]
-    assert msgs == ["r1", "c1", "c2"]
-    assert err.value.problems[0]["field"] == "outcome" and err.value.problems[1]["field"] == "registry"
+    assert [p["code"] for p in err.value.problems] == ["outcome_required"]   # readiness only: no noise
+    monkeypatch.setattr(repo, "_activation_problems", lambda f, r, s: [])
+    with pytest.raises(repo.NotReady) as err:
+        repo.save_version(conn, key, {"name": "Both"}, base_version=1, intent="activate", actor="t", change_note="")
+    assert err.value.problems == [{"field": "registry", "code": "contract", "count": 2, "routeTo": "administrator",
+                                   "message": "The generated policy failed its final check. An administrator can "
+                                              "see the details in the technical view."}]
+    assert repo.get_policy(conn, key)["latestVersion"] == 1 and _count(conn, key) == 1
+
+
+def test_withheld_text_is_never_saved(conn):
+    key = repo.create_draft(conn, {"name": "Withheld probe"}, actor="test")["policyKey"]
+    with pytest.raises(repo.NotReady) as err:
+        repo.save_version(conn, key, {"name": "Withheld probe", "source": {"excerpt": "[withheld]"}},
+                          base_version=1, intent="draft", actor="t", change_note="")
+    assert err.value.problems[0]["code"] == "withheld_text"
     assert repo.get_policy(conn, key)["latestVersion"] == 1 and _count(conn, key) == 1
 
 
@@ -139,3 +153,12 @@ def test_save_version_keeps_a_carried_confirmation_and_clears_after_change(conn)
     assert v2["checked"] == first["checked"] and v2["checked"]["by"] == "alice"
     repo.save_version(conn, key, {**v2, "situation": "new"}, base_version=2, intent="draft", actor="bob", change_note="")
     assert repo.get_policy(conn, key)["versions"][2]["form"]["checked"] is None   # stale confirmation cleared by the edit
+
+
+def test_never_suggest_is_looked_up_like_a_save_looks_it_up(conn):
+    cur = conn.cursor()
+    cur.execute("SELECT area_name, never_suggest FROM proc.bp_business_area")
+    for area, never in cur.fetchall():
+        assert repo.never_suggest_for(conn, area) is bool(never)
+    cur.execute("SELECT never_suggest FROM proc.bp_business_area WHERE is_unassigned")
+    assert repo.never_suggest_for(conn, "No such area") is bool(cur.fetchone()[0])

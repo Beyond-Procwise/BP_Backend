@@ -65,3 +65,11 @@ def test_malformed_condition_is_a_problem_not_a_crash():
     doc["trigger"]["condition"] = {"all": 5}
     problems = contract.validate(doc, REGISTRY)
     assert any("trigger.condition" in p for p in problems)
+
+
+def test_effective_from_must_be_a_real_date():
+    doc = _doc()
+    doc["effective"]["from"] = "not-a-date"
+    assert any(p.startswith("effective/from") for p in contract.validate(doc, REGISTRY))
+    doc["effective"]["from"] = "2026-02-01"
+    assert contract.validate(doc, REGISTRY) == []

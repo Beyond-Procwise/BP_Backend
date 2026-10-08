@@ -150,10 +150,15 @@ def preview(body: PreviewBody, p: Principal = Depends(gateway_principal)):
     registry, settings = load_registry(), load_settings()
     out: Dict[str, Any] = {"examples": conditions.reviewer_view(body.form, settings),
                            "howEnforced": readiness.how_enforced(body.form, registry, settings),
-                           "problems": readiness.activation_problems(body.form, registry, settings)}
+                           "problems": readiness.activation_problems(body.form, registry, settings),
+                           "companyResponseTime": settings["response_time"]}
     if role == "Admin":
+        # The business area's real never_suggest, looked up as a save looks it up, so the
+        # technical view's learning.eligible is what the saved policy will say.
+        with _conn() as conn:
+            never_suggest = repo.never_suggest_for(conn, body.form.get("businessArea"))
         doc = compile_policy(body.form, policy_key=body.policyKey or "GEN-0000", version=body.version or 1,
-                             status="draft", settings=settings, never_suggest=False)
+                             status="draft", settings=settings, never_suggest=never_suggest)
         out["compiled"] = doc
         out["compiledProblems"] = contract.validate(doc, registry)
     return out
@@ -177,7 +182,10 @@ def get_one(key: str, p: Principal = Depends(gateway_principal)):
 def create(body: CreateBody, p: Principal = Depends(gateway_principal)):
     _require(p, "Buyer", "agent_policy.write", {"intent": "create"})
     with _conn() as conn:
-        return repo.create_draft(conn, body.form, actor=p.subject)
+        try:
+            return repo.create_draft(conn, body.form, actor=p.subject)
+        except repo.NotReady as exc:
+            return JSONResponse(status_code=422, content={"problems": exc.problems})
 
 
 @router.post("/{key}/versions")

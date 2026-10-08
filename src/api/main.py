@@ -660,6 +660,15 @@ _OPERATOR_PATHS = ("/docs", "/redoc", "/openapi.json", "/models")
 # answers; every other /reports answer, and every error raised in them, is still scrubbed.
 _REPORT_EDITOR = re.compile(r"^/reports/jobs/[^/]+/(draft|preview|versions)$")
 
+# The orchestrator's agent-policy feed: GET, exactly this path, nothing under it. It is
+# key-protected (AGENT_POLICY_ORCHESTRATOR_KEY), read by a machine and never shown to a
+# person. Each policy in it is an enforceable document, and a rewritten field would change
+# what is enforced: the scrubber turned the agent's instruction ("...retry the tool call")
+# into the apology sentence and withheld an excerpt holding "01/04/2026" and a condition
+# value like "DL/2024/001" (final review 2026-10-08, C1). Its error answers carry only fixed
+# words; every other agent-policy answer (the screens) is still scrubbed.
+_AGENT_POLICY_FEED = "/orchestrator/agent-policies/v2/live"
+
 
 @app.exception_handler(StarletteHTTPException)
 async def _safe_http_exception(request: Request, exc: StarletteHTTPException):
@@ -695,6 +704,8 @@ class OutputSafetyMiddleware(BaseHTTPMiddleware):
 
         path = request.url.path
         if any(path.startswith(p) for p in _OPERATOR_PATHS) or _REPORT_EDITOR.match(path):
+            return response
+        if path == _AGENT_POLICY_FEED and request.method == "GET":
             return response
         ctype = response.headers.get("content-type", "")
 

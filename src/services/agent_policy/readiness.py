@@ -13,7 +13,11 @@ from services.agent_policy import conditions
 from services.agent_policy.compiler import response_time
 from services.agent_policy.registry import RegistrySnapshot
 
-UNKNOWN_NAME = "This policy refers to something the orchestrator does not recognise"
+# Problem messages use product wording only. The screen renders the brief's own sentences
+# (which name the orchestrator) from each problem's `code`; variable data lives in keys
+# that are not prose (`names`, `missing`), so the output-safety scrubber leaves them alone.
+UNKNOWN_NAME = "This policy refers to something that is not recognised. An administrator needs to add it."
+CANT_ENFORCE = "Can't be enforced yet: some information is not available when this policy is checked."
 _DURATION = re.compile(r"^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$")
 _CONFIRM_KEYS = ("situation", "outcome", "hidden", "messageForPerson", "deciders", "notify")
 
@@ -38,30 +42,42 @@ def _human(duration: str) -> str:
     return duration
 
 
-def _cant_enforce(form: Dict[str, Any], registry: RegistrySnapshot) -> List[str]:
+def _cant_enforce_parts(form: Dict[str, Any], registry: RegistrySnapshot):
+    """(plain names of inputs not received at the checkpoint, plain name of a checkpoint not yet checked)."""
     h = form.get("hidden") or {}
     cp = h.get("checkpoint")
-    out = []
+    names: List[str] = []
     for i in h.get("inputs") or []:
         if not registry.available(cp, i.get("field")):
-            out.append(f"Can't be enforced yet: the orchestrator does not receive {i.get('name') or i.get('field')} at this point")
+            names.append(i.get("name") or i.get("field"))
     listed = {i.get("field") for i in h.get("inputs") or []}
     for f in sorted(conditions.condition_fields(h.get("condition"))):
         row = registry.input_row(cp, f)
         # A field with no registry row is reported as unknown by activation_problems.
         if f not in listed and row and not registry.available(cp, f):
-            out.append(f"Can't be enforced yet: the orchestrator does not receive {row.get('plain') or f} at this point")
+            names.append(row.get("plain") or f)
     for m in h.get("missingInputs") or []:
-        out.append(f"Can't be enforced yet: the orchestrator does not receive {m.get('name')} at this point")
-    if cp and registry.knows_checkpoint(cp) and not registry.checkpoint_live(cp):
-        out.append(f"Can't be enforced yet: nothing checks policies {registry.plain(cp)} yet")
+        names.append(m.get("name"))
+    checkpoint = registry.plain(cp) if cp and registry.knows_checkpoint(cp) and not registry.checkpoint_live(cp) else None
+    return names, checkpoint
+
+
+def _cant_enforce(form: Dict[str, Any], registry: RegistrySnapshot) -> List[str]:
+    names, checkpoint = _cant_enforce_parts(form, registry)
+    out = [f"Can't be enforced yet: the orchestrator does not receive {n} at this point" for n in names]
+    if checkpoint:
+        out.append(f"Can't be enforced yet: nothing checks policies {checkpoint} yet")
     return out
 
 
 def how_enforced(form: Dict[str, Any], registry: RegistrySnapshot, settings: Dict[str, Any]) -> Dict[str, Any]:
     cant = _cant_enforce(form, registry)
     if cant:
-        return {"ok": False, "cantEnforce": cant}
+        names, checkpoint = _cant_enforce_parts(form, registry)
+        # cantEnforce keeps the full sentences; the screen builds its own from the names
+        # (its wording names the orchestrator, which this service may not say to a person).
+        return {"ok": False, "cantEnforce": cant, "cantEnforceNames": names,
+                "cantEnforceCheckpoint": checkpoint}
     h = form.get("hidden") or {}
     cp = h.get("checkpoint")
     plain = (h.get("actions") or {}).get("plain") or "act"
@@ -75,7 +91,7 @@ def how_enforced(form: Dict[str, Any], registry: RegistrySnapshot, settings: Dic
         deciders = [d for d in form.get("deciders") or [] if str(d).strip()]
         within, _ = response_time(form, settings)
         if len(deciders) > 1:
-            then = f"the action pauses and {deciders[0]} is asked to approve, then {', then '.join(deciders[1:])} if there is no answer within {_human(within)}."
+            then = f"the action pauses and {deciders[0]} is asked to approve, then {', then '.join(deciders[1:])} if there is no answer within {_human(within)}; if the last level does not answer, the action is rejected."
         else:
             then = f"the action pauses and {deciders[0] if deciders else "nobody yet"} is asked to approve within {_human(within)}; with no answer it is rejected."
     elif outcome == "block":
@@ -93,19 +109,19 @@ def how_enforced(form: Dict[str, Any], registry: RegistrySnapshot, settings: Dic
 def activation_problems(form: Dict[str, Any], registry: RegistrySnapshot,
                         settings: Dict[str, Any]) -> List[Dict[str, Any]]:
     p: List[Dict[str, Any]] = []
-    add = lambda f, m, **kw: p.append({"field": f, "message": m, **kw})  # noqa: E731
+    add = lambda f, c, m, **kw: p.append({"field": f, "code": c, "message": m, **kw})  # noqa: E731
     h = form.get("hidden") or {}
     outcome = form.get("outcome")
 
     # Form order (brief §3.1): Identity, The policy (situation, how enforced, examples),
     # What happens, Applies to, Governance. problems[0] is therefore the first field to fix.
-    if _blank(form.get("name")): add("name", "Name is required.")
-    if _blank(form.get("businessArea")): add("businessArea", "Business area is required.")
-    if _blank(form.get("subArea")): add("subArea", "Sub-area is required.")
-    if _blank(form.get("situation")): add("situation", "The situation is required.")
+    if _blank(form.get("name")): add("name", "name_required", "Name is required.")
+    if _blank(form.get("businessArea")): add("businessArea", "business_area_required", "Business area is required.")
+    if _blank(form.get("subArea")): add("subArea", "sub_area_required", "Sub-area is required.")
+    if _blank(form.get("situation")): add("situation", "situation_required", "The situation is required.")
 
     cp = h.get("checkpoint")
-    if _blank(cp): add("checkpoint", "The policy has no checkpoint.")
+    if _blank(cp): add("checkpoint", "checkpoint_required", "The policy has no checkpoint.")
     cond = h.get("condition")
     unknown = [t for t in sorted(conditions.tool_names(cond)) if not registry.knows_action(cp, t)]
     unknown += [t for t in (h.get("actions") or {}).get("tools") or [] if not registry.knows_action(cp, t)]
@@ -114,45 +130,48 @@ def activation_problems(form: Dict[str, Any], registry: RegistrySnapshot,
     if cp and not registry.knows_checkpoint(cp):
         unknown.append(cp)
     if unknown:
-        add("registry", f"{UNKNOWN_NAME}: {', '.join(sorted(set(unknown)))}.", routeTo="administrator")
-    cant = _cant_enforce(form, registry)
-    if cant:
-        add("inputs", " ".join(cant), routeTo="administrator")
+        add("registry", "unknown_name", UNKNOWN_NAME, names=sorted(set(unknown)), routeTo="administrator")
+    missing, not_checked = _cant_enforce_parts(form, registry)
+    if missing:
+        add("inputs", "cant_enforce", CANT_ENFORCE, missing=missing, routeTo="administrator")
+    if not_checked:
+        add("inputs", "checkpoint_not_live", f"Can't be enforced yet: nothing checks policies {not_checked} yet.",
+            checkpoint=not_checked, routeTo="administrator")
     inputs = h.get("inputs") or []
     if any(i.get("isAmount") for i in inputs):
         currency = (h.get("units") or {}).get("currency")
         if _blank(currency) or any(i.get("isAmount") and i.get("unit") != currency for i in inputs):
-            add("units", "Amounts need a stated currency.")
+            add("units", "currency_required", "Amounts need a stated currency.")
     tw = h.get("timeWindow")
     if tw and _blank(tw.get("timeZone")):
-        add("timeWindow", "A time window needs a time zone.")
+        add("timeWindow", "time_zone_required", "A time window needs a time zone.")
 
     rows = conditions.reviewer_view(form, settings)
     if not rows:
-        add("examples", "There are no examples to check.")
+        add("examples", "examples_missing", "There are no examples to check.")
     elif any(r["flipped"] for r in rows):
-        add("examples", "An example was marked wrong, so the condition is wrong. Ask the agent to fix it.")
+        add("examples", "example_flipped", "An example was marked wrong, so the condition is wrong. Ask the agent to fix it.")
     elif any(r["computed"] == "invalid" for r in rows):
-        add("examples", "The condition could not be read. Ask the agent to fix it.")
+        add("examples", "condition_unreadable", "The condition could not be read. Ask the agent to fix it.")
     if not form.get("checked"):
-        add("checked", "Confirm the examples and how it is enforced.")
+        add("checked", "not_confirmed", "Confirm the examples and how it is enforced.")
 
-    if outcome not in ("approve", "block", "notify"): add("outcome", "Choose what happens.")
+    if outcome not in ("approve", "block", "notify"): add("outcome", "outcome_required", "Choose what happens.")
     if outcome == "approve":
         if not [d for d in form.get("deciders") or [] if str(d).strip()]:
-            add("deciders", "Add at least one person or role who decides.")
+            add("deciders", "deciders_required", "Add at least one person or role who decides.")
         if form.get("responseTime") is not None and (_seconds(form["responseTime"]) or 0) < 1:
-            add("responseTime", "A custom response time must be at least 1.")
+            add("responseTime", "response_time_invalid", "A custom response time must be at least 1.")
     if outcome == "notify" and not [n for n in form.get("notify") or [] if str(n).strip()]:
-        add("notify", "Add at least one person to tell.")
+        add("notify", "notify_required", "Add at least one person to tell.")
     if outcome in ("approve", "block") and _blank(form.get("messageForAgent")):
-        add("messageForAgent", "Write the message the agent receives.")
+        add("messageForAgent", "message_for_agent_required", "Write the message the agent receives.")
 
     limit = form.get("limit") or {}
     if limit.get("on") and _blank(limit.get("text")):
-        add("limit", "Say how the policy is limited, or turn Limit it off.")
+        add("limit", "limit_text_required", "Say how the policy is limited, or turn Limit it off.")
 
-    if _blank(form.get("owner")): add("owner", "Owner is required.")
+    if _blank(form.get("owner")): add("owner", "owner_required", "Owner is required.")
     return p
 
 

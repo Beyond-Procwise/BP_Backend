@@ -21,6 +21,7 @@ def client(monkeypatch):
     monkeypatch.setattr(R, "load_registry", lambda conn=None: REGISTRY)
     monkeypatch.setattr(R, "load_settings", lambda conn=None: SETTINGS)
     monkeypatch.setattr(R, "_conn", _FakeConnCtx)
+    monkeypatch.setattr(R.repo, "never_suggest_for", lambda conn, area: False)
     app = FastAPI(); app.include_router(R.router); app.include_router(R.orchestrator_router)
     c = TestClient(app); c.audits = audits
     return c
@@ -222,3 +223,28 @@ def test_a_non_dict_stored_document_is_refused_not_a_500(client, monkeypatch):
     body = r.json()
     assert [p["id"] for p in body["policies"]] == ["FIN-0001"] and len(body["refused"]) == 1
     assert body["refused"][0]["id"] is None
+
+
+# ---- final review fixes ------------------------------------------------------------------
+def test_preview_returns_the_company_response_time(client):
+    r = client.post("/agent-policies/preview", json={"form": FORM_EXAMPLE}, headers=VIEWER).json()
+    assert r["companyResponseTime"] == SETTINGS["response_time"] == "PT4H"
+    r = client.post("/agent-policies/preview", json={"form": FORM_EXAMPLE}, headers=GOOD).json()
+    assert r["companyResponseTime"] == "PT4H"
+
+
+def test_preview_uses_the_business_areas_real_never_suggest(client, monkeypatch):
+    asked = []
+    monkeypatch.setattr(R.repo, "never_suggest_for", lambda conn, area: asked.append(area) or area == "Finance")
+    r = client.post("/agent-policies/preview", json={"form": FORM_EXAMPLE}, headers=GOOD).json()
+    assert asked == ["Finance"] and r["compiled"]["learning"]["eligible"] is False
+    other = dict(FORM_EXAMPLE, businessArea="Operations")
+    r = client.post("/agent-policies/preview", json={"form": other}, headers=GOOD).json()
+    assert r["compiled"]["learning"]["eligible"] is True
+
+
+def test_create_with_withheld_text_is_a_422(client, monkeypatch):
+    def refuse(conn, form, actor): raise R.repo.NotReady([{"field": "form", "code": "withheld_text", "message": "m"}])
+    monkeypatch.setattr(R.repo, "create_draft", refuse)
+    r = client.post("/agent-policies", json={"form": {"name": "[withheld]"}}, headers=BUYER)
+    assert r.status_code == 422 and r.json()["problems"][0]["code"] == "withheld_text"

@@ -1,5 +1,7 @@
 import copy
 
+import pytest
+
 from services.agent_policy import readiness as R
 from tests.agent_policy.fixtures import FORM_EXAMPLE, REGISTRY, SETTINGS
 
@@ -62,8 +64,10 @@ def test_unknown_tool_is_routed_to_an_administrator():
     form = _ready_form()
     form["hidden"]["condition"]["all"][0]["value"] = ["refund.isue"]
     msgs = [p for p in R.activation_problems(form, REGISTRY, SETTINGS) if p["field"] == "registry"]
-    assert msgs and msgs[0]["message"].startswith("This policy refers to something the orchestrator does not recognise")
+    assert msgs and msgs[0]["code"] == "unknown_name" and msgs[0]["names"] == ["refund.isue"]
     assert msgs[0].get("routeTo") == "administrator"
+    # the screen says "orchestrator" (from the code); the server's own words never do
+    assert "orchestrator" not in msgs[0]["message"].lower()
 
 
 def test_amount_without_currency_blocks_active():
@@ -86,7 +90,11 @@ def test_unavailable_input_cannot_be_enforced_yet():
     assert he["ok"] is False
     assert he["cantEnforce"] == ["Can't be enforced yet: the orchestrator does not receive "
                                  "refunds to this customer in the last 30 days at this point"]
-    assert "inputs" in _fields(R.activation_problems(form, REGISTRY, SETTINGS))
+    assert he["cantEnforceNames"] == ["refunds to this customer in the last 30 days"]
+    probs = [p for p in R.activation_problems(form, REGISTRY, SETTINGS) if p["field"] == "inputs"]
+    assert len(probs) == 1 and probs[0]["code"] == "cant_enforce"
+    assert probs[0]["missing"] == ["refunds to this customer in the last 30 days"]
+    assert probs[0]["routeTo"] == "administrator" and "orchestrator" not in probs[0]["message"].lower()
 
 
 def test_agent_reported_missing_input_also_cannot_be_enforced():
@@ -101,7 +109,7 @@ def test_how_enforced_reads_in_plain_words():
                   "checkedWhen": "the agent is about to do this: issuing a refund or credit (before a tool runs)",
                   "needsToKnow": "Refund amount (USD, from the action), Tool (from the action), Agent's reason (from the action)",
                   "then": "the action pauses and Finance Manager is asked to approve, then CFO if there is no answer "
-                          "within 4 hours. The agent tells the person: \"Your refund needs a manager's approval. "
+                          "within 4 hours; if the last level does not answer, the action is rejected. The agent tells the person: \"Your refund needs a manager's approval. "
                           "You will hear back within 4 hours.\""}
 
 
@@ -160,3 +168,31 @@ def test_condition_field_not_live_and_not_in_inputs_cannot_be_enforced():
 def test_field_in_both_inputs_and_condition_is_reported_once():
     form = _planned_in_condition(also_in_inputs=True)
     assert len(R.how_enforced(form, REGISTRY, SETTINGS)["cantEnforce"]) == 1
+
+
+def test_every_problem_has_a_stable_code_and_no_message_names_the_orchestrator():
+    problems = R.activation_problems({"name": "", "outcome": "approve", "deciders": [], "responseTime": "PT0H",
+                                      "limit": {"on": True, "text": ""}}, REGISTRY, SETTINGS)
+    codes = {p["field"]: p["code"] for p in problems}
+    assert codes["name"] == "name_required" and codes["businessArea"] == "business_area_required"
+    assert codes["subArea"] == "sub_area_required" and codes["situation"] == "situation_required"
+    assert codes["checkpoint"] == "checkpoint_required" and codes["examples"] == "examples_missing"
+    assert codes["checked"] == "not_confirmed" and codes["deciders"] == "deciders_required"
+    assert codes["responseTime"] == "response_time_invalid" and codes["messageForAgent"] == "message_for_agent_required"
+    assert codes["limit"] == "limit_text_required" and codes["owner"] == "owner_required"
+    assert all(p["code"] and p["message"] and "orchestrator" not in p["message"].lower() for p in problems)
+
+
+@pytest.mark.parametrize("mutate, field, code", [
+    (lambda f: f.update(outcome=None), "outcome", "outcome_required"),
+    (lambda f: f.update(outcome="notify", notify=[]), "notify", "notify_required"),
+    (lambda f: f["hidden"]["units"].update(currency=None), "units", "currency_required"),
+    (lambda f: f["hidden"].update(timeWindow={"days": ["mon"], "from": "18:00", "to": "08:00", "timeZone": ""}),
+     "timeWindow", "time_zone_required"),
+    (lambda f: f["examples"][0].update(flipped=True), "examples", "example_flipped"),
+])
+def test_codes_for_the_remaining_problems(mutate, field, code):
+    form = _ready_form()
+    mutate(form)
+    got = [p["code"] for p in R.activation_problems(form, REGISTRY, SETTINGS) if p["field"] == field]
+    assert got == [code]
