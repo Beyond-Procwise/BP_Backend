@@ -60,6 +60,7 @@ PARENT_TABLE_FOR_DOC_TYPE = {
     "Purchase_Order": "bp_purchase_order",
     "Quote": "bp_quote",
     "Contract": "bp_contracts",
+    "Goods_Receipt": "bp_goods_receipt",
 }
 
 
