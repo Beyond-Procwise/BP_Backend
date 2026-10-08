@@ -302,6 +302,33 @@ class ProcessMonitorWatcher:
             with self._processing_lock:
                 self._processing_ids.discard(record_id)
 
+    def _embed_document(self, result: Dict[str, Any]) -> None:
+        """Write this document's text into the document vector index.
+
+        The live path never did this until 2026-10-08, so /ask searched an
+        empty collection. It runs after the rows are safely in the database and
+        is the one step allowed to fail: the error is logged at ERROR and
+        /health's vector_store count shows the gap; extraction still succeeds.
+        """
+        doc_type = result.get("doc_type")
+        doc_pk = result.get("doc_pk") or result.get("pk")
+        raw_id = result.get("raw_id")
+        if not (doc_type and doc_pk and raw_id is not None):
+            return
+        try:
+            from src.services.extraction.embed import embed_document
+
+            conn = self._get_connection()
+            try:
+                cur = conn.cursor()
+                n = embed_document(self._agent_nick, cur,
+                                   doc_type=doc_type, doc_pk=doc_pk, raw_id=raw_id)
+            finally:
+                conn.close()
+            logger.info("Embedded %s %s: %d chunk(s)", doc_type, doc_pk, n)
+        except Exception:
+            logger.exception("Embedding failed for %s %s (extraction kept)", doc_type, doc_pk)
+
     def _stamp_quality_action(
         self, record_id: int, file_path: str,
         content_hash: Optional[str], result: dict,
@@ -557,6 +584,7 @@ class ProcessMonitorWatcher:
                 )
             self._mark_extracted(record_id)
             self._stamp_quality_action(record_id, file_path, content_hash, result)
+            self._embed_document(result)
             confidence = result.get("confidence", 0)
             error_count = result.get("errors", 0)
             # Legacy v3 dispatch returns result["pk"]; the renovation
