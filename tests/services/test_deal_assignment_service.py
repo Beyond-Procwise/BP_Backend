@@ -490,7 +490,13 @@ def test_assign_deals_runs_all_passes_and_returns_counts(monkeypatch):
     monkeypatch.setattr(das, "_look_back", lambda cur: calls.append("back") or 1)
     monkeypatch.setattr(das, "_reconcile_legacy", lambda cur: calls.append("rec") or 3)
     monkeypatch.setattr(das, "_propagate_deal_along_po", lambda cur: calls.append("prop") or 6)
+    # Every pass is stubbed: this test pins the ORDER and the returned counts, not
+    # what a pass does. _attach_rival_quotes was added without a stub here, so it
+    # ran for real against this cursor, which has no rowcount.
+    monkeypatch.setattr(das, "_attach_rival_quotes", lambda cur: calls.append("rivals") or 12)
     monkeypatch.setattr(das, "_flag_conflict_po_chains", lambda cur: calls.append("conf") or 7)
+    monkeypatch.setattr(das, "_flag_supplier_conflict_deals",
+                        lambda cur: calls.append("supconf") or 11)
     monkeypatch.setattr(das, "_backfill_deal_metadata", lambda cur: calls.append("meta") or 5)
     monkeypatch.setattr(das, "_propagate_deal_date", lambda cur: calls.append("dates") or 8)
     monkeypatch.setattr(das, "_mirror_deal_to_raw_and_stg", lambda cur: calls.append("mirror") or 10)
@@ -500,13 +506,15 @@ def test_assign_deals_runs_all_passes_and_returns_counts(monkeypatch):
     conn = _RecConn(cur)
     result = das.assign_deals(conn=conn)
     assert result == {"forward_linked": 2, "backward_linked": 1, "reconciled": 3,
-                      "propagated": 6, "conflicts_flagged": 7, "metadata_filled": 5,
+                      "propagated": 6, "rival_quotes_attached": 12,
+                      "conflicts_flagged": 7,
+                      "supplier_conflicts_flagged": 11, "metadata_filled": 5,
                       "deal_dates_set": 8, "tiers_mirrored": 10, "map_pruned": 9,
                       "status_reconciled": 4,
                       "summaries": {"deal_ids": [], "failed": 0,
                                     "processed": 0, "skipped": 0}}
-    assert calls == ["fwd", "back", "rec", "prop", "conf", "meta", "dates",
-                     "mirror", "prune", "status"]
+    assert calls == ["fwd", "back", "rec", "prop", "rivals", "conf", "supconf",
+                     "meta", "dates", "mirror", "prune", "status"]
 
 
 # --- look-back anchor cache -------------------------------------------------

@@ -9,6 +9,7 @@ deal_date is the order's expected delivery date stamped on every doc.
 """
 from __future__ import annotations
 
+import difflib
 import logging
 from src.services.governed_limits import limit as _governed_limit
 import math
@@ -18,9 +19,11 @@ from typing import Any, Optional
 from src.services.db import get_conn
 from src.services.linking_engine import (
     _PO,
+    _norm_id,
     _norm_po,
     _rows,
     _table_columns,
+    cmp_supplier,
     score_link,
 )
 from src.services.resolution import (
@@ -811,6 +814,105 @@ def _flag_conflict_po_chains(cur) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Is everyone in this deal actually part of it?
+# ---------------------------------------------------------------------------
+# Supplier identity is not string equality, and treating it as such is how a
+# check like this gets switched off. A supplier master resolves the same company
+# to more than one id over time (SUP-Nexaspark / SUP-NexasparkMarketingLtd), and
+# extraction mis-reads a letter (SUP-AuariusMarketing for
+# SUP-AquariusMarketingLtd). Measured across both databases, pairs that ARE the
+# same company score 0.667-0.905 on a character-sequence ratio and pairs that are
+# genuinely different score 0.327-0.522, so 0.6 sits in the gap with room on
+# either side. Every one of those four same-company pairs is a live row.
+_SUPPLIER_SIM_MIN = 0.6
+
+
+def _same_supplier(a, b) -> bool:
+    """Do two supplier ids name the same company?
+
+    `cmp_supplier` already settles an exact match and a resolution drift, where
+    one normalised id is a prefix of the other. It calls a typo a CONFLICT, which
+    is what the ratio is here for. A missing id on either side is not a
+    disagreement — absence is not evidence.
+    """
+    _score, status = cmp_supplier(a, b)
+    if status in ("OK", "WEAK", "MISSING"):
+        return True
+    return difflib.SequenceMatcher(
+        None, _norm_id(a) or "", _norm_id(b) or ""
+    ).ratio() >= _SUPPLIER_SIM_MIN
+
+
+def _deal_supplier_conflicts(cur) -> list:
+    """Invoices billed into a deal by a supplier that holds no order in it.
+
+    A deal is a sourcing event, so its QUOTES are expected to come from several
+    suppliers at once: that is a competitive tender, and checking them would flag
+    every losing bid as a defect. The purchase order is what names the supplier
+    the business actually engaged. An invoice from anyone else is a document in
+    the wrong deal — you cannot be billed by a supplier who was never awarded the
+    order.
+
+    The case this was written for, live in bp_testdb: a batch upload labelled
+    every document it carried with one deal id, so three Kestrel Logistics
+    invoices citing PO-2025-0208 landed in a deal whose only purchase order is
+    PO-2025-0244, placed with Marlowe Construction. Neither PO chain nor deal id
+    disagrees anywhere, so nothing already in this module could see it.
+
+    Returns (doc_type, doc_pk, deal_id, supplier_id, awarded_suppliers) per
+    conflicting document. Two set-based reads, no per-document query.
+    """
+    po_pk, _pr, _ps, po_trgt, _pl, _plt = _DOC["po"]
+    inv_pk, _ir, _is, inv_trgt, _il, _ilt = _DOC["invoice"]
+
+    awarded: dict = {}
+    for r in _rows(cur, f"select deal_id, supplier_id from {po_trgt} "
+                        f"where deal_id is not null and deal_id <> '' "
+                        f"and supplier_id is not null and supplier_id <> ''"):
+        awarded.setdefault(r["deal_id"], set()).add(r["supplier_id"])
+
+    conflicts = []
+    for r in _rows(cur, f"select {inv_pk}, deal_id, supplier_id from {inv_trgt} "
+                        f"where deal_id is not null and deal_id <> '' "
+                        f"and supplier_id is not null and supplier_id <> ''"):
+        holders = awarded.get(r["deal_id"])
+        if not holders:
+            # No order in the deal at all, so there is nothing to be inconsistent
+            # with. An invoice with no purchase order is its own finding, raised
+            # by the three-way match, not a mis-grouping.
+            continue
+        if any(_same_supplier(r["supplier_id"], s) for s in holders):
+            continue
+        conflicts.append(("invoice", r[inv_pk], r["deal_id"],
+                          r["supplier_id"], sorted(holders)))
+    return conflicts
+
+
+def _flag_supplier_conflict_deals(cur) -> int:
+    """Surface those documents for human resolution.
+
+    Flagging, not moving. Which deal the document really belongs to is not
+    decidable here — the grouping is asserted upstream at upload, and this
+    service only ever propagates it — so the honest action is to say the deal is
+    incoherent and let a person settle it, exactly as `_flag_conflict_po_chains`
+    does for a PO chain that disagrees with itself. `reconcile_status` preserves
+    Deal_Conflict_Review, so the flag survives the rest of the run.
+    """
+    flagged: set = set()
+    for (dt, dpk, deal_id, supplier, holders) in _deal_supplier_conflicts(cur):
+        log.warning(
+            "deal %s: %s %s is billed by %s, which holds no purchase order in "
+            "that deal (ordered from %s)",
+            deal_id, dt, dpk, supplier, ", ".join(holders),
+        )
+        for mid in _monitor_ids_for_doc(cur, dt, dpk):
+            if mid not in flagged:
+                _set_monitor_status(cur, mid, "Deal_Conflict_Review")
+                flagged.add(mid)
+    return len(flagged)
+
+
+# ---------------------------------------------------------------------------
 # Reconciliation + orchestration
 # ---------------------------------------------------------------------------
 def _reconcile_legacy(cur) -> int:
@@ -985,19 +1087,85 @@ def assign_deals_fast(conn: Any = None) -> dict:
     return _run(conn.cursor(), include_look_back=False)
 
 
+def _attach_rival_quotes(cur) -> int:
+    """Put the losing bids on the deal their sourcing event formed.
+
+    A requirement goes to market and several suppliers answer it. Only the winning
+    bid becomes a purchase order, and _quote_anchors_per_order forms the deal by
+    anchoring that one quote to that one order (po_quote_anchor is 1:1, and rightly
+    so -- an order IS placed against a single quote). The consequence nobody
+    intended is that the rival bids, having no order of their own, have no route
+    into the deal at all: they keep deal_id NULL, and because document_id is minted
+    as '{deal_id}::quote::{quote_id}' they keep that NULL too.
+
+    That is how a corpus of 21,054 quotes came to have 5,037 deals holding exactly
+    one quote each, and supplier ranking -- which reads competing quotes per deal --
+    came to have nothing to compare.
+
+    requirement_id is the join: the RFQ or tender reference the quotes cite. A quote
+    is attached only when a quote on the SAME requirement already sits on a deal, so
+    the deal is read off the sourcing event rather than inferred from content, and a
+    requirement whose quotes never reached an order forms no deal here.
+
+    The bids are marked not_awarded, which is what keeps them out of
+    proc.bp_deal_documents and therefore out of the deal's quote_count and
+    quote_total: a rival bid is evidence about the sourcing event, not part of the
+    transaction that gets three-way matched.
+    """
+    cur.execute(
+        """
+        UPDATE proc.bp_quote_trgt q
+           SET deal_id      = w.deal_id,
+               deal_name    = w.deal_name,
+               document_id  = w.deal_id || '::quote::' || q.quote_id,
+               award_status = COALESCE(q.award_status, 'not_awarded')
+          FROM (SELECT requirement_id,
+                       min(deal_id)   AS deal_id,
+                       min(deal_name) AS deal_name
+                  FROM proc.bp_quote_trgt
+                 WHERE requirement_id IS NOT NULL AND deal_id IS NOT NULL
+                 GROUP BY requirement_id
+                HAVING count(DISTINCT deal_id) = 1) w
+         WHERE q.requirement_id = w.requirement_id
+           AND q.deal_id IS NULL
+           AND q.po_id IS NULL
+        """
+    )
+    attached = cur.rowcount
+    if attached:
+        cur.execute(
+            """
+            UPDATE proc.bp_quote_line_items_trgt l
+               SET deal_id = q.deal_id, deal_name = q.deal_name,
+                   document_id = q.document_id
+              FROM proc.bp_quote_trgt q
+             WHERE l.quote_id = q.quote_id
+               AND q.award_status = 'not_awarded'
+               AND l.deal_id IS DISTINCT FROM q.deal_id
+            """
+        )
+    return attached
+
+
 def _run(cur, include_look_back: bool = True) -> dict:
     fwd = _look_forward(cur)
     back = _look_back(cur) if include_look_back else None
     rec = _reconcile_legacy(cur)
     prop = _propagate_deal_along_po(cur)
+    # After the PO-anchored deals exist, and before metadata/dates are filled, so a
+    # rival bid picks up the same treatment every other document on the deal gets.
+    rivals = _attach_rival_quotes(cur)
     conflicts = _flag_conflict_po_chains(cur)
+    supplier_conflicts = _flag_supplier_conflict_deals(cur)
     meta = _backfill_deal_metadata(cur)
     dates = _propagate_deal_date(cur)
     mirrored = _mirror_deal_to_raw_and_stg(cur)
     pruned = _prune_deal_document_map(cur)
     status = reconcile_status(cur)
     return {"forward_linked": fwd, "backward_linked": back, "reconciled": rec,
-            "propagated": prop, "conflicts_flagged": conflicts,
+            "propagated": prop, "rival_quotes_attached": rivals,
+            "conflicts_flagged": conflicts,
+            "supplier_conflicts_flagged": supplier_conflicts,
             "metadata_filled": meta, "deal_dates_set": dates,
             "tiers_mirrored": mirrored,
             "map_pruned": pruned, "status_reconciled": status}
