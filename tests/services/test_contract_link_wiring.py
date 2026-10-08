@@ -349,6 +349,7 @@ def test_a_missing_threshold_refuses_rather_than_guessing(monkeypatch):
         CL.MIN_SCORE()
 
 
+@live_only
 def test_the_live_policy_states_both_thresholds(monkeypatch):
     """Live-DB: the migration is applied, so the real lookup answers 65 and 8.
 
