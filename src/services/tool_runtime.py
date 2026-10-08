@@ -11,7 +11,9 @@ support whatsoever, so no agent in the registry could call a tool, and AgentNick
 
 This is that loop, extracted once. It is deliberately dumb: it does not know what
 a policy or an agent is. Callers supply `Tool`s; the runtime calls them and keeps
-a record.
+a record. The one exception: immediately before a handler runs, the agent-policy gate
+(services.agent_policy.gate) is asked whether the call may run; a refused call never reaches
+its handler and the model is told why instead.
 
 The record is the point. Every tool call and every result is captured on the
 returned `ToolRunResult.calls`, so an answer or a decision can be traced back to
@@ -152,6 +154,32 @@ def _render_result(value: Any) -> str:
     return text
 
 
+def _policy_refusal(
+    name: str,
+    args: Dict[str, Any],
+    *,
+    agent: Optional[str],
+    reason: Optional[str],
+    workflow_id: Optional[str],
+    user_id: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """The agent-policy gate, consulted immediately before a handler runs.
+
+    None means run the tool. Otherwise the dict is what the model is told instead, and the
+    handler is never called. The gate never raises; should it be unreachable at all, the
+    call is refused (fail closed) exactly as the gate refuses when policies cannot be checked.
+    """
+    try:
+        from services.agent_policy import gate
+    except Exception:  # noqa: BLE001
+        log.exception("agent policy gate unavailable; refusing tool %s", name)
+        return {"result": "blocked", "reasonCode": "policy_check_unavailable",
+                "reason": "Policy checks are unavailable, so this action was not run."}
+    verdict = gate.before_tool(tool_name=name, args=args, agent=agent, reason=reason,
+                               workflow_id=workflow_id, user_id=user_id)
+    return None if verdict.allow else (verdict.to_agent or dict(gate.UNAVAILABLE))
+
+
 def _chat(
     messages: List[Dict[str, Any]],
     schemas: List[Dict[str, Any]],
@@ -246,6 +274,9 @@ def run_tools_stream(
     timeout_s: int = _DEFAULT_TIMEOUT_S,
     on_tool: Optional[Callable[[ToolCall], None]] = None,
     on_delta: Optional[Callable[[str], None]] = None,
+    agent: Optional[str] = None,
+    workflow_id: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> ToolRunResult:
     """Same loop, but the FINAL answer is streamed out through ``on_delta``.
 
@@ -334,8 +365,14 @@ def run_tools_stream(
             args = _coerce_args(fn.get("arguments"))
             tool = by_name.get(name)
             started = time.monotonic()
+            refusal = None
+            if tool is not None:
+                refusal = _policy_refusal(name, args, agent=agent, reason=content,
+                                          workflow_id=workflow_id, user_id=user_id)
             if tool is None:
                 record = ToolCall(name=name, arguments=args, ok=False, error=f"unknown tool '{name}'")
+            elif refusal is not None:
+                record = ToolCall(name=name, arguments=args, ok=False, result=refusal, error=None)
             else:
                 try:
                     record = ToolCall(
@@ -352,8 +389,12 @@ def run_tools_stream(
                 {
                     "role": "tool",
                     "name": name,
-                    "content": _render_result(
-                        record.result if record.ok else {"error": record.error}
+                    "content": (
+                        json.dumps(refusal, default=str)
+                        if refusal is not None
+                        else _render_result(
+                            record.result if record.ok else {"error": record.error}
+                        )
                     ),
                 }
             )
@@ -372,6 +413,9 @@ def run_tools(
     timeout_s: int = _DEFAULT_TIMEOUT_S,
     require_tool_use: bool = False,
     nudge: Optional[str] = None,
+    agent: Optional[str] = None,
+    workflow_id: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> ToolRunResult:
     """Run AgentNick over ``task``, letting it call ``tools`` until it answers.
 
@@ -437,6 +481,11 @@ def run_tools(
             tool = by_name.get(name)
 
             started = time.monotonic()
+            refusal = None
+            if tool is not None:
+                refusal = _policy_refusal(name, args, agent=agent,
+                                          reason=message.get("content"),
+                                          workflow_id=workflow_id, user_id=user_id)
             if tool is None:
                 record = ToolCall(
                     name=name,
@@ -444,6 +493,9 @@ def run_tools(
                     ok=False,
                     error=f"unknown tool '{name}'",
                 )
+            elif refusal is not None:
+                # Refused by an agent policy: the handler never runs; the model is told why.
+                record = ToolCall(name=name, arguments=args, ok=False, result=refusal, error=None)
             else:
                 try:
                     value = tool.handler(**args)
@@ -468,8 +520,12 @@ def run_tools(
                 {
                     "role": "tool",
                     "name": name,
-                    "content": _render_result(
-                        record.result if record.ok else {"error": record.error}
+                    "content": (
+                        json.dumps(refusal, default=str)
+                        if refusal is not None
+                        else _render_result(
+                            record.result if record.ok else {"error": record.error}
+                        )
                     ),
                 }
             )

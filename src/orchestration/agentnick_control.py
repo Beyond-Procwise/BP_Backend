@@ -291,8 +291,12 @@ def reason(
     exclude: Sequence[str] = (),
     workflow_id: Optional[str] = None,
     user_id: Optional[str] = None,
+    agent: Optional[str] = None,
 ) -> ToolRunResult:
     """Let AgentNick plan and act on ``task`` by calling tools.
+
+    ``agent`` names the calling agent (its slug) for the agent-policy gate, which sees every
+    tool call with the agent, workflow and user it belongs to.
 
     ``require_tool_use`` defaults to True: for a grounded system, an answer
     produced without consulting a single tool is a guess, and the loop nudges once
@@ -308,6 +312,9 @@ def reason(
         system,
         max_rounds=max_rounds,
         require_tool_use=require_tool_use,
+        agent=agent,
+        workflow_id=workflow_id,
+        user_id=user_id,
     )
     log.info(
         "AgentNick.reason rounds=%s tools=%s error=%s",
