@@ -40,7 +40,7 @@ def _declares_money(line_fields: list[FieldSpec]) -> bool:
     )
 
 
-def _header_to_field(header_text: str, line_fields: list[FieldSpec]) -> str | None:
+def _header_match(header_text: str, line_fields: list[FieldSpec]) -> tuple[str | None, int]:
     """Match header cell text to a line-item field by canonical_labels.
 
     Substring matches pick the LONGEST (most specific) matching label, so a
@@ -56,14 +56,14 @@ def _header_to_field(header_text: str, line_fields: list[FieldSpec]) -> str | No
     """
     h = (header_text or "").strip().lower()
     if not h:
-        return None
+        return None, 0
     if _MONEY_HEADER_RE.search(h) and not _declares_money(line_fields):
-        return None
-    # exact match preferred
+        return None, 0
+    # exact match preferred -- it outranks any substring match (see _find_header)
     for f in line_fields:
         for lbl in (f.canonical_labels or []):
             if h == lbl.lower():
-                return f.name
+                return f.name, 1000 + len(lbl)
     # substring: choose the most specific (longest) matching label
     best_field: str | None = None
     best_len = -1
@@ -74,7 +74,11 @@ def _header_to_field(header_text: str, line_fields: list[FieldSpec]) -> str | No
                 if len(ll) > best_len:
                     best_len = len(ll)
                     best_field = f.name
-    return best_field
+    return best_field, max(best_len, 0)
+
+
+def _header_to_field(header_text: str, line_fields: list[FieldSpec]) -> str | None:
+    return _header_match(header_text, line_fields)[0]
 
 
 def _find_header(tbl: Any, line_fields: list[FieldSpec]) -> tuple[int | None, dict[int, str]]:
@@ -93,11 +97,16 @@ def _find_header(tbl: Any, line_fields: list[FieldSpec]) -> tuple[int | None, di
     best_i: int | None = None
     best_map: dict[int, str] = {}
     for i in order:
-        cmap: dict[int, str] = {}
+        # One column per field: the best-matching header wins (an exact label over a partial
+        # one, then the leftmost). Two columns used to feed one field and the LAST won, so
+        # "Provision | Detail" took the detail text ("Standard 1.5x; weekend 2x.") as the
+        # description of the Overtime line.
+        best: dict[str, tuple[int, int]] = {}
         for cell in tbl.rows[i]:
-            fld = _header_to_field(cell.text, line_fields)
-            if fld:
-                cmap.setdefault(cell.col_index, fld)
+            fld, score = _header_match(cell.text, line_fields)
+            if fld and (fld not in best or score > best[fld][0]):
+                best[fld] = (score, cell.col_index)
+        cmap: dict[int, str] = {col: fld for fld, (_score, col) in best.items()}
         if len(cmap) > len(best_map):
             best_i, best_map = i, cmap
         # A declared header with 2+ recognised columns is trusted as-is.
@@ -113,6 +122,29 @@ _DIGIT_RE = re.compile(r"\d")
 # column on the totals rows (Sub-Total/Tax/Discount/Grand Total). These
 # are NOT line items — they're the financial summary block. When a row's
 # item_description matches one of these, skip the whole row.
+#: A section total named after its section: "Staffing subtotal", "Fixed-fee subtotal",
+#: "Provisions sub-total". _SUMMARY_DESC_RE only knew the bare word, so these were kept as
+#: lines and the line sum double-counted every section.
+_SECTION_SUBTOTAL_RE = re.compile(r"\bsub\s*-?\s*totals?\s*[:$£€¥]*\s*$", re.IGNORECASE)
+#: "Total (ex-VAT)", "Grand total (incl. VAT)": the word total qualified only by a bracket.
+_QUALIFIED_TOTAL_RE = re.compile(r"^\s*(?:grand\s+)?total\s*\([^)]*\)\s*[:$£€¥]*\s*$", re.IGNORECASE)
+
+
+def _is_summary_row(desc_value: str, row: list) -> bool:
+    """A totals/subtotal row, not an item.
+
+    Besides the label patterns, a label that the document MERGED across the row's other
+    columns ("Staffing subtotal | Staffing subtotal | ... | 1,995,700" -- a docx merged cell
+    repeats its text in every column it spans) is a heading or a total: an item puts
+    different things in its columns."""
+    if (_SUMMARY_DESC_RE.match(desc_value) or _SECTION_SUBTOTAL_RE.search(desc_value)
+            or _QUALIFIED_TOTAL_RE.match(desc_value)):
+        return True
+    d = desc_value.strip().lower()
+    repeats = sum(1 for cell in row if (cell.text or "").strip().lower() == d)
+    return bool(d) and repeats >= 3
+
+
 _SUMMARY_DESC_RE = re.compile(
     r"^\s*"
     r"(?:"
@@ -190,7 +222,7 @@ def extract_line_items(parsed: Any, schema: DocSchema) -> list[Candidate]:
                 # label ("Sub-Total" / "Tax (20%)" / "Grand Total" / etc.) —
                 # some templates put those labels in the description column.
                 desc_value = row_values["item_description"][0]
-                if _SUMMARY_DESC_RE.match(desc_value):
+                if _is_summary_row(desc_value, row):
                     continue
                 local_idx = line_index
                 for fld, (value, cell) in row_values.items():

@@ -651,7 +651,14 @@ def dispatch_document(
                     "line-item recovery: replaced %d lines with %d (sum %.2f->%.2f, header=%s)",
                     len(line_items), len(mapped), old_sum or 0, new_sum or 0, header_total,
                 )
-                line_items = mapped
+                # Recovery replaces wholesale; put back any line it dropped that the
+                # document's total says belongs (completeness.restore_dropped_lines).
+                line_items, restored = _completeness.restore_dropped_lines(
+                    doc_type, mapped, line_items, header_total)
+                if restored:
+                    log.info("line-item recovery: restored %d table line(s) the recovery dropped "
+                             "(sum now %.2f, header=%s)", restored,
+                             _completeness.line_sum(doc_type, line_items) or 0, header_total)
 
     # Subtotal recovery from line items. When the required header subtotal
     # (invoice_amount / total_amount) could not be grounded from the text but
