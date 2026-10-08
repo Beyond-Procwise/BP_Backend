@@ -124,6 +124,12 @@ the mailbox/S3 under retention.
 | `support_agent` escalation | **No** | Automatic internal email to `SUPPORT_ADMIN_EMAIL` (default is a personal address; skipped if not on the sending domain) containing the user's message and the assistant's reply |
 | Decision engine acting on a classified inbound reply | **Not examined** | I did not trace whether it can cause a send |
 
+**Accepted exceptions (your ruling 2026-10-08):** `value_digest` and `support_agent` stay as they are. Both are internal mail with no supplier recipient.
+`value_digest` sends a weekly summary to the addresses in `VALUE_DIGEST_RECIPIENTS` (on the sending domain, gated by the `email.send` policy as a
+configuration-built identity). `support_agent` sends an automatic escalation to `SUPPORT_ADMIN_EMAIL`, skipped if that address is not on the sending
+domain. **One thing I would still change if asked:** `SUPPORT_ADMIN_EMAIL` defaults in code to a personal address; moving it to governed config would
+cost little. Not changed, because you ruled "accept as listed".
+
 Paths where "nothing goes out without a human approving it" is **not** true: `value_digest`, `support_agent`, and (arguably) `send_query`.
 The supplier-facing paths are all human-approved except `send_query`, which is human-initiated and gated but not content-bound.
 
