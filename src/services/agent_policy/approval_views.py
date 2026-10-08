@@ -301,6 +301,7 @@ def get_case(conn, decision_id: int, principal, *, is_admin: bool) -> Optional[D
                     "OR firing_id = %s ORDER BY created_at, firing_id",
                     (decision_id, facts.get("firingId") if str(facts.get("firingId") or "").isdigit() else None))
         firing_rows = _rows(cur)
+        replay = latest_replay(cur, case)
         pairs = [_pair(case)] if _pair(case)[1] is not None else []
         pairs += [(r["policy_key"], r["policy_version"]) for r in firing_rows]
         sensitive = sensitive_for(cur, pairs)
@@ -308,8 +309,28 @@ def get_case(conn, decision_id: int, principal, *, is_admin: bool) -> Optional[D
     ok = can_decide(principal, case, mapping)
     view = case_view(case, unmasked=ok, sensitive=sensitive, doc=docs.get(_pair(case)), decidable=ok)
     view["history"] = {"decisions": decisions, "notes": notes,
-                       "firings": [_firing_view(r, sensitive) for r in firing_rows]}
+                       "firings": [_firing_view(r, sensitive) for r in firing_rows], "replay": replay}
     return view
+
+
+REPLAY_SUBJECT_TYPE = "agent_policy_replay"   # replay.SUBJECT_TYPE; not imported (pulls in the tools)
+
+
+def latest_replay(cur, case: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The latest replay of this case's group: a replay row names every case it ran for in
+    facts.caseIds (and the group in facts.firingGroup). resultSummary and error were masked when
+    the replay wrote them. None when the action has not been replayed."""
+    group = case["facts"].get("firing_group") or case["facts"].get("firingGroup")
+    cur.execute("SELECT facts, actioned_at FROM proc.bp_decision WHERE subject_type = %s "
+                "AND (facts->'caseIds' @> %s::jsonb OR (%s::text IS NOT NULL AND facts->>'firingGroup' = %s)) "
+                "ORDER BY decision_id DESC LIMIT 1",
+                (REPLAY_SUBJECT_TYPE, json.dumps([int(case["decision_id"])]), group, group))
+    row = cur.fetchone()
+    if not row:
+        return None
+    facts = _j(row[0], {}) or {}
+    return {"outcome": facts.get("outcome"), "resultSummary": facts.get("resultSummary"),
+            "error": facts.get("error"), "at": _iso(row[1])}
 
 
 # ---------------------------------------------------------------------------- firings

@@ -76,7 +76,9 @@ def _note(**over):
 
 @pytest.fixture
 def state():
-    return {"case": _case(), "firing": _firing(), "decider": _decider(), "note": _note()}
+    return {"case": _case(), "firing": _firing(), "decider": _decider(), "note": _note(),
+            "replay": {"outcome": "ran", "resultSummary": f"Refund of 900 to {MASK} issued", "error": None,
+                       "at": "2026-10-08T09:05:00+00:00"}}
 
 
 @pytest.fixture
@@ -88,7 +90,8 @@ def client(monkeypatch, state):
     monkeypatch.setattr(R.agent_actions, "record_action_or_fail", lambda **kw: None)
     monkeypatch.setattr(V, "list_cases", lambda conn, p, is_admin, status="open": [state["case"]])
     monkeypatch.setattr(V, "get_case", lambda conn, did, p, is_admin: {
-        **state["case"], "history": {"decisions": [], "notes": [state["note"]], "firings": [state["firing"]]}})
+        **state["case"], "history": {"decisions": [], "notes": [state["note"]], "firings": [state["firing"]],
+                    "replay": state["replay"]}})
     monkeypatch.setattr(V, "policy_firings", lambda conn, key, limit: [state["firing"]])
     monkeypatch.setattr(V, "my_notifications", lambda conn, p, limit: [state["note"]])
     monkeypatch.setattr(V, "list_deciders", lambda conn: [state["decider"]])
@@ -181,6 +184,19 @@ def test_limits(client):
     assert client.get("/agent-policies/notifications?mine=0", headers=HDR).status_code == 422
     assert client.get("/agent-policies/approvals?status=everything", headers=HDR).status_code == 422
     assert client.get("/agent-policies/fin-12/firings", headers=HDR).status_code == 404
+
+
+def test_replay_outcome_passes_the_scrubber(client, state):
+    r = client.get("/agent-policies/approvals/41", headers=HDR).json()["history"]["replay"]
+    assert r == state["replay"]
+    state["replay"] = {"outcome": "error", "resultSummary": None, "error": "The supplier service did not answer.",
+                       "at": "2026-10-08T09:05:00+00:00"}
+    assert client.get("/agent-policies/approvals/41", headers=HDR).json()["history"]["replay"] == state["replay"]
+
+
+def test_replay_subject_type_matches_the_replay_module():
+    from services.agent_policy import replay
+    assert V.REPLAY_SUBJECT_TYPE == replay.SUBJECT_TYPE
 
 
 # ------------------------------------------------------------------ pure helpers

@@ -70,6 +70,8 @@ def world(conn, monkeypatch):
         cur.execute("DELETE FROM proc.bp_policy_notification WHERE link = ANY(%s) OR recipient = ANY(%s)",
                     ([f"decision:{i}" for i in ids], [w.l1, w.l2, w.requester]))
         cur.execute("DELETE FROM proc.bp_decision WHERE decision_id = ANY(%s)", (ids,))
+        cur.execute("DELETE FROM proc.bp_decision WHERE subject_type = %s AND subject_id LIKE %s",
+                    (V.REPLAY_SUBJECT_TYPE, f"{w.key}:%"))
         cur.execute("DELETE FROM proc.bp_policy_decider_map WHERE decider_name = ANY(%s)",
                     ([w.l1, w.l2, *w.made_names],))
 
@@ -177,6 +179,31 @@ def test_approve_queues_the_replay(client, conn, world):
     assert world.replays == [did]
 
 
+def _replay_row(conn, did, subject_id, facts):
+    """A replay row as replay._insert_replay/_finish_replay write it."""
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO proc.bp_decision (subject_type, subject_id, decision, resolution, facts, evidence, "
+                    "status, actioned_by, actioned_at, created_by) VALUES (%s, %s, 'replay', 'resolved', %s, '[]', "
+                    "'actioned', 'system:replay', now(), 'system:replay')",
+                    (V.REPLAY_SUBJECT_TYPE, subject_id, json.dumps({"caseIds": [did], "tool": "refund.issue", **facts})))
+
+
+def test_case_history_carries_the_latest_replay(client, conn, world):
+    did, fid, _ = _open(conn, world)
+    other, ofid, _ = _open(conn, world)
+    l1 = _hdr("u-l1", world.l1_email)
+    assert client.get(f"/agent-policies/approvals/{did}", headers=l1).json()["history"]["replay"] is None
+    _replay_row(conn, other, f"{world.key}:{ofid}", {"outcome": "ran", "resultSummary": "other", "error": None})
+    assert client.get(f"/agent-policies/approvals/{did}", headers=l1).json()["history"]["replay"] is None
+    _replay_row(conn, did, f"{world.key}:{fid}", {"ok": None, "outcome": "running", "resultSummary": None, "error": None})
+    _replay_row(conn, did, f"{world.key}:{fid}", {"ok": True, "outcome": "ran",
+                                                  "resultSummary": f"Refund of 900 to {MASK} issued", "error": None})
+    r = client.get(f"/agent-policies/approvals/{did}", headers=l1).json()["history"]["replay"]
+    assert r["outcome"] == "ran" and r["resultSummary"] == f"Refund of 900 to {MASK} issued"
+    assert r["error"] is None and r["at"]
+    assert set(r) == {"outcome", "resultSummary", "error", "at"}
+
+
 def test_notifications_mine_and_read(client, conn, world):
     did, _, nid = _open(conn, world)
     l1 = _hdr("u-l1", world.l1_email)
@@ -244,6 +271,9 @@ def test_nothing_in_these_answers_is_withheld_by_output_safety(client, conn, wor
         "deciders": client.get("/agent-policies/deciders", headers=admin).json(),
         "firings": client.get(f"/agent-policies/{world.key}/firings", headers=admin).json(),
         "read": client.post(f"/agent-policies/notifications/{nid}/read", headers=l1).json(),
+        "one_after_replay": (_replay_row(conn, did, f"{world.key}:x", {"outcome": "error", "resultSummary": None,
+                                                                     "error": "The supplier service did not answer."})
+                             or client.get(f"/agent-policies/approvals/{did}", headers=l1).json()),
         "decide": client.post(f"/agent-policies/approvals/{did}/decide",
                               json={"verb": "reject", "reason": "Not a duplicate charge"}, headers=l1).json(),
     }
