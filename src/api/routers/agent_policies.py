@@ -14,6 +14,7 @@ import hmac
 import json
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -24,7 +25,8 @@ from pydantic import BaseModel, Field
 from api.auth import Principal
 from repositories import agent_policy_repo as repo
 from services import agent_actions, rbac
-from services.agent_policy import conditions, contract, documents, live_policies, readiness, run_runner, run_store, sections
+from services.agent_policy import (approval_views, approvals, conditions, contract, documents, live_policies,
+                                   readiness, run_runner, run_store, sections)
 from services.agent_policy.compiler import compile_policy
 from services.agent_policy.registry import load_registry
 from services.agent_policy.settings import load_settings
@@ -310,6 +312,134 @@ def get_extraction_run(run_id: int, afterSeq: int = Query(default=0, ge=0),
     if run is None:
         raise HTTPException(status_code=404, detail="no such extraction run")
     return run
+
+
+# ---------------------------------------------------------------- approvals, notifications, deciders
+# Declared before "/{key}" so "approvals", "notifications" and "deciders" are never read as policy ids.
+# Who may DECIDE is computed here per caller from the decider map at the case's current level;
+# the Admin role reads every case but decides only when linked (separation of duties).
+
+class DecideBody(BaseModel):
+    verb: str = Field(max_length=16)
+    reason: Optional[str] = Field(default=None, max_length=2000)
+
+
+class DeciderBody(BaseModel):
+    groups: List[Any] = Field(default_factory=list, max_length=50)
+    emails: List[Any] = Field(default_factory=list, max_length=200)
+    notes: Optional[Any] = None
+
+
+def _decide_problem(exc: approvals.ApprovalRefused) -> JSONResponse:
+    field = "reason" if exc.code == "reason_required" else "verb"
+    return JSONResponse(status_code=422, content={"problems": [
+        {"field": field, "code": exc.code, "message": exc.message}]})
+
+
+_replay_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="agent-policy-replay")
+
+
+def _replay_later(decision_id: int) -> None:
+    """The approved action runs off the request thread: a tool call may outlast the gateway's
+    timeout, and the person's decision is already committed (act calls this after commit)."""
+    from services.agent_policy import replay  # local: pulls in the orchestrator tools
+
+    def _go():
+        try:
+            replay.run(decision_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("replay after approval %s failed", decision_id)
+
+    _replay_pool.submit(_go)
+
+
+@router.get("/approvals")
+def list_approvals(status: str = Query(default="open", pattern="^(open|closed|all)$"),
+                   p: Principal = Depends(gateway_principal)):
+    role = _require(p, "Viewer", "agent_policy.read", {})
+    with _conn() as conn:
+        return {"approvals": approval_views.list_cases(conn, p, is_admin=role == "Admin", status=status)}
+
+
+@router.get("/approvals/{decision_id}")
+def get_approval(decision_id: int, p: Principal = Depends(gateway_principal)):
+    role = _require(p, "Viewer", "agent_policy.read", {"decision": decision_id})
+    with _conn() as conn:
+        got = approval_views.get_case(conn, decision_id, p, is_admin=role == "Admin")
+    if got is None:
+        raise HTTPException(status_code=404, detail="No such approval request.")
+    return got
+
+
+@router.post("/approvals/{decision_id}/decide")
+def decide(decision_id: int, body: DecideBody, p: Principal = Depends(gateway_principal)):
+    # Viewer is the floor; eligibility (the decider map at the current level) decides inside act().
+    _require(p, "Viewer", "agent_policy.decide", {"decision": decision_id, "verb": body.verb})
+    with _conn() as conn:
+        try:
+            out = approvals.act(conn, decision_id, principal=p, verb=body.verb, reason=body.reason,
+                                now=datetime.now(timezone.utc), replay=_replay_later)
+        except approvals.ApprovalRefused as exc:
+            agent_actions.record_action_or_fail(
+                phase="decide", action_type="agent_policy.decide", agent="agent_policy_api", status="refused",
+                summary=f"{p.subject} could not {body.verb} approval {decision_id}: {exc.code}",
+                details={"decision": decision_id, "verb": body.verb, "code": exc.code, "principal": p.subject})
+            if exc.status == 422:
+                return _decide_problem(exc)
+            raise HTTPException(status_code=exc.status, detail=exc.message)
+    agent_actions.record_action_or_fail(
+        phase="decide", action_type="agent_policy.decide", agent="agent_policy_api", status="done",
+        summary=f"{p.subject} {out['result']} approval {decision_id}",
+        details={"decision": decision_id, "verb": out["verb"], "level": out["level"],
+                 "levelName": out["levelName"], "actionId": out["actionId"], "principal": p.subject})
+    return out
+
+
+@router.get("/notifications")
+def my_notifications(mine: int = Query(default=1, ge=1, le=1), limit: int = Query(default=50, ge=1, le=200),
+                     p: Principal = Depends(gateway_principal)):
+    _require(p, "Viewer", "agent_policy.read", {})
+    with _conn() as conn:
+        return {"notifications": approval_views.my_notifications(conn, p, limit)}
+
+
+@router.post("/notifications/{notification_id}/read")
+def read_notification(notification_id: int, p: Principal = Depends(gateway_principal)):
+    _require(p, "Viewer", "agent_policy.notification_read", {"notification": notification_id})
+    with _conn() as conn:
+        got = approval_views.mark_read(conn, notification_id, p)
+    if got is None:
+        raise HTTPException(status_code=404, detail="No such notification.")
+    return got
+
+
+@router.get("/deciders")
+def list_deciders(p: Principal = Depends(gateway_principal)):
+    _require(p, "Viewer", "agent_policy.read", {})
+    with _conn() as conn:
+        return {"deciders": approval_views.list_deciders(conn)}
+
+
+@router.put("/deciders/{name}")
+def put_decider(name: str, body: DeciderBody, p: Principal = Depends(gateway_principal)):
+    _require(p, "Admin", "agent_policy.admin", {"decider": name, "groups": len(body.groups),
+                                                "emails": len(body.emails)})
+    problems, groups, emails = approval_views.decider_problems(name, body.groups, body.emails, body.notes)
+    if problems:
+        return JSONResponse(status_code=422, content={"problems": problems})
+    notes = body.notes.strip() if isinstance(body.notes, str) and body.notes.strip() else None
+    with _conn() as conn:
+        return approval_views.upsert_decider(conn, name, groups, emails, notes, actor=p.subject)
+
+
+@router.get("/{key}/firings")
+def policy_firings(key: str, limit: int = Query(default=50, ge=1, le=200),
+                   p: Principal = Depends(gateway_principal)):
+    _require(p, "Viewer", "agent_policy.read", {"policy": key})
+    if not approval_views.KEY_RE.match(key):
+        raise HTTPException(status_code=404, detail="no such policy")
+    with _conn() as conn:
+        return {"firings": approval_views.policy_firings(conn, key, limit)}
 
 
 @router.get("/{key}")
