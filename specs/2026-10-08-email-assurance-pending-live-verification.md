@@ -69,7 +69,7 @@ number, a reasoned field with no basis, a figure in no fact, out-of-range scores
 - **Team membership**: no user -> team mapping exists anywhere in the schema. `team_id` stays nullable; exemplar
   fallback is user -> organisation (the whole deployment; there is no tenant dimension).
 - **UI**: the UI repo is not edited. See `2026-10-08-email-assurance-ui-patch-proposal.md`.
-- **Abandoned-draft sweep** (server side): not built; the abandon event is best-effort.
+- **Abandoned-draft sweep** (server side): BUILT 2026-10-08, see the section at the end of this file.
 
 ## 4. Not started (next, in the agreed order)
 
@@ -211,3 +211,33 @@ router's docstring and in `specs/2026-10-08-email-assurance-ui-patch-proposal.md
 | Q9 | All reads and writes go through the writer door (the reader role has no access to `email_agent`). Until the dedicated logins exist this is the app's own login, so the role restriction is not yet in force. |
 | Q10 | Until someone uses these endpoints there is nothing approved for the drafter to be steered by. With no screen, that means an API client or a person calling it by hand. |
 | Q11 | **An earlier gap I should have flagged:** `GET /drafts/{unique_id}/assurance` (the reviewer view built before this) asks no authorisation question beyond being logged in. It returns facts with row ids, the brief and the violations of any draft by id. Gating it is a one-line change; it is your call whether any logged-in user may read any draft's assurance. |
+
+## The abandoned-draft sweep (2026-10-08) - built, off nowhere, applied nowhere
+
+`draft_assurance/sweep.py`, `deploy/sql/2026-10-08_email_draft_sweep.sql`, job `email-draft-sweep` (ON unless
+`EMAIL_DRAFT_SWEEP_ENABLED=0`, hourly). Closes the drafts nobody sent and nobody abandoned, so "how many drafts were never used" can
+be answered.
+
+| # | What is true |
+|---|---|
+| W1 | After `EmailDraftSweepRules.abandon_after_days` (14, proposed by me: **please confirm the number**) with no outcome, the LATEST capture of a draft gets an `abandoned` outcome by `system:draft-sweep`, reason "no send or decision within 14 days". A missing or non-positive value makes the sweep refuse. |
+| W2 | **It abandons only what the product CONFIRMS was not sent.** Recording a send is best-effort, so a draft with no outcome may well have gone out. Sent per `draft_rfq_emails` (`sent`, or any `sent_on`) or per a `workflow_email_tracking` row = left alone. No product record at all = left alone (nothing confirmed). If the check cannot be made, nothing is abandoned. All tested, including each of those mutations. |
+| W3 | A regeneration replaces its predecessor; only the newest capture is ever swept, so a replaced draft is never called abandoned. |
+| W4 | A draft sent AFTER it was swept is counted as sent, not abandoned, in the metrics (tested). It will carry both outcomes. |
+| W5 | **Needs a grant:** the reader role gets `SELECT (unique_id, sent, sent_on)` on `proc.draft_rfq_emails` and nothing else of it (tested as a real login). The DBA change request is updated; this widens what the reader can reach by one table's three columns. Until the dedicated reader exists the app's own login is used. |
+| W6 | A draft the product has no record of (stored elsewhere, or the draft table write failed) is never swept; it stays "no outcome" forever. Counted in the report as `skipped_unverifiable`. |
+| W7 | Batch size (500) bounds one run; the rest waits for the next. The job logs its report each run; nothing else surfaces it yet. |
+| W8 | Not built: a draft that is waiting on a human approval for longer than the period is swept like any other, and then still can be sent. Whether a pending approval should postpone the sweep is a decision; today it does not. |
+
+## Pack (a) alone, and the deploy order (2026-10-08)
+
+Found while rewriting the DDL pack document: the `steering` column was in pack (b) (held back) while the capture code writes to it, so
+applying (a) alone would have made every capture fail, quietly. Fixed: the column is its own pack (a) file, and
+`tests/email_evals/test_pack_split.py` now applies (a) alone to a fresh database and runs capture, send, sweep, retention, learning and metrics
+on it (and reproduces the bug if the column is put back into (b)). The rehearsal on a copy of bp_sqldb's structure was re-run with all fifteen files:
+**PASS**, 364 eval tests against the copy, schema fingerprint identical after rollback.
+
+**Deploy order matters, and failure is quiet.** The application code on `origin/Development` writes to the (a) tables and columns. Where the
+migrations are not applied, capture, send-outcome recording, the sweep and retention each log an error and record nothing, while drafting and
+sending carry on. `bp_testdb` has only the first capture files applied, so any code that reaches it from `Development` records nothing for the
+newer columns. Apply pack (a) before the code reaches an environment you want captured, or accept that it will not be.

@@ -12,7 +12,7 @@ import os
 import sys
 from pathlib import Path
 
-TABLES = ["bp_policy", "bp_prompt", "supplier_response", "bp_supplier", "workflow_email_tracking", "bp_approval"]
+TABLES = ["bp_policy", "bp_prompt", "supplier_response", "bp_supplier", "workflow_email_tracking", "bp_approval", "draft_rfq_emails"]
 HEADER = """-- GENERATED from the live column definitions of the tables below (read-only introspection).
 -- Columns, types, defaults, NOT NULL and identity are faithful; constraints, indexes and triggers are
 -- DELIBERATELY omitted so a golden case can seed the duplicate / orphan rows the code must still cope with.

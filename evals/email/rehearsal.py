@@ -29,7 +29,7 @@ from evals.email import db
 REPO = db.REPO
 PG16 = "/usr/lib/postgresql/16/bin"
 SEQUENCES = ["supplier_response_id_seq"]      # a default that names a standalone sequence needs it in the copy
-TABLES = ["supplier_response", "bp_supplier", "workflow_email_tracking", "bp_policy", "bp_prompt", "bp_approval", "bp_mailbox_binding", "bp_agent_actions"]   # bp_agent_actions: the send guard counts a user's sends there
+TABLES = ["supplier_response", "bp_supplier", "workflow_email_tracking", "bp_policy", "bp_prompt", "bp_approval", "bp_mailbox_binding", "bp_agent_actions", "draft_rfq_emails"]   # draft_rfq_emails: the sweep and the reader grant touch it. bp_agent_actions: the send guard counts a user's sends there
 DATA_TABLES = ["bp_policy", "bp_prompt"]
 
 

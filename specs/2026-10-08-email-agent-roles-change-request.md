@@ -12,7 +12,7 @@ Create two **NOLOGIN group roles** on the RDS cluster `procwisemvpdb01`:
 
 | Role | May do | May not do |
 |---|---|---|
-| `email_agent_reader` | SELECT on `proc.supplier_response`, `proc.workflow_email_tracking`, and 9 named columns of `proc.bp_supplier` | write anything; read any other table; read `bank_*`, tax or registration columns of `bp_supplier`; DDL; GRANT |
+| `email_agent_reader` | SELECT on `proc.supplier_response`, `proc.workflow_email_tracking`, 9 named columns of `proc.bp_supplier`, and **3 columns of `proc.draft_rfq_emails` (`unique_id`, `sent`, `sent_on`)** | write anything; read any other table; read `bank_*`, tax or registration columns of `bp_supplier`; DDL; GRANT |
 | `email_agent_writer` | SELECT, INSERT, UPDATE on the 8 `email_agent.*` tables; USAGE/SELECT on that schema's sequences | touch anything in `proc`; DELETE; TRUNCATE; DDL |
 
 The exact SQL is `deploy/sql/2026-10-09_email_agent_roles.sql`; the rollback is
@@ -22,6 +22,12 @@ a schema copy of `bp_sqldb`, and 57 tests connect AS the roles and attempt write
 
 Login roles (the ones a service actually connects as) are a **separate, later step** and are not part of this
 change. Their passwords never go in the repo.
+
+**Added 2026-10-08 (after the first draft of this request):** the reader also gets `SELECT (unique_id, sent, sent_on)` on
+`proc.draft_rfq_emails`, for the abandoned-draft sweep, which must confirm a draft was NOT sent before it records it as abandoned.
+The drafts' body, subject, recipients, payload and attachments stay unreadable (tested as a real login). This is the one place the
+reader reaches the drafts table, so please review that grant specifically. The table exists in `bp_sqldb`, `bp_testdb`,
+`bp_testdb_it` and the `uicanvas*` databases, like the other tables the reader reads.
 
 ## 2. What is true on the cluster today (read-only audit, 2026-10-08)
 
