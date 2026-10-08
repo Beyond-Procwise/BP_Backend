@@ -15,7 +15,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
-from . import accountability, authority as authority_mod, stages, steering as steering_mod, tone as tone_mod
+from . import accountability, authority as authority_mod, inbound as inbound_mod, stages, steering as steering_mod, tone as tone_mod
 from .assure import Inputs, prepare_inputs
 from .brief import counter_brief
 from .family import FamilyConfig, FamilyConfigUnavailable, list_families, list_labels, load_family
@@ -53,6 +53,19 @@ class AssuranceRun:
     request: Optional[str] = None
     repair_rejected: Optional[str] = None
     steering: Optional[steering_mod.Steering] = None          # what steers the writer: tone, the author's style rules, exemplars
+    inbound_block: Optional[Dict[str, Any]] = None            # {"state": clear|blocked|unknown|not_checked, "flag_ids": [...]}: a flagged reply on this thread
+
+    def blocked_reason(self) -> Optional[str]:
+        """Why an AGENT must not draft on this thread, or None. A flagged reply (a suspected request to change payment details) blocks;
+        so does being unable to check, because 'could not look' must never read as 'nothing there'."""
+
+        state = (self.inbound_block or {}).get("state")
+        if state == "blocked":
+            return ("a reply from this supplier asks to change payment details and has not been reviewed by a person; "
+                    "nothing is drafted on this thread until it is")
+        if state == "unknown":
+            return "whether this supplier's thread holds an unreviewed payment-detail request could not be checked, so nothing is drafted"
+        return None
 
     def guidance(self) -> str:
         """The block appended to the writer's user message. Empty when nothing steers (the prompt is then unchanged)."""
@@ -67,12 +80,17 @@ class AssuranceRun:
                  repaired: bool = False) -> Dict[str, Any]:
         env = self.env
         initiated = accountability.initiated(env.user_id, env.agent_name, env.agent_ids)
+        blocked = self.blocked_reason()
         base: Dict[str, Any] = {"accountability": {"initiated_by": initiated["id"], "kind": initiated["kind"]},
                                 "family_source": self.family_source, "user_instruction": self.instruction,
                                 "exemplars": _safe(env.exemplars),
                                 "steering": self.steering.record() if self.steering is not None else None}
         if self.inputs is None:
-            return {"status": "unassured", "reason": self.error or "not run", **base,
+            # Nothing was checked, but a draft on a flagged thread is still marked: the mark does not depend on a family loading.
+            marks = ({"violations": [{"kind": "payment_change_unreviewed", "severity": "fail", "detail": blocked}]}
+                     if blocked and (self.inbound_block or {}).get("state") in ("blocked", "unknown") else {})
+            return {"status": "unassured", "reason": self.error or "not run", **base, **marks,
+                    **({"inbound_block": dict(self.inbound_block)} if self.inbound_block and self.inbound_block.get("state") != "not_checked" else {}),
                     "stage_status": {"all": {"status": "not_run", "reason": self.error or "not run"}},
                     "ready": False}
         inp = self.inputs
@@ -91,6 +109,14 @@ class AssuranceRun:
                   "clarification": (self.classification or {}).get("clarification") or {}}
         record = inp.finalize(composed, recipients, env.master_emails(supplier_id), extras)
         record["repaired"] = repaired
+        if blocked and self.inbound_block and self.inbound_block.get("state") in ("blocked", "unknown"):
+            # A person may still write on this thread (they may be the one dealing with it) but the draft is marked, not ready, and the
+            # send guard will refuse it while the flag stands.
+            record["violations"] = list(record.get("violations") or []) + [
+                {"kind": "payment_change_unreviewed", "severity": "fail", "detail": blocked}]
+            record["status"], record["ready"] = "needs_review", False
+        if self.inbound_block and self.inbound_block.get("state") != "not_checked":
+            record["inbound_block"] = dict(self.inbound_block)
         record["read_control"] = env.access.get("control")        # dedicated_role | interim_readonly_session | unenforced
         if self.repair_rejected:
             record["repair_rejected"] = self.repair_rejected
@@ -122,12 +148,28 @@ def _safe(fn: Callable[[], Any]) -> Any:
         return {"ids": [], "scope": "none", "status": "unavailable", "reason": "exemplar lookup failed"}
 
 
+def _inbound_state(env: Env, workflow_id: Optional[str], supplier_id: Optional[str]) -> Dict[str, Any]:
+    """Is there an unreviewed suspected payment-detail request on this thread? Never raises; failure is 'unknown', which blocks."""
+
+    if env.store_factory is None:
+        return {"state": "not_checked", "flag_ids": []}
+    try:
+        with env.store_factory() as conn:
+            flags = inbound_mod.blocking_flags(conn, workflow_id, supplier_id)
+    except Exception:  # noqa: BLE001 - the flag lookup failing, or the door itself failing
+        logger.exception("could not check the thread for an unreviewed payment-detail request")
+        return {"state": "unknown", "flag_ids": []}
+    return {"state": "blocked" if flags else "clear", "flag_ids": [f["id"] for f in flags]}
+
+
 def begin(env: Env, data: Dict[str, Any], *, slug: Optional[str], workflow_id: Optional[str],
           instruction: Optional[str] = None, request: Optional[str] = None,
           classify: bool = False, lookup: Optional[Dict[str, Any]] = None) -> AssuranceRun:
     """Resolve the family, derive tone, read facts, and (for free text) classify and plan. Never raises."""
 
     run = AssuranceRun(env=env, data=data, family_source="declared", instruction=instruction, request=request)
+    # First, and independent of everything below: a flagged thread must be seen even if the family cannot be loaded.
+    run.inbound_block = _inbound_state(env, workflow_id or data.get("workflow_id"), data.get("supplier_id"))
     candidates: Dict[str, Any] = {}      # ids the classifier read out of the request: they fill gaps, nothing more
     try:
         if classify:

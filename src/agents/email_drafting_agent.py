@@ -1613,6 +1613,12 @@ class EmailDraftingAgent(BaseAgent):
             instruction=decision_data.get("user_instruction"),
         )
 
+        blocked = assurance_run.blocked_reason() if assurance_run is not None else None
+        if blocked:
+            logger.warning("decision email not drafted for workflow %s: %s", workflow_hint, blocked)
+            return {"blocked": True, "blocked_reason": blocked, "unique_id": unique_id,
+                    "flag_ids": (assurance_run.inbound_block or {}).get("flag_ids", [])}
+
         payload = {
             "unique_id": unique_id,
             "supplier_id": supplier_id,
@@ -2647,6 +2653,14 @@ class EmailDraftingAgent(BaseAgent):
             combined_data, workflow_id=workflow_hint, user_id=getattr(context, "user_id", None),
             instruction=combined_data.get("user_instruction"),
         )
+
+        # An agent never drafts on a thread holding an unreviewed suspected payment-detail request (or one it could not check).
+        blocked = assurance_run.blocked_reason() if assurance_run is not None else None
+        if blocked:
+            logger.warning("negotiation counter not drafted for workflow %s: %s", workflow_hint, blocked)
+            return self._with_plan(context, AgentOutput(
+                status=AgentStatus.FAILED, error=blocked,
+                data={"blocked": True, "blocked_reason": blocked, "flag_ids": (assurance_run.inbound_block or {}).get("flag_ids", [])}))
 
         # The steering run is passed only when something steers, so an unsteered call is exactly the old call.
         steer = {"assurance_run": assurance_run} if assurance_run is not None and assurance_run.guidance() else {}
@@ -4116,6 +4130,10 @@ class EmailDraftingAgent(BaseAgent):
                 data["decision"] = decision_payload
         if isinstance(decision_payload, dict) and decision_payload:
             draft = self.from_decision(decision_payload)
+            if draft.get("blocked"):
+                return self._with_plan(context, AgentOutput(
+                    status=AgentStatus.FAILED, error=draft.get("blocked_reason"),
+                    data={"blocked": True, "blocked_reason": draft.get("blocked_reason"), "flag_ids": draft.get("flag_ids", [])}))
             draft = self._apply_workflow_context(
                 draft, context, source_payload=decision_payload
             )

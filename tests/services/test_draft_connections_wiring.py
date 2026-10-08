@@ -55,6 +55,7 @@ def test_with_dedicated_credentials_the_reads_go_through_the_dedicated_role(monk
 def test_capture_is_written_through_the_writer_door(monkeypatch):
     from src.services.draft_assurance import capture
     agent = _decision_agent(monkeypatch)
+    draft = agent.from_decision(dict(DECISION))        # built first: drafting itself also reads the flag table through the writer door
     seen = []
 
     @contextmanager
@@ -63,7 +64,7 @@ def test_capture_is_written_through_the_writer_door(monkeypatch):
         yield "WRITER-CONN"
     monkeypatch.setattr(connections, "writer", fake_writer)
     monkeypatch.setattr(capture, "record_draft", lambda conn, d: seen.append(conn))
-    agent._capture_draft(agent.from_decision(dict(DECISION)))
+    agent._capture_draft(draft)
     assert seen == ["writer", "WRITER-CONN"]
 
 
