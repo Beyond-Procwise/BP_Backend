@@ -150,11 +150,12 @@ def test_cluster_batch_reproduces_four_events_freight_has_three_bidders():
         quotes=gb.quotes(), quote_lines=gb.quote_lines(),
         purchase_orders=gb.purchase_orders(), po_lines=gb.po_lines(),
         invoices=gb.invoices())
+    bid_roles = ("anchor_quote", "competing_quote")   # earlier rounds are not bidders
     multi = [p for p in res["proposals"]
-             if len([m for m in p["members"] if m["doc_type"] == "quote"]) >= 2]
+             if len([m for m in p["members"] if m["role"] in bid_roles]) >= 2]
     assert len(multi) == 4
     freight = _proposal_with(res, "MFS-Q-3391")
-    freight_suppliers = {m["doc_pk"] for m in freight["members"] if m["doc_type"] == "quote"}
+    freight_suppliers = {m["doc_pk"] for m in freight["members"] if m["role"] in bid_roles}
     assert len(freight_suppliers) == 3          # Swift + Condor + Meridian Freight
 
 
@@ -241,3 +242,36 @@ def test_idempotent_and_nondestructive():
     b = dc.cluster_batch(**kw)
     def sig(r): return sorted(tuple(sorted(m["doc_pk"] for m in p["members"])) for p in r["proposals"])
     assert sig(a) == sig(b)   # stable; pure function writes nothing
+
+
+def test_earlier_rounds_join_their_bid_so_confirm_links_every_version():
+    # A bid's V1/V2 were dropped from the proposal, so confirming it left them with no
+    # deal and the deal page had only one version per supplier -- nothing to compare.
+    res = dc.cluster_batch(quotes=gb.quotes(), quote_lines=gb.quote_lines(),
+                           purchase_orders=gb.purchase_orders(), po_lines=gb.po_lines(),
+                           invoices=gb.invoices())
+    bids_by_id = {b["quote_id"]: b for b in collapse_versions(gb.quotes())}
+    checked = 0
+    for p in res["proposals"]:
+        quote_pks = {m["doc_pk"] for m in p["members"] if m["doc_type"] == "quote"}
+        for m in p["members"]:
+            if m["role"] not in ("anchor_quote", "competing_quote"):
+                continue
+            rounds = bids_by_id[m["doc_pk"]]["rounds"]
+            assert set(rounds) <= quote_pks
+            for r in rounds:
+                if r != m["doc_pk"]:
+                    er = next(x for x in p["members"] if x["doc_pk"] == r)
+                    assert er["role"] == "earlier_round"
+                    assert er["base_reference"] == m["base_reference"]
+                    checked += 1
+    assert checked > 0
+
+
+def test_earlier_rounds_are_not_counted_as_bidders():
+    res = dc.cluster_batch(quotes=gb.quotes(), quote_lines=gb.quote_lines(),
+                           purchase_orders=gb.purchase_orders(), po_lines=gb.po_lines(),
+                           invoices=gb.invoices())
+    for p in res["proposals"]:
+        bidders = [m for m in p["members"] if m["role"] in ("anchor_quote", "competing_quote")]
+        assert p["proposed_name"].endswith(f"{len(bidders)} bidders")
