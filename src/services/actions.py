@@ -63,6 +63,12 @@ ACTIONS: Dict[str, str] = {
     "document.upload": "write",
     "document.promote": "write",
     "email.draft": "write",
+    # The queues the email-learning job leaves for people. Reading them is `read`; deciding one (resolving a data-quality
+    # item, accepting a review item, approving YOUR OWN style rule, exporting a candidate) is `write`. Approving an
+    # EXEMPLAR is `configure`, like a playbook: it changes what steers every user's drafts in that family.
+    "email.learning.read": "read",
+    "email.learning.decide": "write",
+    "exemplar.approve": "configure",
     "catalog.write": "write",
     "account.write": "write",
     "sales.write": "write",

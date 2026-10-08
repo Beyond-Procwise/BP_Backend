@@ -191,3 +191,23 @@ produce a number that looks like one.
 | L4 | **Found while building it, and fixed (tested):** the classifier was offered every `email_family` row, so a free-text request could be classified as `rfq_batch` or `human_written`. Rows now carry `classifiable` (false for those two), and the classifier is shown a `request_description` (when to choose the family) instead of the config text ("Guardrails for ..."), and a short `request_label` in its question ("Is this a counter-offer, or an ordinary supplier message?"). Whether those descriptions classify well is exactly what the sheets will measure. |
 | L5 | Only two families can be classified into. A third family is config plus new rows in the sheets. |
 | L6 | The criteria definitions the team reads are my wording of the rubric names. Please check they say what you meant by them. |
+
+## Endpoints for the learning queues and the metrics (2026-10-08) - built; no screen
+
+`src/api/routers/email_learning.py` (registered with the authenticated routers), `draft_assurance/queues.py`, and decision functions in
+`learning.py`. This closes item 25 (no way to act on the queues) at the API level only: **no UI exists**. The route list is in the
+router's docstring and in `specs/2026-10-08-email-assurance-ui-patch-proposal.md`.
+
+| # | What is true |
+|---|---|
+| Q1 | Three new closed-vocabulary actions: `email.learning.read` (read), `email.learning.decide` (write), `exemplar.approve` (configure). The class decides who may by default; a `configure` action is Admin-only unless a policy row says otherwise. If a team lead who is not an Admin should approve exemplars, that is a policy-row change, not code. |
+| Q2 | Approving an exemplar is `configure` because it changes what steers EVERY user's drafts in that family. Its author can never approve it (tested through the API). Seeing an exemplar's TEXT is a separate call under the same gate; the listing carries no text. |
+| Q3 | A person sees and decides only their OWN proposed style rules (tested: someone else's rule is a 404 and is never listed). |
+| Q4 | Who is recorded is `principal.subject` and nothing else; a body naming someone is ignored; a blank person is a 401 before anything is asked (all tested). |
+| Q5 | Data-quality and review items have no "owner" concept: anyone holding `email.learning.decide` (a `write`-class action, Buyer and above by default) may resolve or dismiss. If only the data owner should, that needs a role for it. |
+| Q6 | **Rejecting an exemplar is not recorded on its row** (the table has no `decided_by`); only the authorisation audit says who. Resolving a data-quality item, deciding a review item and approving an exemplar ARE recorded on the row. |
+| Q7 | Responses carry labels and row ids, never an internal table or column name, never an eval candidate's draft text, and never an exemplar's text outside the detail call (all tested by scanning the JSON). A reviewer's replacement value for a fact is returned marked `verified: false`. |
+| Q8 | Metrics (`GET /email-learning/metrics`) are family aggregates (drafts, sent, abandoned, mean edit distance, fact-edit rate, fact-conflict rate, needs-review rate) by day, week or month. There is no per-person view. |
+| Q9 | All reads and writes go through the writer door (the reader role has no access to `email_agent`). Until the dedicated logins exist this is the app's own login, so the role restriction is not yet in force. |
+| Q10 | Until someone uses these endpoints there is nothing approved for the drafter to be steered by. With no screen, that means an API client or a person calling it by hand. |
+| Q11 | **An earlier gap I should have flagged:** `GET /drafts/{unique_id}/assurance` (the reviewer view built before this) asks no authorisation question beyond being logged in. It returns facts with row ids, the brief and the violations of any draft by id. Gating it is a one-line change; it is your call whether any logged-in user may read any draft's assurance. |
