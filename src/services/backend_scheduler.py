@@ -444,6 +444,7 @@ class BackendScheduler:
         self._register_contract_link_job()
         self._register_contract_expiry_job()
         self._register_email_learning_job()
+        self._register_email_text_retention_job()
 
     EMAIL_LEARNING_JOB_NAME = "email-learning"
 
@@ -485,6 +486,46 @@ class BackendScheduler:
             # A missing threshold, an unreadable policy store or an absent schema stops THIS run and says
             # why; the job is a sweep, and the next interval tries again.
             logger.exception("email learning run failed")
+
+    EMAIL_TEXT_RETENTION_JOB_NAME = "email-text-retention"
+
+    def _register_email_text_retention_job(self) -> None:
+        """Age out raw email text (sent text, diffs, the model's own drafts) after the governed period.
+
+        ON unless EMAIL_TEXT_RETENTION_ENABLED is 0/false: raw text must not accumulate because a switch was
+        never flipped. Where the email_agent schema has not been applied the run finds no table and stops
+        harmlessly. The period is the EmailTextRetention policy row; if it cannot be read the run does nothing.
+        Interval EMAIL_TEXT_RETENTION_INTERVAL_MINUTES (default 360); idempotent.
+        """
+        import os
+        if os.environ.get("EMAIL_TEXT_RETENTION_ENABLED", "1").strip().lower() in ("0", "false", "no", "off"):
+            logger.info("email text retention job not registered (EMAIL_TEXT_RETENTION_ENABLED)")
+            return
+        if self.EMAIL_TEXT_RETENTION_JOB_NAME in self._jobs:
+            return
+        try:
+            minutes = int(os.environ.get("EMAIL_TEXT_RETENTION_INTERVAL_MINUTES", "360"))
+        except ValueError:
+            minutes = 360
+        self.register_job(
+            self.EMAIL_TEXT_RETENTION_JOB_NAME,
+            self._run_email_text_retention,
+            interval=timedelta(minutes=max(1, minutes)),
+            initial_delay=timedelta(minutes=15),
+        )
+
+    def _run_email_text_retention(self) -> None:
+        try:
+            from src.services import rbac
+            from src.services.draft_assurance import connections, retention
+
+            days = retention.load_rules(rbac.policy_engine())["raw_text_days"]
+            with connections.writer(self.agent_nick) as conn:
+                report = retention.purge_expired(conn, days)
+            logger.info("email text retention (%s days): %s", days, report)
+        except Exception:
+            # An unreadable period, an absent schema or a database fault stops THIS run and says why.
+            logger.exception("email text retention run failed")
 
     TRIAGE_JOB_NAME = "discrepancy-triage"
 

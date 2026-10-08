@@ -1,8 +1,9 @@
 """Stage 6: learn from what reviewers do to a draft, and route each lesson to a queue.
 
 This module NEVER changes a prompt, a policy, a style profile, an exemplar set or a family config. It fills
-queues and candidate lists; a person decides every one. It reads no sent text (none is stored): only the
-edit score, the figures that changed, the word counts and the model's own draft.
+queues and candidate lists; a person decides every one. It still reads only the edit score, the figures that
+changed, the word counts and the model's own draft. The sent text and its diff ARE now stored
+(bp_draft_sent_text, retention-governed, writer-only) but this job does not consume them yet.
 
 Routes (an edit can take several):
 

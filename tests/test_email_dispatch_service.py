@@ -847,3 +847,40 @@ def test_a_capture_failure_never_blocks_or_fails_the_send(monkeypatch):
 
     result, _, _ = _send_with_capture(monkeypatch, boom)
     assert result["sent"] is True
+
+
+def test_a_send_passes_the_governed_retention_period_so_the_sent_text_is_kept_that_long(monkeypatch):
+    from src.services import rbac
+    from src.services.draft_assurance import retention
+
+    engine = object()
+    asked = {}
+    monkeypatch.setattr(rbac, "policy_engine", lambda: engine)
+    monkeypatch.setattr(retention, "raw_text_days", lambda e: asked.update(engine=e) or 45)
+    seen = {}
+    result, _, _ = _send_with_capture(monkeypatch, lambda conn, unique_id, body, **kw: seen.update(kw))
+    assert result["sent"] is True
+    assert seen["retention_days"] == 45 and asked["engine"] is engine
+
+
+def test_an_unreadable_retention_period_means_the_send_stores_no_raw_text(monkeypatch):
+    from src.services import rbac
+    from src.services.draft_assurance import retention
+
+    monkeypatch.setattr(rbac, "policy_engine", lambda: object())
+    monkeypatch.setattr(retention, "raw_text_days", lambda e: None)
+    seen = {}
+    result, _, _ = _send_with_capture(monkeypatch, lambda conn, unique_id, body, **kw: seen.update(kw))
+    assert result["sent"] is True and seen["retention_days"] is None
+
+
+def test_a_failure_while_reading_the_period_still_sends_and_still_records_the_outcome(monkeypatch):
+    from src.services import rbac
+
+    def boom():
+        raise RuntimeError("policy store down")
+
+    monkeypatch.setattr(rbac, "policy_engine", boom)
+    seen = {}
+    result, _, _ = _send_with_capture(monkeypatch, lambda conn, unique_id, body, **kw: seen.update(kw))
+    assert result["sent"] is True and seen["retention_days"] is None

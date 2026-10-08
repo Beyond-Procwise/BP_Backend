@@ -157,6 +157,32 @@ def test_the_writer_can_record_and_update_but_not_delete(logins):
     denied(rw, "DELETE FROM email_agent.bp_draft_outcome")
 
 
+def test_raw_text_is_the_one_table_the_writer_may_purge_and_nothing_else_is_deletable(logins):
+    _, rw = logins
+    cid = ok(rw, "INSERT INTO email_agent.bp_draft_capture (unique_id, family_id, assurance_status, draft_text, draft_hash) "
+                 "VALUES ('U-RAW', 'f', 'verified', 't', 'h') RETURNING capture_id")[0][0]
+    oid = ok(rw, "INSERT INTO email_agent.bp_draft_outcome (capture_id, outcome) VALUES (%s, 'sent') RETURNING outcome_id", (cid,))[0][0]
+    ok(rw, "INSERT INTO email_agent.bp_draft_sent_text (outcome_id, capture_id, sent_text, text_hash) VALUES (%s,%s,'x','h')", (oid, cid))
+    assert ok(rw, "SELECT sent_text FROM email_agent.bp_draft_sent_text WHERE outcome_id = %s", (oid,)) == [("x",)]
+    ok(rw, "DELETE FROM email_agent.bp_draft_sent_text WHERE outcome_id = %s", (oid,))          # the retention purge
+    denied(rw, "TRUNCATE email_agent.bp_draft_sent_text")                                       # still no wholesale wipe
+    denied(rw, "ALTER TABLE email_agent.bp_draft_sent_text ADD COLUMN x int")
+    for other in ("bp_draft_capture", "bp_draft_outcome", "bp_dq_item", "bp_eval_candidate", "bp_review_item",
+                  "bp_style_rule", "bp_classifier_example", "bp_exemplar_candidate"):
+        denied(rw, f"DELETE FROM email_agent.{other}")
+
+
+def test_the_reader_and_public_cannot_see_raw_text_at_all(logins, eval_db):
+    ro, _ = logins
+    denied(ro, "SELECT sent_text FROM email_agent.bp_draft_sent_text")
+    denied(ro, "SELECT count(*) FROM email_agent.bp_draft_sent_text")
+    cur = eval_db.cursor()
+    cur.execute("SELECT has_table_privilege('public', 'email_agent.bp_draft_sent_text', 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')")
+    assert cur.fetchone()[0] is False
+    cur.execute("SELECT has_table_privilege('email_agent_reader', 'email_agent.bp_draft_sent_text', 'SELECT')")
+    assert cur.fetchone()[0] is False
+
+
 @pytest.mark.parametrize("sql", [
     "SELECT * FROM proc.supplier_response",
     "SELECT * FROM proc.bp_supplier",

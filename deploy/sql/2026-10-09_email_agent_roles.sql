@@ -62,4 +62,14 @@ GRANT SELECT, INSERT, UPDATE ON
     TO email_agent_writer;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA email_agent TO email_agent_writer;
 
+-- RAW TEXT: the one table the writer may also DELETE from (the retention job purges it). It is not in the list
+-- above on purpose: access to raw text is its own decision. The reader and PUBLIC get nothing. Skipped where
+-- 2026-10-08_email_agent_sent_text.sql has not been applied.
+DO $$
+BEGIN
+    IF to_regclass('email_agent.bp_draft_sent_text') IS NOT NULL THEN
+        GRANT SELECT, INSERT, DELETE ON email_agent.bp_draft_sent_text TO email_agent_writer;
+    END IF;
+END $$;
+
 COMMIT;

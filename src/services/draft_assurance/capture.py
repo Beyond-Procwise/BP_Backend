@@ -44,7 +44,8 @@ def record_draft(conn: Any, draft: Dict[str, Any]) -> Optional[int]:
     a = draft.get("assurance")
     if not isinstance(a, dict) or not draft.get("unique_id"):
         return None
-    text = plain(draft.get("body") or draft.get("text"))
+    # Masked before it is stored OR hashed: bank details are never kept, not even in the model's own draft.
+    text = mask_bank_details(plain(draft.get("body") or draft.get("text")))[0]
     meta = draft.get("metadata") if isinstance(draft.get("metadata"), dict) else {}
     tone = a.get("tone")
     ex = a.get("exemplars")
@@ -119,6 +120,68 @@ def word_distance(drafted: str, sent: str) -> float:
     return round(previous[-1] / max(len(a), len(b)), 3)
 
 
+_BANK_MASK = "[BANK DETAILS REMOVED]"
+_BANK_PATTERNS = (
+    ("iban", re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b")),
+    ("sort_code", re.compile(r"\b\d{2}-\d{2}-\d{2}\b")),
+    ("account_number", re.compile(r"(?i)\b(account\s*(?:number|no\.?)\s*:?\s*)\d{6,12}\b")),
+)
+
+
+def mask_bank_details(text: str) -> "tuple[str, Dict[str, int]]":
+    """Bank details are never stored. Returns the text with each one replaced, and a count per kind."""
+
+    counts: Dict[str, int] = {}
+    for kind, pattern in _BANK_PATTERNS:
+        if kind == "account_number":
+            text, n = pattern.subn(lambda m: m.group(1) + _BANK_MASK, text)
+        else:
+            text, n = pattern.subn(_BANK_MASK, text)
+        if n:
+            counts[kind] = n
+    return text, counts
+
+
+def _pieces(text: str) -> List[str]:
+    return re.findall(r"\S+|\s+", text or "")
+
+
+def diff_ops(drafted: str, sent: str) -> List[List[Any]]:
+    """Ops that turn ``drafted`` into ``sent``: ["eq", n] keep n pieces, ["del", text, n], ["ins", text].
+
+    Pieces are words and the whitespace between them, so ``apply_diff`` rebuilds the sent text exactly.
+    """
+
+    import difflib
+
+    a, b = _pieces(drafted), _pieces(sent)
+    ops: List[List[Any]] = []
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if tag == "equal":
+            ops.append(["eq", i2 - i1])
+            continue
+        if i2 > i1:
+            ops.append(["del", "".join(a[i1:i2]), i2 - i1])
+        if j2 > j1:
+            ops.append(["ins", "".join(b[j1:j2])])
+    return ops
+
+
+def apply_diff(drafted: str, ops: List[List[Any]]) -> str:
+    """Rebuild the sent text from the draft and its ops (the proof that the stored diff is complete)."""
+
+    a, i, out = _pieces(drafted), 0, []
+    for op in ops:
+        if op[0] == "eq":
+            out.extend(a[i:i + op[1]])
+            i += op[1]
+        elif op[0] == "del":
+            i += op[2]
+        elif op[0] == "ins":
+            out.append(op[1])
+    return "".join(out)
+
+
 def _tokens(text: str) -> Dict[str, str]:
     """Figures, dates and references in a text, as {normalised value: kind}."""
 
@@ -150,7 +213,9 @@ def _class(value: str, assurance: Dict[str, Any]) -> str:
 def measure_edit(drafted: str, sent: str, assurance: Dict[str, Any]) -> Dict[str, Any]:
     """Distance, class and changed figures between a draft and what was sent. No text out."""
 
-    a, b = plain(drafted), plain(sent)
+    # Bank details are masked BEFORE anything is measured: a changed account number would otherwise be stored
+    # as a "changed figure" in bp_draft_outcome, which every role that can read outcomes may see.
+    a, b = mask_bank_details(plain(drafted))[0], mask_bank_details(plain(sent))[0]
     ta, tb = _tokens(a), _tokens(b)
     removed = [{"value": v, "kind": ta[v], "class": _class(v, assurance)} for v in ta if v not in tb]
     added = [{"value": v, "kind": tb[v], "class": _class(v, assurance)} for v in tb if v not in ta]
@@ -171,8 +236,13 @@ def measure_edit(drafted: str, sent: str, assurance: Dict[str, Any]) -> Dict[str
 
 
 def record_sent(conn: Any, unique_id: Optional[str], sent_body: Optional[str], *,
-                reviewed_by: Optional[str] = None, sent_by: Optional[str] = None) -> Optional[int]:
-    """Compare what was sent with the latest capture for ``unique_id`` and store the result."""
+                reviewed_by: Optional[str] = None, sent_by: Optional[str] = None,
+                retention_days: Optional[int] = None) -> Optional[int]:
+    """Compare what was sent with the latest capture for ``unique_id`` and store the result.
+
+    With a positive ``retention_days`` the sent text and its diff are kept too (bank details masked), in the
+    separately-granted ``bp_draft_sent_text`` table. Without one, no raw text is stored.
+    """
 
     if not unique_id:
         return None
@@ -181,7 +251,7 @@ def record_sent(conn: Any, unique_id: Optional[str], sent_body: Optional[str], *
             cur.execute(
                 """SELECT capture_id, draft_text, captured_at,
                           (SELECT count(*) FROM email_agent.bp_draft_capture c2 WHERE c2.unique_id = c.unique_id),
-                          facts, reasoned
+                          facts, reasoned, text_expired_at
                    FROM email_agent.bp_draft_capture c WHERE unique_id = %s
                    ORDER BY captured_at DESC LIMIT 1""",
                 (str(unique_id),),
@@ -189,9 +259,16 @@ def record_sent(conn: Any, unique_id: Optional[str], sent_body: Optional[str], *
             row = cur.fetchone()
             if not row:
                 return None
-            capture_id, draft_text, captured_at, captures, facts, reasoned = row
+            capture_id, draft_text, captured_at, captures, facts, reasoned, text_expired_at = row
             parse = lambda v: v if isinstance(v, dict) else (json.loads(v) if v else {})  # noqa: E731
-            m = measure_edit(draft_text, sent_body or "", {"facts": parse(facts), "reasoned": parse(reasoned)})
+            have_draft = text_expired_at is None and bool(draft_text)
+            if have_draft:
+                m = measure_edit(draft_text, sent_body or "", {"facts": parse(facts), "reasoned": parse(reasoned)})
+            else:
+                # The model's draft aged out: there is nothing to measure against. NULL = not captured; a made-up
+                # distance of 1.0 would teach the learning job that every late send was a total rewrite.
+                m = {"edit_distance": None, "edit_class": None, "removed": None, "added": None,
+                     "drafted_words": None, "sent_words": len(re.findall(r"[\w'’]+", plain(sent_body)))}
             seconds = None
             if captured_at is not None:
                 now = datetime.now(captured_at.tzinfo or timezone.utc)
@@ -202,15 +279,53 @@ def record_sent(conn: Any, unique_id: Optional[str], sent_body: Optional[str], *
                     drafted_words, sent_words, regeneration_count, time_to_send_s, reviewed_by, sent_by)
                    VALUES (%s,'sent',%s,%s,%s::jsonb,%s::jsonb,%s,%s,%s,%s,%s,%s)
                    ON CONFLICT DO NOTHING RETURNING outcome_id""",
-                (capture_id, m["edit_distance"], m["edit_class"], _json(m["removed"]), _json(m["added"]),
+                (capture_id, m["edit_distance"], m["edit_class"], _nj(m["removed"]), _nj(m["added"]),
                  m["drafted_words"], m["sent_words"], max(0, int(captures) - 1), seconds,
                  reviewed_by, sent_by),
             )
             out = cur.fetchone()
+            if out and _keeps_text(retention_days):
+                _store_sent_text(conn, cur, int(out[0]), capture_id, draft_text if have_draft else None, sent_body)
         return int(out[0]) if out else None
     except Exception:  # noqa: BLE001 - never block or fail a send over bookkeeping
         logger.exception("could not record send outcome for %s", unique_id)
         return None
+
+
+def _keeps_text(retention_days: Any) -> bool:
+    return isinstance(retention_days, int) and not isinstance(retention_days, bool) and retention_days > 0
+
+
+def _store_sent_text(conn: Any, cur: Any, outcome_id: int, capture_id: int, draft_text: Optional[str],
+                     sent_body: Optional[str]) -> None:
+    """Keep the sent text and its diff. A failure here is logged and must not lose the outcome row."""
+
+    use_savepoint = not getattr(conn, "autocommit", True)       # inside a transaction one error would poison the rest
+    try:
+        if use_savepoint:
+            cur.execute("SAVEPOINT sent_text")
+        sent_plain, redactions = mask_bank_details(plain(sent_body))
+        diff = None
+        if draft_text is not None:
+            draft_plain, more = mask_bank_details(plain(draft_text))
+            for k, v in more.items():
+                redactions[k] = redactions.get(k, 0) + v
+            diff = diff_ops(draft_plain, sent_plain)
+        cur.execute(
+            """INSERT INTO email_agent.bp_draft_sent_text (outcome_id, capture_id, sent_text, diff, text_hash, redactions)
+               VALUES (%s,%s,%s,%s::jsonb,%s,%s::jsonb) ON CONFLICT DO NOTHING""",
+            (outcome_id, capture_id, sent_plain, _nj(diff), hashlib.sha256(sent_plain.encode()).hexdigest(),
+             _json(redactions)),
+        )
+        if use_savepoint:
+            cur.execute("RELEASE SAVEPOINT sent_text")
+    except Exception:  # noqa: BLE001
+        logger.exception("could not store the sent text for outcome %s", outcome_id)
+        if use_savepoint:
+            try:
+                cur.execute("ROLLBACK TO SAVEPOINT sent_text")
+            except Exception:  # noqa: BLE001
+                pass
 
 
 # --- the events that follow a draft: abandon, confirm, readiness ---------------------------------
