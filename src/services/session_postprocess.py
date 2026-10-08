@@ -198,7 +198,8 @@ def store_session_summary(conn, batch_deal_id: str, session_id: str,
         for pid in label_out.get("proposal_ids", []):
             cur.execute(
                 "select p.proposed_name, p.confidence, "
-                "  count(*) filter (where m.doc_type='quote') as bids, "
+                "  count(*) filter (where m.doc_type='quote' "
+                "    and m.role is distinct from 'earlier_round') as bids, "
                 "  count(*) filter (where m.doc_type='po') as pos, "
                 "  count(*) filter (where m.doc_type='invoice') as invoices "
                 "from proc.bp_deal_proposal p "

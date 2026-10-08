@@ -443,6 +443,16 @@ def cluster_batch(*, quotes, quote_lines, purchase_orders, po_lines, invoices, d
                             "base_reference": b["base_reference"], "role": role,
                             "match_score": (round(ev["correlation"] * 100, 2) if ev else None),
                             "match_evidence": ev})
+            # The bid's earlier rounds travel with it. collapse_versions keeps only the
+            # latest round as the bid, but confirm links exactly the members, so a
+            # round left out here never gets a deal and the deal shows one version per
+            # supplier -- nothing to compare. They are not bidders: own role, no score.
+            for r in b.get("rounds") or ():
+                if r != b["quote_id"] and r not in declared_pks:
+                    members.append({"doc_type": "quote", "doc_pk": r,
+                                    "base_reference": b["base_reference"],
+                                    "role": "earlier_round",
+                                    "match_score": None, "match_evidence": None})
             members_total += 1
             if quote_lines.get(b["quote_id"]):
                 members_with_lines += 1
