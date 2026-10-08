@@ -28,8 +28,7 @@ INSERT INTO proc.bp_policy
 SELECT
  'EmailToneRules', 'email_tone_rules',
  'Allowed values, derivations, gap handling, unknown defaults and instruction overrides for the email tone variables.',
- $json$
-{
+ $json${
  "policy_identifier": "email_tone_rules",
  "required_role": "Admin",
  "rules": {
@@ -294,9 +293,45 @@ SELECT
      "region_formality": "low"
     }
    }
-  ]
+  ],
+  "directives": {
+   "relationship_tier": {
+    "strategic": "This is a strategic supplier: be collaborative, value the long-term partnership, and avoid ultimatums.",
+    "preferred": "This is a preferred supplier: be warm and collaborative and acknowledge the relationship.",
+    "new": "This is a new supplier: set out the context clearly and keep expectations explicit."
+   },
+   "escalation_level": {
+    "2": "This is a second contact: refer to the earlier message and ask for a clear answer.",
+    "3": "This is a third contact: be firm and specific about what is needed and by when.",
+    "4": "This is a repeated contact: be direct that a reply is overdue, and do not threaten any consequence that is not in the brief."
+   },
+   "leverage": {
+    "low": "We have limited leverage: ask rather than demand, and keep requests modest.",
+    "high": "We have strong leverage: be confident and specific about what we expect."
+   },
+   "recipient_seniority": {
+    "junior": "The recipient is junior: be clear and step by step, and avoid jargon.",
+    "senior": "The recipient is senior: be concise and lead with the decision needed.",
+    "executive": "The recipient is an executive: be very brief, lead with the decision needed, and add no detail they did not ask for."
+   },
+   "relationship_health": {
+    "strained": "The relationship is strained: be careful, stay factual and calm, and do not reopen past disputes.",
+    "good": "The relationship is good: a friendly tone is appropriate."
+   },
+   "region_formality": {
+    "high": "Use a formal register: full titles, no contractions, no idioms.",
+    "low": "A relaxed, informal register is acceptable."
+   },
+   "warmth": {
+    "cool": "Keep the tone professional and reserved.",
+    "warm": "Be warm and personable."
+   },
+   "directness": {
+    "indirect": "Soften requests and let the supplier raise issues themselves.",
+    "direct": "State requests plainly and early."
+   }
+  }
  }
-}
-$json$::jsonb,
+}$json$::jsonb,
  '', 1, 1, 'email_assurance_migration', now()
 WHERE NOT EXISTS (SELECT 1 FROM proc.bp_policy WHERE policy_name = 'EmailToneRules');

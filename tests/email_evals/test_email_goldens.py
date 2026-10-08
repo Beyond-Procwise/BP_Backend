@@ -50,7 +50,7 @@ def test_the_migrations_apply_roll_back_and_reapply(eval_run):
             cur.execute((db.SQL / name).read_text())
         runner.snapshot(conn)
     cur.execute("SELECT count(*) FROM proc.bp_policy WHERE created_by = 'email_assurance_migration'")
-    assert cur.fetchone()[0] == 7          # counter, free_prompt, rfq_batch, human_written, tone rules, learning rules, text retention
+    assert cur.fetchone()[0] == 8          # counter, free_prompt, rfq_batch, human_written, tone rules, learning rules, text retention, steering
 
 
 def test_every_family_that_has_cases_has_a_baseline_and_at_least_ten_cases():

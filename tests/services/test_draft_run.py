@@ -294,7 +294,7 @@ def test_every_stage_that_did_not_produce_a_value_says_so_in_stage_status():
     st = rec["stage_status"]
     assert {k: v["status"] for k, v in st.items()} == {
         "classify": "unavailable", "tone": "captured", "exemplars": "not_run",
-        "brief": "unavailable", "judge": "unavailable", "authority": "not_run"}
+        "brief": "unavailable", "judge": "unavailable", "authority": "not_run", "steering": "not_run"}
 
 
 # --- tone gaps reach the reviewer ----------------------------------------------------------------------------------------

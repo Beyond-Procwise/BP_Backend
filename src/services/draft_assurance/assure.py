@@ -224,6 +224,17 @@ def _from_result(res: Optional[Dict[str, Any]], not_run: str) -> Dict[str, Any]:
     return _stage(st or "unavailable", res.get("reason"))
 
 
+def _steering_stage(rec: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not rec:
+        return _stage("not_run", "steering did not run")
+    st = rec.get("status")
+    if st in ("captured", "empty"):
+        return _stage(st, rec.get("reason"))
+    if st == "unavailable":
+        return _stage("unavailable", rec.get("reason"))
+    return _stage("not_run", rec.get("reason") or "steering is off")
+
+
 def stage_fields(extras: Dict[str, Any], record: Dict[str, Any], reasoned: Dict[str, Any]) -> Dict[str, Any]:
     """Everything the stages add to a record, with explicit empties and a status for each stage."""
 
@@ -272,6 +283,7 @@ def stage_fields(extras: Dict[str, Any], record: Dict[str, Any], reasoned: Dict[
         "brief": _from_result(brief, "no brief was produced"),
         "judge": _from_result(judge, "the draft was not judged"),
         "authority": (_stage("captured") if authority else _stage("not_run", "no authority check ran")),
+        "steering": _steering_stage(extras.get("steering")),
     }
     return {
         "family_source": source,
@@ -287,6 +299,7 @@ def stage_fields(extras: Dict[str, Any], record: Dict[str, Any], reasoned: Dict[
         "judge": judge,
         "authority": authority,
         "accountability": extras.get("accountability"),
+        "steering": extras.get("steering"),
         "stage_status": stages,
         "ready": not unresolved,
     }

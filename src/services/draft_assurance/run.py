@@ -15,7 +15,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
-from . import accountability, authority as authority_mod, stages, tone as tone_mod
+from . import accountability, authority as authority_mod, stages, steering as steering_mod, tone as tone_mod
 from .assure import Inputs, prepare_inputs
 from .brief import counter_brief
 from .family import FamilyConfig, FamilyConfigUnavailable, list_families, load_family
@@ -36,6 +36,7 @@ class Env:
     user_id: Optional[str] = None
     exemplars: Callable[[], Optional[Dict[str, Any]]] = lambda: None
     access: Dict[str, Any] = field(default_factory=dict)    # how the reads were made: set by the connection helper
+    store_factory: Optional[Callable[[], Any]] = None       # context manager yielding a connection that may read the email_agent tables
 
 
 @dataclass
@@ -51,6 +52,12 @@ class AssuranceRun:
     instruction: Optional[str] = None
     request: Optional[str] = None
     repair_rejected: Optional[str] = None
+    steering: Optional[steering_mod.Steering] = None          # what steers the writer: tone, the author's style rules, exemplars
+
+    def guidance(self) -> str:
+        """The block appended to the writer's user message. Empty when nothing steers (the prompt is then unchanged)."""
+
+        return self.steering.block() if self.steering is not None else ""
 
     # -- after the model has written ------------------------------------------------------
     def check(self, body: str) -> List[Dict[str, str]]:
@@ -62,7 +69,8 @@ class AssuranceRun:
         initiated = accountability.initiated(env.user_id, env.agent_name, env.agent_ids)
         base: Dict[str, Any] = {"accountability": {"initiated_by": initiated["id"], "kind": initiated["kind"]},
                                 "family_source": self.family_source, "user_instruction": self.instruction,
-                                "exemplars": _safe(env.exemplars)}
+                                "exemplars": _safe(env.exemplars),
+                                "steering": self.steering.record() if self.steering is not None else None}
         if self.inputs is None:
             return {"status": "unassured", "reason": self.error or "not run", **base,
                     "stage_status": {"all": {"status": "not_run", "reason": self.error or "not run"}},
@@ -141,12 +149,16 @@ def begin(env: Env, data: Dict[str, Any], *, slug: Optional[str], workflow_id: O
             # What the caller supplied always wins over a candidate the model proposed.
             lk = {**candidates, **data, **(lookup or {}), "workflow_id": workflow_id or data.get("workflow_id")}
             run.inputs = prepare_inputs(conn, family, data, lookup_keys=lk)
+            directives = None
             try:
                 rules = tone_mod.load_rules(env.policy_engine)
+                directives = rules.directives
                 run.tone = tone_mod.derive_tone(conn, rules, supplier_id=data.get("supplier_id"),
                                                 workflow_id=lk.get("workflow_id"), instruction=run.instruction)
             except tone_mod.ToneRulesUnavailable as exc:
                 run.tone = {"status": "unavailable", "reason": str(exc)}
+        run.steering = steering_mod.resolve(env.policy_engine, env.store_factory, family_id=family.family_id,
+                                            author=env.user_id, tone=run.tone, directives=directives)
         if classify and env.ask is not None and run.inputs is not None:
             facts = {k: f.value for k, f in run.inputs.facts.items()}
             run.planned = stages.plan_brief(env.ask, env.prompt("email_brief_plan"), family_id=family.family_id,

@@ -94,4 +94,4 @@ jobs:
           pytest tests/email_evals tests/services/test_draft_stages.py tests/services/test_draft_run.py
           tests/services/test_draft_events.py tests/services/test_draft_agent_stages.py
           tests/services/test_draft_assurance.py tests/services/test_draft_capture.py
-          tests/services/test_dispatch_facts_recheck.py tests/services/test_draft_connections_wiring.py tests/services/test_draft_rfq_batch.py tests/services/test_draft_human_written.py tests/services/test_negotiation_stub_not_sendable.py tests/test_email_dispatch_service.py -q
+          tests/services/test_dispatch_facts_recheck.py tests/services/test_draft_connections_wiring.py tests/services/test_draft_rfq_batch.py tests/services/test_draft_human_written.py tests/services/test_negotiation_stub_not_sendable.py tests/services/test_draft_steering.py tests/test_email_dispatch_service.py -q

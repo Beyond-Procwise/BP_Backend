@@ -59,12 +59,12 @@ def record_draft(conn: Any, draft: Dict[str, Any]) -> Optional[int]:
                     assumptions, unverified_figures, violations, repaired, draft_text, draft_hash,
                     initiated_by, initiated_by_kind, family_source, classification, clarification,
                     lookup_keys, user_instruction, tone_variables, tone_sources, exemplar_ids, exemplar_scope,
-                    brief, assumption_items, judge, authority, stage_status, ready)
+                    brief, assumption_items, judge, authority, stage_status, ready, steering)
                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,
                            %s::jsonb,%s::jsonb,%s::jsonb,%s,%s,%s,
                            %s,%s,%s,%s::jsonb,%s::jsonb,
                            %s::jsonb,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,
-                           %s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s)
+                           %s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s::jsonb)
                    RETURNING capture_id""",
                 (str(draft["unique_id"]), draft.get("workflow_id"), draft.get("supplier_id"),
                  meta.get("intent") or draft.get("intent"),
@@ -80,7 +80,7 @@ def record_draft(conn: Any, draft: Dict[str, Any]) -> Optional[int]:
                  _nj(tone["variables"]) if tone else None, _nj(tone["sources"]) if tone else None,
                  _nj(ex["ids"]) if ex else None, ex["scope"] if ex else None,
                  _nj(a.get("brief")), _nj(a.get("assumption_items")), _nj(a.get("judge")),
-                 _nj(a.get("authority")), _nj(a.get("stage_status")), a.get("ready")),
+                 _nj(a.get("authority")), _nj(a.get("stage_status")), a.get("ready"), _nj(a.get("steering"))),
             )
             row = cur.fetchone()
         return int(row[0]) if row else None

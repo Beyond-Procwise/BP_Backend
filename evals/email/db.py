@@ -26,6 +26,7 @@ MIGRATIONS: List[str] = [
     "2026-10-07_email_agent_capture.sql",
     "2026-10-08_email_agent_capture_v2.sql",
     "2026-10-08_email_agent_sent_text.sql",
+    "2026-10-08_email_agent_steering.sql",
     "2026-10-07_email_family_negotiation_counter.sql",
     "2026-10-07_email_family_free_prompt.sql",
     "2026-10-08_email_family_rfq_batch.sql",
