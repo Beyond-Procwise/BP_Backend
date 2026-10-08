@@ -382,7 +382,7 @@ def propose_parent_links(limit: Optional[int] = None,
     scoped run that silently became a corpus run is the kind of fallback that
     makes a flag useless.
     """
-    proposed = contested = no_candidate = 0
+    proposed = contested = no_candidate = below_threshold = 0
     considered = {"children": 0, "with_structure": 0, "with_candidates": 0}
     details: list[dict] = []
 
@@ -426,7 +426,9 @@ def propose_parent_links(limit: Optional[int] = None,
             )
             best, best_parent = scored[0]
             if best["F"] < MIN_SCORE:
-                no_candidate += 1
+                # Candidates existed and were scored; none was good enough. Not
+                # the same as never finding one, so it is counted apart.
+                below_threshold += 1
                 continue
 
             runner_up = scored[1][0]["F"] if len(scored) > 1 else None
@@ -454,7 +456,7 @@ def propose_parent_links(limit: Optional[int] = None,
                     (
                         f"this {child['resolved_doc_type'].split('.')[-1]} appears to "
                         f"sit under contract {best_parent['contract_id']} "
-                        f"(score {best['F']:.1f}, {routing}). "
+                        f"(score {best['F']:.1f}, band {best['decision']}, {routing}). "
                         f"reference: {why.get('declared_reference')}; "
                         f"structure: {why.get('expected_structure')}; "
                         f"supplier: {why.get('supplier')}; "
@@ -475,7 +477,8 @@ def propose_parent_links(limit: Optional[int] = None,
                             "F": best["F"], "routing": routing})
 
     result = {"proposed": proposed, "contested": contested,
-              "no_candidate": no_candidate, "considered": considered,
+              "no_candidate": no_candidate, "below_threshold": below_threshold,
+              "considered": considered,
               "details": details}
     log.info("contract parent proposals%s: %s",
              f" for {contract_id}" if contract_id else "",

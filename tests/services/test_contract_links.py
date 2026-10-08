@@ -234,6 +234,22 @@ def test_a_child_with_no_candidate_parent_proposes_nothing(fixture_contracts):
                                   (orphan,))
 
 
+def test_the_result_counts_scored_but_too_weak_apart_from_never_found():
+    """'no_candidate' is "nothing to score"; 'below_threshold' is "scored, too weak"."""
+    result = CL.propose_parent_links()
+    assert isinstance(result["below_threshold"], int)
+    assert "below_threshold" in result and "no_candidate" in result
+
+
+def test_a_proposal_names_the_decision_band(fixture_contracts):
+    """Design section 8 promises the band; a reader needs it to weigh the score."""
+    CL.propose_parent_links()
+    rows = [r for c in fixture_contracts.values() if isinstance(c, str)
+            for r in _open_proposals(c)]
+    assert rows, "the fixtures produced no proposal to read"
+    assert all(" band " in str(r) for r in rows)
+
+
 def test_a_structure_with_no_declared_parent_is_not_a_child(fixture_contracts):
     """A master agreement sits under nothing, so it is never proposed a parent."""
     CL.propose_parent_links()
