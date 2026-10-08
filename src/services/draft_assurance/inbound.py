@@ -11,8 +11,13 @@ It returns categories and keywords only. It never returns text from the email, s
 from __future__ import annotations
 
 import html
+import json
+import logging
 import re
-from typing import Any, Dict, List, Set, Tuple
+from contextlib import contextmanager
+from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
+
+logger = logging.getLogger(__name__)
 
 MAX_SCAN = 60_000          # characters scanned from each end of a very long mail: a phrase hidden at the end still counts
 NEAR = 100                 # characters between a payment term and a change term for them to count as one request
@@ -93,3 +98,97 @@ def screen_payment_change(subject: Any = "", body: Any = "") -> Dict[str, Any]:
         kinds.add("bank_details_with_pressure")
     return {"suspected": bool(kinds), "kinds": sorted(kinds), "terms": terms[:8],
             "bank_details_present": bank, "pressure": pressure}
+
+
+# --- recording what the screen found --------------------------------------------------------------------------------------------
+
+class FlagLookupFailed(RuntimeError):
+    """The flags could not be read. A caller that must be safe treats this as 'blocked', never as 'nothing flagged'."""
+
+
+@contextmanager
+def _default_factory() -> Iterator[Any]:
+    from src.services.db import get_conn
+
+    with get_conn() as conn:
+        yield conn
+
+
+def record_flag(conn: Any, *, workflow_id: Optional[str], unique_id: Optional[str], supplier_id: Optional[str],
+                message_id: Optional[str], result: Dict[str, Any]) -> Optional[int]:
+    """Store WHICH signals fired and the keywords, by pointer to the message. Returns the flag id, or None if already flagged."""
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO email_agent.bp_inbound_flag (kind, workflow_id, unique_id, supplier_id, response_message_id, kinds, terms)
+               VALUES ('payment_detail_change', %s, %s, %s, %s, %s::jsonb, %s::jsonb)
+               ON CONFLICT (kind, workflow_id, response_message_id) WHERE response_message_id IS NOT NULL DO NOTHING
+               RETURNING flag_id""",
+            (workflow_id, unique_id, supplier_id, message_id, json.dumps(result["kinds"]), json.dumps(result["terms"])))
+        got = cur.fetchone()
+    return int(got[0]) if got else None
+
+
+def screen_and_record(row: Any, conn_factory: Optional[Callable[[], Any]] = None) -> Optional[int]:
+    """Screen an inbound reply and, if suspected, flag it. NEVER raises and never blocks the ingest: this runs inside the path
+    that stores a supplier's reply, and a fault here must cost a missed flag at worst (logged), not a lost reply."""
+
+    try:
+        if row is None:
+            return None
+        text = "\n".join(str(getattr(row, k, None) or "") for k in ("response_text", "response_body", "body_html"))
+        result = screen_payment_change(getattr(row, "response_subject", None), text)
+        if not result["suspected"]:
+            return None
+        with (conn_factory or _default_factory)() as conn:
+            return record_flag(conn, workflow_id=getattr(row, "workflow_id", None), unique_id=getattr(row, "unique_id", None),
+                               supplier_id=getattr(row, "supplier_id", None), message_id=getattr(row, "response_message_id", None),
+                               result=result)
+    except Exception as exc:  # noqa: BLE001
+        # An absent email_agent schema is the normal state before the pack is applied: say so quietly, not as an error.
+        if "bp_inbound_flag" in str(exc) and ("does not exist" in str(exc) or "UndefinedTable" in type(exc).__name__):
+            logger.debug("inbound flag not recorded: the email_agent schema is not applied")
+        else:
+            logger.exception("inbound payment-change screen failed; the reply was stored regardless")
+        return None
+
+
+def blocking_flags(conn: Any, workflow_id: Optional[str], supplier_id: Optional[str]) -> List[Dict[str, Any]]:
+    """Flags that stop anything being drafted or sent on this supplier's thread: open and confirmed_fraud (not cleared).
+
+    A flag with no supplier blocks the whole workflow (we cannot say who wrote it). An absent flag table means nothing can have been
+    flagged, so nothing blocks. Any OTHER failure raises ``FlagLookupFailed``: the caller must treat that as blocked.
+    """
+
+    if not workflow_id:
+        return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('email_agent.bp_inbound_flag')")
+            if cur.fetchone()[0] is None:
+                return []
+            cur.execute(
+                """SELECT flag_id, status, kinds, response_message_id, created_at FROM email_agent.bp_inbound_flag
+                   WHERE workflow_id = %s AND status <> 'cleared' AND (supplier_id IS NULL OR supplier_id IS NOT DISTINCT FROM %s)
+                   ORDER BY flag_id""", (workflow_id, supplier_id))
+            return [{"id": r[0], "status": r[1], "kinds": r[2], "message_id": r[3], "created_at": r[4]} for r in cur.fetchall()]
+    except Exception as exc:  # noqa: BLE001
+        raise FlagLookupFailed(f"{type(exc).__name__}: {exc}") from exc
+
+
+def decide_flag(conn: Any, flag_id: int, by: Optional[str], action: str, note: Optional[str] = None) -> Dict[str, Any]:
+    """A person clears a flag (lifting the block) or confirms it as fraud (keeping it). From 'open' only, once, by a named person."""
+
+    if action not in ("clear", "confirm") or not isinstance(by, str) or not by.strip():
+        return {"ok": False, "error": "action must be clear or confirm, by a named person"}
+    status = "cleared" if action == "clear" else "confirmed_fraud"
+    with conn.cursor() as cur:
+        cur.execute("UPDATE email_agent.bp_inbound_flag SET status = %s, decided_by = %s, decided_at = now(), note = %s "
+                    "WHERE flag_id = %s AND status = 'open' RETURNING flag_id",
+                    (status, by.strip(), (note or "").strip()[:500] or None, int(flag_id)))
+        row = cur.fetchone()
+        if row:
+            return {"ok": True}
+        cur.execute("SELECT 1 FROM email_agent.bp_inbound_flag WHERE flag_id = %s", (int(flag_id),))
+        exists = cur.fetchone() is not None
+    return {"ok": False, "error": "this flag has already been decided" if exists else "no such flag"}

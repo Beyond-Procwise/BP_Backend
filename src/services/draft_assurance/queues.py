@@ -22,6 +22,7 @@ STATUSES = {
     "exemplar": ("candidate", "approved", "rejected", "expired"),
     "eval": ("candidate", "exported", "rejected"),
     "classifier": ("candidate", "exported", "rejected"),
+    "flag": ("open", "confirmed_fraud", "cleared"),
 }
 
 
@@ -65,6 +66,7 @@ def counts(conn: Any, user: Optional[str]) -> Dict[str, int]:
         "exemplars": ("SELECT count(*) FROM email_agent.bp_exemplar_candidate WHERE status = 'candidate'", ()),
         "eval_candidates": ("SELECT count(*) FROM email_agent.bp_eval_candidate WHERE status = 'candidate'", ()),
         "classifier_examples": ("SELECT count(*) FROM email_agent.bp_classifier_example WHERE status = 'candidate'", ()),
+        "inbound_flags": ("SELECT count(*) FROM email_agent.bp_inbound_flag WHERE status = 'open'", ()),
     }
     out = {}
     with conn.cursor() as cur:
@@ -153,3 +155,26 @@ def list_classifier_examples(conn: Any, status: Optional[str] = "candidate", lim
                           f"FROM email_agent.bp_classifier_example {where} ORDER BY example_id DESC LIMIT %s", params + (_limit(limit),))
     return [{"id": r[0], "request": r[1], "predicted_family": r[2], "labeled_family": r[3], "labeled_by": r[4], "status": r[5],
              "created_at": _iso(r[6])} for r in rows]
+
+
+_FLAG_LABELS = {"payment_detail_change": "Asks for new or changed payment details",
+                "bank_details_with_pressure": "Bank details with pressure language"}
+
+
+def list_inbound_flags(conn: Any, status: Optional[str] = "open", limit: Any = 50) -> List[Dict[str, Any]]:
+    """Replies a person must look at. Names the message by id and dispatch; carries signals and keywords, never email text."""
+
+    st = _status("flag", status, "open")
+    where, params = ("WHERE status = %s", (st,)) if st else ("", ())
+    with conn.cursor() as cur:
+        rows = _rows(cur, f"SELECT flag_id, workflow_id, unique_id, supplier_id, response_message_id, kinds, terms, status, created_at, "
+                          f"decided_by, decided_at, note FROM email_agent.bp_inbound_flag {where} ORDER BY flag_id DESC LIMIT %s",
+                     params + (_limit(limit),))
+    out = []
+    for r in rows:
+        kinds = r[5] if isinstance(r[5], list) else []
+        signals = [_FLAG_LABELS.get(k, _label(k)) for k in kinds]
+        out.append({"id": r[0], "workflow_id": r[1], "dispatch_id": r[2], "supplier_id": r[3], "message_id": r[4],
+                    "what": signals[0] if signals else "Needs review", "signals": signals, "keywords": r[6], "status": r[7],
+                    "created_at": _iso(r[8]), "decided_by": r[9], "decided_at": _iso(r[10]), "note": r[11]})
+    return out

@@ -71,6 +71,14 @@ GRANT SELECT, INSERT, UPDATE ON
     TO email_agent_writer;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA email_agent TO email_agent_writer;
 
+-- Inbound flags: the writer records and decides them. Never deletes. (The reader has no access to email_agent at all.)
+DO $$
+BEGIN
+    IF to_regclass('email_agent.bp_inbound_flag') IS NOT NULL THEN
+        GRANT SELECT, INSERT, UPDATE ON email_agent.bp_inbound_flag TO email_agent_writer;
+    END IF;
+END $$;
+
 -- RAW TEXT: the one table the writer may also DELETE from (the retention job purges it). It is not in the list
 -- above on purpose: access to raw text is its own decision. The reader and PUBLIC get nothing. Skipped where
 -- 2026-10-08_email_agent_sent_text.sql has not been applied.

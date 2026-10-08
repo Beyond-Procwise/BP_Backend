@@ -320,7 +320,25 @@ def init_schema() -> None:
         cur.close()
 
 
+def _screen_inbound(row: SupplierResponseRow) -> None:
+    """Flag a reply that asks for new or changed payment details, for a person to look at before anything is drafted against it.
+
+    Best-effort and first: it runs before the insert so a reply that fails to store is still screened, and it can never raise or
+    change the row, so a fault in the screen costs a missed flag (logged) and never a lost reply.
+    """
+
+    try:
+        try:
+            from services.draft_assurance import inbound
+        except ImportError:
+            from src.services.draft_assurance import inbound
+        inbound.screen_and_record(row)
+    except Exception:  # noqa: BLE001
+        logger.debug("inbound payment-change screen did not run", exc_info=True)
+
+
 def insert_response(row: SupplierResponseRow) -> None:
+    _screen_inbound(row)
     base_text = row.response_text or row.response_body or ""
     response_text = base_text or ""
     response_body = row.response_body if row.response_body not in (None, "") else None
