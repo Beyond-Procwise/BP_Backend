@@ -669,6 +669,32 @@ _REPORT_EDITOR = re.compile(r"^/reports/jobs/[^/]+/(draft|preview|versions)$")
 # words; every other agent-policy answer (the screens) is still scrubbed.
 _AGENT_POLICY_FEED = "/orchestrator/agent-policies/v2/live"
 
+# The agent-policy screens' reads and the upload-link answer (user ruling 2026-10-08). The
+# text in them is the customer's own policy documents -- excerpts, section text, reasons a
+# rule cannot be enforced -- and the names are their own file names. The scrubber withheld a
+# date like "01/04/2026" (two slashes look like a route) and rewrote reasons that mention the
+# orchestrator, so a person reading or comparing their own policy saw "[withheld]". Sign-in
+# (gateway key + user), the role check and the audit are unchanged; only the 2xx body of
+# exactly these method+path pairs is passed through. Anchored: a trailing slash, a child path
+# or another method is still scrubbed, and so is every error answer.
+_AGENT_POLICY_SCREEN_EXEMPT = (
+    ("GET", re.compile(r"^/agent-policies$")),
+    ("GET", re.compile(r"^/agent-policies/[A-Z]{3}-[0-9]{4,}$")),
+    ("GET", re.compile(r"^/agent-policies/taxonomy$")),
+    ("POST", re.compile(r"^/agent-policies/preview$")),
+    ("GET", re.compile(r"^/agent-policies/documents$")),
+    ("GET", re.compile(r"^/agent-policies/documents/[0-9]+/compare$")),
+    ("GET", re.compile(r"^/agent-policies/extraction-runs$")),
+    ("GET", re.compile(r"^/agent-policies/extraction-runs/[0-9]+$")),
+    ("POST", re.compile(r"^/agent-policies/documents/upload-urls$")),
+)
+
+
+def _agent_policy_screen_exempt(method: str, path: str, status_code: int) -> bool:
+    if not 200 <= status_code < 300:
+        return False
+    return any(method == m and rx.fullmatch(path) for m, rx in _AGENT_POLICY_SCREEN_EXEMPT)
+
 
 @app.exception_handler(StarletteHTTPException)
 async def _safe_http_exception(request: Request, exc: StarletteHTTPException):
@@ -706,6 +732,8 @@ class OutputSafetyMiddleware(BaseHTTPMiddleware):
         if any(path.startswith(p) for p in _OPERATOR_PATHS) or _REPORT_EDITOR.match(path):
             return response
         if path == _AGENT_POLICY_FEED and request.method == "GET":
+            return response
+        if _agent_policy_screen_exempt(request.method, path, response.status_code):
             return response
         ctype = response.headers.get("content-type", "")
 

@@ -76,14 +76,12 @@ def test_feed_errors_are_still_handled(app_client):
     assert r.status_code == 401 and r.json() == {"detail": "not accepted"}
 
 
-def test_the_screens_are_still_scrubbed(app_client):
-    """Only the feed is exempt: the same excerpt in the Admin preview is still withheld."""
-    form = copy.deepcopy(FORM_EXAMPLE)
-    form["source"]["excerpt"] = EXCERPT
-    form["hidden"]["inputs"].append({"name": "refunds in 30 days", "field": "agg.refunds_30d", "type": "number",
-                                     "from": "total:refunds_30d", "showApprover": False, "sensitive": False})
+def test_the_screens_writes_are_still_scrubbed(app_client, monkeypatch):
+    """The feed and (user ruling 2026-10-08) the screens' READS are exempt -- see
+    test_screens_through_app.py. A screen's write answer, here create, is still scrubbed."""
+    monkeypatch.setattr(R.repo, "create_draft",
+                        lambda conn, form, actor: {"policyKey": "FIN-0013", "excerpt": EXCERPT})
     hdr = {"X-Gateway-Key": "k1", "X-User-Sub": "u1", "X-User-Groups": json.dumps(["PROCWISE_ADMIN"])}
-    r = app_client.post("/agent-policies/preview", json={"form": form}, headers=hdr)
+    r = app_client.post("/agent-policies", json={"form": copy.deepcopy(FORM_EXAMPLE)}, headers=hdr)
     assert r.status_code == 200
-    assert r.json()["compiled"]["source"]["excerpt"] == "[withheld]"
-    assert r.json()["howEnforced"]["cantEnforceNames"] == ["refunds in 30 days"]
+    assert r.json()["excerpt"] == "[withheld]"
