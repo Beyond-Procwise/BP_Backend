@@ -119,3 +119,22 @@ body). No model writes these, so nothing is repaired or judged, and the person's
 | H4 | The manual passthrough's author is `data.requested_by` only; if the caller does not send it the draft is attributed to the agent, not a person. |
 | H5 | Report-panel emails with no deal thread have no workflow or supplier, so only the text checks run. |
 | H6 | Test-suite note: a test file that imports `src.api.routers.workflows` at module level breaks `tests/test_email_dispatch_service.py` (three tests) in the same session; `tests/api/test_email_prepare_endpoint.py` already does, independent of this work. The new tests import the router lazily. |
+
+## The one path left unwrapped: the negotiation agent's own draft stub (decision 2026-10-08)
+
+`NegotiationAgent._build_email_draft_stub` returns a dict with the agent's own composed text. It is deliberately NOT wrapped,
+because it cannot reach a supplier by itself:
+
+1. The negotiation agent never stores it (no write to `proc.draft_rfq_emails` anywhere in `negotiation_agent.py`), and
+   `EmailDispatchService.send_draft` raises `No stored draft found` for any identifier that is not a stored draft.
+   Pinned by `tests/services/test_negotiation_stub_not_sendable.py`; mutation-checked (removing the refusal turns it red).
+2. The email a negotiation round actually sends is written and stored by `EmailDraftingAgent`, whose counter path IS assured.
+3. A body handed to the dispatcher over that stored draft (what a stub would try) changes the transmitted content, and the
+   approval's content hash refuses it (`tests/approvals/test_content_binding_enforced.py`). Live policy, read-only check on
+   bp_sqldb and bp_testdb 2026-10-08: `EmailDispatchApprovalPolicy.on_content_mismatch = deny`, `approval_required = true`;
+   `EmailReplyAutonomyPolicy.auto_reply_intents = []` (no unattended send).
+
+**Residual risk, stated:** the hash protection holds while `on_content_mismatch` stays `deny` and `auto_reply_intents` stays
+empty. Setting either to `warn` / a real intent would let an un-assured body reach a supplier, and this decision would have
+to be reopened. Also, the stub text is still shown to anyone who reads the negotiation agent's `drafts` output; it carries
+no assurance record and should not be presented to a reviewer as a checked draft.
