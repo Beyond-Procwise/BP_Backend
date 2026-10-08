@@ -1,0 +1,157 @@
+import json
+
+import pytest
+
+from services.agent_policy import extractor
+from services.agent_policy.extraction_schema import ChunkResult, ProposedPolicy, grammar_schema
+from tests.agent_policy.fixtures import FORM_EXAMPLE, REGISTRY
+from tests.agent_policy.test_converter import TAXONOMY, _proposal
+
+PROMPTS = {
+    "agent_policy_extract": "T={taxonomy}|R={registry}|D={document_title} v{document_version}|S={sections}",
+    "agent_policy_fix": "E={excerpt}|C={constraints}|R={registry}|P={policy}",
+}
+SECTIONS = [{"reference": "1.1", "heading": "1.1", "text": "1.1 Refunds above $500 need approval.", "start": 0}]
+
+
+@pytest.fixture(autouse=True)
+def _prompts(monkeypatch):
+    def load(name):
+        if name not in PROMPTS:
+            raise extractor.PromptUnavailable(f"prompt unavailable: {name}")
+        return PROMPTS[name]
+    monkeypatch.setattr(extractor, "load_prompt", load)
+
+
+class Stub:
+    def __init__(self, reply):
+        self.reply, self.calls = reply, []
+
+    def __call__(self, prompt, **kwargs):
+        self.calls.append((prompt, kwargs))
+        return self.reply
+
+
+def _walk(node, path="$"):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            yield path, k, v
+            yield from _walk(v, f"{path}.{k}")
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            yield from _walk(v, f"{path}[{i}]")
+
+
+def _assert_grammar_safe(schema):
+    defs = schema.get("$defs", {})
+    for path, key, value in _walk(schema):
+        assert key not in ("anyOf", "oneOf", "allOf"), f"union at {path}.{key}"
+        if key == "$ref":
+            # refs only point into $defs, and no def refers (directly or not) to itself
+            assert value.startswith("#/$defs/")
+    def reach(name, seen):
+        for _, key, value in _walk(defs[name]):
+            if key == "$ref":
+                target = value.rsplit("/", 1)[-1]
+                assert target not in seen, f"recursive $ref {seen + [target]}"
+                reach(target, seen + [target])
+    for name in defs:
+        reach(name, [name])
+
+
+def _good_reply():
+    return ChunkResult(policies=[_proposal()], not_enforceable=[
+        {"reference": "1.3", "excerpt": "Staff should be courteous.", "reason": "a duty on people"}]).model_dump_json()
+
+
+def test_extract_chunk_calls_the_model_as_required():
+    stub = Stub(_good_reply())
+    result = extractor.extract_chunk(SECTIONS, document={"title": "Finance Payments Policy", "version": 2},
+                                     taxonomy=TAXONOMY, registry=REGISTRY, call=stub)
+    assert result.policies[0].reference == "1.1" and result.not_enforceable[0].reference == "1.3"
+    prompt, kw = stub.calls[0]
+    assert kw["think"] is False and kw["use_load_options"] is True
+    assert kw["temperature"] == 0 and kw["num_predict"] == 8192 and kw["background"] is True
+    assert "model" not in kw  # the default model, AgentNick, and nothing else
+    _assert_grammar_safe(kw["format"])
+    assert kw["format"] == grammar_schema(ChunkResult)
+    assert "D=Finance Payments Policy v2" in prompt
+    assert "--- Section 1.1 ---\n1.1 Refunds above $500 need approval." in prompt
+    assert "- Finance: General, Refunds and credits, Payments" in prompt
+    assert "{" not in prompt.replace("{}", "")  # every placeholder filled
+
+
+def test_the_raw_pydantic_schema_would_have_had_unions():
+    # the guard is not vacuous: without grammar_schema the schema carries anyOf
+    assert "anyOf" in json.dumps(ChunkResult.model_json_schema())
+    with pytest.raises(AssertionError):
+        _assert_grammar_safe(ChunkResult.model_json_schema())
+
+
+@pytest.mark.parametrize("reply", [None, "", "not json", '{"policies": [{"name": "x"}], "not_enforceable": []}'])
+def test_unusable_reply_raises_extraction_error(reply):
+    with pytest.raises(extractor.ExtractionError, match="the model did not return a usable answer"):
+        extractor.extract_chunk(SECTIONS, document={"title": "D", "version": 1}, taxonomy=TAXONOMY,
+                                registry=REGISTRY, call=Stub(reply))
+
+
+def test_nulls_from_the_model_still_validate():
+    raw = json.loads(_good_reply())
+    raw["policies"][0]["time_zone"] = None
+    raw["policies"][0]["rules"][0]["value_text"] = None
+    out = extractor.extract_chunk(SECTIONS, document={"title": "D", "version": 1}, taxonomy=TAXONOMY,
+                                  registry=REGISTRY, call=Stub(json.dumps(raw)))
+    assert out.policies[0].time_zone is None
+
+
+def test_missing_prompt_row_is_prompt_unavailable(monkeypatch):
+    class Engine:
+        def __init__(self, connection_factory=None):
+            pass
+
+        def all_prompts(self):
+            return [{"promptName": "something_else", "template": "x"}]
+    import orchestration.prompt_engine as pe
+    monkeypatch.undo()  # drop the autouse load_prompt stub: this test exercises the real loader
+    monkeypatch.setattr(pe, "PromptEngine", Engine)
+    with pytest.raises(extractor.PromptUnavailable, match="prompt unavailable: agent_policy_extract"):
+        extractor.load_prompt("agent_policy_extract")
+
+
+def test_registry_digest_lists_checkpoints_actions_and_inputs():
+    from services.agent_policy import registry
+    reg = registry.snapshot_from_rows([
+        {"kind": "checkpoint", "name": "tool.call.before", "checkpoint": None, "plain": "before a tool runs",
+         "status": "live"},
+        {"kind": "checkpoint", "name": "message.send.before", "checkpoint": None, "plain": "before a message is sent",
+         "status": "planned"},
+        {"kind": "action", "name": "refund.issue", "checkpoint": "tool.call.before", "plain": "x", "status": "live"},
+        {"kind": "input", "name": "args.amount", "checkpoint": "tool.call.before", "plain": "amount",
+         "value_type": "number", "source": "action", "status": "live"},
+        {"kind": "input", "name": "agg.r30", "checkpoint": "tool.call.before", "plain": "refunds in 30 days",
+         "value_type": "number", "source": "total:r30", "status": "planned"},
+    ])
+    text = extractor.registry_digest(reg)
+    assert "- tool.call.before: before a tool runs (checked today)" in text
+    assert "- message.send.before: before a message is sent (not checked yet)" in text
+    assert "Actions: refund.issue" in text
+    assert "- args.amount (number, from action): amount" in text
+    assert "- agg.r30 (number, from total:r30): refunds in 30 days - not received yet" in text
+    assert "At message.send.before" not in text
+
+
+def test_fix_policy_sends_flipped_examples_as_constraints():
+    stub = Stub(_proposal(rules=[{"field": "args.amount", "op": "gte", "value_number": 500}]).model_dump_json())
+    flipped = [{"input": {"tool.name": "refund.issue", "args.amount": 500}, "reviewer_expects": "approve"}]
+    out = extractor.fix_policy(FORM_EXAMPLE, flipped, registry=REGISTRY, taxonomy=TAXONOMY, call=stub)
+    assert isinstance(out, ProposedPolicy) and out.rules[0].op == "gte"
+    prompt, kw = stub.calls[0]
+    assert 'these inputs must give approve: {"args.amount": 500, "tool.name": "refund.issue"}' in prompt
+    assert FORM_EXAMPLE["source"]["excerpt"] in prompt
+    assert kw["think"] is False and kw["use_load_options"] is True
+    _assert_grammar_safe(kw["format"])
+
+
+def test_fix_policy_bad_reply_raises():
+    with pytest.raises(extractor.ExtractionError):
+        extractor.fix_policy(FORM_EXAMPLE, [], registry=REGISTRY, taxonomy=TAXONOMY, call=Stub("{}"))
