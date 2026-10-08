@@ -319,3 +319,12 @@ in every later draft, not just the one they were looking at. `POST /email-learni
 | O4 | **It writes the PRODUCT table** (`proc.supplier_response`) through the application's own connection, not the email writer role (which cannot, by design). It needs the provenance migration (`deploy/sql/2026-10-08_supplier_response_provenance.sql`, applied separately); without it the answer is "not available" and nothing changes. |
 | O5 | **Rejected still reads as a claim**, not as absent: the draft still shows the figure, flagged unconfirmed. Making a rejected value disappear from drafts is not built. |
 | O6 | No screen: the reviewer's UI would call this endpoint; the UI repo is untouched. Nothing lists "offers awaiting confirmation" yet; the draft's claim item is the entry point. |
+
+## Applied to bp_testdb (2026-10-08, by request; bp_sqldb untouched)
+
+Pack (a) is now fully on bp_testdb. It already held capture, capture v2, learning and the counter and free-prompt families from earlier work; this
+run added the provenance columns on `proc.supplier_response` (8, all NULL on the 7 existing rows), sent text, the steering column, the inbound
+flag and sender-auth tables, the RFQ-batch and human-written families, family v2, and the draft sweep. `email_agent` now holds 11 tables and the
+eight governed rule rows exist. NOT applied: pack (b) (tone rules, prompts), the roles file, anything on bp_sqldb. Nothing was rolled back or
+re-run; the rehearsal fingerprint check was not repeated on this database. From now on the running application on bp_testdb records captures,
+flags, outcomes and the sweep for real.
