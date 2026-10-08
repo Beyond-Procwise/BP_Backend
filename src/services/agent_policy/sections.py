@@ -12,7 +12,16 @@ import re
 from typing import Any, Dict, List, Optional, TypedDict
 
 _HEADING = re.compile(r"^#{1,6} +(?P<title>.*\S)?")
-_CLAUSE = re.compile(r"^\s*(?P<num>\d+(?:\.\d+)*)[.)]?\s+\S")
+# A clause line is one of: a dotted number ("1.1 ", "4.2) "), a number with a "." or ")"
+# ("1. ", "4) "), or a bare number then an UPPERCASE word ("1 Refunds"). Prose that merely
+# starts with a number ("2026 budget", "3 days notice") is not a clause: references drive
+# stable-ID matching across revisions, so a false marker is load-bearing.
+_CLAUSE = re.compile(
+    r"^\s*(?P<num>"
+    r"\d{1,3}(?:\.\d{1,3})+(?=[.)]?\s+\S)"
+    r"|\d{1,3}(?=[.)]\s+\S)"
+    r"|\d{1,3}(?=\s+[A-Z])"
+    r")")
 
 DEFAULT_MAX_CHARS = 9000
 

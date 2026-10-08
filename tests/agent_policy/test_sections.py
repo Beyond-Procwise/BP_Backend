@@ -76,3 +76,16 @@ def test_diff_changed_removed_added():
     assert "ten" in rows["1.1"]["before"] and "twenty" in rows["1.1"]["after"]
     assert rows["1.2"]["status"] == "removed" and rows["1.2"]["after"] is None
     assert rows["1.3"]["status"] == "added" and rows["1.3"]["before"] is None
+
+
+def test_prose_starting_with_a_number_is_not_a_clause():
+    for line in ("2026 budget was approved\n", "3 days notice is required\n", "30 days from receipt\n",
+                 "12345 widgets\n"):
+        text = "1. Terms\nintro\n" + line + "more\n"
+        assert [s["reference"] for s in split_sections(text)] == ["1"], line
+
+
+def test_real_clause_shapes_are_markers():
+    for line, ref in (("1 Refunds\n", "1"), ("1. Refunds\n", "1"), ("1.1 Refunds\n", "1.1"),
+                      ("4.2) Credits\n", "4.2"), ("4) Credits\n", "4"), ("1.2.3. Deep\n", "1.2.3")):
+        assert [s["reference"] for s in split_sections(line)] == [ref], line

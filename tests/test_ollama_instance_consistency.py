@@ -244,3 +244,13 @@ def test_use_load_options_sends_the_shared_runner_set(monkeypatch):
     for key, value in shared.items():
         assert opts[key] == value
     assert opts["temperature"] == 0 and opts["num_predict"] == 8192
+
+
+def test_pinned_num_gpu_is_kept_with_use_load_options(monkeypatch):
+    seen = {}
+    oc.clear_layout_rejection()
+    monkeypatch.setattr(oc.egress, "post", _capture(seen))
+    oc.ollama_generate("hello", model="m", retries=1, num_gpu=7, use_load_options=True)
+    opts = seen["payload"]["options"]
+    assert opts["num_gpu"] == 7
+    assert opts["num_ctx"] == oc.load_options()["num_ctx"]

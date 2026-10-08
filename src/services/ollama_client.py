@@ -305,9 +305,10 @@ def _ollama_generate(
     # card that has just refused the layout is not asked again.
     if num_gpu is not None:
         options["num_gpu"] = num_gpu
-    else:
+    elif not use_load_options:
         options.update(gpu_options())
     if use_load_options:
+        # One read of the GPU option, taken inside load_options(); a pin is kept.
         options.update(load_options(include_gpu=num_gpu is None))
     if stop:
         options["stop"] = stop
