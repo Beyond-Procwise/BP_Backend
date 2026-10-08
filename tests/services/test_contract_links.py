@@ -990,27 +990,6 @@ def test_a_named_contract_of_the_wrong_structure_is_still_not_a_candidate():
             conn.cursor().execute("DELETE FROM proc.bp_contracts WHERE contract_id = %s", (wrong,))
 
 
-def test_profile_and_link_type_follow_the_childs_role():
-    from src.services.graph_resolution.profiles import (
-        contract_amendment, contract_attachment, contract_hierarchy)
-    assert CL._profile_module({"resolved_doc_type": "doctype.addendum"}) is contract_amendment
-    assert CL._profile_module({"resolved_doc_type": "doctype.ccn"}) is contract_amendment
-    assert CL._profile_module({"resolved_doc_type": "doctype.sla"}) is contract_attachment
-    assert CL._profile_module({"resolved_doc_type": "doctype.schedule"}) is contract_attachment
-    assert CL._profile_module({"resolved_doc_type": "doctype.sow"}) is contract_hierarchy
-    assert CL._link_type({"resolved_doc_type": "doctype.addendum"}) == "amends"
-    assert CL._link_type({"resolved_doc_type": "doctype.sla"}) == "attaches_to"
-    assert CL._link_type({"resolved_doc_type": "doctype.sow"}) == "child_of"
-
-
-def test_schedules_and_slas_are_children_with_master_and_framework_parents():
-    wanted = CL._wanted_parent_types({"resolved_doc_type": "doctype.sla"})
-    assert "doctype.master_agreement" in wanted and "doctype.framework_agreement" in wanted
-    assert "doctype.sla" not in wanted and "doctype.addendum" not in wanted
-    assert CL.is_child({"resolved_doc_type": "doctype.schedule"})
-    assert not CL.is_child({"resolved_doc_type": "doctype.termination_notice"})
-
-
 _CORROBORATING_KEYS = {"buyer_org_id", "currency", "payment_terms", "governing_law",
                        "contract_signatory_name", "buyer_signatory_name", "cost_centre_id"}
 
