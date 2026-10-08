@@ -164,6 +164,10 @@ def _is_unparented(child: dict, known: set[str]) -> bool:
     return ptr not in known or ptr == _ch._norm_ref(child.get("contract_id"))
 
 
+#: Contract structures a schedule or SLA never attaches to.
+_NOT_ATTACHMENT_PARENTS = frozenset({"doctype.nda"})
+
+
 def _is_variation(child: dict) -> bool:
     """A document that changes another one: variation, addendum, CCN."""
     return _role_of(child) == "role.variation"
@@ -245,9 +249,12 @@ def _wanted_parent_types(child: dict) -> set[str]:
     if _is_attachment(child):
         # A schedule sits under SEVERAL kinds of agreement, and default_parent_type
         # holds one value (also read by the upload gate), so the set is chosen here.
+        # Not an NDA: it carries no service levels and no commercial schedules, so
+        # an SLA or schedule sharing its supplier is coincidence, not a link.
         return {code for code, dt in ensure_vocabulary().document_types.items()
                 if dt.pipeline_doc_type == "contract"
-                and dt.role in ("role.master", "role.framework")}
+                and dt.role in ("role.master", "role.framework")
+                and code not in _NOT_ATTACHMENT_PARENTS}
     want = _ch.expected_parent_type(child.get("resolved_doc_type"))
     return {want} if want else set()
 

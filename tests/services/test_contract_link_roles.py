@@ -25,3 +25,13 @@ def test_schedules_and_slas_are_children_with_master_and_framework_parents():
     assert "doctype.sla" not in wanted and "doctype.addendum" not in wanted
     assert CL.is_child({"resolved_doc_type": "doctype.schedule"})
     assert not CL.is_child({"resolved_doc_type": "doctype.termination_notice"})
+
+
+def test_an_attachment_is_never_proposed_under_a_confidentiality_agreement():
+    """An NDA carries no service levels and no commercial schedules, so an SLA or a
+    schedule found sitting 'under' one is a coincidence of supplier, not a link."""
+    for child in ("doctype.sla", "doctype.schedule"):
+        wanted = CL._wanted_parent_types({"resolved_doc_type": child})
+        assert "doctype.nda" not in wanted, child
+        assert {"doctype.master_agreement", "doctype.service_agreement",
+                "doctype.sow"} <= wanted, child

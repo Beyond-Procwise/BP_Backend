@@ -76,10 +76,26 @@ def test_value_rollup_never_compares_across_currencies_or_without_a_parent_value
 
 def test_signatory_shared_name_is_positive_and_a_different_one_is_neutral():
     a = {"contract_signatory_name": "Jane Doe"}
-    assert cs.cmp_signatory(a, {"buyer_signatory_name": "jane  doe"}) == (1.0, "OK")
-    assert cs.cmp_signatory(a, {"contract_signatory_name": "Jane Doe"}) == (1.0, "OK")
+    assert cs.cmp_signatory(a, {"contract_signatory_name": "jane  doe"}) == (1.0, "OK")
     assert cs.cmp_signatory(a, {"contract_signatory_name": "Sam Roe"}) == (0.5, "WEAK")
     assert cs.cmp_signatory(a, {}) == (0.5, "MISSING")
+    b = {"buyer_signatory_name": "Ann Lee"}
+    assert cs.cmp_signatory(b, {"buyer_signatory_name": "ann lee"}) == (1.0, "OK")
+
+
+def test_a_signatory_is_compared_only_with_the_same_party_on_the_other_document():
+    """The supplier's signatory on one document and the BUYER's on the other are two
+    different people's roles; a matching name across them is not corroboration."""
+    supplier_side = {"contract_signatory_name": "Jane Doe"}
+    buyer_side = {"buyer_signatory_name": "Jane Doe"}
+    assert cs.cmp_signatory(supplier_side, buyer_side) == (0.5, "MISSING")
+    # One party matches, the other differs: still a shared signatory.
+    child = {"contract_signatory_name": "Jane Doe", "buyer_signatory_name": "Ann Lee"}
+    parent = {"contract_signatory_name": "Jane Doe", "buyer_signatory_name": "Bob Ray"}
+    assert cs.cmp_signatory(child, parent) == (1.0, "OK")
+    # Both parties comparable, neither matches: neutral, never a conflict.
+    parent2 = {"contract_signatory_name": "Sam Roe", "buyer_signatory_name": "Bob Ray"}
+    assert cs.cmp_signatory(child, parent2) == (0.5, "WEAK")
 
 
 def test_cost_centre_any_shared_field_is_positive():
