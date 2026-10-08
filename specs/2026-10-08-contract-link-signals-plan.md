@@ -147,6 +147,7 @@ def test_the_variant_name_does_not_depend_on_declaration_order():
     a = {"id": "b"}, {"id": "a"}
     assert ap.variant_name("p", list(a)) == ap.variant_name("p", list(reversed(a))) == "p+a+b"
     assert ap.variant_name("p", []) == "p"
+```
 
 - [ ] **Step 2: Run it and see it fail**
 
