@@ -151,7 +151,25 @@ _DOCUMENT_TYPE_CONCEPTS = (
     ("doctype.sales_order",
      "The supplier's own confirmation of an order it has received.",
      ("doctype.order", "doctype.invoice")),
+    ("doctype.dpa",
+     "Governs how personal data is processed for a parent agreement; forms part of it.",
+     ("doctype.addendum",)),
+    ("doctype.side_letter",
+     "A separate letter that modifies or waives a term of an agreement it names.",
+     ("doctype.variation",)),
+    ("doctype.renewal",
+     "Extends an agreement past its expiry on terms the original already sets.",
+     ("doctype.variation",)),
+    ("doctype.guaranty",
+     "A third party's undertaking to answer for a party's obligations under an agreement.",
+     ()),
 )
+
+#: Known to the vocabulary, resolved by nothing: only status='active' rows resolve.
+_PROPOSED_TYPES = frozenset({
+    "doctype.policy_document", "doctype.dpa", "doctype.side_letter",
+    "doctype.renewal", "doctype.guaranty",
+})
 
 
 CONCEPTS: Mapping[str, Concept] = {
@@ -163,7 +181,7 @@ CONCEPTS: Mapping[str, Concept] = {
         *(Concept(code, "EVENT_KIND", defn) for code, defn in _EVENT_KINDS),
         *(
             Concept(code, "DOCUMENT_TYPE", defn, confused,
-                    status="proposed" if code == "doctype.policy_document" else "active")
+                    status="proposed" if code in _PROPOSED_TYPES else "active")
             for code, defn, confused in _DOCUMENT_TYPE_CONCEPTS
         ),
     )
@@ -384,5 +402,14 @@ DOCUMENT_TYPES: Mapping[str, DocumentType] = {
             ("line items with quantities and a total",),
             "purchase_order",
         ),
+        DocumentType("doctype.dpa", "role.attachment", None, None,
+                     ("dpa", "data processing agreement"), (), (), None, status="proposed"),
+        DocumentType("doctype.side_letter", "role.variation", None, None,
+                     ("side letter",), (), (), None, status="proposed"),
+        DocumentType("doctype.renewal", "role.variation", None, None,
+                     ("renewal agreement",), (), (), None, status="proposed"),
+        DocumentType("doctype.guaranty", "role.supporting", None, None,
+                     ("guaranty", "guarantee", "parent company guarantee"), (), (), None,
+                     status="proposed"),
     )
 }

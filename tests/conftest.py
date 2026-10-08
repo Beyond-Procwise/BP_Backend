@@ -28,7 +28,8 @@ GOVERNED_LIMIT_SEED = {
     "promotion_thresholds": {
         "promote_min_confidence": 50, "promote_min_link_score": 80,
         "promote_review_min": 65, "propose_min_link_score": 40,
-        "propose_max_candidates": 5, "quote_anchor_min_score": 80},
+        "propose_max_candidates": 5, "quote_anchor_min_score": 80,
+        "contract_parent_min_score": 65, "contract_parent_separation": 8},
     "reconciliation_tolerances": {
         "amount_tolerance_pct": 0.01, "amount_tolerance_abs": 1.00,
         "tax_tolerance_pct": 0.1},

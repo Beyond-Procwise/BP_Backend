@@ -290,3 +290,29 @@ def test_a_missing_title_is_missing_not_conflict():
 def test_a_placeholder_is_no_reference(ph):
     child = _sow(parent_agreement_ref=ph)
     assert _detail(ch.score(child, _msa(contract_id=ph)))["declared_reference"] == "MISSING"
+
+
+def test_no_optional_data_scores_exactly_as_before_the_extension():
+    """Review Focus 1: the corpus norm is a row with none of the corroborating fields."""
+    with_ref = ch.score(_sow(), _msa())
+    assert round(with_ref["F"], 1) == 96.9 and with_ref["decision"] == "auto_link"
+    no_ref = ch.score(_sow(parent_agreement_ref=None), _msa())
+    assert round(no_ref["F"], 1) == 75.6 and no_ref["decision"] == "review"
+    assert with_ref["profile"] == "contract_hierarchy"
+    assert [s["id"] for s in with_ref["signals"]] == [
+        "declared_reference", "expected_structure", "supplier", "term_containment", "title_overlap"]
+
+
+def test_a_matching_buyer_joins_the_score_and_a_conflicting_one_lowers_it():
+    base = ch.score(_sow(parent_agreement_ref=None), _msa())["F"]
+    same = ch.score(_sow(parent_agreement_ref=None, buyer_org_id="B-1"), _msa(buyer_org_id="B-1"))
+    diff = ch.score(_sow(parent_agreement_ref=None, buyer_org_id="B-1"), _msa(buyer_org_id="B-2"))
+    assert "buyer" in [s["id"] for s in same["signals"]]
+    assert same["F"] > base > diff["F"]
+
+
+def test_absent_corroborators_never_tax_a_pair_with_some_present():
+    """Only the fields BOTH sides carry may enter the profile."""
+    got = ch.score(_sow(currency="GBP", payment_terms="Net 30"), _msa(currency="GBP"))
+    ids = [s["id"] for s in got["signals"]]
+    assert "currency" in ids and "payment_terms" not in ids
