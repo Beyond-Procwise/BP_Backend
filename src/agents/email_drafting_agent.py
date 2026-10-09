@@ -612,7 +612,9 @@ def _build_rfq_table_html(
 RFQ_TABLE_HEADER = _build_rfq_table_html([])
 
 
-DEFAULT_NEGOTIATION_MODEL = "mistral"
+# AgentNick is the only model (hard constraint). This was "mistral", which worked only because mistral is not
+# installed and call_ollama fell back to AgentNick; installing it would have silently switched every counter email.
+DEFAULT_NEGOTIATION_MODEL = "BeyondProcwise/AgentNick:unified"
 
 
 class EmailDraftingAgent(BaseAgent):
@@ -2605,6 +2607,14 @@ class EmailDraftingAgent(BaseAgent):
         from src.services.draft_assurance.capture import word_distance
 
         left = [v for v in run.check(repaired) if v["severity"] == "fail"]
+        before = {(v["kind"], v["detail"]) for v in failed}
+        added = [v for v in left if (v["kind"], v["detail"]) not in before]
+        if added:
+            # Fewer failures is not enough: a repair that swaps one problem for a new one (a [name] for a [deadline])
+            # has not repaired anything. Seen live 2026-10-09.
+            run.repair_rejected = ("the repaired text adds a new problem: "
+                                   + ", ".join(f"{v['kind']} {v['detail']}" for v in added))
+            return body, False
         if len(left) >= len(failed):
             run.repair_rejected = "the repaired text did not reduce the failures"
             return body, False

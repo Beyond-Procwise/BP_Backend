@@ -1,0 +1,71 @@
+"""The repair pass: which model it asks, and which repairs it keeps.
+
+Found live 2026-10-09: the repair (and the counter compose) asked for 'mistral', which only worked because it is not
+installed and call_ollama fell back to AgentNick; and a repair that removed two problems while ADDING a new placeholder
+was accepted, because acceptance only counted failures.
+"""
+
+from types import SimpleNamespace
+
+from agents import email_drafting_agent as module
+from agents.email_drafting_agent import EmailDraftingAgent
+
+AGENTNICK = "BeyondProcwise/AgentNick:unified"
+
+
+def test_the_drafting_agents_default_model_is_agentnick_not_another_model():
+    assert module.DEFAULT_NEGOTIATION_MODEL == AGENTNICK
+
+
+def test_the_repair_pass_asks_agentnick(monkeypatch):
+    agent = EmailDraftingAgent()
+    monkeypatch.delattr(agent.agent_nick.settings, "negotiation_email_model", raising=False)
+    asked = {}
+
+    def call_ollama(**kw):
+        asked["model"] = kw["model"]
+        return {"message": {"content": "Thank you for your offer. Please confirm the revised price by 30 October 2026."}}
+    monkeypatch.setattr(agent, "call_ollama", call_ollama)
+    agent._repair_assured_body("Body [name] text that is long enough to be a real email body.", [{"kind": "k", "detail": "d"}])
+    assert asked["model"] == AGENTNICK
+
+
+class Run:
+    """A run whose checks are a fixed table: text -> failures."""
+
+    def __init__(self, table):
+        self.table, self.inputs, self.repair_rejected, self.repair_skipped = table, object(), None, None
+
+    def payment_hold(self, body):
+        return None
+
+    def check(self, body):
+        return [{"kind": k, "detail": d, "severity": "fail"} for k, d in self.table.get(body, [])]
+
+
+ORIGINAL = "Thank you for your offer of 47.50 GBP. We propose 42.00 GBP. Speak soon, [name]."
+ADDS_ONE = "Thank you for your offer of 47.50 GBP. We propose 42.00 GBP. Please confirm by [deadline]."
+CLEAN = "Thank you for your offer of 47.50 GBP. We propose 42.00 GBP. Please confirm by Friday? Kind regards."
+
+
+def _agent_returning(monkeypatch, text):
+    agent = EmailDraftingAgent()
+    monkeypatch.setattr(agent, "_repair_assured_body", lambda body, failed: text)
+    return agent
+
+
+def test_a_repair_that_adds_a_new_failure_is_rejected_even_if_the_count_goes_down(monkeypatch):
+    run = Run({ORIGINAL: [("ungrounded_figure", "42.00"), ("unresolved_placeholder", "[name]"),
+                          ("missing_required_element", "explicit_ask"), ("missing_required_element", "deadline")],
+               ADDS_ONE: [("ungrounded_figure", "42.00"), ("unresolved_placeholder", "[deadline]"),
+                          ("missing_required_element", "deadline")]})
+    body, repaired = _agent_returning(monkeypatch, ADDS_ONE)._assure_composed(run, ORIGINAL)
+    assert (body, repaired) == (ORIGINAL, False)
+    assert "new problem" in run.repair_rejected and "[deadline]" in run.repair_rejected
+
+
+def test_a_repair_that_only_removes_failures_is_kept(monkeypatch):
+    run = Run({ORIGINAL: [("unresolved_placeholder", "[name]"), ("missing_required_element", "deadline")],
+               CLEAN: []})
+    body, repaired = _agent_returning(monkeypatch, CLEAN)._assure_composed(run, ORIGINAL)
+    assert (body, repaired) == (CLEAN, True) and run.repair_rejected is None

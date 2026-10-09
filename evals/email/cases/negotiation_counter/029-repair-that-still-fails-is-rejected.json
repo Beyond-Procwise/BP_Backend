@@ -1,7 +1,7 @@
 {
  "id": "029-repair-that-still-fails-is-rejected",
  "family": "negotiation_counter",
- "description": "The 'repair' changes one wrong figure for another: it does not reduce the failures, so it is not accepted.",
+ "description": "The 'repair' changes one wrong figure for another: it adds a new problem (43.20) while removing one (43.10), so it is not accepted. Reason updated 2026-10-09 when acceptance began refusing any added failure.",
  "run": {
   "path": "counter",
   "payload": {
@@ -43,7 +43,7 @@
  "expect": {
   "rec.repaired": false,
   "rec.repair_rejected": {
-   "contains": "did not reduce"
+   "contains": "adds a new problem: ungrounded_figure 43.20"
   },
   "draft.text": {
    "contains": "43.10"
