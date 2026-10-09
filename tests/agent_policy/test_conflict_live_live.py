@@ -94,8 +94,30 @@ def test_same_conflict_decided_same_way_5_times_raises_policy_case(conn, world, 
     [pc] = repeat_cases(conn, world)
     assert pc["subject_id"] == "|".join(sorted(world.keys)) and pc["is_open"]
     assert pc["facts"]["proposal"] == {"from": "repeat", "count": 5, "outcome": "approve"}
-    once(conn, world, monkeypatch)
+    world.n += 1
+    wf = f"{world.wf}-{world.n}"
+    world.wfs.append(wf)
+    T.use(monkeypatch, [world.docs["A"], world.docs["B"]])
+    res, _ = T.run(monkeypatch, T.stub_tools(world, []), [T._round(world.tool), T.FINAL], workflow_id=wf)
+    assert res.calls[0].result == {"refunded": 900}, "the 6th identical clash runs on precedent (ruling R2)"
     assert len(repeat_cases(conn, world)) == 1, "a 6th raises no second case while one is open"
+
+
+def test_precedent_decisions_never_count_toward_the_proposal(conn, world, monkeypatch):
+    F.precedent_n(monkeypatch, 2)
+    once(conn, world, monkeypatch)
+    once(conn, world, monkeypatch)
+    assert len(repeat_cases(conn, world)) == 1
+    proposed = []
+    monkeypatch.setattr(CL, "maybe_propose", lambda *a, **k: proposed.append(a) or [])
+    for _ in range(2):
+        world.n += 1
+        wf = f"{world.wf}-{world.n}"
+        world.wfs.append(wf)
+        T.use(monkeypatch, [world.docs["A"], world.docs["B"]])
+        res, _ = T.run(monkeypatch, T.stub_tools(world, []), [T._round(world.tool), T.FINAL], workflow_id=wf)
+        assert res.calls[0].result == {"refunded": 900}
+    assert proposed == [] and len(repeat_cases(conn, world)) == 1
 
 
 def test_mixed_outcomes_reset_the_count(conn, world, monkeypatch):

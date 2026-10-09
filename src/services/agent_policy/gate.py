@@ -19,6 +19,9 @@ conflict (kind None) every statement is exactly stage 3's. Otherwise, in the sam
 - auto: a standing rule decides; only the rule's winner(s) get (normal) approval cases;
 - human: the action pauses; one member case per approve policy, a conflicting one at its LAST
   escalation level only, all naming the open live record; every member must approve.
+- human, on a fresh call: the decision engine (decision_engine.decide_live_conflict) may decide it
+  on precedent: the action runs, or is refused with refused_on_precedent; otherwise it goes to
+  people as below, with the clash's history attached.
 The agent is told the live case as ``conflictCaseId``.
 """
 from __future__ import annotations
@@ -33,8 +36,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from services.agent_policy import (approvals, conflict_engine, conflict_live, conflict_payload, deciders,
-                                   enforcement, live_policies, settings)
+from engines import decision_engine as DE
+from services.agent_policy import (approvals, conflict_detect, conflict_engine, conflict_history, conflict_live,
+                                   conflict_payload, deciders, enforcement, live_policies, settings)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +46,7 @@ CHECKPOINT = "tool.call.before"
 REASON_MAX = 500
 UNAVAILABLE = {"result": "blocked", "reasonCode": "policy_check_unavailable",
                "reason": "Policy checks are unavailable, so this action was not run."}
+PRECEDENT_REFUSED = "refused_on_precedent"
 
 
 @dataclass
@@ -128,10 +133,11 @@ def _notify(cur, firing_id: int, recipients, message: str, link: str) -> None:
 
 def record_matches(cur, hits: List[Dict[str, Any]], notifies: List[Dict[str, Any]], *, result: str,
                    tool_name: str, agent, workflow_id, user_id, duration_ms: int,
-                   reason: Optional[str] = None) -> Dict[int, int]:
+                   reason: Optional[str] = None, decision_id: Optional[int] = None) -> Dict[int, int]:
     """One firing row per matched policy (all recording `result`, the action's fate) and the
     notifications every notify recipient gets. Returns {id(hit): firing_id}. Used by the gate and
-    by the replay's re-check, on the caller's cursor inside the caller's transaction."""
+    by the replay's re-check, on the caller's cursor inside the caller's transaction. `decision_id`
+    links the rows at insert (a settled row is append-only: it can never be linked afterwards)."""
     firing_of: Dict[int, int] = {}
     for hit in hits:
         if id(hit) in firing_of:
@@ -140,7 +146,7 @@ def record_matches(cur, hits: List[Dict[str, Any]], notifies: List[Dict[str, Any
             cur, key=str(hit["id"]), version=int(hit.get("version") or 0), tool_name=tool_name,
             agent=agent, workflow_id=workflow_id, user_id=user_id, outcome=hit["outcome"], result=result,
             matched_values=hit.get("matched_values"), missing=hit.get("missing"),
-            duration_ms=duration_ms, reason=reason)
+            duration_ms=duration_ms, decision_id=decision_id, reason=reason)
     # notify recipients hear about it whatever the result (a block carrying a notify list too)
     for hit in notifies:
         key = str(hit["id"])
@@ -183,6 +189,11 @@ def notify_first_level(cur, policy: Dict[str, Any], firing_id: int, decision_id:
         _notify(cur, firing_id, [levels[0]],
                 f"{_what(policy, tool_name)} (policy {policy.get('id')}) needs your decision.",
                 f"decision:{decision_id}")
+
+
+def _lock_key(tool_name: str, digest: str, workflow_id, user_id) -> str:
+    """The per-call advisory lock: two identical calls (tool, args, workflow, requester) serialise."""
+    return f"agent_policy_gate:{tool_name}:{digest}:{workflow_id}:{user_id}"
 
 
 def _open_case_for(cur, *, key: str, tool_name: str, digest: str, workflow_id,
@@ -259,30 +270,46 @@ def _before_tool(*, tool_name, args, agent, reason, workflow_id, user_id, starte
     action = {"tool": tool_name, "args": args, "agent": agent, "workflowId": workflow_id,
               "userId": user_id, "reason": reason}
     live: Dict[str, Optional[int]] = {"id": None}
+    precedent = None          # the engine's Decision when it resolved the clash on precedent
+    note: Optional[str] = None  # why precedent did not decide a 'human' clash
 
     # One transaction for every row this call writes (firing rows, notifications, cases): on any
     # failure nothing is left behind -- never an open case for a call the agent was refused.
     with _connect() as conn:
         with approvals._tx(conn):
-            with conn.cursor() as cur:
-                firing_of = record_matches(cur, matched, verdict.notifies, result=verdict.result,
-                                           tool_name=tool_name, agent=agent, workflow_id=workflow_id,
-                                           user_id=user_id, duration_ms=duration_ms)
-            firing_ids.extend(firing_of[id(h)] for h in matched)
+            if lc.kind == "human" and verdict.result == "paused_for_approval":
+                consulted = _consult_precedent(conn, lc, ctx=ctx, digest=digest, tool_name=tool_name,
+                                               workflow_id=workflow_id, user_id=user_id, now=now)
+                if consulted is not None and consulted.resolution == DE.RESOLVED:
+                    precedent = consulted
+                elif consulted is not None:
+                    note = consulted.rationale
+            if precedent is not None:
+                live["id"], firing_ids = _record_precedent(
+                    conn, lc, verdict, matched, precedent, action=action, ctx=ctx, tool_name=tool_name,
+                    agent=agent, workflow_id=workflow_id, user_id=user_id, duration_ms=duration_ms, now=now)
+            else:
+                with conn.cursor() as cur:
+                    firing_of = record_matches(cur, matched, verdict.notifies, result=verdict.result,
+                                               tool_name=tool_name, agent=agent, workflow_id=workflow_id,
+                                               user_id=user_id, duration_ms=duration_ms)
+                firing_ids.extend(firing_of[id(h)] for h in matched)
 
-            if lc.kind == "block_record":
-                live["id"] = _record_block(conn, lc, action=action, ctx=ctx, now=now)
+                if lc.kind == "block_record":
+                    live["id"] = _record_block(conn, lc, action=action, ctx=ctx, now=now)
 
-            if verdict.result == "paused_for_approval":
-                case_ids = _open_cases(conn, verdict, firing_of, action=action, ctx=ctx, digest=digest,
-                                       tool_name=tool_name, workflow_id=workflow_id, user_id=user_id,
-                                       now=now, **({"lc": lc, "live": live} if lc.kind else {}))
-                # A notify row of a paused call is itself paused and linked to the group's first
-                # case; approvals._close_group settles it once the whole group is decided.
-                if case_ids:
-                    with conn.cursor() as cur:
-                        link_paused_notifies(cur, [firing_of[id(h)] for h in verdict.notifies], case_ids[0])
+                if verdict.result == "paused_for_approval":
+                    case_ids = _open_cases(conn, verdict, firing_of, action=action, ctx=ctx, digest=digest,
+                                           tool_name=tool_name, workflow_id=workflow_id, user_id=user_id,
+                                           now=now, **({"lc": lc, "live": live, "note": note} if lc.kind else {}))
+                    # A notify row of a paused call is itself paused and linked to the group's first
+                    # case; approvals._close_group settles it once the whole group is decided.
+                    if case_ids:
+                        with conn.cursor() as cur:
+                            link_paused_notifies(cur, [firing_of[id(h)] for h in verdict.notifies], case_ids[0])
 
+    if precedent is not None:
+        return _precedent_answer(precedent, live["id"], firing_ids)
     if verdict.result == "allowed":
         return GateResult(allow=True, firing_ids=firing_ids)
     to_agent = dict(verdict.to_agent or {})
@@ -304,8 +331,71 @@ def _record_block(conn, lc, *, action, ctx, now) -> int:
     return live_id
 
 
+def _consult_precedent(conn, lc, *, ctx, digest, tool_name, workflow_id, user_id, now):
+    """The decision engine on a 'human' clash, under the call's own lock (inside the gate's
+    transaction). None when this call repeats one whose member cases are still open: that call is
+    already with people, and precedent is not consulted again."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (_lock_key(tool_name, digest, workflow_id, user_id),))
+        if any(_open_case_for(cur, key=str(h["id"]), tool_name=tool_name, digest=digest,
+                              workflow_id=workflow_id, requested_by=user_id) for h in lc.required):
+            return None
+        return DE.decide_live_conflict(cur, lc, ctx=ctx, now=now)
+
+
+def _notify_precedent(cur, lc, firing_of, decision, case: str, tool_name: str) -> None:
+    """Each involved policy's owner and deciders hear what precedent did. No input values."""
+    verb = "ran on precedent" if decision.decision == "approve" else "was refused on precedent"
+    n = len(decision.evidence)
+    for hit in sorted(lc.involved, key=lambda h: str(h["id"])):
+        policy = hit["policy"]
+        names: List[str] = []
+        for name in [str(policy.get("owner") or "").strip(), *_level_names(policy)]:
+            if name and name not in names:
+                names.append(name)
+        _notify(cur, firing_of[id(hit)], names,
+                f"{_what(policy, tool_name)} (policy {hit['id']}) {verb}: decided the same way {n} times "
+                f"before ({case}).", f"agent-policy:{hit['id']}")
+
+
+def _record_precedent(conn, lc, verdict, matched, decision, *, action, ctx, tool_name, agent, workflow_id,
+                      user_id, duration_ms, now):
+    """A clash the engine decided on precedent, in the gate's transaction: the closed live record
+    (system:precedent, citing its cases), the firing rows linked to it, and the notifications.
+    Returns (live_id, firing_ids)."""
+    approve = decision.decision == "approve"
+    cited = [{"kind": "precedent", "caseId": e.reference, "source": e.source, **dict(e.value or {})}
+             for e in decision.evidence]
+    with conn.cursor() as cur:
+        live_id = conflict_live.insert_live(cur, lc, ctx=ctx, action=action, now=now,
+                                            default_response_time=_default_response_time(), status="actioned",
+                                            decision=decision.decision, actor=conflict_live.PRECEDENT,
+                                            reason=decision.rationale, extra_evidence=cited)
+        case = conflict_payload.case_id(live_id)
+        firing_of = record_matches(cur, matched, verdict.notifies, result="allowed" if approve else "blocked",
+                                   tool_name=tool_name, agent=agent, workflow_id=workflow_id, user_id=user_id,
+                                   duration_ms=duration_ms, decision_id=live_id,
+                                   reason=(f"Decided on precedent ({case})" if approve
+                                           else f"{PRECEDENT_REFUSED}: decided on precedent ({case})"))
+        fids = [firing_of[id(h)] for h in matched]
+        _notify_precedent(cur, lc, firing_of, decision, case, tool_name)
+    return live_id, fids
+
+
+def _precedent_answer(decision, live_id: int, firing_ids: List[int]) -> GateResult:
+    case = conflict_payload.case_id(live_id)
+    if decision.decision == "approve":
+        return GateResult(allow=True, to_agent={"result": "allowed", "conflictCaseId": case, "precedent": True},
+                          firing_ids=firing_ids)
+    n = len(decision.evidence)
+    return GateResult(allow=False, firing_ids=firing_ids, to_agent={
+        "result": "blocked", "reasonCode": PRECEDENT_REFUSED,
+        "reason": f"People refused this same action {n} times before, so it was refused on precedent ({case}).",
+        "conflictCaseId": case, "precedent": True})
+
+
 def _open_cases(conn, verdict, firing_of, *, action, ctx, digest, tool_name, workflow_id, user_id,
-                now, lc=None, live=None) -> List[int]:
+                now, lc=None, live=None, note: Optional[str] = None) -> List[int]:
     """One case per matched approve policy; a still-open case for the same call is reused.
 
     Runs inside the gate's transaction. A transaction-scoped advisory lock on (tool, digest,
@@ -322,7 +412,7 @@ def _open_cases(conn, verdict, firing_of, *, action, ctx, digest, tool_name, wor
     """
     conflict = lc is not None and lc.kind in ("human", "auto")
     needed = lc.required if conflict else verdict.approvals
-    lock_key = f"agent_policy_gate:{tool_name}:{digest}:{workflow_id}:{user_id}"
+    lock_key = _lock_key(tool_name, digest, workflow_id, user_id)
     with conn.cursor() as cur:
         cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (lock_key,))
     reused: Dict[str, Dict[str, Any]] = {}
@@ -349,8 +439,14 @@ def _open_cases(conn, verdict, firing_of, *, action, ctx, digest, tool_name, wor
         if live_id is None and len(reused) < len(needed):
             with conn.cursor() as cur:
                 if lc.kind == "human":
+                    extra_live: Dict[str, Any] = {"history": conflict_history.raw(
+                        cur, pair_key=conflict_detect.pair_key(*[str(h["id"]) for h in lc.involved]),
+                        limit=conflict_history.IN_CASE_LIMIT)}
+                    if note:
+                        extra_live["precedent"] = {"why": note}
                     live_id = conflict_live.insert_live(cur, lc, ctx=ctx, action=action, now=now,
-                                                        default_response_time=default_rt, status="open")
+                                                        default_response_time=default_rt, status="open",
+                                                        extra_facts=extra_live)
                 else:
                     live_id = conflict_live.insert_live(cur, lc, ctx=ctx, action=action, now=now,
                                                         default_response_time=default_rt, status="actioned",
