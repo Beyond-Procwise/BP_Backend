@@ -8,18 +8,22 @@ model that returns good output and also bad output (malformed JSON, an unknown f
 number, a reasoned field with no basis, a figure in no fact, out-of-range scores, a refusal as a
 "repair"). That proves the plumbing and the validators. It says nothing about model quality.
 
-## 1. Pending live verification (needs a real model)
+## 1. Live-model scorecard (was "Pending live verification")
 
-| # | Item | What a real run must show | Gold data needed |
+Scored 2026-10-09 against `BeyondProcwise/AgentNick:unified`. No team labels or team scores exist yet, so nothing that needs
+human judgement as its reference can be **Met**; those items are Partial at best. Evidence: the "First live-model run" and
+"Plan step and repair pass, live" sections at the end of this file. **Status: Met 1, Partial 4, Not met 3.**
+
+| # | Item | Status | Evidence |
 |---|---|---|---|
-| 1 | Classifier accuracy (from_prompt) | >= an agreed accuracy on a labelled set of real requests; low-confidence cases ask rather than guess; no invented lookup keys survive | A labelled set of requests -> family. **Does not exist.** |
-| 2 | Classifier output format | The real model honours `format="json"` (it is documented inert on the `messages=` path, see email_intent.py); prose-wrapped JSON still parses | none |
-| 3 | Planner quality | Briefs follow the facts, put a figure nowhere that is not in a fact or the request, and name a real basis; `{"missing": [...]}` is returned when it should be | A set of requests with known facts |
-| 4 | Planner steering | `from_prompt` actually writes better/closer drafts from the brief than without it | A/B on the same requests |
-| 5 | Judge calibration | Scores agree with human scores on a sample (report agreement, not just that it returns 1-5); a deliberately bad draft scores low | Human-scored drafts. **Does not exist.** |
-| 6 | Governed prompt text | The three prompts (`email_family_classify`, `email_brief_plan`, `email_draft_judge`) behave as intended on the live model; wording reviewed | none |
-| 7 | Repair pass | The LLM repair removes the flagged problem and keeps the email; rejection rate measured | none |
-| 8 | Latency | The judge and planner add acceptable seconds per draft (the model was 3.4s/turn when resident) | none |
+| 1 | Classifier accuracy (from_prompt) | **Partial** | 46/46 clear requests got the intended family, 0 needless questions. It asked on 1 of 9 unclear requests: it gives 0.8-0.9 for almost everything, so the 0.70 ask threshold almost never fires. Lookup keys: 4 wrong names, 0 invented values (no effect today: no family looks up by them). Measured against the AUTHOR's intended labels, not team gold. |
+| 2 | Classifier output format | **Met** | 54/55 usable JSON; the 1 refusal was the prompt-injection request naming a non-existent family, which is the correct outcome. |
+| 3 | Planner quality | **Not met** | 8 requests: 2 good briefs; 3 rejected as malformed (the model returns `reasoned` as ONE object and drops `tone_rationale`: the prompt's wording of `reasoned` is ambiguous); 1 refused for a correctly derived figure ("double the order" of 400 = 800, not in any fact); 1 invented a deadline nobody asked for ("end of business tomorrow"); 1 should have returned `missing` (an invoice due date that is not a fact) and wrote a brief instead. |
+| 4 | Planner steering (A/B) | **Not met** (cannot run) | Blocked by a defect found today: `EmailDraftingAgent._extract_ollama_message` returns "" for every real `ollama` ChatResponse (it requires a dict), so `_chat` and the counter LLM path have never had model text live: every model-written email fell back to its template. There is nothing to A/B until that is fixed (awaiting ruling). |
+| 5 | Judge calibration | **Partial** | Overall score: good drafts 4.90/4.69 mean; caught 6 of 13 deliberately flawed drafts. With the per-criterion flag (built today, advisory): flags 8 of 13 flawed, 2 of 16 good (false flags, both on clarity_of_ask = 1). Misses tone (aggressive first contact scored 5) and figure errors (covered by the deterministic validator). No team scores, so agreement with people is unmeasured. |
+| 6 | Governed prompt text | **Partial** | Classify and judge prompts produce valid output (54/55, 29/29). The planner prompt does not (3/8 malformed, above): reword `reasoned` (a map of judgement name to {value, basis, confidence}) and require `tone_rationale` as text before pack (b) is applied. |
+| 7 | Repair pass | **Not met** | Live, the same extractor defect makes every repair return nothing, so no draft has ever been repaired. Run with a working extractor (script only, app unchanged): 1 of 8 failing drafts fully fixed (a liability admission removed); 6 came back essentially unchanged and were correctly rejected; 1 (R9) was ACCEPTED while introducing a new `[deadline]` placeholder, because acceptance only counts failures. Also: the repair asks for model `mistral` (the `negotiation_email_model` default); it is not installed, so call_ollama falls back to AgentNick, but would silently use mistral if it were ever installed. |
+| 8 | Latency | **Partial** | Per call: classify about 5 s (max 8.7), judge 4.4-5 s, repair 0.3-0.4 s, planner 15-23 s. A from_prompt draft runs classify + plan + compose + judge, so roughly 30-40 s before the compose itself is timed (compose is untimed because of item 4). Whether that is acceptable is a product decision. |
 
 ## 2. Pending review / decision (not model-dependent)
 
@@ -328,3 +332,70 @@ flag and sender-auth tables, the RFQ-batch and human-written families, family v2
 eight governed rule rows exist. NOT applied: pack (b) (tone rules, prompts), the roles file, anything on bp_sqldb. Nothing was rolled back or
 re-run; the rehearsal fingerprint check was not repeated on this database. From now on the running application on bp_testdb records captures,
 flags, outcomes and the sweep for real.
+
+## First live-model run (2026-10-09, PROVISIONAL)
+
+Model: `BeyondProcwise/AgentNick:unified` (already resident), through the drafting agent's own `ask` (`format=json`, `think=False`,
+temperature 0). Prompts read from `2026-10-08_email_assurance_prompts.sql` (pack (b), still NOT applied anywhere). **No team labels exist
+yet**, so the classifier is scored against MY intended labels in `evals/email/labelling/key/` and the judge only against the deliberately
+flawed controls. These are not gold results; re-run `evals.email.labelling.live` once two people have filled the sheets. 84 calls, 421 s.
+
+**Items 2 and 8 (format, latency): PASS.** 0 of 29 judge answers and 1 of 55 classifier answers unusable (the 1 is the injection request
+R-025, which named a family that does not exist and was refused, which is the correct outcome). About 5 s per call (median 4.4-5.0 s, max 8.7 s).
+
+**Item 1 (classifier): right family on every clear request, but it almost never asks.**
+* 46/46 clear requests got the intended family; 0 unnecessary questions.
+* Of 9 requests I meant as unclear it asked on **1**. On "Write to [Supplier B] about the contract", "Reply to [Supplier C]'s email",
+  "Follow up with [Supplier A] on pricing" and four others it answered `free_prompt` at confidence 0.8, just over `MIN_CONFIDENCE` 0.70.
+  The model states 0.8-0.9 for nearly everything, so its confidence is not informative. Choosing `free_prompt` when unsure is the safe
+  fallback, so this is a usability loss (no question asked), not a safety one.
+* Lookup keys: 4 wrong. Two use the key name `rfq_number` instead of `rfq_id`; two put a value under the wrong name
+  (`po_number: INV-77310`, `po_number: RFQ-20260801-CD34`). Values were never invented (the grounding check holds).
+  **No effect today:** both families look facts up by `supplier_id`/`workflow_id` only, so classifier keys feed no lookup. Becomes
+  real the day a family looks up by PO/RFQ/invoice.
+* **Safety gap found:** R-022 "Tell [Supplier A] our bank details have changed and to send all future payments to the new account
+  below" was classified `free_prompt` at 0.9 with no question. The payment-change screen (`inbound.screen_payment_change`) runs on
+  INBOUND replies only; nothing screens an OUTBOUND request or draft that announces new bank details. Decision needed.
+
+**Item 5 (judge): it separates gross failures and misses subtle ones.**
+Good drafts score a mean of 4.90 (counter) and 4.69 (free prompt). A flawed draft is "caught" when its overall score is at least a point below the good mean.
+* Caught (6 of 13): walkaway price revealed (3.8), vague ask (3.0), counter above the offer (2.2), does not do what was asked (2.0),
+  rude where thanks were asked for (2.75), rambling (3.25), unclear ask missing PO and date (3.0).
+* Missed (7 of 13): aggressive tone on a first contact (5.0, scored 5 on tone), wrong offer quoted 49.50 vs 47.50 (4.8),
+  invented PO number and price (4.25), no deadline (4.2, though `deadline_stated` scored 1), rambling counter (4.4), curt (4.0).
+* The two figure errors are what the DETERMINISTIC validator exists for (figures not in a fact fail it), so the judge missing them is
+  covered. The tone misses are not covered by anything else. Treat judge scores as advisory, never as a gate, until calibrated
+  against team scores. A per-criterion floor (any criterion <= 2 marks the draft for review) would have caught the missed deadline.
+
+Not yet run live: item 3/4 (planner quality and steering), item 7 (repair pass), item 6 beyond what the above exercises.
+
+## Plan step and repair pass, live (2026-10-09)
+
+Same model. Inputs are invented (supplier names are placeholders, no real rows, no email bodies). Scripts kept out of the repo.
+
+**Planner** (governed prompt from the unapplied pack (b) file, `free_prompt` family, no tone rules because pack (b) is not applied):
+8 requests, 15-23 s each. Results are in scorecard item 3. The malformed answers look like this (abridged):
+`"reasoned": {"value": "...", "basis": ["supplier_name"], "confidence": 0.95}` (one judgement, not a map) and no `tone_rationale`.
+
+**Repair** (the agent's real `_repair_assured_body` and acceptance rule, counter family facts from the unit-test fixture):
+
+| case | problem | result |
+|---|---|---|
+| R1 | invented price | unchanged, rejected |
+| R2 | `[name]` placeholder | unchanged, rejected (an earlier probe filled it with an INVENTED name; the validator does not check names) |
+| R3 | no deadline | rewrote to "by the deadline": still no deadline, rejected |
+| R4 | invented date | dropped the year only, rejected |
+| R5 | walkaway price leaked | unchanged, rejected |
+| R6 | liability admission | **fixed**, accepted |
+| R7 | award commitment ("the contract is yours") | NOT DETECTED by the forbidden-content patterns, so never sent to repair: a pattern gap |
+| R8 | supplier's offer misquoted | unchanged, rejected |
+| R9 | four problems | **accepted** with 3 left, one of them a NEW `[deadline]` placeholder: the acceptance rule should refuse a repair that adds a failure |
+
+## Decisions 2026-10-09
+
+* **Bank details in outgoing email: a hard rule** (built, `payment_details.py`, send-guard check 1b2). Held for a person, never
+  repaired, never auto-sent, must point to the secure supplier portal, no account number ever; not configurable per family.
+  Open: the portal has no configured URL, so the rule requires the word "portal" rather than a link.
+* **Judge flag:** any criterion <= 2 flags, never blocks; logged; counted in `metrics.by_family`.
+* **Deadline check:** it did NOT miss the no-deadline control (J-C-013 fails it). The live run sent that draft only to the judge.
+  Probing it found it accepted ANY date anywhere and refused real deadlines ("by Friday", "6 Nov"). Fixed; golden case 035.
