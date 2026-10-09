@@ -125,6 +125,10 @@ def _n(count: int, singular: str, plural: Optional[str] = None) -> str:
     return f"{count} {singular if count == 1 else (plural or singular + 's')}"
 
 
+def _gbp(amount: float) -> str:
+    return f"£{amount:,.2f}"
+
+
 def _cap(text: str) -> str:
     return text[:1].upper() + text[1:]
 
@@ -162,6 +166,11 @@ def compose_session_summary(facts: dict) -> str:
     critical = [f for f in findings if f["severity"] == "critical"]
     n_critical = sum(f["count"] for f in critical)
     n_warning = sum(f["count"] for f in findings if f["severity"] == "warning")
+    var = facts.get("value_at_risk") or {}
+    billed = var.get("billed_gbp") or {}
+    uplift = var.get("uplift_up_to_gbp")
+    unvalued = var.get("unvalued") or {}
+    total_billed = round(sum(billed.values()), 2)
 
     # ---- lead: the verdict --------------------------------------------------
     if pending and n_critical:
@@ -196,6 +205,11 @@ def compose_session_summary(facts: dict) -> str:
                  f"; {blocks}.")
     else:
         lead += " There are no open findings."
+    if total_billed:
+        lead += f" Value at risk: {_gbp(total_billed)}."
+    if uplift:
+        lead += (f" A bid rising faster than its stated uplift adds up to {_gbp(uplift)} "
+                 "over the term.")
 
     # ---- key outcomes ---------------------------------------------------------
     bullets = []
@@ -203,6 +217,23 @@ def compose_session_summary(facts: dict) -> str:
         bullets.append(f"• Proposed deal: {p['name']} — {_proposal_bits(p)}")
     for p in confirmed:
         bullets.append(f"• Confirmed deal: {p['name']} — {_proposal_bits(p)}")
+    # A type's money is stated once, on its first row (a type can have a critical and a
+    # warning row); whatever is not on a named row is stated on the "Other findings" row.
+    valued: set = set()
+
+    def _money(issue_type: str) -> str:
+        if issue_type in valued:
+            return ""
+        valued.add(issue_type)
+        bits = []
+        if billed.get(issue_type):
+            bits.append(f"{_gbp(billed[issue_type])} at risk")
+        if issue_type == "uplift_above_stated" and uplift:
+            bits.append(f"up to {_gbp(uplift)} over the term")
+        if unvalued.get(issue_type):
+            bits.append(f"{unvalued[issue_type]} not valued")
+        return "; " + ", ".join(bits) if bits else ""
+
     named = findings[:_TOP_ISSUES]   # ordered critical first, then by count
     for f in named:
         kind = {"critical": "critical finding", "warning": "warning"}.get(f["severity"], "note")
@@ -210,11 +241,16 @@ def compose_session_summary(facts: dict) -> str:
                 f"{_n(f['docs'], 'document')}")
         if f["issue_type"] in _QUOTE_SAMPLE and f.get("sample_ref"):
             line += f" (e.g. {f['sample_ref']})"
-        bullets.append(line)
+        bullets.append(line + _money(f["issue_type"]))
     rest = findings[_TOP_ISSUES:]
     if rest:
-        bullets.append(f"• Other findings: {_n(sum(f['count'] for f in rest), 'more finding')} "
-                       f"of {_n(len(rest), 'other type')}")
+        line = (f"• Other findings: {_n(sum(f['count'] for f in rest), 'more finding')} "
+                f"of {_n(len(rest), 'other type')}")
+        rest_billed = round(sum(billed.get(t, 0.0) for t in {f["issue_type"] for f in rest}
+                                if t not in valued), 2)
+        if rest_billed:
+            line += f"; {_gbp(rest_billed)} at risk"
+        bullets.append(line)
     doc_bits = [f"{docs['linked']} analysed and linked"]
     if docs["held"]:
         doc_bits.append(f"{docs['held']} held for data review")
@@ -314,11 +350,115 @@ def _session_proposals(cur, batch_deal_id: str) -> list[dict]:
             for pid, name, conf, status, deal_id, bids, pos, inv in cur.fetchall()]
 
 
+_SESSION_PKS_SQL = """
+  select doc_pk_candidate from proc.bp_quote_raw
+   where process_monitor_id in (select id from proc.process_monitor where session_id = %s)
+  union
+  select doc_pk_candidate from proc.bp_invoice_raw
+   where process_monitor_id in (select id from proc.process_monitor where session_id = %s)
+  union
+  select doc_pk_candidate from proc.bp_purchase_order_raw
+   where process_monitor_id in (select id from proc.process_monitor where session_id = %s)
+"""
+
+
+def _session_billed_value(cur, session_id: str) -> tuple[dict, dict]:
+    """Money billed above what was ordered, or possibly paid twice: the open findings of
+    this session's documents, valued exactly as the Value Found screen values them
+    (value_summary_service: its per-type figure conventions, its rules for not counting
+    the same money twice, its FX to GBP). Returns ({issue_type: gbp}, {issue_type: n
+    findings that could not be valued}); a finding with no figure, no currency or no
+    rate is counted as not valued, never as £0."""
+    from src.services import value_summary_service as vs
+    rows = vs._rows(cur, vs._DISCREPANCY_SQL
+                    + " AND e.status = 'open' AND e.doc_pk_candidate IN (" + _SESSION_PKS_SQL + ")",
+                    (vs.DISCREPANCY_VALUE_TYPES, session_id, session_id, session_id))
+    unvalued: dict = {}
+    findings = []
+    for row in rows:
+        row["deal_id"] = row.get("deal_id") or None
+        f = vs.classify_discrepancy(row)
+        if f is None:
+            unvalued[row["issue_type"]] = unvalued.get(row["issue_type"], 0) + 1
+            continue
+        findings.append(f)
+    need_fx = any(f.get("currency") not in (None, "GBP") for f in findings)
+    rates = vs._get_rates() if need_fx else None
+    findings = [vs._apply_discrepancy_fx(f, rates) for f in findings]
+    findings = vs.dedupe(findings)
+    findings = vs.supersede_po_level_by_duplicate(findings)
+    findings = vs.supersede_lines_under_overbilled_po(findings)
+    value: dict = {}
+    for f in findings:
+        if f.get("superseded_by"):
+            continue          # its money is counted under the finding that superseded it
+        if f.get("amount_gbp") is None:
+            unvalued[f["issue_type"]] = unvalued.get(f["issue_type"], 0) + 1
+            continue
+        value[f["issue_type"]] = round(value.get(f["issue_type"], 0.0) + f["amount_gbp"], 2)
+    return value, unvalued
+
+
+def _session_uplift_value(cur, session_id: str) -> tuple[Optional[float], int]:
+    """The largest extra cost over the term, against its own stated uplift, among the
+    session's bids (uplift_above_stated.computed_value; price_schedule.escalation_findings).
+
+    Only each bid's latest version counts: the finding is raised on every round of a bid,
+    and a later round that no longer rises too fast clears the bid. Bids are alternatives
+    (one is awarded), so the figure is the largest, never a sum. price_rises_unstated is
+    left out on purpose: rises nobody agreed to are a negotiating point, not money billed
+    against an agreed rate. Returns (largest £ or None, findings that could not be valued)."""
+    from src.services import value_summary_service as vs
+    from src.services.version_collapse import base_reference, version_ordinal
+    cur.execute(
+        "select q.quote_id from proc.bp_quote_raw r "
+        "join proc.process_monitor m on m.id = r.process_monitor_id "
+        "join proc.bp_quote_stg q on q.quote_id = r.doc_pk_candidate "
+        "where m.session_id = %s", (session_id,))
+    latest: dict = {}
+    for (qid,) in cur.fetchall():
+        b = base_reference(qid)
+        latest[b] = max(latest.get(b, 0), version_ordinal(qid))
+    cur.execute(
+        "select e.doc_pk_candidate, e.computed_value, coalesce(t.currency, s.currency) "
+        "from proc.bp_extraction_discrepancy e "
+        "left join proc.bp_quote_trgt t on t.quote_id = e.doc_pk_candidate "
+        "left join proc.bp_quote_stg s on s.quote_id = e.doc_pk_candidate "
+        "where e.issue_type = 'uplift_above_stated' and e.status = 'open' "
+        "  and e.doc_pk_candidate in (" + _SESSION_PKS_SQL + ")",
+        (session_id, session_id, session_id))
+    amounts, unvalued, rates = [], 0, None
+    for pk, computed, currency in cur.fetchall():
+        if version_ordinal(pk) < latest.get(base_reference(pk), 0):
+            continue          # an earlier round of a bid that has a later one
+        amount = vs.parse_amount(computed)
+        if amount is None or amount <= 0:
+            unvalued += 1
+            continue
+        if currency not in (None, "GBP") and rates is None:
+            rates = vs._get_rates()
+        gbp, _ = vs._to_gbp(amount, currency, rates)
+        if gbp is None:
+            unvalued += 1
+        else:
+            amounts.append(gbp)
+    return (max(amounts) if amounts else None), unvalued
+
+
+def _session_value_at_risk(cur, session_id: str) -> dict:
+    billed, unvalued = _session_billed_value(cur, session_id)
+    uplift, uplift_unvalued = _session_uplift_value(cur, session_id)
+    if uplift_unvalued:
+        unvalued["uplift_above_stated"] = uplift_unvalued
+    return {"billed_gbp": billed, "uplift_up_to_gbp": uplift, "unvalued": unvalued}
+
+
 def session_summary_facts(cur, batch_deal_id: str, session_id: str) -> dict:
     """The one facts object the executive summary is rendered from."""
     return {"documents": _session_documents(cur, session_id),
             "proposals": _session_proposals(cur, batch_deal_id),
-            "findings": _session_facts(cur, session_id)}
+            "findings": _session_facts(cur, session_id),
+            "value_at_risk": _session_value_at_risk(cur, session_id)}
 
 
 def store_session_summary(conn, batch_deal_id: str, session_id: str,
