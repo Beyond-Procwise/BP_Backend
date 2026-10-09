@@ -276,10 +276,14 @@ def conflict_block(live_id: int, live: Optional[Dict[str, Any]], *, unmasked: bo
     example = overlap_example(live.get("evidence"))
     if not unmasked:
         args, example = mask_args(args, sensitive), mask_witness(example, sensitive)
+    from services.agent_policy import conflict_history   # lazily: conflict_history reads this module
+    history = conflict_history.shown(facts.get("history") or [], sensitive=sensitive,
+                                     unmasked_for=lambda _e: unmasked)
     return {"caseId": conflict_payload.case_id(live_id), "why": live.get("rationale") or summary.get("why"),
             "policies": list(facts.get("policies") or []), "prior": facts.get("priorDecisions"),
             "options": list(live.get("options") or []), "respondWithin": summary.get("respondWithin"),
-            "actionPlain": action.get("plain"), "args": args, "example": example}
+            "actionPlain": action.get("plain"), "args": args, "example": example,
+            "history": history, "precedentNote": (facts.get("precedent") or {}).get("why")}
 
 
 def case_view(case: Dict[str, Any], *, unmasked: bool, sensitive: Set[str],

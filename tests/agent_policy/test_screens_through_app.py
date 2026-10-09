@@ -48,7 +48,8 @@ def client(monkeypatch):
     monkeypatch.setattr(R.agent_actions, "record_action_or_fail", lambda **kw: None)
     monkeypatch.setattr(R.repo, "never_suggest_for", lambda conn, area: False)
     monkeypatch.setattr(R.repo, "list_policies", lambda conn: [_policy()])
-    monkeypatch.setattr(R.repo, "get_policy", lambda conn, key: _policy())
+    monkeypatch.setattr(R.repo, "get_policy", lambda conn, key, **_kw: _policy())
+    monkeypatch.setattr(R.conflict_history, "viewer", lambda conn, p, *, is_admin: None)   # fake conn: no decider map
     monkeypatch.setattr(R.documents, "list_documents",
                         lambda conn: [{"documentId": 3, "title": SAFE_NAMES[0], "excerpt": EXCERPT}])
     monkeypatch.setattr(R.documents, "document_text", lambda conn, doc, ver: f"1. Refunds\n{EXCERPT} v{ver}")

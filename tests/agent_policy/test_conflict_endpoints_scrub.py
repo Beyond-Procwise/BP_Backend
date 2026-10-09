@@ -70,7 +70,7 @@ def client(monkeypatch, state):
     monkeypatch.setattr(R, "_role_of", lambda principal: "Viewer")
     monkeypatch.setattr(R.agent_actions, "record_action_or_fail", lambda **kw: None)
     monkeypatch.setattr(CV, "list_conflicts", lambda conn, p, status="open": [state["view"]])
-    monkeypatch.setattr(CV, "get_conflict", lambda conn, did, p: {**state["view"], "history": state["history"]})
+    monkeypatch.setattr(CV, "get_conflict", lambda conn, did, p, **_kw: {**state["view"], "history": state["history"]})
     return TestClient(app)
 
 
@@ -122,7 +122,7 @@ def test_a_422_on_the_exempt_list_path_is_still_scrubbed_by_the_middleware(clien
 
 
 def test_a_404_for_a_missing_case_is_still_scrubbed(client, monkeypatch):
-    monkeypatch.setattr(CV, "get_conflict", lambda conn, did, p: None)
+    monkeypatch.setattr(CV, "get_conflict", lambda conn, did, p, **_kw: None)
     r = client.get("/agent-policies/conflicts/41", headers=HDR)
     assert r.status_code == 404 and r.json() == {"detail": "No such conflict case."}
 
@@ -273,7 +273,7 @@ def test_status_allow_list(client):
 
 
 def test_conflicts_routes_are_not_read_as_policy_keys(client, monkeypatch):
-    monkeypatch.setattr(R.repo, "get_policy", lambda conn, key: pytest.fail(f"read {key} as a policy"))
+    monkeypatch.setattr(R.repo, "get_policy", lambda conn, key, **_kw: pytest.fail(f"read {key} as a policy"))
     assert client.get("/agent-policies/conflicts", headers=HDR).status_code == 200
     assert client.get("/agent-policies/conflicts/41", headers=HDR).status_code == 200
     paths = [getattr(r, "path", "") for r in R.router.routes]

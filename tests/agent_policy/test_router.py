@@ -22,6 +22,7 @@ def client(monkeypatch):
     monkeypatch.setattr(R, "load_settings", lambda conn=None: SETTINGS)
     monkeypatch.setattr(R, "_conn", _FakeConnCtx)
     monkeypatch.setattr(R.repo, "never_suggest_for", lambda conn, area: False)
+    monkeypatch.setattr(R.conflict_history, "viewer", lambda conn, p, *, is_admin: None)   # fake conn: no decider map
     app = FastAPI(); app.include_router(R.router); app.include_router(R.orchestrator_router)
     c = TestClient(app); c.audits = audits
     return c
@@ -158,7 +159,7 @@ def _policy():
 
 
 def test_get_policy_strips_compiled_for_non_admin_only(client, monkeypatch):
-    monkeypatch.setattr(R.repo, "get_policy", lambda conn, key: _policy())
+    monkeypatch.setattr(R.repo, "get_policy", lambda conn, key, **_kw: _policy())
     for hdr in (VIEWER, BUYER):
         assert all("compiled" not in v for v in client.get("/agent-policies/FIN-0001", headers=hdr).json()["versions"])
     assert all("compiled" in v for v in client.get("/agent-policies/FIN-0001", headers=GOOD).json()["versions"])
@@ -425,7 +426,7 @@ def test_runs_list_and_one_run_with_after_seq(client, monkeypatch):
 
 
 def test_documents_and_runs_are_not_read_as_policy_ids(client, monkeypatch):
-    monkeypatch.setattr(R.repo, "get_policy", lambda conn, key: pytest.fail(f"read {key} as a policy"))
+    monkeypatch.setattr(R.repo, "get_policy", lambda conn, key, **_kw: pytest.fail(f"read {key} as a policy"))
     monkeypatch.setattr(R.documents, "list_documents", lambda conn: [])
     monkeypatch.setattr(R.run_store, "list_recent", lambda conn: [])
     assert client.get("/agent-policies/documents", headers=VIEWER).status_code == 200
@@ -434,7 +435,7 @@ def test_documents_and_runs_are_not_read_as_policy_ids(client, monkeypatch):
 
 def test_agent_fix_is_202_with_the_request_stored(client, monkeypatch):
     created, submitted = [], []
-    monkeypatch.setattr(R.repo, "get_policy", lambda conn, key: _policy())
+    monkeypatch.setattr(R.repo, "get_policy", lambda conn, key, **_kw: _policy())
     monkeypatch.setattr(R.run_store, "create",
                         lambda conn, kind, request, actor: created.append((kind, request, actor)) or {"run_id": 8})
     monkeypatch.setattr(R.run_runner, "submit", lambda run_id, work: submitted.append(run_id))
@@ -447,7 +448,7 @@ def test_agent_fix_is_202_with_the_request_stored(client, monkeypatch):
 
 def test_agent_fix_refuses_unknown_policy_version_and_bad_flips(client, monkeypatch):
     monkeypatch.setattr(R.run_store, "create", lambda *a, **k: pytest.fail("no run"))
-    monkeypatch.setattr(R.repo, "get_policy", lambda conn, key: _policy())
+    monkeypatch.setattr(R.repo, "get_policy", lambda conn, key, **_kw: _policy())
     ok = [{"input": {"a": 1}}]
     assert client.post("/agent-policies/FIN-0001/agent-fix", json={"baseVersion": 9, "flipped": ok}, headers=BUYER).status_code == 404
     assert client.post("/agent-policies/FIN-0001/agent-fix", json={"baseVersion": 1, "flipped": []}, headers=BUYER).status_code == 422
@@ -511,7 +512,7 @@ def test_register_as_new_with_revision_of_is_a_422(client, monkeypatch):
 
 
 def test_agent_fix_takes_at_most_20_flipped_examples(client, monkeypatch):
-    monkeypatch.setattr(R.repo, "get_policy", lambda conn, key: _policy())
+    monkeypatch.setattr(R.repo, "get_policy", lambda conn, key, **_kw: _policy())
     monkeypatch.setattr(R.run_store, "create", lambda conn, kind, request, actor: {"run_id": 1})
     monkeypatch.setattr(R.run_runner, "submit", lambda run_id, work: None)
     flips = [{"input": {"a": i}} for i in range(21)]
