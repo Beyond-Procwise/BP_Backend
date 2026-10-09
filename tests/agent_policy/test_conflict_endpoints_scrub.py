@@ -69,7 +69,7 @@ def client(monkeypatch, state):
     monkeypatch.setattr(R, "_conn", _FakeConnCtx)
     monkeypatch.setattr(R, "_role_of", lambda principal: "Viewer")
     monkeypatch.setattr(R.agent_actions, "record_action_or_fail", lambda **kw: None)
-    monkeypatch.setattr(CV, "list_conflicts", lambda conn, p, status="open": [state["view"]])
+    monkeypatch.setattr(CV, "list_conflicts", lambda conn, p, status="open", **_kw: [state["view"]])
     monkeypatch.setattr(CV, "get_conflict", lambda conn, did, p, **_kw: {**state["view"], "history": state["history"]})
     return TestClient(app)
 

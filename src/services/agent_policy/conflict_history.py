@@ -123,15 +123,35 @@ def _entry(row, cid: str, act: Optional[tuple]) -> Dict[str, Any]:
     if kind == "live":
         args = dict(((facts.get("action") or {}).get("args")) or {})
     else:
-        args = {k[len("args."):]: v for k, v in example.items() if k.startswith("args.")}
+        args = example_args(example)
     return {
         "caseId": cid, "kind": kind, "isOpen": bool(is_open), "raisedAt": _iso(created),
         "policies": [{"id": k, "version": int(v)} for k, v in sorted((_j(versions, {}) or {}).items())],
         "example": example, "decision": decision, "citedCases": cited, "proposal": facts.get("proposal"),
-        "_owners": sorted({str(p.get("owner")).strip() for p in pols if str(p.get("owner") or "").strip()}),
-        "_deciders": sorted({str(n).strip() for p in pols for n in p.get("deciders") or [] if str(n or "").strip()}),
+        **parties(pols),
         "_args": args,
     }
+
+
+def parties(policies: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+    """{_owners, _deciders}: the names may_see() links a reader to, from a case's facts.policies."""
+    pols = [p for p in policies or [] if isinstance(p, dict)]
+    return {"_owners": sorted({str(p.get("owner")).strip() for p in pols if str(p.get("owner") or "").strip()}),
+            "_deciders": sorted({str(n).strip() for p in pols for n in p.get("deciders") or []
+                                 if str(n or "").strip()})}
+
+
+def example_args(example: Dict[str, Any]) -> Dict[str, Any]:
+    """A policy case's action values: the args.* fields of its (unmasked) overlap example."""
+    return {k[len("args."):]: v for k, v in (example or {}).items() if k.startswith("args.")}
+
+
+def mask_reason(reason: Any, args: Dict[str, Any], sensitive: Set[str]) -> Any:
+    """Free text with every sensitive action value it quotes masked in place (never dropped)."""
+    if not isinstance(reason, str):
+        return reason
+    arg_names = {f[len("args."):] for f in sensitive if f.startswith("args.")}
+    return _av().mask_text(reason, dict(args or {}), arg_names)
 
 
 def may_see(v: Viewer, entry: Dict[str, Any]) -> bool:
@@ -147,7 +167,6 @@ def shown(entries: List[Dict[str, Any]], *, sensitive: Set[str],
     """The entries as a reader may see them: private keys gone, and for an entry the reader may
     not see in full, the example and the reason masked. Never edits its input."""
     av = _av()
-    arg_names = {f[len("args."):] for f in sensitive if f.startswith("args.")}
     out = []
     for e in entries or []:
         if not isinstance(e, dict):
@@ -158,8 +177,8 @@ def shown(entries: List[Dict[str, Any]], *, sensitive: Set[str],
         if not unmasked_for(e):
             view["example"] = av.mask_witness(view["example"], sensitive)
             d = view["decision"]
-            if d and isinstance(d.get("reason"), str):
-                d["reason"] = av.mask_text(d["reason"], dict(e.get("_args") or {}), arg_names)
+            if d:
+                d["reason"] = mask_reason(d.get("reason"), dict(e.get("_args") or {}), sensitive)
         out.append(view)
     return out
 
