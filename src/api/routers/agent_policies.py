@@ -478,9 +478,9 @@ _CONFLICT_FIELD = {"reason_required": "reason", "limit_required": "limitText"}
 @router.get("/conflicts")
 def list_conflicts(status: str = Query(default="open", pattern="^(open|closed|all)$"),
                    p: Principal = Depends(gateway_principal)):
-    _require(p, "Viewer", "agent_policy.read", {})
+    role = _require(p, "Viewer", "agent_policy.read", {})
     with _conn() as conn:
-        return {"conflicts": conflict_views.list_conflicts(conn, p, status=status)}
+        return {"conflicts": conflict_views.list_conflicts(conn, p, status=status, is_admin=role == "Admin")}
 
 
 @router.get("/conflicts/{decision_id}")

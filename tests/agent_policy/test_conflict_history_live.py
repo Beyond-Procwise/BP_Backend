@@ -1,4 +1,5 @@
 """One reader for every screen: complete, masked per reader (design §3.1). Needs PROCWISE_TEST_LIVE_DB=1."""
+import json
 import os
 from types import SimpleNamespace
 
@@ -9,7 +10,7 @@ from services.agent_policy import conflict_history as CH
 from services.agent_policy.enforcement import MASK
 from tests.agent_policy import test_conflict_live_gate as LG
 from tests.agent_policy.test_conflict_endpoints_live import (  # noqa: F401 - fixtures
-    NOW, STRANGER, _a, _as, _b, _c, _design_case, _gate, client, conn, world)
+    ADMIN, NOW, STRANGER, _a, _as, _b, _c, _design_case, _gate, client, conn, world)
 
 pytestmark = pytest.mark.skipif(os.getenv("PROCWISE_TEST_LIVE_DB") != "1", reason="live DB required")
 REASON = "Paying the 900 refund is fine."
@@ -95,3 +96,29 @@ def test_history_is_newest_first_and_capped(conn, world, monkeypatch):
         assert [e["caseId"] for e in both] == [f"pc_{live_id}"]
         one = CH.raw(cur, policy_key=c, limit=1)
     assert [e["caseId"] for e in one] == [f"pc_{did}"]
+
+
+def test_the_conflicts_screen_masks_a_policy_case_reason_everywhere_for_a_stranger(client, conn, world):
+    """Fix round 1: the case's own `decision` and `history` follow the reader's viewer rule (§3.1),
+    so the three places a reason appears agree for every viewer."""
+    a, c, did = _design_case(conn, world)
+    reason = "Narrow it below 10001 please"
+    CC.decide_policy(conn, did, principal=LG.who(world, world.oa), option=f"change:{a}", reason=reason,
+                     limit_text=None, now=NOW)
+    masked = f"Narrow it below {MASK} please"
+    detail = client.get(f"/agent-policies/conflicts/{did}", headers=STRANGER).json()
+    assert "10001" not in json.dumps(detail)
+    assert detail["decision"]["reason"] == masked and [h["reason"] for h in detail["history"]] == [masked]
+    [mine] = [h for h in detail["conflictHistory"] if h["caseId"] == f"pc_{did}"]
+    assert mine["decision"]["reason"] == masked
+    listed = client.get("/agent-policies/conflicts?status=all", headers=STRANGER).json()["conflicts"]
+    [row] = [v for v in listed if v["decisionId"] == did]
+    assert "10001" not in json.dumps(row) and row["decision"]["reason"] == masked
+    for hdr in (_as(world, world.oa), ADMIN):
+        got = client.get(f"/agent-policies/conflicts/{did}", headers=hdr).json()
+        [mine] = [h for h in got["conflictHistory"] if h["caseId"] == f"pc_{did}"]
+        assert got["decision"]["reason"] == reason and [h["reason"] for h in got["history"]] == [reason]
+        assert mine["decision"]["reason"] == reason
+        [row] = [v for v in client.get("/agent-policies/conflicts?status=all", headers=hdr).json()["conflicts"]
+                 if v["decisionId"] == did]
+        assert row["decision"]["reason"] == reason

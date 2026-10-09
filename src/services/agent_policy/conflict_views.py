@@ -122,24 +122,42 @@ def view(case: Dict[str, Any], *, unmasked: bool, decidable: bool, sensitive, he
     }
 
 
-def _views(cur, cases: List[Dict[str, Any]], principal, mapping) -> List[Dict[str, Any]]:
+def _shown_actions(case: Dict[str, Any], actions: List[Dict[str, Any]], *, full: bool,
+                   sensitive) -> List[Dict[str, Any]]:
+    """The case's action rows as this reader may see them: a reason quoting a sensitive value of the
+    case's example is masked in place unless the reader sees the history in full (conflict_history's
+    viewer rule, design §3.1), so `decision`, `history` and `conflictHistory` always agree."""
+    if full:
+        return actions
+    args = CH.example_args(AV.overlap_example(case.get("evidence")))
+    return [{**a, "reason": CH.mask_reason(a.get("reason"), args, sensitive)} for a in actions]
+
+
+def _views(cur, cases: List[Dict[str, Any]], principal, mapping, *, is_admin: bool = False,
+           with_history: bool = False) -> List[Dict[str, Any]]:
     sensitive = AV.sensitive_for(cur, _pairs(cases))
     heads = _heads(cur, [str((p or {}).get("id")) for c in cases for p in c["facts"].get("policies") or []])
     acts = _actions(cur, cases)
+    reader = CH.Viewer(principal, bool(is_admin), mapping)
     out = []
     for c in cases:
         ok = may_decide(principal, c, mapping)
-        out.append(view(c, unmasked=ok, decidable=ok, sensitive=sensitive, heads=heads,
-                        actions=acts.get(int(c["decision_id"]), [])))
+        full = CH.may_see(reader, CH.parties(c["facts"].get("policies") or []))
+        shown = _shown_actions(c, acts.get(int(c["decision_id"]), []), full=full, sensitive=sensitive)
+        v = view(c, unmasked=ok, decidable=ok, sensitive=sensitive, heads=heads, actions=shown)
+        if with_history:
+            v["history"] = shown
+        out.append(v)
     return out
 
 
-def list_conflicts(conn, principal, *, status: str = "open", limit: int = CASE_LIMIT) -> List[Dict[str, Any]]:
+def list_conflicts(conn, principal, *, status: str = "open", limit: int = CASE_LIMIT,
+                   is_admin: bool = False) -> List[Dict[str, Any]]:
     """Policy cases, newest first; canDecide and masking per caller."""
     mapping = deciders.load_map(conn)
     with conn.cursor() as cur:
         cases = _select(cur, _WHERE[status], (), limit)
-        return _views(cur, cases, principal, mapping)
+        return _views(cur, cases, principal, mapping, is_admin=is_admin)
 
 
 def get_conflict(conn, decision_id: int, principal, *, is_admin: bool = False) -> Optional[Dict[str, Any]]:
@@ -150,8 +168,7 @@ def get_conflict(conn, decision_id: int, principal, *, is_admin: bool = False) -
         cases = _select(cur, "AND d.decision_id = %s", (decision_id,), 1)
         if not cases:
             return None
-        [out] = _views(cur, cases, principal, mapping)
-        out["history"] = _actions(cur, cases).get(int(decision_id), [])
+        [out] = _views(cur, cases, principal, mapping, is_admin=is_admin, with_history=True)
         out["conflictHistory"] = CH.read(cur, pair_key=str(cases[0]["subject_id"]),
                                          viewer=CH.Viewer(principal, bool(is_admin), mapping))
     return out
