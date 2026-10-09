@@ -14,7 +14,7 @@ import pytest
 from repositories import agent_policy_repo as repo
 from services.agent_policy import approvals as A
 from services.agent_policy import conflict_live as CL
-from services.agent_policy import settings as S
+from tests.agent_policy import fixtures as F
 from tests.agent_policy import test_conflict_live_gate as T
 
 pytestmark = pytest.mark.skipif(os.getenv("PROCWISE_TEST_LIVE_DB") != "1", reason="live DB required")
@@ -119,10 +119,26 @@ def test_timeouts_do_not_count(conn, world, monkeypatch):
         "a timeout neither counts nor resets"
 
 
-def test_threshold_comes_from_company_setting(conn, world, monkeypatch):
-    monkeypatch.setattr(S, "load_settings", lambda conn=None: S.merge({"live_conflict_repeat": 2}))
+def test_threshold_comes_from_the_governed_policy(conn, world, monkeypatch):
+    F.precedent_n(monkeypatch, 2)
     once(conn, world, monkeypatch)
     assert repeat_cases(conn, world) == []
     once(conn, world, monkeypatch)
     [pc] = repeat_cases(conn, world)
     assert pc["facts"]["proposal"] == {"from": "repeat", "count": 2, "outcome": "approve"}
+
+
+def test_a_missing_precedent_row_skips_the_proposal(conn, world, monkeypatch, caplog):
+    F.precedent_n(monkeypatch, None, missing=True)
+    with caplog.at_level("WARNING", logger=CL.__name__):
+        for _ in range(5):
+            once(conn, world, monkeypatch)
+    assert repeat_cases(conn, world) == []
+    assert "the precedent count cannot be read" in caplog.text
+
+
+def test_zero_switches_the_proposal_off(conn, world, monkeypatch):
+    F.precedent_n(monkeypatch, 0)
+    for _ in range(3):
+        once(conn, world, monkeypatch)
+    assert repeat_cases(conn, world) == []

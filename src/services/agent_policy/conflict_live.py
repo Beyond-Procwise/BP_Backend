@@ -10,7 +10,8 @@ raised_by 'live'). The gate writes it inside its own transaction (insert_live):
 
 When the member group closes (approvals._close_group), settle_for_group writes the live case's
 action row ('approve' only when every member approved, else 'reject') and closes it. A person's
-decision counts towards repeat-N (maybe_propose); a timeout, a block record or a standing-rule
+decision counts towards repeat-N (maybe_propose); N is the governed
+agent_policy_conflicts.precedent_count (settings.precedent_count). A timeout, a block record or a standing-rule
 auto decision never does (user ruling Q4).
 
 Facts store only the action's CONDITION fields (facts.action.args), never the full arguments:
@@ -175,13 +176,15 @@ def _live_ids(cur, member_ids: List[int]) -> List[int]:
     return sorted(int(r[0]) for r in cur.fetchall() if r[0] is not None)
 
 
-def threshold() -> int:
-    """The company's repeat-N (settings.live_conflict_repeat); unreadable -> the ruled default."""
+def threshold() -> Optional[int]:
+    """The governed precedent count (settings.precedent_count): at N the standing-rule proposal is
+    raised, as the engine starts deciding on precedent (ruling R2). None when it cannot be read:
+    no proposal then, with a warning, never a number made up here."""
     try:
-        n = int(_settings.load_settings().get("live_conflict_repeat"))
-    except (TypeError, ValueError):
-        n = 0
-    return n if n > 0 else int(_settings.DEFAULTS["live_conflict_repeat"])
+        return _settings.precedent_count()
+    except Exception as exc:  # noqa: BLE001 - LimitUnavailable, or a value that is not a number
+        logger.warning("repeat proposal skipped: the precedent count cannot be read (%s)", type(exc).__name__)
+        return None
 
 
 def _credited(cur, approvals, member_ids: List[int], verdict: str, actor: str,
@@ -254,17 +257,20 @@ def settle_for_group(cur, case: Dict[str, Any], state: Dict[str, int], *, refuse
 
 def _propose_safely(cur, live_id: int, *, now: datetime) -> None:
     """maybe_propose in a savepoint: a failed proposal is logged and undone on its own and never
-    rolls back the person's approval or the settle (they stay in the caller's transaction)."""
+    rolls back the person's approval or the settle (they stay in the caller's transaction).
+    N missing, null or 0: no proposal, nothing runs."""
+    n = threshold()
+    if not n or n <= 0:
+        return
     cur.execute("SAVEPOINT live_conflict_propose")
     try:
-        maybe_propose(cur, live_id, now=now, threshold=threshold())
+        maybe_propose(cur, live_id, now=now, threshold=n)
     except Exception as exc:  # noqa: BLE001 - type only: a driver message can quote stored values
         cur.execute("ROLLBACK TO SAVEPOINT live_conflict_propose")
         logger.error("repeat proposal failed for live case %s: %s", live_id, type(exc).__name__)
     cur.execute("RELEASE SAVEPOINT live_conflict_propose")
 
 
-# ---------------------------------------------------------------------------- repeat-N
 def _in_key_order(pairs) -> List[tuple]:
     """Pairs in sorted pair-key order, as detect_for takes them: two writers locking the same
     pairs always lock them in one order, so they cannot deadlock."""

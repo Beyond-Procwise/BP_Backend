@@ -16,7 +16,6 @@ DEFAULTS: Dict[str, Any] = {
     "response_time": "PT4H",
     "response_time_basis": "clock",
     "on_missing_data": {"approve": "fail_closed", "block": "fail_closed", "notify": "fail_closed"},
-    "live_conflict_repeat": 5,
     "conflict_cases_per_run": 25,
     "learning": {"min_decisions": 30, "min_days": 30, "min_approvers": 3, "wilson_lower": 0.85,
                  "median_seconds_floor": 30, "not_yet_more": 30, "dismiss_more": 30},
@@ -50,3 +49,20 @@ def load_settings(conn: Any = None) -> Dict[str, Any]:
     except Exception as exc:  # unreadable settings -> ruled defaults, loudly
         logger.warning("agent_policy_settings unreadable, using defaults: %s", exc)
         return merge(None)
+
+
+#: N, the precedent count (design §3.3): a governed limit in proc.bp_policy that a customer can
+#: change, not a company setting. One number for both the precedent and the standing-rule
+#: proposal (ruling R2).
+PRECEDENT_POLICY = "agent_policy_conflicts"
+PRECEDENT_RULE = "precedent_count"
+
+
+def precedent_count() -> Optional[int]:
+    """How many same-way decisions by people make a precedent. Read fresh on every call: the
+    policy admin writes the row directly and its edit must apply without a restart. None is a
+    stated null (off). Raises governed_limits.LimitUnavailable when the row or rule is missing,
+    and ValueError/TypeError when the value is not a number: never a default in code."""
+    from src.services import governed_limits
+
+    return governed_limits.limit(PRECEDENT_POLICY, PRECEDENT_RULE, cast=int, fresh=True)
