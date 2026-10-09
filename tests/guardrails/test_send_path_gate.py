@@ -346,8 +346,32 @@ def test_check_3_a_failed_peer_price_lookup_denies_rather_than_passes():
     """
 
     class ExplodingPeerPrices(FakeConn):
+        """Only the peer-price query fails. Every earlier check that reads the database must get past this
+        connection (check 1e's payment-flag lookup sees no flag table), or the guard denies on THAT check and this
+        test proves nothing about check 3 -- which is what happened once 1e was added (2026-10-08)."""
+
         def cursor(self):
-            raise RuntimeError("bp_quote_trgt is unreachable")
+            return _PeerPriceExplodes()
+
+    class _PeerPriceExplodes:
+        rows = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, sql, params=None):
+            if "bp_quote_trgt" in sql:
+                raise RuntimeError("bp_quote_trgt is unreachable")
+            self.rows = [(None,)] if "to_regclass" in sql else []
+
+        def fetchone(self):
+            return self.rows[0] if self.rows else None
+
+        def fetchall(self):
+            return self.rows
 
     decision = guard.check_dispatch(
         **base_kwargs(
