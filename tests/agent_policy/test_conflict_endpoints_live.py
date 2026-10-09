@@ -164,17 +164,23 @@ def test_conflict_view_masks_sensitive_witness(client, conn, world):
     assert set(mine["options"]) == set(mine["optionLabels"])
     assert mine["prior"] == {"sameConflict": 0, "lastOutcome": None} and mine["why"].startswith("One policy needs")
 
-    for hdr in (STRANGER, ADMIN):
+    # One response never shows a value both masked and unmasked (final review I4): the Admin role
+    # reads the whole response unmasked, as its conflictHistory (design §3.1); a stranger reads
+    # all of it masked. Neither may decide.
+    for hdr, shown in ((STRANGER, MASK), (ADMIN, 10001)):
         r = client.get("/agent-policies/conflicts", headers=hdr)
         [theirs] = [v for v in r.json()["conflicts"] if v["decisionId"] == did]
         assert theirs["canDecide"] is False
-        assert theirs["example"] == {"tool.name": world.tool, "args.amount": MASK}
-        assert "10001" not in json.dumps(theirs)
+        assert theirs["example"] == {"tool.name": world.tool, "args.amount": shown}
+        assert ("10001" in json.dumps(theirs)) is (hdr is ADMIN)
         one = client.get(f"/agent-policies/conflicts/{did}", headers=hdr).json()
-        case_only = {k: v for k, v in one.items() if k != "conflictHistory"}
-        assert one["example"]["args.amount"] == MASK and "10001" not in json.dumps(case_only) and one["history"] == []
-        # the pair's history: masked for a stranger, full for the Admin role (design §3.1)
+        assert one["canDecide"] is False and one["example"]["args.amount"] == shown and one["history"] == []
         assert ("10001" in json.dumps(one["conflictHistory"])) is (hdr is ADMIN)
+        if hdr is STRANGER:
+            assert "10001" not in json.dumps(one), "a stranger sees the value nowhere"
+            assert MASK in json.dumps(one["conflictHistory"], ensure_ascii=False)
+        else:
+            assert MASK not in json.dumps(one, ensure_ascii=False), "the Admin sees no mask anywhere"
 
     one = client.get(f"/agent-policies/conflicts/{did}", headers=_as(world, world.ob)).json()
     assert one["canDecide"] is True and one["example"]["args.amount"] == 10001
@@ -297,15 +303,16 @@ def test_policy_case_from_a_live_block_masks_its_witness(client, conn, world, mo
     owner = client.get(f"/agent-policies/conflicts/{did}", headers=_as(world, world.oa)).json()
     assert owner["raisedBy"] == "live" and owner["canDecide"] is True
     assert owner["example"] == {"tool.name": world.tool, "args.amount": 12000}
-    for hdr in (STRANGER, ADMIN):
+    # the whole response: unmasked for the Admin role, masked for a stranger (final review I4)
+    for hdr, shown in ((STRANGER, MASK), (ADMIN, 12000)):
         one = client.get(f"/agent-policies/conflicts/{did}", headers=hdr).json()
-        assert one["example"] == {"tool.name": world.tool, "args.amount": MASK}
-        assert "12000" not in json.dumps({k: v for k, v in one.items() if k != "conflictHistory"})
-        # the pair's history: masked for a stranger, full for the Admin role (design §3.1)
+        assert one["example"] == {"tool.name": world.tool, "args.amount": shown} and one["canDecide"] is False
+        assert ("12000" in json.dumps(one)) is (hdr is ADMIN)
         assert ("12000" in json.dumps(one["conflictHistory"])) is (hdr is ADMIN)
+        assert (MASK in json.dumps(one, ensure_ascii=False)) is (hdr is STRANGER)
         [v] = [v for v in client.get("/agent-policies/conflicts", headers=hdr).json()["conflicts"]
                if v["decisionId"] == did]
-        assert v["example"]["args.amount"] == MASK
+        assert v["example"]["args.amount"] == shown
 
 
 def test_policy_case_from_repeat_proposal_masks_its_witness(client, conn, world, monkeypatch):

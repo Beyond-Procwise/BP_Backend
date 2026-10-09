@@ -15,6 +15,7 @@ from tests.agent_policy.fixtures import precedent_n
 
 NOW = datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc)
 AT = datetime(2026, 10, 9, 11, 0, tzinfo=timezone.utc)
+OTHER = "sub-requester"                 # decided none of the cited cases
 
 
 def _hit(key, version, outcome="approve"):
@@ -31,16 +32,22 @@ def _lc(kind="human", involved=(A, B), required=None):
 
 
 class _Cur:
-    def __init__(self, rows=(), fail=False):
+    """The precedent lookup answers `rows`; the cited cases' member approvers answer `approvers`."""
+    def __init__(self, rows=(), fail=False, approvers=(), fail_approvers=False):
         self.rows, self.fail, self.sql = list(rows), fail, []
+        self.approvers, self.fail_approvers = [(a,) for a in approvers], fail_approvers
+        self._last = ""
 
     def execute(self, sql, params=None):
         self.sql.append((" ".join(sql.split()), params))
+        self._last = sql
         if self.fail and "bp_agent_policy_conflict" in sql:
             raise RuntimeError("lookup down")
+        if self.fail_approvers and "memberCases" in sql:
+            raise RuntimeError("member lookup down")
 
     def fetchall(self):
-        return list(self.rows)
+        return list(self.approvers if "memberCases" in self._last else self.rows)
 
 
 def _n(monkeypatch, n):
@@ -50,7 +57,7 @@ def _n(monkeypatch, n):
 def test_resolves_when_the_last_n_person_decisions_agree(monkeypatch):
     _n(monkeypatch, 2)
     cur = _Cur([(11, "approve", "sub-b", AT), (10, "approve", "sub-a", AT)])
-    d = DE.decide_live_conflict(cur, _lc(), ctx={}, now=NOW)
+    d = DE.decide_live_conflict(cur, _lc(), ctx={}, now=NOW, requester=OTHER)
     assert (d.resolution, d.decision, d.subject_type, d.subject_id) == (DE.RESOLVED, "approve", "live_conflict",
                                                                        "TST-0001|TST-0002")
     assert [e.reference for e in d.evidence] == ["pc_11", "pc_10"]
@@ -61,7 +68,7 @@ def test_resolves_when_the_last_n_person_decisions_agree(monkeypatch):
     assert d.facts["citedCases"] == ["pc_11", "pc_10"] and d.facts["precedentCount"] == 2
     statements = [s for s, _ in cur.sql]
     assert statements[0] == "SAVEPOINT live_conflict_precedent"
-    assert statements[-1] == "RELEASE SAVEPOINT live_conflict_precedent"
+    assert statements[2] == "RELEASE SAVEPOINT live_conflict_precedent"
     [(_sql, params)] = [x for x in cur.sql if "bp_agent_policy_conflict" in x[0]]
     assert params == ("TST-0001|TST-0002", json.dumps({"TST-0001": 3, "TST-0002": 1}, sort_keys=True), 2)
 
@@ -76,20 +83,20 @@ def test_the_lookup_counts_only_settled_person_decisions_at_identical_versions()
 def test_rejects_on_precedent_too(monkeypatch):
     _n(monkeypatch, 2)
     d = DE.decide_live_conflict(_Cur([(11, "reject", "sub-b", AT), (10, "reject", "sub-a", AT)]), _lc(),
-                                ctx={}, now=NOW)
+                                ctx={}, now=NOW, requester=OTHER)
     assert (d.resolution, d.decision) == (DE.RESOLVED, "reject")
 
 
 def test_fewer_than_n_escalates(monkeypatch):
     _n(monkeypatch, 2)
-    d = DE.decide_live_conflict(_Cur([(10, "approve", "sub-a", AT)]), _lc(), ctx={}, now=NOW)
+    d = DE.decide_live_conflict(_Cur([(10, "approve", "sub-a", AT)]), _lc(), ctx={}, now=NOW, requester=OTHER)
     assert (d.resolution, d.rationale) == (DE.ESCALATED, "only 1 of 2 decisions by people on this exact clash")
 
 
 def test_disagreement_escalates(monkeypatch):
     _n(monkeypatch, 2)
     d = DE.decide_live_conflict(_Cur([(11, "approve", "sub-b", AT), (10, "reject", "sub-a", AT)]), _lc(),
-                                ctx={}, now=NOW)
+                                ctx={}, now=NOW, requester=OTHER)
     assert (d.resolution, d.rationale) == (DE.ESCALATED, "decisions disagree")
 
 
@@ -97,7 +104,7 @@ def test_disagreement_escalates(monkeypatch):
 def test_zero_or_null_switches_it_off(monkeypatch, n):
     _n(monkeypatch, n)
     cur = _Cur()
-    d = DE.decide_live_conflict(cur, _lc(), ctx={}, now=NOW)
+    d = DE.decide_live_conflict(cur, _lc(), ctx={}, now=NOW, requester=OTHER)
     assert (d.resolution, d.rationale) == (DE.ESCALATED, "precedent is switched off") and cur.sql == []
 
 
@@ -107,7 +114,7 @@ def test_an_unreadable_limit_escalates_with_a_warning(monkeypatch, caplog):
     monkeypatch.setattr(DE, "_precedent_count", missing)
     cur = _Cur()
     with caplog.at_level("WARNING", logger=DE.__name__):
-        d = DE.decide_live_conflict(cur, _lc(), ctx={}, now=NOW)
+        d = DE.decide_live_conflict(cur, _lc(), ctx={}, now=NOW, requester=OTHER)
     assert (d.resolution, d.rationale) == (DE.ESCALATED, "precedent limit unavailable") and cur.sql == []
     assert "precedent limit unavailable, the clash TST-0001|TST-0002 goes to people" in caplog.text
 
@@ -115,7 +122,7 @@ def test_an_unreadable_limit_escalates_with_a_warning(monkeypatch, caplog):
 def test_a_failed_lookup_rolls_back_to_its_savepoint_and_escalates(monkeypatch):
     _n(monkeypatch, 2)
     cur = _Cur(fail=True)
-    d = DE.decide_live_conflict(cur, _lc(), ctx={}, now=NOW)
+    d = DE.decide_live_conflict(cur, _lc(), ctx={}, now=NOW, requester=OTHER)
     assert (d.resolution, d.rationale) == (DE.ESCALATED, "precedent lookup failed")
     assert [s for s, _ in cur.sql if "SAVEPOINT" in s] == [
         "SAVEPOINT live_conflict_precedent", "ROLLBACK TO SAVEPOINT live_conflict_precedent",
@@ -125,14 +132,14 @@ def test_a_failed_lookup_rolls_back_to_its_savepoint_and_escalates(monkeypatch):
 def test_an_approval_outside_the_clash_escalates(monkeypatch):
     _n(monkeypatch, 2)
     cur = _Cur([(11, "approve", "sub-b", AT), (10, "approve", "sub-a", AT)])
-    d = DE.decide_live_conflict(cur, _lc(required=[A, B, C]), ctx={}, now=NOW)
+    d = DE.decide_live_conflict(cur, _lc(required=[A, B, C]), ctx={}, now=NOW, requester=OTHER)
     assert (d.resolution, d.rationale) == (DE.ESCALATED, "TST-0003 also needs approval and is not part of this clash")
     assert cur.sql == []
 
 
 def test_only_a_human_clash_is_considered(monkeypatch):
     _n(monkeypatch, 2)
-    d = DE.decide_live_conflict(_Cur(), _lc(kind="auto"), ctx={}, now=NOW)
+    d = DE.decide_live_conflict(_Cur(), _lc(kind="auto"), ctx={}, now=NOW, requester=OTHER)
     assert (d.resolution, d.rationale) == (DE.ESCALATED, "only a clash that needs people can be decided on precedent")
 
 
@@ -142,3 +149,64 @@ def test_the_real_count_is_the_governed_fresh_value(monkeypatch):
     precedent_n(monkeypatch, None, missing=True)
     with pytest.raises(GL.LimitUnavailable):
         DE._precedent_count()
+
+
+# ---------------------------------------------------------------- the self-approval bar (final review C1)
+SAME = "the requester decided an earlier case of this clash"
+
+
+def test_a_requester_who_is_the_credited_decider_of_a_cited_case_escalates(monkeypatch):
+    _n(monkeypatch, 2)
+    cur = _Cur([(11, "approve", "sub-b", AT), (10, "approve", "sub-a", AT)])
+    d = DE.decide_live_conflict(cur, _lc(), ctx={}, now=NOW, requester="sub-a")
+    assert (d.resolution, d.decision, d.rationale) == (DE.ESCALATED, "escalate", SAME)
+
+
+@pytest.mark.parametrize("requester", ["SUB-A", "  sub-a  "])
+def test_the_same_person_test_is_the_approvals_one(monkeypatch, requester):
+    """Same semantics as approvals._same_person: trimmed, case-insensitive."""
+    _n(monkeypatch, 2)
+    cur = _Cur([(11, "approve", "sub-b", AT), (10, "approve", "sub-a", AT)])
+    assert DE.decide_live_conflict(cur, _lc(), ctx={}, now=NOW, requester=requester).rationale == SAME
+
+
+def test_a_requester_who_approved_a_member_case_of_a_cited_case_escalates(monkeypatch):
+    _n(monkeypatch, 2)
+    cur = _Cur([(11, "approve", "sub-b", AT), (10, "approve", "sub-a", AT)], approvers=["sub-c", "sub-x"])
+    d = DE.decide_live_conflict(cur, _lc(), ctx={}, now=NOW, requester="sub-x")
+    assert (d.resolution, d.rationale) == (DE.ESCALATED, SAME)
+    [(_sql, params)] = [x for x in cur.sql if "memberCases" in x[0]]
+    assert params == (DE.LIVE_CONFLICT_SUBJECT, "TST-0001|TST-0002", ["pc_11", "pc_10"], "agent_policy_approval")
+
+
+def test_a_requester_who_decided_nothing_is_decided_on_precedent(monkeypatch):
+    _n(monkeypatch, 2)
+    cur = _Cur([(11, "reject", "sub-b", AT), (10, "reject", "sub-a", AT)], approvers=["sub-c"])
+    d = DE.decide_live_conflict(cur, _lc(), ctx={}, now=NOW, requester="sub-z")
+    assert (d.resolution, d.decision) == (DE.RESOLVED, "reject")
+    assert [s for s, _ in cur.sql if "SAVEPOINT" in s] == [
+        "SAVEPOINT live_conflict_precedent", "RELEASE SAVEPOINT live_conflict_precedent",
+        "SAVEPOINT live_conflict_precedent_members", "RELEASE SAVEPOINT live_conflict_precedent_members"]
+
+
+def test_a_failed_member_lookup_escalates_and_rolls_back_to_its_savepoint(monkeypatch):
+    _n(monkeypatch, 2)
+    cur = _Cur([(11, "approve", "sub-b", AT), (10, "approve", "sub-a", AT)], fail_approvers=True)
+    d = DE.decide_live_conflict(cur, _lc(), ctx={}, now=NOW, requester="sub-z")
+    assert (d.resolution, d.rationale) == (DE.ESCALATED, "precedent lookup failed")
+    assert [s for s, _ in cur.sql if "members" in s and "SAVEPOINT" in s] == [
+        "SAVEPOINT live_conflict_precedent_members", "ROLLBACK TO SAVEPOINT live_conflict_precedent_members",
+        "RELEASE SAVEPOINT live_conflict_precedent_members"]
+
+
+def test_no_requester_bars_nobody_and_looks_up_no_member(monkeypatch):
+    """A call no person asked for (a watcher): nobody's own request, so no member lookup."""
+    _n(monkeypatch, 2)
+    cur = _Cur([(11, "approve", "sub-b", AT), (10, "approve", "sub-a", AT)])
+    d = DE.decide_live_conflict(cur, _lc(), ctx={}, now=NOW, requester=None)
+    assert d.resolution == DE.RESOLVED and not [x for x in cur.sql if "memberCases" in x[0]]
+
+
+def test_the_requester_is_required():
+    with pytest.raises(TypeError):
+        DE.decide_live_conflict(_Cur(), _lc(), ctx={}, now=NOW)   # noqa - the bar needs to know who asked

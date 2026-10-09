@@ -104,3 +104,12 @@ def test_decision_words_use_the_screen_labels():
     assert CH.decision_words("keep_both:FIN-0001") == "Keep both: FIN-0001 takes priority"
     assert CH.decision_words("moot") == "Closed: policy retired"
     assert CH.decision_words(None) == ""
+
+
+def test_a_case_closed_by_the_system_says_so_in_the_csv():
+    """Final review I2: a system-closed case (decidedBy.kind "system") is never a blank "Decided by"."""
+    system = {**_entry(), "decision": {"option": "reject", "scope": "this_action",
+                                       "decidedBy": {"kind": "system", "name": "system:group"},
+                                       "decidedAt": "2026-10-09T12:00:00+00:00", "reason": None}}
+    assert CH.DECIDED_BY_WORDS["system"] == "By the system"
+    assert '"By the system","system:group","Reject"' in CH.to_csv([system]).split("\r\n")[1]

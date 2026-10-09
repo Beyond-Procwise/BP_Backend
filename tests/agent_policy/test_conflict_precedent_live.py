@@ -22,13 +22,14 @@ pytestmark = pytest.mark.skipif(os.getenv("PROCWISE_TEST_LIVE_DB") != "1", reaso
 OWNER = "Chief Financial Officer"          # FORM_EXAMPLE's owner, on every test policy
 
 
-def call(monkeypatch, w, docs, ran, *, wf=None):
+def call(monkeypatch, w, docs, ran, *, wf=None, user_id="req@example.test"):
     """One scripted agent call (amount 900), in its own workflow unless `wf` repeats one."""
     if wf is None:
         wf = f"{w.wf}-{len(w.wfs)}"
         w.wfs.append(wf)
     LG.use(monkeypatch, docs, w, ran)
-    res, _ = LG.run(monkeypatch, LG.stub_tools(w, ran), [LG._round(w.tool), LG.FINAL], workflow_id=wf)
+    res, _ = LG.run(monkeypatch, LG.stub_tools(w, ran), [LG._round(w.tool), LG.FINAL], workflow_id=wf,
+                    user_id=user_id)
     return wf, res.calls[0].result
 
 
@@ -106,7 +107,25 @@ def test_the_agent_is_told_it_ran_on_precedent(conn, world, monkeypatch, ran):
                         workflow_id=wf, user_id="req@example.test")
     [lv] = live_of(conn, wf)
     assert res.allow is True
-    assert res.to_agent == {"result": "allowed", "conflictCaseId": f"pc_{lv['decision_id']}", "precedent": True}
+    assert res.to_agent == {"result": "allowed", "conflictCaseId": f"pc_{lv['decision_id']}", "precedent": True,
+                            "precedentCount": 1}
+
+
+def test_the_model_reads_the_precedent_note_after_the_tool_result(conn, world, monkeypatch, ran):
+    """Final review I1 end to end: the tool message the model reads carries the result, then one note."""
+    precedent_n(monkeypatch, 2)
+    docs = _pair(world)
+    decided(conn, monkeypatch, world, docs, ran)
+    decided(conn, monkeypatch, world, docs, ran)
+    wf = f"{world.wf}-note"
+    world.wfs.append(wf)
+    LG.use(monkeypatch, docs, world, ran)
+    res, script = LG.run(monkeypatch, LG.stub_tools(world, ran), [LG._round(world.tool), LG.FINAL], workflow_id=wf)
+    [lv] = live_of(conn, wf)
+    assert res.calls[0].result == {"refunded": 900}
+    [msg] = [m for m in script.seen[-1] if m.get("role") == "tool"]
+    assert msg["content"] == ('{"refunded": 900}\nNote: this action ran without a person approving it, on precedent '
+                              f"(decided the same way 2 times before, case pc_{lv['decision_id']}).")
 
 
 def test_precedent_rejects_after_n_person_rejects(conn, world, monkeypatch, ran):
@@ -280,8 +299,8 @@ def _always_approves(real):
     first, so a consult is visible as a real lookup), to prove a block wins even then."""
     asked = []
 
-    def stub(cur, lc, *, ctx, now):
-        real(cur, lc, ctx=ctx, now=now)
+    def stub(cur, lc, *, ctx, now, requester):
+        real(cur, lc, ctx=ctx, now=now, requester=requester)
         asked.append(lc.kind)
         return DE.Decision(subject_type=DE.LIVE_CONFLICT_SUBJECT, subject_id="x", decision="approve",
                            resolution=DE.RESOLVED, rationale="stub approve", facts={}, evidence=[])
@@ -380,3 +399,71 @@ def test_the_escalated_record_stores_the_raw_history_with_its_private_fields(con
     assert all(e["_args"] == {"amount": 900} for e in stored), "the raw entries keep _args"
     assert all("_owners" in e and "_deciders" in e for e in stored)
     assert stored[1]["decision"]["reason"] == "Paying the 900 refund is fine.", "unmasked as stored"
+
+
+# ---------------------------------------------------------------- final review wave
+@pytest.mark.parametrize("decider", ["lb", "la2"])   # lb: the credited (last) approver; la2: a member approver
+def test_precedent_never_decides_for_a_requester_who_decided_a_cited_case(conn, world, monkeypatch, ran, decider):
+    """C1: D approves 5 clashes others asked for; D's own request goes to people and the tool does
+    not run. Anyone else's request still runs on precedent."""
+    precedent_n(monkeypatch, 5)
+    docs = _pair(world)
+    for _ in range(5):
+        decided(conn, monkeypatch, world, docs, ran)
+    assert ran == []
+    name = getattr(world, decider)
+    me = LG.who(world, name).subject
+    wf, out = call(monkeypatch, world, docs, ran, user_id=me)
+    assert out["result"] == "paused_for_approval" and ran == [], "the tool must not run"
+    [lv] = live_of(conn, wf)
+    assert (lv["status"], lv["is_open"]) == ("open", True)
+    assert lv["facts"]["precedent"] == {"why": "the requester decided an earlier case of this clash"}
+    assert len(members_of(conn, wf)) == 2, "it went to people"
+    assert len(lv["facts"]["history"]) == 5, "the people deciding see the five earlier cases"
+    _wf, other = call(monkeypatch, world, docs, ran, user_id="someone-else@example.test")
+    assert other == {"refunded": 900} and ran == [LG.ARGS], "precedent still decides for anyone else"
+
+
+def _clocks(conn, live_id):
+    [r] = LG.rows(conn, "SELECT d.created_at AS d_created, d.actioned_at, c.created_at AS c_created, c.decided_at "
+                        "FROM proc.bp_decision d JOIN proc.bp_agent_policy_conflict c USING (decision_id) "
+                        "WHERE d.decision_id = %s", (live_id,))
+    return r
+
+
+def test_a_closed_live_record_is_never_decided_before_it_was_raised(conn, world, monkeypatch, ran):
+    """M1: precedent, block-record and standing-rule records write created_at and the decision
+    time from one clock, so decidedAt is never earlier than raisedAt."""
+    precedent_n(monkeypatch, 1)
+    docs = _pair(world)
+    decided(conn, monkeypatch, world, docs, ran)
+    wf_p, _ = call(monkeypatch, world, docs, ran)
+    wf_b, _ = call(monkeypatch, world, [LG.doc_a(world), LG.doc_b(world, outcome="block")], ran)
+    rule = {"with": world.key("B"), "prevails": world.key("A"),
+            "rule": f"{world.key('A')} takes priority over {world.key('B')}"}
+    wf_s, _ = call(monkeypatch, world, [LG.doc_a(world, conflicts=[rule]), LG.doc_b(world)], ran)
+    for wf, kind in ((wf_p, "approve"), (wf_b, "block"), (wf_s, "standing_rule")):
+        [lv] = live_of(conn, wf)
+        assert lv["decision"] == kind
+        c = _clocks(conn, lv["decision_id"])
+        assert c["d_created"] == c["actioned_at"] == c["c_created"] == c["decided_at"], (kind, c)
+
+
+def test_a_failed_history_read_never_refuses_the_call(conn, world, monkeypatch, ran, caplog):
+    """M4: the escalate path's history snapshot fails (and poisons the transaction): rolled back to
+    its savepoint, logged by type only, and the clash still goes to people, without history."""
+    from services.agent_policy import conflict_history
+    precedent_n(monkeypatch, 3)
+    docs = _pair(world)
+
+    def broken(cur, **kw):
+        cur.execute("SELECT no_such_column_tst FROM proc.bp_agent_policy_conflict LIMIT 1")
+    monkeypatch.setattr(conflict_history, "raw", broken)
+    with caplog.at_level("ERROR"):
+        wf, out = call(monkeypatch, world, docs, ran)
+    assert out["result"] == "paused_for_approval" and ran == []
+    [lv] = live_of(conn, wf)
+    assert lv["facts"]["history"] == []
+    assert lv["facts"]["precedent"] == {"why": "only 0 of 3 decisions by people on this exact clash"}
+    assert len(members_of(conn, wf)) == 2
+    assert "UndefinedColumn" in caplog.text and "no_such_column_tst" not in caplog.text

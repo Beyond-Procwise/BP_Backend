@@ -31,6 +31,7 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -1970,6 +1971,24 @@ PRECEDENT_SQL = """
 """
 
 
+# Who approved a member case of each cited live case (the approval cases its settle row names):
+# a requester among them, or among the credited deciders, is never decided for on precedent.
+PRECEDENT_MEMBERS_SQL = """
+    SELECT DISTINCT a.actioned_by
+      FROM proc.bp_decision s
+     CROSS JOIN LATERAL jsonb_array_elements_text(
+           CASE WHEN jsonb_typeof(s.facts->'memberCases') = 'array' THEN s.facts->'memberCases'
+                ELSE '[]'::jsonb END) AS m(id)
+      JOIN proc.bp_decision c ON c.decision_id = m.id::bigint
+      JOIN proc.bp_decision a ON a.subject_type = c.subject_type AND a.subject_id = c.subject_id
+     WHERE s.subject_type = %s AND s.subject_id = %s AND s.status = 'actioned'
+       AND s.facts->>'caseId' = ANY(%s)
+       AND c.subject_type = %s AND a.status = 'actioned' AND a.decision = 'approve'
+       AND a.actioned_by IS NOT NULL
+"""
+SAME_PERSON = "the requester decided an earlier case of this clash"
+
+
 def _precedent_count() -> Optional[int]:
     """The governed precedent count, read fresh. A seam; raises when it cannot be read."""
     from services.agent_policy import settings as agent_policy_settings
@@ -1988,7 +2007,7 @@ def _hit_version(hit: Dict[str, Any]) -> int:
         return 0
 
 
-def decide_live_conflict(cur, lc: Any, *, ctx: Dict[str, Any], now: Any) -> Decision:
+def decide_live_conflict(cur, lc: Any, *, ctx: Dict[str, Any], now: Any, requester: Optional[str]) -> Decision:
     """Decide a live clash between agent policies from its own history, or escalate it.
 
     Facts first (rule 1): the governed precedent count and this clash's settled cases, looked up
@@ -1996,6 +2015,11 @@ def decide_live_conflict(cur, lc: Any, *, ctx: Dict[str, Any], now: Any) -> Deci
     clash (same policies, same versions) were all decided the same way by people, and every
     approval the action needs is part of the clash. The action's values (ctx) play no part:
     precedent is about the clash, not the amount.
+
+    The self-approval bar binds here too (stage 3): when `requester` (who asked for this action)
+    is the same person (approvals._same_person) as the credited decider of any cited case, or as
+    any member approver of one, the clash goes to people. Precedent never lets someone approve
+    their own request at one remove. `requester` is required; None means no person asked.
 
     `lc` is a conflict_engine.LiveConflict. Runs on the caller's cursor inside the caller's
     transaction and never writes. A failed lookup rolls back to its own savepoint and escalates,
@@ -2043,6 +2067,22 @@ def decide_live_conflict(cur, lc: Any, *, ctx: Dict[str, Any], now: Any) -> Deci
         return escalate("decisions disagree", precedentCount=n)
     outcome = outcomes.pop()
     cited = [case_id(int(r[0])) for r in rows]
+    if requester and str(requester).strip():
+        from services.agent_policy import approvals
+
+        cur.execute("SAVEPOINT live_conflict_precedent_members")
+        try:
+            cur.execute(PRECEDENT_MEMBERS_SQL, (LIVE_CONFLICT_SUBJECT, key, list(cited), approvals.SUBJECT_TYPE))
+            members = [r[0] for r in cur.fetchall()]
+        except Exception as exc:  # noqa: BLE001 - a lookup that failed is doubt: people decide
+            cur.execute("ROLLBACK TO SAVEPOINT live_conflict_precedent_members")
+            cur.execute("RELEASE SAVEPOINT live_conflict_precedent_members")
+            logger.warning("precedent member lookup failed for %s: %s", key, type(exc).__name__)
+            return escalate("precedent lookup failed", precedentCount=n)
+        cur.execute("RELEASE SAVEPOINT live_conflict_precedent_members")
+        asker = SimpleNamespace(subject=str(requester), email=None)
+        if any(approvals._same_person(asker, who) for who in [r[2] for r in rows] + members):
+            return escalate(SAME_PERSON, precedentCount=n, citedCases=cited)
     evidence = [Evidence(fact="precedent",
                          value={"decision_id": int(r[0]), "outcome": r[1], "actioned_by": r[2],
                                 "actioned_at": _as_iso(r[3])},

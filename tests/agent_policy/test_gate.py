@@ -208,6 +208,49 @@ def test_reason_is_the_round_text_stripped_and_capped(monkeypatch, tools):
     assert G.clean_reason(seen[1]["reason"]) is None
 
 
+# ------------------------------------------------------------------ ran on precedent (final review I1)
+PRECEDENT_ALLOW = {"result": "allowed", "conflictCaseId": "pc_77", "precedent": True, "precedentCount": 3}
+NOTE = ("Note: this action ran without a person approving it, on precedent "
+        "(decided the same way 3 times before, case pc_77).")
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_the_agent_is_told_it_ran_on_precedent_and_the_tool_result_is_kept(monkeypatch, tools, ran, stream):
+    monkeypatch.setattr(G, "before_tool", lambda **kw: G.GateResult(allow=True, to_agent=dict(PRECEDENT_ALLOW),
+                                                                    firing_ids=[1]))
+    res, script = _run(monkeypatch, tools, [_round(), FINAL], stream=stream)
+    assert ran == [("refund.issue", ARGS)]
+    call = res.calls[0]
+    assert call.ok is True and call.result == {"refunded": 900}, "the tool's own result is intact"
+    [msg] = _tool_messages(script)
+    assert msg["content"] == TR._render_result({"refunded": 900}) + "\n" + NOTE
+    assert msg["content"].count("\n") == 1, "one line, after the result"
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("verdict", [G.GateResult(allow=True),
+                                     G.GateResult(allow=True, firing_ids=[4, 5]),
+                                     G.GateResult(allow=True, to_agent={"result": "allowed"}),
+                                     G.GateResult(allow=True, to_agent={"result": "allowed", "precedent": False})])
+def test_every_other_allow_is_byte_for_byte_the_ungated_call(monkeypatch, tools, ran, stream, verdict):
+    monkeypatch.setattr(G, "before_tool", lambda **kw: verdict)
+    gated, s1 = _run(monkeypatch, tools, [_round(), FINAL], stream=stream)
+    monkeypatch.setattr(TR, "_policy_refusal", lambda *a, **k: None)   # the gate patched out
+    plain, s2 = _run(monkeypatch, tools, [_round(), FINAL], stream=stream)
+    assert s1.seen == s2.seen
+    assert [c.to_dict() | {"duration_ms": 0} for c in gated.calls] == \
+           [c.to_dict() | {"duration_ms": 0} for c in plain.calls]
+    assert len(ran) == 2
+
+
+def test_the_note_survives_a_truncated_result(monkeypatch, ran):
+    big = TR.Tool(name="refund.issue", description="d", parameters={"type": "object", "properties": {}},
+                  handler=lambda **kw: "x" * (TR._MAX_RESULT_CHARS + 50))
+    monkeypatch.setattr(G, "before_tool", lambda **kw: G.GateResult(allow=True, to_agent=dict(PRECEDENT_ALLOW)))
+    _res, script = _run(monkeypatch, [big], [_round(), FINAL])
+    assert _tool_messages(script)[0]["content"].endswith("\n" + NOTE)
+
+
 def test_unknown_tool_is_not_gated(monkeypatch, tools):
     monkeypatch.setattr(G, "before_tool", lambda **kw: pytest.fail("gate called for an unknown tool"))
     res, _ = _run(monkeypatch, tools, [_round(tool="nope"), FINAL])

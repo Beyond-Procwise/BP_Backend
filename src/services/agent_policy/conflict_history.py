@@ -201,7 +201,8 @@ HEADER = ("Case", "Kind", "Raised", "Policies", "Decided by", "Name", "Decision"
           "Reason", "Cited cases")
 KIND_WORDS = {"policy": "Between policies", "live": "During an action"}
 DECIDED_BY_WORDS = {"person": "Person", "standing_rule": "Standing rule", "precedent": "Precedent",
-                    "timeout": "Timeout", "block": "Not allowed (block)", "retired": "Policy retired"}
+                    "timeout": "Timeout", "block": "Not allowed (block)", "retired": "Policy retired",
+                    "system": "By the system"}
 _DECISION_WORDS = {"approve": "Approve", "reject": "Reject", "moot": "Closed: policy retired",
                    "block": "Blocked", "standing_rule": "Decided by a standing rule"}
 _FORMULA = re.compile(r"^\s*[=+\-@]")
