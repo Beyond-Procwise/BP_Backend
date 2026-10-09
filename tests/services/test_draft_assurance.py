@@ -397,7 +397,7 @@ def test_agent_stores_an_assurance_record_with_provenance_and_the_conflict(monke
 def test_agent_repairs_once_then_shows_what_is_left(monkeypatch):
     agent, stored = _agent(monkeypatch, CANNED.replace("44.80", "43.10"))
     calls = []
-    monkeypatch.setattr(agent, "_repair_assured_body", lambda body, failed: calls.append(failed) or None)
+    monkeypatch.setattr(agent, "_repair_assured_body", lambda body, failed, **k: calls.append(failed) or None)
     ctx, payload = _ctx()
     agent._handle_negotiation_counter(ctx, payload)
     assert len(calls) == 1                                       # exactly one repair pass
@@ -406,7 +406,7 @@ def test_agent_repairs_once_then_shows_what_is_left(monkeypatch):
 
 def test_agent_uses_the_repaired_text_when_repair_fixes_it(monkeypatch):
     agent, stored = _agent(monkeypatch, CANNED.replace("44.80", "43.10"))
-    monkeypatch.setattr(agent, "_repair_assured_body", lambda body, failed: body.replace("43.10", "44.80"))
+    monkeypatch.setattr(agent, "_repair_assured_body", lambda body, failed, **k: body.replace("43.10", "44.80"))
     ctx, payload = _ctx()
     agent._handle_negotiation_counter(ctx, payload)
     a = stored[0]["assurance"]
@@ -471,7 +471,7 @@ def test_from_decision_shows_the_model_postgres_figure_not_the_payload_one(monke
 def test_from_decision_flags_an_invented_price_and_repairs_once(monkeypatch):
     agent, _ = _wrapped(monkeypatch, "Subject: Re\n" + GOOD.replace("44.80", "43.10"))
     calls = []
-    monkeypatch.setattr(agent, "_repair_assured_body", lambda b, f: calls.append(f) or None)
+    monkeypatch.setattr(agent, "_repair_assured_body", lambda b, f, **k: calls.append(f) or None)
     draft = agent.from_decision(dict(DECISION))
     assert len(calls) == 1
     assert any(v["kind"] == "ungrounded_figure" for v in draft["assurance"]["violations"])
@@ -479,7 +479,7 @@ def test_from_decision_flags_an_invented_price_and_repairs_once(monkeypatch):
 
 def test_from_decision_checks_a_premade_negotiation_message_too(monkeypatch):
     agent, _ = _wrapped(monkeypatch, "unused")
-    monkeypatch.setattr(agent, "_repair_assured_body", lambda b, f: None)
+    monkeypatch.setattr(agent, "_repair_assured_body", lambda b, f, **k: None)
     draft = agent.from_decision({**DECISION, "negotiation_message": GOOD.replace("47.50", "52.00")})
     assert any(v["detail"] == "52.00" for v in draft["assurance"]["violations"])
 
@@ -501,7 +501,7 @@ def test_from_prompt_reports_figures_taken_from_the_persons_words_as_unverified(
 
 def test_from_prompt_flags_a_figure_the_person_never_gave(monkeypatch):
     agent, _ = _wrapped(monkeypatch, "Subject: Chairs\nPlease quote for 40 chairs by 12 March 2027.")
-    monkeypatch.setattr(agent, "_repair_assured_body", lambda b, f: None)
+    monkeypatch.setattr(agent, "_repair_assured_body", lambda b, f, **k: None)
     draft = agent.from_prompt("Ask Acme to quote for 25 chairs", context={"supplier_id": "S-1", "workflow_id": "wf-1",
                                                                          "recipients": ["a@x.test"]})
     kinds = {v["kind"] for v in draft["assurance"]["violations"]}
@@ -510,7 +510,7 @@ def test_from_prompt_flags_a_figure_the_person_never_gave(monkeypatch):
 
 def test_from_prompt_refuses_bank_details_and_a_stranger_recipient(monkeypatch):
     agent, _ = _wrapped(monkeypatch, "Subject: Pay\nPlease confirm your bank details for 25 chairs.")
-    monkeypatch.setattr(agent, "_repair_assured_body", lambda b, f: None)
+    monkeypatch.setattr(agent, "_repair_assured_body", lambda b, f, **k: None)
     draft = agent.from_prompt("Ask about 25 chairs", context={"supplier_id": "S-1", "workflow_id": "wf-1",
                                                               "recipients": ["stranger@evil.test"]})
     kinds = {v["kind"] for v in draft["assurance"]["violations"]}
@@ -519,7 +519,7 @@ def test_from_prompt_refuses_bank_details_and_a_stranger_recipient(monkeypatch):
 
 def test_from_prompt_never_states_a_walkaway_price_even_if_the_person_typed_it(monkeypatch):
     agent, _ = _wrapped(monkeypatch, "Subject: Price\nOur limit is 46.00 GBP.")
-    monkeypatch.setattr(agent, "_repair_assured_body", lambda b, f: None)
+    monkeypatch.setattr(agent, "_repair_assured_body", lambda b, f, **k: None)
     draft = agent.from_prompt("Counter at 44.80", context={"supplier_id": "S-1", "workflow_id": "wf-1",
                                                            "recipients": ["a@x.test"], "walkaway_price": 46.0})
     assert any(v["kind"] == "internal_figure_leaked" for v in draft["assurance"]["violations"])
@@ -540,7 +540,7 @@ def test_the_round_number_is_not_reported_as_an_unverified_figure(family):
 
 def test_from_prompt_uses_the_repaired_text_and_clears_the_violation(monkeypatch):
     agent, _ = _wrapped(monkeypatch, "Subject: Chairs\nPlease quote for 40 chairs.")
-    monkeypatch.setattr(agent, "_repair_assured_body", lambda b, f: b.replace("40", "25"))
+    monkeypatch.setattr(agent, "_repair_assured_body", lambda b, f, **k: b.replace("40", "25"))
     draft = agent.from_prompt("Ask Acme to quote for 25 chairs", context={"supplier_id": "S-1", "workflow_id": "wf-1",
                                                                          "recipients": ["a@x.test"]})
     assert draft["assurance"]["repaired"] is True
@@ -551,7 +551,7 @@ def test_from_prompt_uses_the_repaired_text_and_clears_the_violation(monkeypatch
 
 def test_from_decision_uses_the_repaired_text_and_clears_the_violation(monkeypatch):
     agent, _ = _wrapped(monkeypatch, "Subject: Re\n" + GOOD.replace("44.80", "43.10"))
-    monkeypatch.setattr(agent, "_repair_assured_body", lambda b, f: b.replace("43.10", "44.80"))
+    monkeypatch.setattr(agent, "_repair_assured_body", lambda b, f, **k: b.replace("43.10", "44.80"))
     draft = agent.from_decision({**DECISION, "response_deadline": "30 October 2026"})
     assert draft["assurance"]["repaired"] is True
     assert not [v for v in draft["assurance"]["violations"] if v["severity"] == "fail"]

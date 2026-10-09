@@ -34,7 +34,7 @@ class Run:
     """A run whose checks are a fixed table: text -> failures."""
 
     def __init__(self, table):
-        self.table, self.inputs, self.repair_rejected, self.repair_skipped = table, object(), None, None
+        self.table, self.inputs, self.repair_rejected, self.repair_skipped = table, SimpleNamespace(reasoned={}), None, None
 
     def payment_hold(self, body):
         return None
@@ -50,7 +50,7 @@ CLEAN = "Thank you for your offer of 47.50 GBP. We propose 42.00 GBP. Please con
 
 def _agent_returning(monkeypatch, text):
     agent = EmailDraftingAgent()
-    monkeypatch.setattr(agent, "_repair_assured_body", lambda body, failed: text)
+    monkeypatch.setattr(agent, "_repair_assured_body", lambda body, failed, **k: text)
     return agent
 
 
@@ -102,3 +102,22 @@ def test_the_repair_pass_returns_the_models_repair(monkeypatch):
     monkeypatch.setattr(agent, "call_ollama", lambda **kw: _chat_response(fixed))
     out = agent._repair_assured_body("Thank you. [name]", [{"kind": "unresolved_placeholder", "detail": "[name]"}])
     assert out is not None and fixed in out                     # the body is wrapped in <p> by the sanitiser, as every draft is
+
+
+def test_a_missing_deadline_we_do_not_hold_never_reaches_the_model(monkeypatch):
+    agent = EmailDraftingAgent()
+    calls = []
+    monkeypatch.setattr(agent, "call_ollama", lambda **kw: calls.append(kw) or _chat_response("x" * 50))
+    assert agent._repair_assured_body("Thank you. We propose 44.80 GBP. Could you let us know?",
+                                      [{"kind": "missing_required_element", "detail": "deadline", "severity": "fail"}]) is None
+    assert calls == []
+
+
+def test_the_model_is_told_the_deadline_we_hold_and_no_internal_codes(monkeypatch):
+    agent = EmailDraftingAgent()
+    calls = []
+    monkeypatch.setattr(agent, "call_ollama", lambda **kw: calls.append(kw) or _chat_response("x" * 50))
+    agent._repair_assured_body("Body", [{"kind": "missing_required_element", "detail": "deadline", "severity": "fail"},
+                                        {"kind": "ungrounded_figure", "detail": "43.10", "severity": "fail"}], deadline="30 October 2026")
+    told = calls[0]["messages"][1]["content"]
+    assert "30 October 2026" in told and "43.10" in told and "ungrounded_figure" not in told
