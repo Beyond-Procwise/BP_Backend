@@ -45,6 +45,11 @@ class DocumentType:
     requires_parent_evidence: bool = False
     #: Matchable phrases that count as naming a parent, folded like aliases.
     parent_evidence_phrases: Tuple[str, ...] = ()
+    #: Named only by the document's own title, never by mentions in its body.
+    #: For a type whose name is also everyday clause wording ('guarantee',
+    #: 'DPA', 'renewal'): two body mentions were measured to relabel a contract
+    #: that has no clean title of its own.
+    title_only: bool = False
 
 
 _ROLES = (
@@ -403,13 +408,14 @@ DOCUMENT_TYPES: Mapping[str, DocumentType] = {
             "purchase_order",
         ),
         DocumentType("doctype.dpa", "role.attachment", None, None,
-                     ("dpa", "data processing agreement"), (), (), None, status="proposed"),
+                     ("dpa", "data processing agreement"), (), (), None, status="proposed",
+                     title_only=True),
         DocumentType("doctype.side_letter", "role.variation", None, None,
-                     ("side letter",), (), (), None, status="proposed"),
+                     ("side letter",), (), (), None, status="proposed", title_only=True),
         DocumentType("doctype.renewal", "role.variation", None, None,
-                     ("renewal agreement",), (), (), None, status="proposed"),
+                     ("renewal agreement",), (), (), None, status="proposed", title_only=True),
         DocumentType("doctype.guaranty", "role.supporting", None, None,
                      ("guaranty", "guarantee", "parent company guarantee"), (), (), None,
-                     status="proposed"),
+                     status="proposed", title_only=True),
     )
 }
