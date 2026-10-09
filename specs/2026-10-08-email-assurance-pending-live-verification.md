@@ -12,17 +12,17 @@ number, a reasoned field with no basis, a figure in no fact, out-of-range scores
 
 Scored 2026-10-09 against `BeyondProcwise/AgentNick:unified`. No team labels or team scores exist yet, so nothing that needs
 human judgement as its reference can be **Met**; those items are Partial at best. Evidence: the "First live-model run" and
-"Plan step and repair pass, live" sections at the end of this file. **Status: Met 1, Partial 4, Not met 3.**
+"Plan step and repair pass, live" sections at the end of this file. **Status (updated 2026-10-09 evening): Met 1, Partial 5, Not met 2.**
 
 | # | Item | Status | Evidence |
 |---|---|---|---|
 | 1 | Classifier accuracy (from_prompt) | **Partial** | 46/46 clear requests got the intended family, 0 needless questions. It asked on 1 of 9 unclear requests: it gives 0.8-0.9 for almost everything, so the 0.70 ask threshold almost never fires. Lookup keys: 4 wrong names, 0 invented values (no effect today: no family looks up by them). Measured against the AUTHOR's intended labels, not team gold. |
 | 2 | Classifier output format | **Met** | 54/55 usable JSON; the 1 refusal was the prompt-injection request naming a non-existent family, which is the correct outcome. |
-| 3 | Planner quality | **Not met** | 8 requests: 2 good briefs; 3 rejected as malformed (the model returns `reasoned` as ONE object and drops `tone_rationale`: the prompt's wording of `reasoned` is ambiguous); 1 refused for a correctly derived figure ("double the order" of 400 = 800, not in any fact); 1 invented a deadline nobody asked for ("end of business tomorrow"); 1 should have returned `missing` (an invoice due date that is not a fact) and wrote a brief instead. |
-| 4 | Planner steering (A/B) | **Not met** (cannot run) | Blocked by a defect found today: `EmailDraftingAgent._extract_ollama_message` returns "" for every real `ollama` ChatResponse (it requires a dict), so `_chat` and the counter LLM path have never had model text live: every model-written email fell back to its template. There is nothing to A/B until that is fixed (awaiting ruling). |
+| 3 | Planner quality | **Partial** (was Not met) | Prompt reworded after a live A/B on the same 8 requests: 5 good briefs (was 3), none malformed (was 3), no invented deadline, about 10 s per plan (was about 20). Still wrong: an invoice due date the person referred to but did not give is not reported missing; "double the order" (400 to 800) is refused because 800 is in no fact (safe). Pack (b) file changed; re-rehearse before applying. |
+| 4 | Planner steering (A/B) | **Not met** | Run end to end 2026-10-09 with the reader fixed (6 requests, throwaway eval database, real model at every stage). With the brief: judge mean 4.29, 0 of 6 drafts free of failing checks; without: 3.76, 2 of 6. The brief helps the judge's view but the writer fails the checks either way: it INVENTS a sender name, job title, company, email address and phone numbers in the sign-off, names the wrong recipient ("Ms. Thompson" for Alex Morgan), and leaves placeholders ("[Your Full Name]"). The figure check catches the phone numbers; nothing catches the names or addresses. About 49 s per draft with the brief, 32 s without. The reader fix was therefore reverted (local, never pushed). |
 | 5 | Judge calibration | **Partial** | Overall score: good drafts 4.90/4.69 mean; caught 6 of 13 deliberately flawed drafts. With the per-criterion flag (built today, advisory): flags 8 of 13 flawed, 2 of 16 good (false flags, both on clarity_of_ask = 1). Misses tone (aggressive first contact scored 5) and figure errors (covered by the deterministic validator). No team scores, so agreement with people is unmeasured. |
 | 6 | Governed prompt text | **Partial** | Classify and judge prompts produce valid output (54/55, 29/29). The planner prompt does not (3/8 malformed, above): reword `reasoned` (a map of judgement name to {value, basis, confidence}) and require `tone_rationale` as text before pack (b) is applied. |
-| 7 | Repair pass | **Not met** | Live, the same extractor defect makes every repair return nothing, so no draft has ever been repaired. Run with a working extractor (script only, app unchanged): 1 of 8 failing drafts fully fixed (a liability admission removed); 6 came back essentially unchanged and were correctly rejected; 1 (R9) was ACCEPTED while introducing a new `[deadline]` placeholder, because acceptance only counts failures. Also: the repair asks for model `mistral` (the `negotiation_email_model` default); it is not installed, so call_ollama falls back to AgentNick, but would silently use mistral if it were ever installed. |
+| 7 | Repair pass | **Partial** (was Not met) | With plain-English instructions (built) and the reader fixed: 6 of 9 failing drafts come back clean through the agent's own path (was 1 of 8); a missing deadline is repaired only with the deadline the run holds, never invented; a repair that adds a problem is refused (built). Open: once reachable, the repaired text is HTML-escaped a second time in from_prompt drafts, and removing a figure can leave a broken sentence. Not live in production: the reader fix is held back (item 4). |
 | 8 | Latency | **Partial** | Per call: classify about 5 s (max 8.7), judge 4.4-5 s, repair 0.3-0.4 s, planner 15-23 s. A from_prompt draft runs classify + plan + compose + judge, so roughly 30-40 s before the compose itself is timed (compose is untimed because of item 4). Whether that is acceptable is a product decision. |
 
 ## 2. Pending review / decision (not model-dependent)
@@ -399,3 +399,14 @@ Same model. Inputs are invented (supplier names are placeholders, no real rows, 
 * **Judge flag:** any criterion <= 2 flags, never blocks; logged; counted in `metrics.by_family`.
 * **Deadline check:** it did NOT miss the no-deadline control (J-C-013 fails it). The live run sent that draft only to the judge.
   Probing it found it accepted ANY date anywhere and refused real deadlines ("by Friday", "6 Nov"). Fixed; golden case 035.
+
+
+## Second round, 2026-10-09 (after the rulings)
+
+* **Reader fix ruled "fix it", then held back.** `EmailDraftingAgent._extract_ollama_message` was fixed (c389e9a9) and, once model text
+  flowed, the end-to-end run in item 4 showed invented identities and contact details in every draft. Reverted on local Development
+  (4d567054) before the running service could pick it up; the reader tests remain as strict xfail. To put it back safely: (1) the
+  writer must not produce a signature block (append the fixed sign-off in code) and must address the contact on record; (2) a
+  deterministic check for email addresses and phone numbers not in the facts; (3) repair output in the same format as its input
+  (no second escaping).
+* **Repair model** now defaults to AgentNick (was "mistral", which only reached AgentNick by fallback).
