@@ -427,3 +427,11 @@ carries an invented name, address, number, placeholder or escaped tag; 10 of 12 
 deadline, both on the 12-month-commitment request) are flagged. NOT caught by any check, seen in the drafts: invented claims in
 the body (e.g. that an invoice was "settled"), and an ask that was not requested. These need a person, which every send already has.
 Open choice: the sign-off is a fixed constant; a real sender name would need a governed source.
+
+
+## Applied to bp_testdb (2026-10-09 19:0x UTC, by request)
+
+`2026-10-09_email_award_commitment.sql`: UPDATE 4 (the four EmailFamily rows, all still on the original pattern); a re-run updated 0.
+Read back, each row equals the migration's pattern and catches all 13 commitment phrasings and none of the 6 ordinary sentences in
+`tests/services/test_award_commitment_pattern.py`. The running service loads policies at start: it uses the new pattern after its next
+restart or policy reload. bp_sqldb untouched. Classifier ask threshold kept at 0.70 (ruling 2026-10-09).
