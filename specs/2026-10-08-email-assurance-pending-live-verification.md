@@ -12,18 +12,18 @@ number, a reasoned field with no basis, a figure in no fact, out-of-range scores
 
 Scored 2026-10-09 against `BeyondProcwise/AgentNick:unified`. No team labels or team scores exist yet, so nothing that needs
 human judgement as its reference can be **Met**; those items are Partial at best. Evidence: the "First live-model run" and
-"Plan step and repair pass, live" sections at the end of this file. **Status (updated 2026-10-09 evening): Met 1, Partial 5, Not met 2.**
+"Plan step and repair pass, live" sections at the end of this file. **Status (updated 2026-10-09, late): Met 1, Partial 5, Not met 2.** Model-written emails are live in code (ff0f07d1) with the frame and the contact-detail check.
 
 | # | Item | Status | Evidence |
 |---|---|---|---|
 | 1 | Classifier accuracy (from_prompt) | **Partial** | 46/46 clear requests got the intended family, 0 needless questions. It asked on 1 of 9 unclear requests: it gives 0.8-0.9 for almost everything, so the 0.70 ask threshold almost never fires. Lookup keys: 4 wrong names, 0 invented values (no effect today: no family looks up by them). Measured against the AUTHOR's intended labels, not team gold. |
 | 2 | Classifier output format | **Met** | 54/55 usable JSON; the 1 refusal was the prompt-injection request naming a non-existent family, which is the correct outcome. |
 | 3 | Planner quality | **Partial** (was Not met) | Prompt reworded after a live A/B on the same 8 requests: 5 good briefs (was 3), none malformed (was 3), no invented deadline, about 10 s per plan (was about 20). Still wrong: an invoice due date the person referred to but did not give is not reported missing; "double the order" (400 to 800) is refused because 800 is in no fact (safe). Pack (b) file changed; re-rehearse before applying. |
-| 4 | Planner steering (A/B) | **Not met** | Run end to end 2026-10-09 with the reader fixed (6 requests, throwaway eval database, real model at every stage). With the brief: judge mean 4.29, 0 of 6 drafts free of failing checks; without: 3.76, 2 of 6. The brief helps the judge's view but the writer fails the checks either way: it INVENTS a sender name, job title, company, email address and phone numbers in the sign-off, names the wrong recipient ("Ms. Thompson" for Alex Morgan), and leaves placeholders ("[Your Full Name]"). The figure check catches the phone numbers; nothing catches the names or addresses. About 49 s per draft with the brief, 32 s without. The reader fix was therefore reverted (local, never pushed). |
+| 4 | Planner steering (A/B) | **Not met** (now measurable) | Final run 2026-10-09 evening, reader fixed and drafts framed (ff0f07d1), 6 requests x 2: with the brief 5/6 drafts pass every check, judge mean 4.13; without it 5/6, judge mean 4.46. The brief does not measurably improve drafts on this sample and adds a planner call. Earlier the same evening (before framing) the brief looked better (4.29 vs 3.76) but every draft failed on invented identities, so that comparison is void. 6 requests cannot separate the two; a larger set is needed before keeping or dropping the planner. |
 | 5 | Judge calibration | **Partial** | Overall score: good drafts 4.90/4.69 mean; caught 6 of 13 deliberately flawed drafts. With the per-criterion flag (built today, advisory): flags 8 of 13 flawed, 2 of 16 good (false flags, both on clarity_of_ask = 1). Misses tone (aggressive first contact scored 5) and figure errors (covered by the deterministic validator). No team scores, so agreement with people is unmeasured. |
 | 6 | Governed prompt text | **Partial** | Classify and judge prompts produce valid output (54/55, 29/29). The planner prompt does not (3/8 malformed, above): reword `reasoned` (a map of judgement name to {value, basis, confidence}) and require `tone_rationale` as text before pack (b) is applied. |
-| 7 | Repair pass | **Partial** (was Not met) | With plain-English instructions (built) and the reader fixed: 6 of 9 failing drafts come back clean through the agent's own path (was 1 of 8); a missing deadline is repaired only with the deadline the run holds, never invented; a repair that adds a problem is refused (built). Open: once reachable, the repaired text is HTML-escaped a second time in from_prompt drafts, and removing a figure can leave a broken sentence. Not live in production: the reader fix is held back (item 4). |
-| 8 | Latency | **Partial** | Per call: classify about 5 s (max 8.7), judge 4.4-5 s, repair 0.3-0.4 s, planner 15-23 s. A from_prompt draft runs classify + plan + compose + judge, so roughly 30-40 s before the compose itself is timed (compose is untimed because of item 4). Whether that is acceptable is a product decision. |
+| 7 | Repair pass | **Partial** | Plain instructions: 6 of 9 failing drafts clean (was 1 of 8). Live and safe: repaired text keeps its format (no second escaping) and the code's greeting and sign-off are put back before it is checked; a repair that adds a problem is refused; a missing deadline is only ever filled with the one the run holds. Open: removing a figure can leave a clumsy sentence (no check reads grammar). |
+| 8 | Latency | **Partial** | Per call: classify about 5 s (max 8.7), judge 4.4-5 s, repair 0.3-0.4 s, planner 15-23 s. A from_prompt draft runs classify + plan + compose + judge, so roughly 30-40 s before the compose itself is timed (compose is untimed because of item 4). Whether that is acceptable is a product decision. Final end-to-end run: 70-82 s per free-text draft (36 s earlier the same evening on the same code path minus framing, which costs nothing measurable): the GPU is shared with other sessions; re-time on a quiet host. |
 
 ## 2. Pending review / decision (not model-dependent)
 
@@ -410,3 +410,20 @@ Same model. Inputs are invented (supplier names are placeholders, no real rows, 
   deterministic check for email addresses and phone numbers not in the facts; (3) repair output in the same format as its input
   (no second escaping).
 * **Repair model** now defaults to AgentNick (was "mistral", which only reached AgentNick by fallback).
+
+
+## Third round, 2026-10-09 late: model-written emails made safe and re-enabled (ff0f07d1)
+
+Ruled "go ahead" with four safeguards; all built, each broken on purpose and seen red:
+1. **Frame in code** (`draft_assurance/frame.py`): the model's greeting and signature are cut from its raw text (whole line or
+   inline, e.g. "Dear Procurement Manager, We refer to..."), the greeting names the contact on record, the sign-off is fixed
+   ("Kind regards, Procurement Team"). The model is also told to write body paragraphs only. A caller-supplied message is untouched.
+2. **Contact on record** in the greeting (the counter path prefers it over the payload's contact name).
+3. **Contact-detail check** (`validator.check_contact_details`): any email address or phone number not on record fails, in every family.
+4. **Repair keeps format and frame.**
+
+Live end to end (6 requests, with and without the brief): every draft greets the contact on record with the fixed sign-off; none
+carries an invented name, address, number, placeholder or escaped tag; 10 of 12 pass every check; the 2 that fail (no ask, no
+deadline, both on the 12-month-commitment request) are flagged. NOT caught by any check, seen in the drafts: invented claims in
+the body (e.g. that an invoice was "settled"), and an ask that was not requested. These need a person, which every send already has.
+Open choice: the sign-off is a fixed constant; a real sender name would need a governed source.
