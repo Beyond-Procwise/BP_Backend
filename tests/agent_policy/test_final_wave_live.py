@@ -154,6 +154,46 @@ def test_recheck_outage_on_the_last_retry_records_not_run_and_tells_people(conn,
     assert replay_retry.retry_lost_replays(conn, later, run=run, decision_ids=[did])["retried"] == 0
 
 
+@live
+def test_no_runtime_on_the_last_retry_records_not_run_and_tells_people(conn, world, stub, monkeypatch):
+    """Stage 4 task 0, m4: every retry ends in no_runtime. Earlier attempts write nothing; the last
+    one records the replay as not run and tells the approvers and the requester."""
+    doc = _doc(world, f"TST-{world.tag}")
+    _policies(monkeypatch, [doc])
+    did, _ = _open(conn, world, doc)
+    _approve(conn, world, did)
+    monkeypatch.setattr(R, "_resolve_agent_nick", lambda _n: None)
+    later = datetime.now(timezone.utc) + replay_retry.RETRY_AFTER + timedelta(seconds=5)
+    for attempt in range(1, replay_retry.MAX_ATTEMPTS + 1):
+        assert replay_retry.retry_lost_replays(conn, later, run=R.run, decision_ids=[did])["retried"] == 1
+        if attempt < replay_retry.MAX_ATTEMPTS:
+            assert _replays(conn, world) == [], f"attempt {attempt} consumed the claim"
+    rows = _replays(conn, world)
+    assert len(rows) == 1 and rows[0]["facts"]["outcome"] == "not_run"
+    assert rows[0]["facts"]["error"] == R.NO_RUNTIME
+    notes = [n for n in _notes(conn, link=f"decision:{did}") if "could not be run" in n["message"]]
+    assert sorted(n["recipient"] for n in notes) == sorted([f"sub-{world.tag}", world.requester])
+    assert all(n["message"].endswith("was approved but could not be run: no agent runtime was available.")
+               or "was approved but could not be run: no agent runtime was available." in n["message"]
+               for n in notes)
+    assert stub.calls == []
+    # nothing further to retry, and a direct run with a runtime does not run it a second time
+    assert replay_retry.retry_lost_replays(conn, later, run=R.run, decision_ids=[did])["retried"] == 0
+    monkeypatch.undo()
+    assert R.run(did, agent_nick=stub.nick)["status"] == "already_replayed"
+    assert len(_replays(conn, world)) == 1
+
+
+@live
+def test_no_runtime_before_the_last_attempt_still_writes_nothing(conn, world, stub, monkeypatch):
+    doc = _doc(world, f"TST-{world.tag}")
+    did, _ = _open(conn, world, doc)
+    _approve(conn, world, did)
+    monkeypatch.setattr(R, "_resolve_agent_nick", lambda _n: None)
+    assert R.run(did)["status"] == "no_runtime"          # attempts == 0: the immediate post-approval try
+    assert _replays(conn, world) == []
+
+
 # ------------------------------------------------------------------ I4: the re-check's new case
 @live
 def test_recheck_new_case_notifies_its_first_level_and_is_found_by_reuse(conn, world, stub, monkeypatch):

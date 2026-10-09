@@ -471,7 +471,12 @@ def list_deciders(conn) -> List[Dict[str, Any]]:
 def decider_problems(name: str, groups: Any, emails: Any, notes: Any) -> Tuple[List[Dict[str, Any]], List[str], List[str]]:
     """Validate a decider-map row. Returns (problems, clean_groups, clean_emails)."""
     problems: List[Dict[str, Any]] = []
-    if not DECIDER_NAME_RE.match(name or ""):
+    if (name or "").strip().casefold() == approvals.ADMIN_RECIPIENT.casefold():
+        # the fixed recipient of "cannot be routed" notices, read by every Admin: a mapping under
+        # this name would let its non-Admin members read them
+        problems.append({"field": "name", "code": "reserved_name",
+                         "message": f"{approvals.ADMIN_RECIPIENT} is reserved for Admins; choose another name."})
+    elif not DECIDER_NAME_RE.match(name or ""):
         problems.append({"field": "name", "code": "invalid",
                          "message": "A decider name starts with a letter and uses letters, numbers, spaces "
                                     "and & , ' . - only (64 characters at most)."})

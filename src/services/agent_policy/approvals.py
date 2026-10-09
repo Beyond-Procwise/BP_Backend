@@ -369,6 +369,10 @@ def _load_locked(cur, decision_id: int, *, skip_locked: bool = False) -> Optiona
     row = cur.fetchone()
     if not row:
         return None
+    return _case_from_row(cur, row)
+
+
+def _case_from_row(cur, row) -> Dict[str, Any]:
     case = dict(zip([d[0] for d in cur.description], row))
     case["facts"] = _facts(case["facts"])
     case["levels"] = _jsonable(case["levels"], [])
@@ -398,32 +402,42 @@ def act(conn, decision_id: int, *, principal, verb: str, reason: Optional[str], 
     if not actor:
         raise ApprovalRefused("not_signed_in", "Sign in to decide.", 401)
 
+    if mapping is None:
+        mapping = deciders.load_map(conn)
+
+    def _permitted(case):
+        """The refusals that need the case's own data. Returns (levels, level, level_name, facts)."""
+        if case["status"] != "open":
+            raise ApprovalRefused("not_open", "This request has already been decided.", 409)
+        levels, level = case["levels"], case["current_level"]
+        level_name = levels[level]["name"] if 0 <= level < len(levels) else None
+        facts = case["facts"]
+        if _same_person(principal, facts.get("requestedBy")):
+            raise ApprovalRefused("self_approval",
+                                  "You cannot decide on an action your own request triggered.", 403)
+        if not level_name or not deciders.eligible(principal, level_name, mapping):
+            raise ApprovalRefused("not_eligible",
+                                  f"Only someone linked to {level_name or 'this level'} can decide this now.",
+                                  403)
+        return levels, level, level_name, facts
+
     with _tx(conn):
         with conn.cursor() as cur:
             cur.execute(_CASE_SQL, (decision_id, SUBJECT_TYPE))
             peek = cur.fetchone()
             if peek is None:
                 raise ApprovalRefused("not_found", "No such approval request.", 404)
+            peeked = _case_from_row(cur, peek)
+            # Permission first, on an unlocked read: a refused caller never takes a group lock.
+            _permitted(peeked)
             # every case of the group, locked in id order, before this one is read for real
-            _member_ids(cur, decision_id, _facts(peek[[d[0] for d in cur.description].index("facts")]),
-                        lock=True)
+            # (the case row is locked only here, after the group, so the order stays id order)
+            _member_ids(cur, decision_id, peeked["facts"], lock=True)
             case = _load_locked(cur, decision_id)
             if case is None:
                 raise ApprovalRefused("not_found", "No such approval request.", 404)
-            if case["status"] != "open":
-                raise ApprovalRefused("not_open", "This request has already been decided.", 409)
-            levels, level = case["levels"], case["current_level"]
-            level_name = levels[level]["name"] if 0 <= level < len(levels) else None
-            facts = case["facts"]
-            if _same_person(principal, facts.get("requestedBy")):
-                raise ApprovalRefused("self_approval",
-                                      "You cannot decide on an action your own request triggered.", 403)
-            if mapping is None:
-                mapping = deciders.load_map(conn)
-            if not level_name or not deciders.eligible(principal, level_name, mapping):
-                raise ApprovalRefused("not_eligible",
-                                      f"Only someone linked to {level_name or 'this level'} can decide this now.",
-                                      403)
+            # the case may have moved (decided, escalated) between the read and the lock: judge again
+            levels, level, level_name, facts = _permitted(case)
             action_id = _record(cur, case, verb=verb, actor=actor, reason=reason, now=now,
                                 level=level, level_name=level_name)
             _update_firing(cur, facts.get("firingId"),

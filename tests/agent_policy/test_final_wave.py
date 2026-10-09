@@ -111,3 +111,22 @@ def test_admins_read_the_administrators_notices(monkeypatch):
     monkeypatch.setattr(V.deciders, "load_map", lambda conn: {})
     assert A.ADMIN_RECIPIENT in V._recipients(object(), P(), is_admin=True)
     assert A.ADMIN_RECIPIENT not in V._recipients(object(), P(), is_admin=False)
+
+
+# ------------------------------------------------------------------ stage 4 task 0, m1: the reserved decider name
+@pytest.mark.parametrize("name", ["Administrators", "administrators", "ADMINISTRATORS"])
+def test_the_administrators_recipient_cannot_be_mapped_as_a_decider(client, monkeypatch, name):
+    """'Administrators' is the fixed recipient every Admin reads; mapping members to it would let
+    non-Admins read unroutable notices. Refused 422 `reserved_name`, case-insensitively, trimmed."""
+    saved = []
+    monkeypatch.setattr(V, "upsert_decider", lambda *a, **kw: saved.append(a) or {})
+    r = client.put(f"/agent-policies/deciders/{name}", headers=HDR, json={"groups": ["G1"]})
+    assert r.status_code == 422, r.text
+    assert [p["code"] for p in r.json()["problems"]] == ["reserved_name"]
+    assert saved == []
+
+
+def test_the_reserved_name_is_matched_after_trimming_and_before_other_checks():
+    probs, _, _ = V.decider_problems("  administrators ", ["G1"], [], None)
+    assert [p["code"] for p in probs] == ["reserved_name"] and probs[0]["field"] == "name"
+    assert V.decider_problems("Administrators Assistant", ["G1"], [], None)[0] == []

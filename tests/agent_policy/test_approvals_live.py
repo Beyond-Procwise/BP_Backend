@@ -404,3 +404,40 @@ def test_unroutable_level_refuses_admin_and_times_out_to_rejected(conn, world):
     assert A.sweep(conn, NOW + timedelta(hours=3), decision_ids=[did])["rejected"] == 1
     assert _row(conn, "bp_policy_firing", "firing_id", fid)["result"] == "timed_out"
     assert [a[:2] for a in _actions(conn, world)] == [("reject", "system:timeout")]
+
+
+# ------------------------------------------------------------------ stage 4 task 0, m2: lock after permission
+@live
+def test_a_refused_caller_never_takes_group_locks(conn, world, monkeypatch):
+    """Eligibility, self-approval and not-open are decided BEFORE the group lock, so a refused
+    caller never blocks (or is blocked by) the people deciding the group."""
+    locked = []
+    real = A._member_ids
+
+    def spy(cur, decision_id, facts, *, lock=False):
+        locked.append(lock)
+        return real(cur, decision_id, facts, lock=lock)
+    monkeypatch.setattr(A, "_member_ids", spy)
+
+    did, _ = _open(conn, world)
+    with pytest.raises(A.ApprovalRefused) as e:
+        A.act(conn, did, principal=_P("sub-l2", groups=[world.l2_group]), verb="approve", reason=None, now=NOW,
+              replay=_NO_REPLAY)
+    assert e.value.code == "not_eligible"
+    did2, _ = _open(conn, world, requested_by="sub-l1")
+    with pytest.raises(A.ApprovalRefused) as e:
+        A.act(conn, did2, principal=_P("sub-l1", world.l1_email), verb="approve", reason=None, now=NOW,
+              replay=_NO_REPLAY)
+    assert e.value.code == "self_approval"
+    assert True not in locked, "a refused caller took a group lock"
+
+    # an eligible caller still locks the group, once, and the decision is recorded
+    A.act(conn, did, principal=_P("sub-l1", world.l1_email), verb="approve", reason=None, now=NOW,
+          replay=_NO_REPLAY)
+    assert locked.count(True) == 1
+    # and a second decision on the now-closed case is refused without locks
+    n = locked.count(True)
+    with pytest.raises(A.ApprovalRefused) as e:
+        A.act(conn, did, principal=_P("sub-l1", world.l1_email), verb="approve", reason=None, now=NOW,
+              replay=_NO_REPLAY)
+    assert e.value.code == "not_open" and locked.count(True) == n

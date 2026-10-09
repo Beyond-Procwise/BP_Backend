@@ -311,14 +311,58 @@ def _check_unavailable(cur, decision_id: int, case: Dict[str, Any], members: Lis
         return {"status": "check_unavailable", "retry": True}
     logger.error("replay re-check unavailable for decision %s on the last attempt: %s",
                  decision_id, type(exc).__name__)
+    rid = _give_up(cur, case, members, key, error=f"policy_check_unavailable: {type(exc).__name__}",
+                   why="policy checks were unavailable")
+    return {"status": "check_unavailable", "replayId": rid}
+
+
+def _give_up(cur, case: Dict[str, Any], members: List[Dict[str, Any]], key: str, *, error: str, why: str) -> int:
+    """The last retry attempt failed for a reason outside the action itself: record the replay as
+    not run and tell the approvers and the requester, so an approved action never vanishes."""
     rid = _insert_replay(cur, key=key, case=case, members=members,
-                         facts={"ok": False, "outcome": "not_run", "resultSummary": None,
-                                "error": f"policy_check_unavailable: {type(exc).__name__}"})
+                         facts={"ok": False, "outcome": "not_run", "resultSummary": None, "error": error})
+    facts = case["facts"]
     who = _approvers(cur, members) + [facts.get("requestedBy")]
     approvals._notify(cur, facts.get("firingId"), list(dict.fromkeys(w for w in who if w)),
-                      f"{approvals._action_text(facts)} was approved but could not be run: policy checks "
-                      "were unavailable.", case["decision_id"])
-    return {"status": "check_unavailable", "replayId": rid}
+                      f"{approvals._action_text(facts)} was approved but could not be run: {why}.",
+                      case["decision_id"])
+    return rid
+
+
+def _no_runtime_give_up(decision_id: int) -> Dict[str, Any]:
+    """No agent runtime was found. Normally nothing is written (a later run can proceed); but when
+    this was the retry sweeper's LAST attempt there is no later run, so say so loudly (the I3 path)."""
+    base = {"status": "no_runtime", "error": NO_RUNTIME}
+    with _connect() as conn:
+        prev = getattr(conn, "autocommit", False)
+        conn.autocommit = False
+        try:
+            with conn.cursor() as cur:
+                case = _load_case(cur, decision_id)
+                if case is None or int(case["facts"].get("replayAttempts") or 0) < replay_retry.MAX_ATTEMPTS:
+                    conn.commit()
+                    return base
+                if not _members(cur, case, lock=True):
+                    conn.commit()
+                    return base
+                members = _members(cur, case, lock=False)
+                if (any(m["status"] == "open" for m in members)
+                        or any(_verdict_of(cur, m) != "approve" for m in members)):
+                    conn.commit()
+                    return base
+                key = _replay_key(members)
+                if _already_replayed(cur, key):
+                    conn.commit()
+                    return base
+                logger.error("replay of decision %s gave up on its last attempt: %s", decision_id, NO_RUNTIME)
+                rid = _give_up(cur, case, members, key, error=NO_RUNTIME, why="no agent runtime was available")
+            conn.commit()
+            return {**base, "replayId": rid}
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.autocommit = prev
 
 
 def _record_recheck(cur, verdict, *, result: str, action: Dict[str, Any], requested_by: Optional[str],
@@ -346,7 +390,7 @@ def run(decision_id: int, *, agent_nick: Any = None) -> Dict[str, Any]:
         if nick is None:
             # nothing claimed, nothing written: a later run with a runtime can still proceed
             logger.warning("replay of decision %s not attempted: %s", decision_id, NO_RUNTIME)
-            return {"status": "no_runtime", "error": NO_RUNTIME}
+            return _no_runtime_give_up(decision_id)
         with _connect() as conn:
             return _run(conn, int(decision_id), nick)
     except Exception as exc:  # noqa: BLE001
