@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from services import output_safety as osafe
-from services.agent_policy import contract, readiness
+from services.agent_policy import conflict_cases, contract, readiness
 from services.agent_policy.compiler import compile_policy
 from services.agent_policy.registry import load_registry
 from services.agent_policy.settings import load_settings
@@ -324,8 +324,13 @@ def get_policy(conn, policy_key: str) -> Dict[str, Any]:
     versions = [{"version": r[0], "savedAs": r[1], "savedBy": r[2], "savedAt": r[3].isoformat(),
                  "changeNote": r[4], "form": _j(r[5]), "compiled": _j(r[6]), "problems": _j(r[7]),
                  "confidence": _j(r[8])} for r in cur.fetchall()]
+    for v in versions:
+        if head[1] is not None and v["version"] == head[1] and isinstance(v["compiled"], dict):
+            v["compiled"] = conflict_cases.overlay(cur, [v["compiled"]])[0]   # what the orchestrator is fed
+    history = conflict_cases.history_for(cur, policy_key, head[2], head[0])
     return {"policyKey": policy_key, "status": head[0], "liveVersion": head[1], "latestVersion": head[2],
-            "areaName": head[3], "versions": versions}
+            "areaName": head[3], "versions": versions, "conflicts": history["conflicts"],
+            "pendingConflictAction": history["pendingAction"]}
 
 
 def list_policies(conn) -> List[Dict[str, Any]]:
@@ -334,8 +339,10 @@ def list_policies(conn) -> List[Dict[str, Any]]:
         "SELECT p.policy_key, p.status, p.live_version, p.latest_version, v.form_state, v.confidence, v.problems"
         " FROM proc.bp_agent_policy p JOIN proc.bp_agent_policy_version v"
         "   ON v.policy_key = p.policy_key AND v.version = p.latest_version ORDER BY p.policy_key")
+    rows = cur.fetchall()
+    open_cases = conflict_cases.open_cases_by_policy(cur)
     out = []
-    for key, status, live, latest, form, conf, problems in cur.fetchall():
+    for key, status, live, latest, form, conf, problems in rows:
         form = _j(form) or {}
         src = form.get("source") or {}
         out.append({"policyKey": key, "status": status, "liveVersion": live, "latestVersion": latest,
@@ -344,7 +351,8 @@ def list_policies(conn) -> List[Dict[str, Any]]:
                     "outcome": form.get("outcome"),
                     "source": {"document": src.get("document"), "documentVersion": src.get("documentVersion"),
                                "reference": src.get("reference")},
-                    "confidence": _j(conf), "problemsCount": len(_j(problems) or [])})
+                    "confidence": _j(conf), "problemsCount": len(_j(problems) or []),
+                    "openConflicts": list(open_cases.get(key, []))})
     return out
 
 
@@ -353,4 +361,6 @@ def live_documents(conn) -> List[Dict[str, Any]]:
     cur.execute("SELECT v.compiled FROM proc.bp_agent_policy p JOIN proc.bp_agent_policy_version v"
                 " ON v.policy_key = p.policy_key AND v.version = p.live_version"
                 " WHERE p.status = 'live' ORDER BY p.policy_key")
-    return [_j(r[0]) for r in cur.fetchall()]
+    # standing rules are overlaid at read time: version rows are immutable (the orchestrator feed
+    # and live_policies.load both read through here)
+    return conflict_cases.overlay(cur, [_j(r[0]) for r in cur.fetchall()])

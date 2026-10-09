@@ -551,7 +551,7 @@ def retire(key: str, body: RetireBody, p: Principal = Depends(gateway_principal)
     try:
         with _conn() as conn:
             try:
-                return repo.retire(conn, key, base_version=body.baseVersion, actor=p.subject, change_note=body.changeNote)
+                out = repo.retire(conn, key, base_version=body.baseVersion, actor=p.subject, change_note=body.changeNote)
             except repo.StaleVersion as exc:
                 raise HTTPException(status_code=409, detail=f"Someone saved a newer version ({exc}). Reload and try again.")
             except repo.InvalidTransition:
@@ -560,6 +560,18 @@ def retire(key: str, body: RetireBody, p: Principal = Depends(gateway_principal)
                 raise HTTPException(status_code=404, detail="no such policy")
     finally:
         live_policies.invalidate()
+    _close_moot(key)
+    return out
+
+
+def _close_moot(key: str) -> None:
+    """A retired policy's open conflict cases close as moot, on a fresh connection. Best effort:
+    the retire is never undone."""
+    try:
+        with _conn() as conn:
+            conflict_cases.close_moot(conn, key, now=datetime.now(timezone.utc))
+    except Exception as exc:  # noqa: BLE001
+        logger.error("closing conflict cases of retired %s failed: %s", key, type(exc).__name__)
 
 
 @orchestrator_router.get("/v2/live")

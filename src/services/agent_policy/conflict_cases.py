@@ -13,6 +13,13 @@ Dedup, under a per-pair advisory lock taken before any check:
 The partial unique index on open policy pairs is the backstop: tripping it is a bug, and it
 raises and rolls the whole transaction back.
 
+Deciding (decide_policy): anyone linked to EITHER owner name decides (Admin is not automatic);
+one decision closes the case. keep_both writes only a standing-rule row (the pair's previous rule
+is superseded, superseded_at and superseded_by always set together); change and limit write no
+version (the owner's own save applies them); retire waits for the normal two-step retire. A
+retired policy's open cases close as moot (close_moot). Standing rules reach each live policy's
+conflicts[] at read time (overlay), because version rows are immutable.
+
 get_conn() is AUTOCOMMIT: every write runs in approvals._tx.
 """
 from __future__ import annotations
@@ -355,3 +362,319 @@ def after_save(conn, policy_key: str) -> None:
         detect_for(conn, key)
     except Exception as exc:  # noqa: BLE001
         logger.error("conflict detection failed for %s: %s", key, type(exc).__name__)
+
+
+# ---------------------------------------------------------------------------- deciding
+#: Who closes a case whose policy was retired, and the action scope of every non-rule outcome.
+RETIRED_ACTOR = "system:retired"
+MOOT = "moot"
+_APPLIED = {"keep_both": "standing_rule", "change": "draft_pending", "limit": "draft_pending",
+            "retire": "retire_pending"}
+_PENDING_VERBS = ("change", "limit", "retire")
+_LABELS = {"keep_both": "Keep both: {} takes priority", "change": "Change {}", "limit": "Limit {}",
+           "retire": "Retire {}"}
+
+
+class ConflictRefused(Exception):
+    """A refused decision. `status` is the HTTP status a router should answer with
+    (the same shape as approvals.ApprovalRefused)."""
+
+    def __init__(self, code: str, message: str, status: int = 403):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.status = status
+
+
+def option_label(option: str) -> str:
+    """The words a person reads for an option (the screens use the same ones)."""
+    verb, _, key = str(option).partition(":")
+    return _LABELS[verb].format(key) if verb in _LABELS else str(option)
+
+
+def _iso(v: Any) -> Any:
+    if isinstance(v, datetime):
+        return (v if v.tzinfo else v.replace(tzinfo=timezone.utc)).astimezone(timezone.utc).isoformat()
+    return v
+
+
+_POLICY_CASE_SQL = """
+    SELECT decision_id, subject_id, resolution, rationale, policy_name, facts, status, options
+      FROM proc.bp_decision
+     WHERE decision_id = %s AND subject_type = %s
+"""
+
+
+def _case(cur, decision_id: int, *, lock: bool) -> Optional[Dict[str, Any]]:
+    cur.execute(_POLICY_CASE_SQL + (" FOR UPDATE" if lock else ""), (decision_id, SUBJECT_POLICY))
+    row = cur.fetchone()
+    if not row:
+        return None
+    case = dict(zip([d[0] for d in cur.description], row))
+    case["facts"] = _j(case["facts"], {}) or {}
+    case["options"] = _j(case["options"], []) or []
+    return case
+
+
+def _case_owners(facts: Dict[str, Any]) -> List[str]:
+    out: List[str] = []
+    for p in facts.get("policies") or []:
+        name = str((p or {}).get("owner") or "").strip()
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+def _record_action(cur, case: Dict[str, Any], *, decision: str, actor: str, now: datetime, reason: Optional[str],
+                   scope: str, facts: Dict[str, Any]) -> int:
+    """The action row and the original's close, the way approvals._record does it."""
+    cur.execute(
+        """
+        INSERT INTO proc.bp_decision (
+            subject_type, subject_id, decision, resolution, rationale, policy_id, policy_name,
+            facts, evidence, status, actioned_by, actioned_at, override_reason,
+            workflow_id, agent, created_by, decision_scope
+        ) VALUES (%s,%s,%s,%s,%s,NULL,%s,%s,'[]','actioned',%s,%s,%s,NULL,%s,%s,%s)
+        RETURNING decision_id
+        """,
+        (SUBJECT_POLICY, case["subject_id"], decision, case["resolution"], case["rationale"], case["policy_name"],
+         json.dumps(facts, default=str), actor, now, reason, _AGENT, actor, scope),
+    )
+    action_id = int(cur.fetchone()[0])
+    cur.execute("UPDATE proc.bp_decision SET status = 'actioned' WHERE decision_id = %s AND subject_type = %s",
+                (case["decision_id"], SUBJECT_POLICY))
+    return action_id
+
+
+def _close_conflict(cur, decision_id: int, *, outcome: str, actor: str, now: datetime, by_person: bool) -> None:
+    cur.execute(
+        "UPDATE proc.bp_agent_policy_conflict SET is_open = false, outcome = %s, decided_by = %s, decided_at = %s, "
+        "by_person = %s WHERE decision_id = %s AND is_open",
+        (outcome, actor, now, by_person, decision_id),
+    )
+
+
+def _latest_versions(cur, keys: List[str]) -> Dict[str, int]:
+    cur.execute("SELECT policy_key, latest_version FROM proc.bp_agent_policy WHERE policy_key = ANY(%s)", (keys,))
+    return {k: int(v) for k, v in cur.fetchall()}
+
+
+def _write_rule(cur, *, pair: str, prevails: str, yields: str, case_decision_id: int, action_id: int,
+                actor: str, now: datetime) -> None:
+    """Supersede the pair's in-force rule (both columns, always together) and insert the new one."""
+    cur.execute(
+        "UPDATE proc.bp_agent_policy_conflict_rule SET superseded_at = %s, superseded_by = %s "
+        "WHERE pair_key = %s AND superseded_at IS NULL",
+        (now, action_id, pair),
+    )
+    cur.execute(
+        "INSERT INTO proc.bp_agent_policy_conflict_rule (pair_key, prevails, yields, rule_text, decision_id, "
+        "decided_by, decided_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+        (pair, prevails, yields, f"{prevails} takes priority over {yields}", case_decision_id, actor, now),
+    )
+
+
+def _invalidate_enforcement() -> None:
+    from services.agent_policy import live_policies   # lazily: live_policies imports the repo, which imports us
+    live_policies.invalidate()
+
+
+def decide_policy(conn, decision_id: int, *, principal, option: str, reason: Optional[str],
+                  limit_text: Optional[str], now: datetime, mapping=None) -> Dict[str, Any]:
+    """An owner decides a policy case. Writes the action row, closes the case, and for keep_both the
+    standing rule; change, limit and retire write NO policy version (the owner's own save or the
+    two-step retire applies them). Raises ConflictRefused when not allowed."""
+    reason = (reason or "").strip() or None
+    limit_text = (limit_text or "").strip() or None
+    option = str(option or "")
+    actor = getattr(principal, "subject", None)
+    if not actor:
+        raise ConflictRefused("not_signed_in", "Sign in to decide.", 401)
+    if mapping is None:
+        mapping = deciders.load_map(conn)
+
+    def _permitted(case: Optional[Dict[str, Any]]) -> None:
+        if case is None:
+            raise ConflictRefused("not_found", "No such conflict case.", 404)
+        if option not in case["options"]:
+            raise ConflictRefused("unknown_option", "That is not one of this case's options.", 422)
+        if not reason:
+            raise ConflictRefused("reason_required", "A decision needs a reason.", 422)
+        if option.startswith("limit:") and not limit_text:
+            raise ConflictRefused("limit_required", "Say how the policy should be limited.", 422)
+        if case["status"] != "open":
+            raise ConflictRefused("not_open", "This conflict has already been decided.", 409)
+        owners = _case_owners(case["facts"])
+        if not any(deciders.eligible(principal, o, mapping) for o in owners):
+            raise ConflictRefused("not_eligible",
+                                  "Only someone linked to one of the policies' owners can decide this.", 403)
+
+    verb, _, chosen = option.partition(":")
+    with approvals._tx(conn):
+        with conn.cursor() as cur:
+            _permitted(_case(cur, decision_id, lock=False))      # refused callers never take the lock
+            case = _case(cur, decision_id, lock=True)
+            _permitted(case)                                     # it may have been decided meanwhile
+            pair = str(case["subject_id"])
+            keys = pair.split("|")
+            facts = dict(case["facts"])
+            facts["caseId"] = conflict_payload.case_id(decision_id)
+            facts["limitText"] = limit_text if verb == "limit" else None
+            facts["versionsAtDecision"] = _latest_versions(cur, keys)
+            scope = conflict_payload.scope_of(option)
+            action_id = _record_action(cur, case, decision=option, actor=actor, now=now, reason=reason,
+                                       scope=scope, facts=facts)
+            _close_conflict(cur, decision_id, outcome=option, actor=actor, now=now, by_person=True)
+            if verb == "keep_both":
+                other = next(k for k in keys if k != chosen)
+                _write_rule(cur, pair=pair, prevails=chosen, yields=other, case_decision_id=decision_id,
+                            action_id=action_id, actor=actor, now=now)
+            _notify(cur, _case_owners(case["facts"]),
+                    f"The conflict between {keys[0]} and {keys[1]} was decided: {option_label(option)}.", decision_id)
+    _invalidate_enforcement()
+    row = {"decision_id": decision_id, "decision": option, "decision_scope": scope, "actioned_by": actor,
+           "actioned_at": now.isoformat(), "override_reason": reason}
+    out = conflict_payload.returned_decision(row)
+    out["actionId"] = action_id
+    out["applied"] = _APPLIED[verb]
+    return out
+
+
+def close_moot(conn, policy_key: str, *, now: datetime) -> int:
+    """Close every open policy case naming a retired policy as moot. Returns how many were closed."""
+    reason = f"{policy_key} was retired"
+    closed = 0
+    with approvals._tx(conn):
+        with conn.cursor() as cur:
+            cur.execute("SELECT decision_id FROM proc.bp_agent_policy_conflict WHERE kind = 'policy' AND is_open "
+                        "AND policy_keys @> ARRAY[%s]::text[] ORDER BY decision_id", (policy_key,))
+            for (did,) in cur.fetchall():
+                case = _case(cur, int(did), lock=True)
+                if case is None or case["status"] != "open":
+                    continue                                     # decided between the read and the lock
+                facts = dict(case["facts"])
+                facts["caseId"] = conflict_payload.case_id(did)
+                _record_action(cur, case, decision=MOOT, actor=RETIRED_ACTOR, now=now, reason=reason,
+                               scope="this_action", facts=facts)
+                _close_conflict(cur, int(did), outcome=MOOT, actor=RETIRED_ACTOR, now=now, by_person=False)
+                keys = str(case["subject_id"]).split("|")
+                _notify(cur, _case_owners(case["facts"]),
+                        f"The conflict between {keys[0]} and {keys[1]} was closed: {reason}.", int(did))
+                closed += 1
+    if closed:
+        _invalidate_enforcement()
+    return closed
+
+
+# ---------------------------------------------------------------------------- standing rules + overlay
+def rules_for(cur, keys: List[str]) -> List[Dict[str, Any]]:
+    """The in-force standing rules touching any of the keys."""
+    cur.execute(
+        "SELECT pair_key, prevails, yields, rule_text, decision_id, decided_by, decided_at "
+        "FROM proc.bp_agent_policy_conflict_rule WHERE superseded_at IS NULL "
+        "AND (prevails = ANY(%s) OR yields = ANY(%s)) ORDER BY rule_id",
+        (list(keys), list(keys)),
+    )
+    cols = ("pair_key", "prevails", "yields", "rule_text", "decision_id", "decided_by", "decided_at")
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def overlay(cur, docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Each doc with its conflicts[] set from the in-force standing rules. Returns NEW dicts and
+    never changes its input: version rows are immutable and cached copies are shared."""
+    keys = sorted({str(d.get("id")) for d in docs if isinstance(d, dict) and d.get("id")})
+    if not keys:
+        return list(docs)
+    by_key: Dict[str, List[Dict[str, Any]]] = {}
+    for r in rules_for(cur, keys):
+        for me, other in ((r["prevails"], r["yields"]), (r["yields"], r["prevails"])):
+            by_key.setdefault(me, []).append({
+                "with": other, "rule": r["rule_text"], "caseId": conflict_payload.case_id(r["decision_id"]),
+                "decidedAt": _iso(r["decided_at"]), "prevails": r["prevails"]})
+    out = []
+    for d in docs:
+        if isinstance(d, dict):
+            d = {**d, "conflicts": [dict(e) for e in by_key.get(str(d.get("id")), [])]}
+        out.append(d)
+    return out
+
+
+# ---------------------------------------------------------------------------- history
+def open_cases_by_policy(cur) -> Dict[str, List[str]]:
+    """policy key -> its open policy caseIds."""
+    cur.execute("SELECT decision_id, policy_keys FROM proc.bp_agent_policy_conflict "
+                "WHERE kind = 'policy' AND is_open ORDER BY decision_id")
+    out: Dict[str, List[str]] = {}
+    for did, keys in cur.fetchall():
+        for k in keys or []:
+            out.setdefault(k, []).append(conflict_payload.case_id(did))
+    return out
+
+
+def _action_dict(row) -> Dict[str, Any]:
+    decision_id, decision, scope, by, at, reason = row
+    return {"decision_id": decision_id, "decision": decision, "decision_scope": scope, "actioned_by": by,
+            "actioned_at": _iso(at), "override_reason": reason}
+
+
+def history_for(cur, policy_key: str, latest_version: int, status: str) -> Dict[str, Any]:
+    """A policy's conflicts (newest first, each with its returned decision) and the change, limit or
+    retire decision still waiting for the owner, if any."""
+    cur.execute(
+        "SELECT decision_id, kind, is_open, policy_keys, created_at, outcome, decided_by, decided_at "
+        "FROM proc.bp_agent_policy_conflict WHERE policy_keys @> ARRAY[%s]::text[] "
+        "ORDER BY created_at DESC, decision_id DESC",
+        (policy_key,),
+    )
+    rows = cur.fetchall()
+    ids = [conflict_payload.case_id(r[0]) for r in rows]
+    actions: Dict[str, Dict[str, Any]] = {}
+    if ids:
+        cur.execute(
+            "SELECT facts->>'caseId', decision, decision_scope, actioned_by, actioned_at, override_reason "
+            "FROM proc.bp_decision WHERE subject_type IN (%s, %s) AND status = 'actioned' "
+            "AND facts->>'caseId' = ANY(%s) ORDER BY actioned_at, decision_id",
+            (SUBJECT_POLICY, SUBJECT_LIVE, ids),
+        )
+        for cid, *rest in cur.fetchall():
+            actions[cid] = _action_dict((conflict_payload.parse_case_id(cid), *rest))   # the latest wins
+    conflicts = []
+    for (did, kind, is_open, keys, created, outcome, by, at), cid in zip(rows, ids):
+        decision = None
+        if cid in actions:
+            decision = conflict_payload.returned_decision(actions[cid])
+        elif not is_open and outcome is not None:
+            # closed without an action row of ours (a live case settled elsewhere): what the index says
+            decision = conflict_payload.returned_decision(
+                {"decision_id": did, "decision": outcome, "decision_scope": None, "actioned_by": by,
+                 "actioned_at": _iso(at), "override_reason": None})
+        conflicts.append({"caseId": cid, "kind": kind, "isOpen": bool(is_open),
+                          "otherPolicies": [k for k in keys or [] if k != policy_key],
+                          "raisedAt": _iso(created), "decision": decision})
+    return {"conflicts": conflicts, "pendingAction": _pending(cur, policy_key, latest_version, status)}
+
+
+def _pending(cur, policy_key: str, latest_version: int, status: str) -> Optional[Dict[str, Any]]:
+    cur.execute(
+        "SELECT decision, facts, override_reason, actioned_at FROM proc.bp_decision "
+        "WHERE subject_type = %s AND status = 'actioned' AND decision = ANY(%s) "
+        "ORDER BY actioned_at DESC, decision_id DESC LIMIT 1",
+        (SUBJECT_POLICY, [f"{v}:{policy_key}" for v in _PENDING_VERBS]),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    option, facts, reason, at = row
+    facts = _j(facts, {}) or {}
+    verb = option.partition(":")[0]
+    if verb == "retire":
+        if status == "retired":
+            return None
+    else:
+        at_decision = (facts.get("versionsAtDecision") or {}).get(policy_key)
+        if at_decision is None or int(latest_version) != int(at_decision):
+            return None
+    cid = facts.get("caseId")
+    return {"caseId": cid, "action": verb,
+            "changeNote": f"Conflict decision {cid}: {option_label(option)} — {reason}",
+            "limitText": facts.get("limitText"), "decidedAt": _iso(at)}
