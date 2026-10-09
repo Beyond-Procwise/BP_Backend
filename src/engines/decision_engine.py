@@ -1949,3 +1949,104 @@ def escalate_authorization(
             exc,
         )
         return None
+
+# ======================================================================================
+# Live conflicts between agent policies: decided on precedent, or escalated
+# (specs/2026-10-09-conflict-history-and-precedent-design.md §3.2, rulings R1-R3)
+# ======================================================================================
+LIVE_CONFLICT_SUBJECT = "live_conflict"
+PRECEDENT_SOURCE = "proc.bp_agent_policy_conflict"
+
+#: The last N settled live cases of this exact clash: the same pair key, the same version of every
+#: involved policy, decided by a person. Precedent and every other automatic decision has
+#: by_person false, so the engine can never reinforce itself.
+PRECEDENT_SQL = """
+    SELECT c.decision_id, c.outcome, c.decided_by, c.decided_at
+      FROM proc.bp_agent_policy_conflict c
+     WHERE c.kind = 'live' AND c.pair_key = %s AND NOT c.is_open AND c.by_person
+       AND c.policy_versions = %s::jsonb
+     ORDER BY c.decided_at DESC, c.decision_id DESC
+     LIMIT %s
+"""
+
+
+def _precedent_count() -> Optional[int]:
+    """The governed precedent count, read fresh. A seam; raises when it cannot be read."""
+    from services.agent_policy import settings as agent_policy_settings
+
+    return agent_policy_settings.precedent_count()
+
+
+def _as_iso(value: Any) -> Any:
+    return value.isoformat() if hasattr(value, "isoformat") else value
+
+
+def _hit_version(hit: Dict[str, Any]) -> int:
+    try:
+        return int(hit.get("version") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def decide_live_conflict(cur, lc: Any, *, ctx: Dict[str, Any], now: Any) -> Decision:
+    """Decide a live clash between agent policies from its own history, or escalate it.
+
+    Facts first (rule 1): the governed precedent count and this clash's settled cases, looked up
+    here. Escalate rather than guess (rule 2): resolved only when the last N cases of this exact
+    clash (same policies, same versions) were all decided the same way by people, and every
+    approval the action needs is part of the clash. The action's values (ctx) play no part:
+    precedent is about the clash, not the amount.
+
+    `lc` is a conflict_engine.LiveConflict. Runs on the caller's cursor inside the caller's
+    transaction and never writes. A failed lookup rolls back to its own savepoint and escalates,
+    so it never poisons that transaction."""
+    from services.agent_policy.conflict_detect import pair_key
+    from services.agent_policy.conflict_payload import case_id
+    from src.services.governed_limits import LimitUnavailable
+
+    key = pair_key(*[str(h["id"]) for h in lc.involved])
+    versions = {str(h["id"]): _hit_version(h) for h in lc.involved}
+    base = {"pairKey": key, "versions": versions, "consultedAt": _as_iso(now)}
+
+    def escalate(why: str, **more: Any) -> Decision:
+        return Decision(subject_type=LIVE_CONFLICT_SUBJECT, subject_id=key, decision="escalate",
+                        resolution=ESCALATED, rationale=why, facts={**base, **more})
+
+    if lc.kind != "human":
+        return escalate("only a clash that needs people can be decided on precedent")
+    outside = [str(h["id"]) for h in lc.required if not any(h is x for x in lc.involved)]
+    if outside:
+        return escalate(f"{', '.join(outside)} also needs approval and is not part of this clash")
+    try:
+        n = _precedent_count()
+    except (LimitUnavailable, TypeError, ValueError) as exc:
+        logger.warning("precedent limit unavailable, the clash %s goes to people: %s", key, exc)
+        return escalate("precedent limit unavailable")
+    if not n or n <= 0:
+        return escalate("precedent is switched off", precedentCount=n)
+
+    cur.execute("SAVEPOINT live_conflict_precedent")
+    try:
+        cur.execute(PRECEDENT_SQL, (key, json.dumps(versions, sort_keys=True), int(n)))
+        rows = cur.fetchall()
+    except Exception as exc:  # noqa: BLE001 - a lookup that failed is doubt: people decide
+        cur.execute("ROLLBACK TO SAVEPOINT live_conflict_precedent")
+        cur.execute("RELEASE SAVEPOINT live_conflict_precedent")
+        logger.warning("precedent lookup failed for %s: %s", key, type(exc).__name__)
+        return escalate("precedent lookup failed", precedentCount=n)
+    cur.execute("RELEASE SAVEPOINT live_conflict_precedent")
+
+    if len(rows) < n:
+        return escalate(f"only {len(rows)} of {n} decisions by people on this exact clash", precedentCount=n)
+    outcomes = {r[1] for r in rows}
+    if len(outcomes) != 1 or not outcomes <= {"approve", "reject"}:
+        return escalate("decisions disagree", precedentCount=n)
+    outcome = outcomes.pop()
+    cited = [case_id(int(r[0])) for r in rows]
+    evidence = [Evidence(fact="precedent",
+                         value={"decision_id": int(r[0]), "outcome": r[1], "actioned_by": r[2],
+                                "actioned_at": _as_iso(r[3])},
+                         source=PRECEDENT_SOURCE, reference=case_id(int(r[0]))) for r in rows]
+    return Decision(subject_type=LIVE_CONFLICT_SUBJECT, subject_id=key, decision=outcome, resolution=RESOLVED,
+                    rationale=f"Decided the same way ({outcome}) {n} times before by people: {', '.join(cited)}.",
+                    facts={**base, "precedentCount": n, "citedCases": cited}, evidence=evidence)
