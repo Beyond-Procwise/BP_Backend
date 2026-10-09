@@ -54,8 +54,17 @@ def get_deal_summary(deal_id: str) -> dict[str, Any]:
     stored, respond 200 with a "Summary not available" message instead of
     regenerating or erroring."""
     from src.services.db import get_conn
+    from src.services.session_postprocess import refresh_session_summary
     try:
         with get_conn() as conn:
+            # A draft (upload) summary is re-rendered from today's facts before it is
+            # read, so a finding resolved or a proposal confirmed since the upload is
+            # reflected. Best-effort: on failure the stored text is served as before.
+            try:
+                refresh_session_summary(conn, deal_id)
+            except Exception:  # noqa: BLE001
+                logger.exception("session summary refresh failed for %s", deal_id)
+                conn.rollback()
             cur = conn.cursor()
             cur.execute(
                 "select summary, model, generated_at "

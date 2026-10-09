@@ -273,8 +273,13 @@ def test_earlier_rounds_are_not_counted_as_bidders():
                            purchase_orders=gb.purchase_orders(), po_lines=gb.po_lines(),
                            invoices=gb.invoices())
     for p in res["proposals"]:
-        bidders = [m for m in p["members"] if m["role"] in ("anchor_quote", "competing_quote")]
-        assert p["proposed_name"].endswith(f"{len(bidders)} bidders")
+        quotes = [m for m in p["members"] if m["doc_type"] == "quote"]
+        bidders = [m for m in quotes if m["role"] in ("anchor_quote", "competing_quote")]
+        # One bidder per bid family, however many rounds it went through.
+        assert len(bidders) == len({m["base_reference"] for m in quotes})
+        # The count lives in the members, never in the name (which becomes the deal's
+        # name on confirm, and was summarised twice when it carried "— N bidders").
+        assert "bidder" not in p["proposed_name"]
 
 
 def test_proposed_name_does_not_depend_on_row_order():
