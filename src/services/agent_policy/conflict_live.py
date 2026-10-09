@@ -248,11 +248,29 @@ def settle_for_group(cur, case: Dict[str, Any], state: Dict[str, int], *, refuse
                     (live_id, SUBJECT_LIVE))
         conflict_cases._close_conflict(cur, live_id, outcome=verdict, actor=actor, now=now, by_person=by_person)
         if by_person:
-            maybe_propose(cur, live_id, now=now, threshold=threshold())
+            _propose_safely(cur, live_id, now=now)
     return out
 
 
+def _propose_safely(cur, live_id: int, *, now: datetime) -> None:
+    """maybe_propose in a savepoint: a failed proposal is logged and undone on its own and never
+    rolls back the person's approval or the settle (they stay in the caller's transaction)."""
+    cur.execute("SAVEPOINT live_conflict_propose")
+    try:
+        maybe_propose(cur, live_id, now=now, threshold=threshold())
+    except Exception as exc:  # noqa: BLE001 - type only: a driver message can quote stored values
+        cur.execute("ROLLBACK TO SAVEPOINT live_conflict_propose")
+        logger.error("repeat proposal failed for live case %s: %s", live_id, type(exc).__name__)
+    cur.execute("RELEASE SAVEPOINT live_conflict_propose")
+
+
 # ---------------------------------------------------------------------------- repeat-N
+def _in_key_order(pairs) -> List[tuple]:
+    """Pairs in sorted pair-key order, as detect_for takes them: two writers locking the same
+    pairs always lock them in one order, so they cannot deadlock."""
+    return sorted(pairs, key=lambda p: conflict_detect.pair_key(*p))
+
+
 def _live_docs(cur, keys: List[str]) -> Dict[str, Dict[str, Any]]:
     """The live version of each key (the proposal is about the policies as they are now)."""
     cur.execute(
@@ -299,7 +317,7 @@ def maybe_propose(cur, live_id: int, *, now: datetime, threshold: int) -> List[i
     mapping = deciders.load_map(cur.connection)
     budget = conflict_cases.cap_of(_settings.load_settings())
     raised: List[int] = []
-    for a, b in pairs:
+    for a, b in _in_key_order(pairs):
         if a not in docs or b not in docs:
             logger.info("repeat proposal for %s|%s skipped: a policy is no longer live", a, b)
             continue
@@ -322,7 +340,7 @@ def raise_block_pairs(cur, lc, *, ctx: Dict[str, Any], now: datetime, mapping) -
     flat = _flat(ctx)
     budget = conflict_cases.cap_of(_settings.load_settings())
     raised: List[int] = []
-    for a, b in lc.pairs:
+    for a, b in _in_key_order(lc.pairs):
         ha, hb = by_key.get(a), by_key.get(b)
         if ha is None or hb is None or "block" not in (ha["outcome"], hb["outcome"]):
             continue

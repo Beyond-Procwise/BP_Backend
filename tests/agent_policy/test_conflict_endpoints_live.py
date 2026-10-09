@@ -325,3 +325,39 @@ def test_notification_with_a_conflict_link_returns_conflict_id(client, conn, wor
     notes = client.get("/agent-policies/notifications?mine=1", headers=_as(world, world.oa)).json()["notifications"]
     [n] = [n for n in notes if n.get("conflictId") == did]
     assert n["recipient"] == world.oa and n["decisionId"] is None
+
+
+# ------------------------------------------------------------------ a policy's conflict history (final review I2)
+def _live_entry(client, w, key, live_id, headers=STRANGER):
+    got = client.get(f"/agent-policies/{key}", headers=headers)
+    assert got.status_code == 200, got.text
+    [entry] = [c for c in got.json()["conflicts"] if c["caseId"] == f"pc_{live_id}"]
+    return entry, got.text
+
+
+def test_history_shows_a_settled_live_conflict_as_the_approvers_decision(client, conn, world, monkeypatch):
+    (a, da), (b, db) = _a(conn, world), _b(conn, world)
+    _gate(monkeypatch, world, [da, db])
+    [lv] = LG.lives(conn, world)
+    ma, mb = LG.members(conn, world)
+    LG.act(conn, world, ma["decision_id"], world.la2)
+    LG.act(conn, world, mb["decision_id"], world.lb, reason="Paying the 900 refund is fine.")
+    entry, text = _live_entry(client, world, a, lv["decision_id"])
+    assert entry["kind"] == "live" and entry["isOpen"] is False
+    d = entry["decision"]
+    assert (d["decision"], d["decidedBy"]) == ("approve", f"sub-{world.people[world.lb]}")
+    assert d["decidedAt"]
+    # the decider's free text quotes the sensitive amount: never shown on the policy page
+    assert d.get("reason") is None
+    assert "Paying the" not in text
+
+
+def test_history_shows_a_timed_out_live_conflict_as_a_system_reject(client, conn, world, monkeypatch):
+    from services.agent_policy import approvals as A
+    (a, da), (b, db) = _a(conn, world), _b(conn, world)
+    _gate(monkeypatch, world, [da, db])
+    [lv] = LG.lives(conn, world)
+    ms = LG.members(conn, world)
+    A.sweep(conn, lv["respond_by"] + LG.timedelta(seconds=1), decision_ids=[m["decision_id"] for m in ms])
+    entry, _ = _live_entry(client, world, b, lv["decision_id"])
+    assert (entry["decision"]["decision"], entry["decision"]["decidedBy"]) == ("reject", "system:timeout")

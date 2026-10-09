@@ -443,14 +443,15 @@ def _claim(conn, decision_id: int) -> Dict[str, Any]:
         try:
             policies = _load_policies()
             verdict = enforcement.check(_ctx(facts), policies)
+            # a standing rule that decides a live conflict still decides it at the re-check: its
+            # losers need no approval of their own (stage 4); anything else is as in stage 3.
+            # Part of the check: a classify failure fails closed exactly as a check() failure.
+            lc = conflict_engine.classify(verdict)
         except Exception as exc:  # noqa: BLE001 - fail closed: never run unchecked
             return _check_unavailable(cur, decision_id, case, members, key, exc)
         duration_ms = int((time.monotonic() - started) * 1000)
 
         covered = {str((m["facts"].get("policy") or {}).get("id") or "") for m in members}
-        # a standing rule that decides a live conflict still decides it at the re-check: its
-        # losers need no approval of their own (stage 4); anything else is as in stage 3
-        lc = conflict_engine.classify(verdict)
         needed = lc.required if lc.kind == "auto" else verdict.approvals
         new = [h for h in needed if str(h["id"]) not in covered]
         result = "blocked" if verdict.blocks else "paused_for_approval" if new else "allowed"

@@ -558,3 +558,133 @@ def test_timeout_raced_by_a_persons_approval_settles_as_the_timeout(conn, world,
     assert (la["decision"], la["actioned_by"], la["override_reason"]) == ("reject", A.TIMEOUT_ACTOR, A.TIMEOUT_REASON)
     assert proposed == [], "a timeout never counts toward repeat-N"
     assert ran == []
+
+
+@live
+def test_repeat_after_one_member_approved_keeps_the_one_live_case(conn, world, monkeypatch, ran):
+    """Final review I1: member A is approved, then the identical call repeats. A's request is no
+    longer open, so a new A' opens -- but it must join the ORIGINAL live case: no second live
+    record, and the group's close settles (and counts toward repeat-N) exactly once."""
+    a, b = doc_a(world), doc_b(world)
+    use(monkeypatch, [a, b])
+    run(monkeypatch, stub_tools(world, ran), [_round(world.tool), FINAL], workflow_id=world.wf)
+    ma, mb = members(conn, world)
+    [lv] = lives(conn, world)
+    act(conn, world, ma["decision_id"], world.la2)          # replay stubbed: B is still open anyway
+    run(monkeypatch, stub_tools(world, ran), [_round(world.tool), FINAL], workflow_id=world.wf)
+    assert ran == []
+    live_rows = rows(conn, "SELECT decision_id FROM proc.bp_decision WHERE subject_type = %s AND workflow_id = ANY(%s)",
+                     (CL.SUBJECT_LIVE, world.wfs))
+    assert [r["decision_id"] for r in live_rows] == [lv["decision_id"]], "exactly one live_conflict decision row"
+    assert [x["decision_id"] for x in lives(conn, world)] == [lv["decision_id"]], "exactly one live index row"
+    ms = members(conn, world)
+    assert len(ms) == 3
+    a2 = ms[-1]
+    assert a2["policy_name"] == a["id"] and a2["status"] == "open"
+    assert a2["facts"]["liveConflict"] == lv["decision_id"], "A' joins the original live case"
+    assert a2["facts"]["firing_group"] == mb["facts"]["firing_group"]
+    proposed = []
+    real = CL.maybe_propose
+    monkeypatch.setattr(CL, "maybe_propose", lambda cur, lid, **k: proposed.append(lid) or real(cur, lid, **k))
+    act(conn, world, a2["decision_id"], world.la2)
+    act(conn, world, mb["decision_id"], world.lb)
+    [lv] = lives(conn, world)
+    assert (lv["status"], lv["is_open"], lv["outcome"], lv["by_person"]) == ("actioned", False, "approve", True)
+    assert len(actions(conn, world, CL.SUBJECT_LIVE)) == 1, "the live case settles once"
+    assert proposed == [lv["decision_id"]], "maybe_propose runs once"
+
+
+@live
+def test_a_failed_repeat_proposal_never_rolls_back_the_persons_approval(conn, world, monkeypatch, ran, caplog):
+    """Final review I5: the proposal runs in a savepoint. A failure inside it -- here a statement
+    that aborts the transaction -- is logged by type and the approval and the settle still commit."""
+    a, b = doc_a(world), doc_b(world)
+    use(monkeypatch, [a, b])
+    run(monkeypatch, stub_tools(world, ran), [_round(world.tool), FINAL], workflow_id=world.wf)
+    ma, mb = members(conn, world)
+    monkeypatch.setattr(CL, "threshold", lambda: 1)          # this one person decision proposes
+    monkeypatch.setattr(CL, "_live_docs", lambda cur, keys: {a["id"]: a, b["id"]: b})   # injected, not stored
+
+    def boom(cur, *a_, **k):
+        cur.execute("SELECT 1/0")                            # aborts the transaction
+    monkeypatch.setattr(CL.conflict_cases, "raise_policy_case", boom)
+    act(conn, world, ma["decision_id"], world.la2)
+    with caplog.at_level("ERROR", logger=CL.__name__):
+        act(conn, world, mb["decision_id"], world.lb)
+    [lv] = lives(conn, world)
+    assert (lv["status"], lv["is_open"], lv["outcome"], lv["by_person"]) == ("actioned", False, "approve", True)
+    assert [x["decision"] for x in actions(conn, world)] == ["approve", "approve"], "both approvals committed"
+    assert len(actions(conn, world, CL.SUBJECT_LIVE)) == 1
+    assert policy_cases(conn, world) == []
+    assert f"repeat proposal failed for live case {lv['decision_id']}: DivisionByZero" in caplog.text
+
+
+# ------------------------------------------------------------------ final review M4: pairs in pair-key order
+_UNSORTED = [("TST-0003", "TST-0004"), ("TST-0001", "TST-0003"), ("TST-0002", "TST-0004"), ("TST-0001", "TST-0002")]
+
+
+def _raised_in_order(monkeypatch):
+    seen = []
+    monkeypatch.setattr(CL.conflict_cases, "raise_policy_case",
+                        lambda cur, a, b, *x, **k: seen.append(CL.conflict_detect.pair_key(a["id"], b["id"])) or len(seen))
+    monkeypatch.setattr(CL._settings, "load_settings", lambda: {})
+    return seen
+
+
+def test_raise_block_pairs_takes_pairs_in_pair_key_order(monkeypatch):
+    """Two calls locking the same pairs in different orders could deadlock (and refuse the call):
+    pairs go in the same sorted pair-key order as detect_for."""
+    seen = _raised_in_order(monkeypatch)
+    keys = sorted({k for p in _UNSORTED for k in p})
+    involved = [{"id": k, "outcome": "block", "policy": {"id": k}} for k in keys]
+    lc = CE.LiveConflict(kind="block_record", involved=involved, pairs=list(_UNSORTED))
+    CL.raise_block_pairs(object(), lc, ctx={}, now=datetime.now(timezone.utc), mapping={})
+    assert seen == sorted(seen) and len(seen) == 4
+
+
+class _ProposeCur:
+    """Answers maybe_propose's three reads: the pair key, the last outcomes, the live facts."""
+    connection = None
+
+    def __init__(self, threshold):
+        self.answers = [("TST-0001|TST-0002|TST-0003|TST-0004",),
+                        [("approve",)] * threshold,
+                        ({"pairs": [list(p) for p in _UNSORTED]}, [])]
+
+    def execute(self, sql, params=None):
+        pass
+
+    def fetchone(self):
+        return self.answers.pop(0)
+
+    def fetchall(self):
+        return self.answers.pop(0)
+
+
+def test_maybe_propose_takes_pairs_in_pair_key_order(monkeypatch):
+    seen = _raised_in_order(monkeypatch)
+    keys = sorted({k for p in _UNSORTED for k in p})
+    monkeypatch.setattr(CL, "_live_docs", lambda cur, ks: {k: {"id": k} for k in keys})
+    monkeypatch.setattr(CL.deciders, "load_map", lambda conn: {})
+    CL.maybe_propose(_ProposeCur(2), 1, now=datetime.now(timezone.utc), threshold=2)
+    assert seen == sorted(seen) and len(seen) == 4
+
+
+@live
+def test_replay_classify_failure_fails_closed_like_a_check_failure(conn, world, monkeypatch, ran):
+    """Final review M1: the re-check's classify() is inside the fail-closed try, so its failure
+    is check_unavailable (retried later; nothing claimed), never a bare error."""
+    a, b = doc_a(world), doc_b(world)
+    use(monkeypatch, [a, b], world, ran)
+    run(monkeypatch, stub_tools(world, ran), [_round(world.tool), FINAL], workflow_id=world.wf)
+    ma, mb = members(conn, world)
+    act(conn, world, ma["decision_id"], world.la2)
+    act(conn, world, mb["decision_id"], world.lb)
+
+    def boom(_verdict):
+        raise RuntimeError("classifier down")
+    monkeypatch.setattr(R.conflict_engine, "classify", boom)
+    assert R.run(ma["decision_id"], agent_nick=object()) == {"status": "check_unavailable", "retry": True}
+    assert ran == []
+    assert rows(conn, "SELECT decision_id FROM proc.bp_decision WHERE subject_type = %s AND workflow_id = ANY(%s)",
+                (R.SUBJECT_TYPE, world.wfs)) == [], "nothing claimed: the retry sweeper can try again"

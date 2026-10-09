@@ -675,7 +675,11 @@ def _action_dict(row) -> Dict[str, Any]:
 
 def history_for(cur, policy_key: str, latest_version: int, status: str) -> Dict[str, Any]:
     """A policy's conflicts (newest first, each with its returned decision) and the change, limit or
-    retire decision still waiting for the owner, if any."""
+    retire decision still waiting for the owner, if any.
+
+    The returned decision is the latest action row a person or the system wrote (actioned_by set):
+    a settled live case's own row is 'actioned' too but has no actor or time, and is never it.
+    A live entry's reason is always None (no caller context here to unmask it for a decider)."""
     cur.execute(
         "SELECT decision_id, kind, is_open, policy_keys, created_at, outcome, decided_by, decided_at "
         "FROM proc.bp_agent_policy_conflict WHERE policy_keys @> ARRAY[%s]::text[] "
@@ -689,7 +693,7 @@ def history_for(cur, policy_key: str, latest_version: int, status: str) -> Dict[
         cur.execute(
             "SELECT facts->>'caseId', decision, decision_scope, actioned_by, actioned_at, override_reason "
             "FROM proc.bp_decision WHERE subject_type IN (%s, %s) AND status = 'actioned' "
-            "AND facts->>'caseId' = ANY(%s) ORDER BY actioned_at, decision_id",
+            "AND actioned_by IS NOT NULL AND facts->>'caseId' = ANY(%s) ORDER BY actioned_at, decision_id",
             (SUBJECT_POLICY, SUBJECT_LIVE, ids),
         )
         for cid, *rest in cur.fetchall():
@@ -704,6 +708,11 @@ def history_for(cur, policy_key: str, latest_version: int, status: str) -> Dict[
             decision = conflict_payload.returned_decision(
                 {"decision_id": did, "decision": outcome, "decision_scope": None, "actioned_by": by,
                  "actioned_at": _iso(at), "override_reason": None})
+        if decision is not None and kind == "live":
+            # A live decider's free text can quote the action's (sensitive) values, and this read
+            # has no caller to tell a decider from anyone else: the reason is not shown here (the
+            # member approval cases, which mask per caller, are where it is read).
+            decision["reason"] = None
         conflicts.append({"caseId": cid, "kind": kind, "isOpen": bool(is_open),
                           "otherPolicies": [k for k in keys or [] if k != policy_key],
                           "raisedAt": _iso(created), "decision": decision})

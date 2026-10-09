@@ -316,8 +316,9 @@ def _open_cases(conn, verdict, firing_of, *, action, ctx, digest, tool_name, wor
     with a conflict; without them this is exactly stage 3. 'auto' opens cases only for the
     standing rule's winners (lc.required, normal levels) and records the closed live case; the
     losers' firing rows wait on the winners' first case. 'human' records an open live case and
-    routes each conflicting policy to its last level. A repeat whose approvals were all reused
-    takes the live id from them and writes no second live record.
+    routes each conflicting policy to its last level. A repeat takes the live id from any reused
+    case that carries one (also when some members were decided meanwhile and are opened anew) and
+    writes no second live record; one is written only when no reused case carries one.
     """
     conflict = lc is not None and lc.kind in ("human", "auto")
     needed = lc.required if conflict else verdict.approvals
@@ -343,7 +344,9 @@ def _open_cases(conn, verdict, firing_of, *, action, ctx, digest, tool_name, wor
     if conflict:
         live_id = next((f["facts"].get("liveConflict") for f in reused.values()
                         if f["facts"].get("liveConflict") is not None), None)
-        if len(reused) < len(needed):
+        # A repeat after one member was decided reuses only the still-open members; the new ones
+        # join the live case those carry (one action is one live decision, user ruling Q4).
+        if live_id is None and len(reused) < len(needed):
             with conn.cursor() as cur:
                 if lc.kind == "human":
                     live_id = conflict_live.insert_live(cur, lc, ctx=ctx, action=action, now=now,
