@@ -315,22 +315,39 @@ def _raw_index(cur, raw_table, pk) -> dict:
 
     Built once per raw table per run so the look-forward match is O(monitors),
     not O(monitors x raw-rows).
+
+    The document an upload stands for is its NEWEST read. A re-read run by script
+    carries no process_monitor_id, and may file the document under a corrected
+    reference: Orbis's V3 order form (upload 12) was first read as "ORB-Q-6612" (V1's
+    reference) and re-read on 2026-09-23 as "ORB-Q-6612 (V3)". Matching the upload by
+    its own id alone found the first read, so the corrected reference was never linked
+    to the deal. So an upload maps to the newest read that is either its own (same
+    process_monitor_id) or a later re-read of the same file with no upload id. Reads
+    belonging to OTHER uploads never count. "Newest" is the highest raw_id, compared
+    directly, so it is the same every run (it was whatever order the server returned).
     """
-    by_pmid: dict = {}     # process_monitor_id -> pk (exact)
-    by_basename: dict = {}  # basename(source_file) -> pk, ONLY for pmid-less raws
-    for r in _rows(cur, f"select {pk}, source_file, process_monitor_id from {raw_table}") or []:
+    by_pmid: dict = {}     # process_monitor_id -> (raw_id, pk, basename) of its newest own read
+    by_basename: dict = {}  # basename(source_file) -> pk of the newest pmid-less read
+    rereads: dict = {}      # basename(source_file) -> (raw_id, pk) of the newest pmid-less read
+    for r in _rows(cur, f"select raw_id, {pk}, source_file, process_monitor_id "
+                        f"from {raw_table} order by raw_id") or []:
+        key = _basename(r.get("source_file"))
         pmid = r.get("process_monitor_id")
         if pmid is not None:
-            # A raw that knows its triggering monitor row is matched ONLY by that
-            # exact id — never by basename. Otherwise other monitor rows sharing
-            # the filename (same file re-uploaded under a different deal) would
-            # cross-claim it, nondeterministically overwriting the right deal.
-            by_pmid[pmid] = r.get(pk)
+            # A raw that knows its triggering monitor row is matched by that exact id —
+            # never by basename. Otherwise other monitor rows sharing the filename (same
+            # file re-uploaded under a different deal) would cross-claim it.
+            if pmid not in by_pmid or (r.get("raw_id") or 0) > (by_pmid[pmid][0] or 0):
+                by_pmid[pmid] = (r.get("raw_id"), r.get(pk), key)
             continue
-        key = _basename(r.get("source_file"))
-        if key:
+        if key and (key not in rereads or (r.get("raw_id") or 0) > (rereads[key][0] or 0)):
             by_basename[key] = r.get(pk)
-    return {"by_pmid": by_pmid, "by_basename": by_basename}
+            rereads[key] = (r.get("raw_id"), r.get(pk))
+    resolved = {}
+    for pmid, (raw_id, pk_val, key) in by_pmid.items():
+        later = rereads.get(key) if key else None
+        resolved[pmid] = later[1] if later and later[0] > raw_id and later[1] else pk_val
+    return {"by_pmid": resolved, "by_basename": by_basename}
 
 
 def _ensure_in_trgt(cur, doc_type, doc_pk) -> bool:
