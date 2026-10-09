@@ -19,6 +19,7 @@ _PLAIN = {
     "unresolved_placeholder": "Delete the placeholder {d}. If the sentence needs it, delete the whole sentence. Never fill it in.",
     "internal_figure_leaked": "Delete the sentence that reveals our internal limit. Do not hint at it.",
     "forbidden_content": "Delete the sentence containing: {text}.",
+    "ungrounded_contact_detail": "Delete {d} and any name, title or company given with it; it is not a contact detail we hold.",
 }
 
 
