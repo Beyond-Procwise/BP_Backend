@@ -17,6 +17,7 @@ DEFAULTS: Dict[str, Any] = {
     "response_time_basis": "clock",
     "on_missing_data": {"approve": "fail_closed", "block": "fail_closed", "notify": "fail_closed"},
     "live_conflict_repeat": 5,
+    "conflict_cases_per_run": 25,
     "learning": {"min_decisions": 30, "min_days": 30, "min_approvers": 3, "wilson_lower": 0.85,
                  "median_seconds_floor": 30, "not_yet_more": 30, "dismiss_more": 30},
 }

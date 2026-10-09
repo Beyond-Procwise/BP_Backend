@@ -257,13 +257,55 @@ def test_owner_unlinked_marks_unroutable_and_notifies_administrators(conn, world
     assert "10000" not in admin[1] and "10001" not in admin[1]      # no input values in notification text
 
 
-def test_detect_all_scans_and_never_raises(conn, world, monkeypatch):
+def test_detect_all_scans_and_reads_everything_once(conn, world, monkeypatch):
     a, b = _fin_cus(conn, world)
-    # the scan normally covers everything; here it is narrowed to this test's policies
-    real = CC._detect
-    monkeypatch.setattr(CC, "_detect", lambda c, key, **kw: real(c, key, **{**kw, "among": [a, b]})
-                        if key in (a, b) else [])
-    stats = CC.detect_all(conn, now=NOW)
-    assert stats["raised"] == 1 and stats["errors"] == 0 and stats["pairs"] >= 2
+    calls = {"snapshot": 0, "map": 0, "load": 0, "settings": 0}
+
+    def spy(name, fn):
+        def wrapped(*args, **kw):
+            calls[name] += 1
+            return fn(*args, **kw)
+        return wrapped
+    monkeypatch.setattr(CC, "_snapshot", spy("snapshot", CC._snapshot))
+    monkeypatch.setattr(CC.deciders, "load_map", spy("map", CC.deciders.load_map))
+    monkeypatch.setattr(CC, "_load", spy("load", CC._load))
+    monkeypatch.setattr(CC._settings, "load_settings", spy("settings", CC._settings.load_settings))
+    stats = CC.detect_all(conn, now=NOW, among=[a, b])     # the shared DB: narrowed to this test's policies
+    assert stats == {"pairs": 2, "raised": 1, "errors": 0, "capped": False}
+    assert calls == {"snapshot": 1, "map": 1, "load": 0, "settings": 1}
     rows = _conflict_rows(conn, world)
     assert len(rows) == 1 and rows[0]["raised_by"] == "scan"
+
+
+def _cap(monkeypatch, n):
+    from services.agent_policy import settings as S
+    monkeypatch.setattr(CC._settings, "load_settings", lambda conn=None: S.merge({"conflict_cases_per_run": n}))
+
+
+def _three_pairs(conn, w):
+    a = _make(conn, w, outcome="approve", gt=500, doc=f"TST Finance {w.tag}", owner=w.owner_a)
+    blocks = [_make(conn, w, outcome="block", gt=1000 * (i + 1), doc=f"TST Source {i} {w.tag}", owner=w.owner_b)
+              for i in range(3)]
+    return a, blocks
+
+
+def test_save_raises_at_most_the_cap_and_the_scan_raises_the_rest(conn, world, monkeypatch, caplog):
+    _cap(monkeypatch, 2)
+    a, blocks = _three_pairs(conn, world)
+    with caplog.at_level("WARNING", logger=CC.__name__):
+        assert len(CC.detect_for(conn, a, now=NOW, among=blocks)) == 2
+    assert "conflict case cap 2 reached; remaining pairs wait for the next scan" in caplog.text
+    assert len(_conflict_rows(conn, world)) == 2
+    stats = CC.detect_all(conn, now=NOW, among=[a, *blocks])
+    assert stats["raised"] == 1 and stats["capped"] is False
+    rows = _conflict_rows(conn, world)
+    assert len(rows) == 3 and sorted(r["raised_by"] for r in rows) == ["save", "save", "scan"]
+
+
+def test_scan_raises_at_most_the_cap_per_whole_scan(conn, world, monkeypatch):
+    _cap(monkeypatch, 2)
+    a, blocks = _three_pairs(conn, world)
+    stats = CC.detect_all(conn, now=NOW, among=[a, *blocks])
+    assert stats["raised"] == 2 and stats["capped"] is True
+    assert len(_conflict_rows(conn, world)) == 2
+    assert CC.detect_all(conn, now=NOW, among=[a, *blocks])["raised"] == 1    # the next scan picks up the rest

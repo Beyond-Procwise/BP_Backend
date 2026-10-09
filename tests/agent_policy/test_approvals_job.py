@@ -63,14 +63,15 @@ def test_run_also_retries_lost_replays_and_never_raises(monkeypatch):
 # ---------------------------------------------------------------- conflict scan (stage 4)
 class _ScanStub:
     AGENT_POLICY_CONFLICT_SCAN_JOB_NAME = BackendScheduler.AGENT_POLICY_CONFLICT_SCAN_JOB_NAME
+    AGENT_POLICY_CONFLICT_SCAN_LANE = BackendScheduler.AGENT_POLICY_CONFLICT_SCAN_LANE
     _register_agent_policy_conflict_scan_job = BackendScheduler._register_agent_policy_conflict_scan_job
     _run_agent_policy_conflict_scan = BackendScheduler._run_agent_policy_conflict_scan
 
     def __init__(self):
         self._jobs = {}
 
-    def register_job(self, name, runner, interval, initial_delay=None, **_):
-        self._jobs[name] = (runner, interval, initial_delay)
+    def register_job(self, name, runner, interval, initial_delay=None, lane="pipeline", **_):
+        self._jobs[name] = (runner, interval, initial_delay, lane)
 
 
 @pytest.mark.parametrize("value,registered", [(None, True), ("on", True), ("OFF", False), ("off", False),
@@ -84,8 +85,16 @@ def test_conflict_scan_toggle(monkeypatch, value, registered):
     s._register_agent_policy_conflict_scan_job()
     assert (s.AGENT_POLICY_CONFLICT_SCAN_JOB_NAME in s._jobs) is registered
     if registered:
-        _runner, interval, delay = s._jobs[s.AGENT_POLICY_CONFLICT_SCAN_JOB_NAME]
+        _runner, interval, delay, lane = s._jobs[s.AGENT_POLICY_CONFLICT_SCAN_JOB_NAME]
         assert interval.total_seconds() == 3600 and delay.total_seconds() == 300
+
+
+def test_conflict_scan_has_its_own_lane():
+    from services.backend_scheduler import DEFAULT_JOB_LANE
+    s = _ScanStub()
+    s._register_agent_policy_conflict_scan_job()
+    lane = s._jobs[s.AGENT_POLICY_CONFLICT_SCAN_JOB_NAME][3]
+    assert lane == BackendScheduler.AGENT_POLICY_CONFLICT_SCAN_LANE and lane != DEFAULT_JOB_LANE
 
 
 def test_conflict_scan_is_registered_at_startup():

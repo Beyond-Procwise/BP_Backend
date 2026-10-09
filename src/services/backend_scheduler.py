@@ -500,6 +500,9 @@ class BackendScheduler:
             logger.exception("agent policy replay retry failed")
 
     AGENT_POLICY_CONFLICT_SCAN_JOB_NAME = "agent-policy-conflict-scan"
+    # Its own lane: the scan can take minutes and must never hold up the shared lane (the 60 s
+    # approval sweep runs there). Nothing else writes the conflict tables it writes.
+    AGENT_POLICY_CONFLICT_SCAN_LANE = "agent-policy-conflicts"
 
     def _register_agent_policy_conflict_scan_job(self) -> None:
         """Look for contradicting agent policies every hour (first run 5 min after start).
@@ -519,6 +522,7 @@ class BackendScheduler:
             self._run_agent_policy_conflict_scan,
             interval=timedelta(hours=1),
             initial_delay=timedelta(minutes=5),
+            lane=self.AGENT_POLICY_CONFLICT_SCAN_LANE,
         )
 
     def _run_agent_policy_conflict_scan(self) -> None:

@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from services.agent_policy import approvals, conflict_detect, conflict_payload, deciders
+from services.agent_policy import settings as _settings
 from services.policy_condition import ConditionError
 
 logger = logging.getLogger(__name__)
@@ -239,49 +240,111 @@ def _pairs(saved, examples, others, stats) -> List[Tuple[str, Dict[str, Any], Di
     return found
 
 
-def _detect(conn, policy_key: str, *, now: datetime, among, raised_by: str, stats) -> List[int]:
-    mapping = deciders.load_map(conn)
+def cap_of(settings: Dict[str, Any]) -> int:
+    """The company's cap on NEW cases per detection call (and per whole scan)."""
+    try:
+        cap = int((settings or {}).get("conflict_cases_per_run"))
+    except (TypeError, ValueError):
+        cap = 0
+    return cap if cap > 0 else int(_settings.DEFAULTS["conflict_cases_per_run"])
+
+
+def _cap_reached(cap: int) -> None:
+    logger.warning("conflict case cap %d reached; remaining pairs wait for the next scan", cap)
+
+
+def _raise_pairs(cur, saved, examples, others, *, now, mapping, raised_by, stats, budget) -> List[int]:
+    """Raise the saved policy's pairs while budget["left"] lasts. Sets stats["capped"] when a pair
+    was left unraised because the budget ran out (dedup leaves it to a later scan)."""
     raised: List[int] = []
-    with approvals._tx(conn):
-        with conn.cursor() as cur:
-            loaded = _load(cur, policy_key, among)
-            if loaded is None:
-                return []
-            saved, examples, others = loaded
-            for _key, other, w in _pairs(saved, examples, others, stats):
-                did = raise_policy_case(cur, saved, other, w, raised_by=raised_by, now=now, mapping=mapping)
-                if did is not None:
-                    raised.append(did)
+    for _key, other, w in _pairs(saved, examples, others, stats):
+        if budget["left"] <= 0:
+            stats["capped"] = True
+            break
+        did = raise_policy_case(cur, saved, other, w, raised_by=raised_by, now=now, mapping=mapping)
+        if did is not None:
+            raised.append(did)
+            budget["left"] -= 1
     stats["raised"] += len(raised)
     return raised
 
 
 def detect_for(conn, policy_key: str, *, now: Optional[datetime] = None, among: Optional[List[str]] = None,
                raised_by: str = "save") -> List[int]:
-    """Raise a case for every policy the saved one contradicts. One transaction. Returns new case ids."""
-    stats = {"pairs": 0, "raised": 0, "errors": 0}
-    return _detect(conn, policy_key, now=now or datetime.now(timezone.utc), among=among,
-                   raised_by=raised_by, stats=stats)
-
-
-def detect_all(conn, *, now: Optional[datetime] = None) -> Dict[str, int]:
-    """The hourly safety net: every non-retired policy against all others. Never raises."""
+    """Raise a case for every policy the saved one contradicts, at most the company cap of NEW cases.
+    One transaction. Returns the new case ids."""
     now = now or datetime.now(timezone.utc)
-    stats = {"pairs": 0, "raised": 0, "errors": 0}
-    try:
+    stats = {"pairs": 0, "raised": 0, "errors": 0, "capped": False}
+    cap = cap_of(_settings.load_settings(conn))
+    mapping = deciders.load_map(conn)
+    with approvals._tx(conn):
         with conn.cursor() as cur:
-            cur.execute("SELECT policy_key FROM proc.bp_agent_policy WHERE status <> 'retired' ORDER BY policy_key")
-            keys = [r[0] for r in cur.fetchall()]
+            loaded = _load(cur, policy_key, among)
+            if loaded is None:
+                return []
+            saved, examples, others = loaded
+            raised = _raise_pairs(cur, saved, examples, others, now=now, mapping=mapping, raised_by=raised_by,
+                                  stats=stats, budget={"left": cap})
+    if stats["capped"]:
+        _cap_reached(cap)
+    return raised
+
+
+def _snapshot(conn, among: Optional[List[str]] = None):
+    """Every non-retired policy, read ONCE per scan: ({key: (latest doc, example inputs)}, [(key, doc)])
+    where the list holds each policy's live and latest versions, latest first."""
+    sql = ("SELECT p.policy_key, v.compiled, v.form_state, v.version = p.latest_version "
+           "FROM proc.bp_agent_policy p JOIN proc.bp_agent_policy_version v "
+           "ON v.policy_key = p.policy_key AND v.version IN (p.live_version, p.latest_version) "
+           "WHERE p.status <> 'retired'")
+    params: List[Any] = []
+    if among is not None:
+        sql += " AND p.policy_key = ANY(%s)"
+        params.append(list(among))
+    with conn.cursor() as cur:
+        cur.execute(sql + " ORDER BY p.policy_key, v.version DESC", params)
+        rows = cur.fetchall()
+    latest: Dict[str, Tuple[Dict[str, Any], List[Dict[str, Any]]]] = {}
+    docs: List[Tuple[str, Dict[str, Any]]] = []
+    for key, compiled, form, is_latest in rows:
+        doc = _j(compiled, {})
+        if not isinstance(doc, dict):
+            continue
+        docs.append((key, doc))
+        if is_latest:
+            latest[key] = (doc, _examples(form))
+    return latest, docs
+
+
+def detect_all(conn, *, now: Optional[datetime] = None, among: Optional[List[str]] = None) -> Dict[str, Any]:
+    """The hourly safety net: every non-retired policy against all others, at most the company cap
+    of NEW cases per whole scan. Policies, the decider map and settings are read once; each policy's
+    raises run in their own transaction. Never raises. `among` narrows the scan (tests)."""
+    now = now or datetime.now(timezone.utc)
+    stats: Dict[str, Any] = {"pairs": 0, "raised": 0, "errors": 0, "capped": False}
+    try:
+        cap = cap_of(_settings.load_settings(conn))
+        mapping = deciders.load_map(conn)
+        latest, docs = _snapshot(conn, among)
     except Exception as exc:  # noqa: BLE001
-        logger.error("conflict scan could not list policies: %s", type(exc).__name__)
+        logger.error("conflict scan could not load policies: %s", type(exc).__name__)
         stats["errors"] += 1
         return stats
-    for key in keys:
+    budget = {"left": cap}
+    for key in sorted(latest):
+        saved, examples = latest[key]
+        others = [d for k, d in docs if k != key]
         try:
-            _detect(conn, key, now=now, among=None, raised_by="scan", stats=stats)
+            with approvals._tx(conn):
+                with conn.cursor() as cur:
+                    _raise_pairs(cur, saved, examples, others, now=now, mapping=mapping, raised_by="scan",
+                                 stats=stats, budget=budget)
         except Exception as exc:  # noqa: BLE001 - one policy must not stop the scan
             stats["errors"] += 1
             logger.error("conflict scan failed for %s: %s", key, type(exc).__name__)
+        if stats["capped"]:
+            _cap_reached(cap)
+            break
     return stats
 
 

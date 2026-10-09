@@ -75,7 +75,14 @@ def test_detect_all_never_raises(monkeypatch):
     class _Broken:
         def cursor(self):
             raise RuntimeError("down")
-    assert CC.detect_all(_Broken(), now=NOW) == {"pairs": 0, "raised": 0, "errors": 1}
+    assert CC.detect_all(_Broken(), now=NOW) == {"pairs": 0, "raised": 0, "errors": 1, "capped": False}
+
+
+def test_cap_is_a_company_setting_default_25():
+    from services.agent_policy import settings as S
+    assert S.DEFAULTS["conflict_cases_per_run"] == 25
+    assert CC.cap_of(S.merge(None)) == 25 and CC.cap_of(S.merge({"conflict_cases_per_run": 2})) == 2
+    assert CC.cap_of({"conflict_cases_per_run": "junk"}) == 25 and CC.cap_of({"conflict_cases_per_run": 0}) == 25
 
 
 # ---------------------------------------------------------------- extraction
