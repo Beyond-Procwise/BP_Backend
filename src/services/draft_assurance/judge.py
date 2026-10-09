@@ -6,11 +6,22 @@ never averaged over what is left, because a partial score reads as a complete on
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+
+# Ruling 2026-10-09: any one criterion at or below this flags the draft for a person. It FLAGS and never
+# blocks until the judge is calibrated against team scores; every flag is logged and counted (metrics.by_family)
+# so the false-flag rate can be measured before anyone considers letting it gate.
+FLAG_AT_OR_BELOW = 2
 
 
 class JudgeInvalid(ValueError):
     pass
+
+
+def review_flag(scores: Dict[str, int]) -> Optional[Dict[str, Any]]:
+    low = {c: v for c, v in scores.items() if v <= FLAG_AT_OR_BELOW}
+    return {"criteria": low, "at_or_below": FLAG_AT_OR_BELOW, "blocks": False} if low else None
 
 
 def parse_judgement(raw: Any, rubric: List[str]) -> Dict[str, Any]:
@@ -29,4 +40,4 @@ def parse_judgement(raw: Any, rubric: List[str]) -> Dict[str, Any]:
     return {"status": "scored", "scores": scores,
             "overall": round(sum(scores.values()) / len(scores), 2),
             "rationale": rationale.strip()[:500] if isinstance(rationale, str) else None,
-            "ignored_criteria": extra}
+            "ignored_criteria": extra, "review_flag": review_flag(scores)}

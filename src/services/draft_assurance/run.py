@@ -103,6 +103,10 @@ class AssuranceRun:
             brief = counter_brief(self.data, inp, self.tone)
         # Stage 4: the judge scores what was written; it never gates, and never invents a score.
         judge = self._judge(composed, brief if isinstance(brief, dict) else None, facts)
+        if (judge or {}).get("review_flag"):
+            # Logged every time so the false-flag rate can be measured; the flag itself rides in the stored judgement.
+            logger.warning("email judge flag: family=%s workflow=%s criteria=%s overall=%s", fam.family_id,
+                           self.data.get("workflow_id"), judge["review_flag"]["criteria"], judge.get("overall"))
         extras = {**base, "tone": self.tone, "brief": brief, "judge": judge,
                   "authority": self._authority(fam),
                   "classification": self.classification,
