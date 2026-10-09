@@ -12,6 +12,14 @@
 Fail closed: ANY exception (store unavailable, check() raising, a write failing) refuses the
 call with reasonCode ``policy_check_unavailable`` and a best-effort firing row (policy_key '*').
 Notification text never contains input values.
+
+Live conflicts (stage 4): conflict_engine.classify(verdict) runs right after the check. With no
+conflict (kind None) every statement is exactly stage 3's. Otherwise, in the same transaction:
+- block_record: the block still blocks; a closed live record and a policy case per block pair;
+- auto: a standing rule decides; only the rule's winner(s) get (normal) approval cases;
+- human: the action pauses; one member case per approve policy, a conflicting one at its LAST
+  escalation level only, all naming the open live record; every member must approve.
+The agent is told the live case as ``conflictCaseId``.
 """
 from __future__ import annotations
 
@@ -25,7 +33,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from services.agent_policy import approvals, deciders, enforcement, live_policies, settings
+from services.agent_policy import (approvals, conflict_engine, conflict_live, conflict_payload, deciders,
+                                   enforcement, live_policies, settings)
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +158,21 @@ def link_paused_notifies(cur, firing_ids: List[int], case_id: int) -> None:
                     (case_id, list(firing_ids)))
 
 
+def _level_names(policy: Dict[str, Any]) -> List[str]:
+    return [str(e.get("name")).strip() for e in
+            ((policy.get("enforcement") or {}).get("intervention") or {}).get("escalateTo") or []
+            if isinstance(e, dict) and str(e.get("name") or "").strip()]
+
+
+def notify_last_level(cur, policy: Dict[str, Any], firing_id: int, decision_id: int, tool_name: str) -> None:
+    """A live-conflict member case is decided at the policy's last level only: that level hears."""
+    levels = _level_names(policy)
+    if levels:
+        _notify(cur, firing_id, [levels[-1]],
+                f"{_what(policy, tool_name)} (policy {policy.get('id')}) needs your decision.",
+                f"decision:{decision_id}")
+
+
 def notify_first_level(cur, policy: Dict[str, Any], firing_id: int, decision_id: int, tool_name: str) -> None:
     """The first level of a newly opened case hears that a decision is waiting (escalations
     notify the next level from the sweep)."""
@@ -219,6 +243,7 @@ def _before_tool(*, tool_name, args, agent, reason, workflow_id, user_id, starte
         return GateResult(allow=True)
     ctx = _ctx(tool_name, args, agent, reason)
     verdict = enforcement.check(ctx, policies, default_response_time=_default_response_time())
+    lc = conflict_engine.classify(verdict)
     matched: List[Dict[str, Any]] = []
     for hit in verdict.blocks + verdict.approvals + verdict.notifies:
         if not any(h is hit for h in matched):
@@ -233,6 +258,7 @@ def _before_tool(*, tool_name, args, agent, reason, workflow_id, user_id, starte
     now = datetime.now(timezone.utc)
     action = {"tool": tool_name, "args": args, "agent": agent, "workflowId": workflow_id,
               "userId": user_id, "reason": reason}
+    live: Dict[str, Optional[int]] = {"id": None}
 
     # One transaction for every row this call writes (firing rows, notifications, cases): on any
     # failure nothing is left behind -- never an open case for a call the agent was refused.
@@ -244,10 +270,13 @@ def _before_tool(*, tool_name, args, agent, reason, workflow_id, user_id, starte
                                            user_id=user_id, duration_ms=duration_ms)
             firing_ids.extend(firing_of[id(h)] for h in matched)
 
+            if lc.kind == "block_record":
+                live["id"] = _record_block(conn, lc, action=action, ctx=ctx, now=now)
+
             if verdict.result == "paused_for_approval":
                 case_ids = _open_cases(conn, verdict, firing_of, action=action, ctx=ctx, digest=digest,
                                        tool_name=tool_name, workflow_id=workflow_id, user_id=user_id,
-                                       now=now)
+                                       now=now, **({"lc": lc, "live": live} if lc.kind else {}))
                 # A notify row of a paused call is itself paused and linked to the group's first
                 # case; approvals._close_group settles it once the whole group is decided.
                 if case_ids:
@@ -259,23 +288,45 @@ def _before_tool(*, tool_name, args, agent, reason, workflow_id, user_id, starte
     to_agent = dict(verdict.to_agent or {})
     if verdict.result == "paused_for_approval":
         to_agent["requestIds"] = list(case_ids)
+    if live["id"] is not None:
+        to_agent["conflictCaseId"] = conflict_payload.case_id(live["id"])
     return GateResult(allow=False, to_agent=to_agent, firing_ids=firing_ids, case_ids=case_ids)
 
 
+def _record_block(conn, lc, *, action, ctx, now) -> int:
+    """A live conflict involving a block (the block still blocks): the closed live record and a
+    policy case for every pair containing the block. Returns the live record's id."""
+    with conn.cursor() as cur:
+        live_id = conflict_live.insert_live(cur, lc, ctx=ctx, action=action, now=now,
+                                            default_response_time=_default_response_time(),
+                                            status="actioned", decision="block")
+        conflict_live.raise_block_pairs(cur, lc, ctx=ctx, now=now, mapping=deciders.load_map(conn))
+    return live_id
+
+
 def _open_cases(conn, verdict, firing_of, *, action, ctx, digest, tool_name, workflow_id, user_id,
-                now) -> List[int]:
+                now, lc=None, live=None) -> List[int]:
     """One case per matched approve policy; a still-open case for the same call is reused.
 
     Runs inside the gate's transaction. A transaction-scoped advisory lock on (tool, digest,
     workflow, requester) serialises two identical calls racing, so the second always finds the
     first's case instead of opening its own.
+
+    `lc` (a live conflict of kind 'human' or 'auto') and `live` ({"id": ...}, filled in) come only
+    with a conflict; without them this is exactly stage 3. 'auto' opens cases only for the
+    standing rule's winners (lc.required, normal levels) and records the closed live case; the
+    losers' firing rows wait on the winners' first case. 'human' records an open live case and
+    routes each conflicting policy to its last level. A repeat whose approvals were all reused
+    takes the live id from them and writes no second live record.
     """
+    conflict = lc is not None and lc.kind in ("human", "auto")
+    needed = lc.required if conflict else verdict.approvals
     lock_key = f"agent_policy_gate:{tool_name}:{digest}:{workflow_id}:{user_id}"
     with conn.cursor() as cur:
         cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (lock_key,))
     reused: Dict[str, Dict[str, Any]] = {}
     with conn.cursor() as cur:
-        for hit in verdict.approvals:
+        for hit in needed:
             found = _open_case_for(cur, key=str(hit["id"]), tool_name=tool_name, digest=digest,
                                    workflow_id=workflow_id, requested_by=user_id)
             if found:
@@ -288,8 +339,24 @@ def _open_cases(conn, verdict, firing_of, *, action, ctx, digest, tool_name, wor
     group = group or uuid.uuid4().hex
     default_rt = _default_response_time()
     mapping = deciders.load_map(conn)
+    extra: Dict[str, Any] = {}
+    if conflict:
+        live_id = next((f["facts"].get("liveConflict") for f in reused.values()
+                        if f["facts"].get("liveConflict") is not None), None)
+        if len(reused) < len(needed):
+            with conn.cursor() as cur:
+                if lc.kind == "human":
+                    live_id = conflict_live.insert_live(cur, lc, ctx=ctx, action=action, now=now,
+                                                        default_response_time=default_rt, status="open")
+                else:
+                    live_id = conflict_live.insert_live(cur, lc, ctx=ctx, action=action, now=now,
+                                                        default_response_time=default_rt, status="actioned",
+                                                        decision="standing_rule",
+                                                        reason=conflict_live.rule_text(lc))
+        live["id"] = live_id
+        extra = {"liveConflict": live_id}
     out: List[int] = []
-    for hit in verdict.approvals:
+    for hit in needed:
         key = str(hit["id"])
         if key in reused:
             did = reused[key]["decision_id"]
@@ -302,12 +369,20 @@ def _open_cases(conn, verdict, firing_of, *, action, ctx, digest, tool_name, wor
             logger.info("tool %s repeated while request %s is open; reusing it", tool_name, did)
             out.append(did)
             continue
+        last_only = conflict and lc.kind == "human" and key in lc.last_level_only
         with conn.cursor() as cur:
             did = approvals._insert_case(
                 cur, policy_doc=hit["policy"], firing_id=firing_of[id(hit)], action=action,
                 requested_by=user_id, now=now, mapping=mapping, default_response_time=default_rt,
-                extra_facts={"firing_group": group, "ctx": ctx, "argsDigest": digest})
+                extra_facts={"firing_group": group, "ctx": ctx, "argsDigest": digest, **extra},
+                **({"last_level_only": True} if last_only else {}))
         out.append(did)
         with conn.cursor() as cur:
-            notify_first_level(cur, hit["policy"], firing_of[id(hit)], did, tool_name)
+            (notify_last_level if last_only else notify_first_level)(cur, hit["policy"], firing_of[id(hit)],
+                                                                     did, tool_name)
+    if conflict and out:
+        # the standing rule's losers need no approval of their own: their rows wait on the winners'
+        losers = [h for h in verdict.approvals if not any(h is r for r in needed)]
+        with conn.cursor() as cur:
+            link_paused_notifies(cur, [firing_of[id(h)] for h in losers], out[0])
     return out

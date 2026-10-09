@@ -146,16 +146,21 @@ def open_case(conn, *, policy_doc: Dict[str, Any], firing_id: int, action: Dict[
 def _insert_case(cur, *, policy_doc: Dict[str, Any], firing_id: int, action: Dict[str, Any],
                  requested_by: Optional[str], now: datetime, mapping: deciders.Mapping,
                  extra_facts: Optional[Dict[str, Any]] = None,
-                 default_response_time: str = durations.COMPANY_DEFAULT) -> int:
+                 default_response_time: str = durations.COMPANY_DEFAULT,
+                 last_level_only: bool = False) -> int:
     """open_case's writes on the caller's cursor, inside the CALLER's transaction (no commit).
 
-    For callers that must open cases atomically with their own writes (replay.py)."""
+    For callers that must open cases atomically with their own writes (replay.py).
+    `last_level_only` (a live-conflict member, stage 4): only the policy's LAST escalation level
+    decides, so the case has one level and a timeout rejects."""
     key = str(policy_doc.get("id") or "")
     intervention = (policy_doc.get("enforcement") or {}).get("intervention") or {}
     sla = intervention.get("sla") or {}
     within = durations.resolve(sla.get("respondWithin"), default_response_time)
     names = [str(e.get("name")).strip() for e in intervention.get("escalateTo") or []
              if isinstance(e, dict) and str(e.get("name") or "").strip()]
+    if last_level_only:
+        names = names[-1:]
     levels = [{"name": n, "respondWithin": within} for n in names]
     # A timeout escalates while a next level exists; only the last level rejects.
     on_timeout = "escalate_next" if len(levels) > 1 else "reject"
@@ -360,6 +365,9 @@ def _close_group(cur, case: Dict[str, Any], *, refused: Optional[str], actor: st
             """,
             (result, level, actor, now, reason, _member_ids(cur, did, case["facts"])),
         )
+        # a live conflict whose member cases these are settles with the group (stage 4)
+        from services.agent_policy import conflict_live
+        conflict_live.settle_for_group(cur, case, state, refused=refused, actor=actor, reason=reason, now=now)
     return state
 
 
