@@ -253,7 +253,7 @@ def test_a_hundredth_of_a_percent_above_the_range_goes_to_people(monkeypatch):
     cur = _Cur(_cases({AMOUNT: 900}, {AMOUNT: 1000}))
     d = _decide(monkeypatch, cur, 1200.1)
     assert (d.resolution, d.decision) == (DE.ESCALATED, "escalate")
-    assert d.rationale == "args.amount 1200.1 is more than 20% above the largest approved (1000)"
+    assert d.rationale == "args.amount 1200.1 is more than 20% above the largest earlier value (1000)"
 
 
 def test_the_lookup_returns_each_cited_cases_stored_example():
@@ -267,7 +267,7 @@ def test_zero_percent_is_never_above_the_largest_approved(monkeypatch, amount, r
     d = _decide(monkeypatch, _Cur(_cases({AMOUNT: 1000}, {AMOUNT: 400})), amount, pct=0)
     assert d.resolution == resolution
     if resolution == DE.ESCALATED:
-        assert d.rationale == "args.amount 1000.01 is more than 0% above the largest approved (1000)"
+        assert d.rationale == "args.amount 1000.01 is more than 0% above the largest earlier value (1000)"
 
 
 def test_null_means_no_range_check(monkeypatch):
@@ -288,7 +288,7 @@ def test_a_cited_case_without_the_field_goes_to_people(monkeypatch):
     assert (d.resolution, d.rationale) == (DE.ESCALATED, "args.amount has no number in an earlier case")
 
 
-@pytest.mark.parametrize("bad", ["900", True, None])
+@pytest.mark.parametrize("bad", ["nine hundred", True, None, [900]])
 def test_a_cited_value_that_is_not_a_number_goes_to_people(monkeypatch, bad):
     d = _decide(monkeypatch, _Cur(_cases({AMOUNT: 900}, {AMOUNT: bad})), 900)
     assert (d.resolution, d.rationale) == (DE.ESCALATED, "args.amount has no number in an earlier case")
@@ -300,9 +300,52 @@ def test_a_cited_case_with_no_stored_example_goes_to_people(monkeypatch):
 
 
 def test_a_clash_with_no_numeric_condition_value_passes(monkeypatch):
+    """Text the condition evaluator cannot read as a number is not a number; text it can read is."""
     cur = _Cur(_cases({"tool.name": "tst_refund"}, {"tool.name": "tst_refund"}))
     d = _decide(monkeypatch, cur, "nine hundred")
     assert (d.resolution, d.facts["valueRange"]) == (DE.RESOLVED, {"pct": 20.0, "fields": {}})
+    d = _decide(monkeypatch, _Cur(_cases({"tool.name": "tst_refund"})), "900")
+    assert (d.resolution, d.rationale) == (DE.ESCALATED, "args.amount has no number in an earlier case"), \
+        "'900' is a number to the evaluator, so it is range-checked"
+
+
+def test_a_number_sent_as_text_is_range_checked(monkeypatch):
+    """The evaluator compares '1200' > 500 as a number, so the range check must too."""
+    from services import policy_condition as pc
+    assert pc.evaluate({"field": "args.amount", "op": ">", "value": 500}, {"args": {"amount": "1200"}}) is True
+    d = _decide(monkeypatch, _Cur(_cases({AMOUNT: 900}, {AMOUNT: 900})), "1200")
+    assert (d.resolution, d.rationale) == (
+        DE.ESCALATED, "args.amount 1200 is more than 20% above the largest earlier value (900)")
+    ok = _decide(monkeypatch, _Cur(_cases({AMOUNT: 900}, {AMOUNT: 900})), "1000")
+    assert ok.resolution == DE.RESOLVED
+    assert ok.facts["valueRange"]["fields"] == {AMOUNT: {"value": "1000", "max": 900, "limit": 1080.0}}
+
+
+def test_a_cited_number_stored_as_text_counts(monkeypatch):
+    d = _decide(monkeypatch, _Cur(_cases({AMOUNT: "900"}, {AMOUNT: 400})), 1000)
+    assert d.resolution == DE.RESOLVED
+    assert d.facts["valueRange"]["fields"] == {AMOUNT: {"value": 1000, "max": "900", "limit": 1080.0}}
+    d = _decide(monkeypatch, _Cur(_cases({AMOUNT: " 900 "})), 1100)
+    assert d.rationale == "args.amount 1100 is more than 20% above the largest earlier value ( 900 )"
+
+
+@pytest.mark.parametrize("bad", ["nan", "inf", "-Infinity", float("nan"), float("inf")])
+def test_a_cited_value_that_is_not_finite_goes_to_people(monkeypatch, bad):
+    d = _decide(monkeypatch, _Cur(_cases({AMOUNT: 900}, {AMOUNT: bad})), 900)
+    assert (d.resolution, d.rationale) == (DE.ESCALATED, "args.amount has no number in an earlier case")
+
+
+@pytest.mark.parametrize("bad", ["nan", "inf", float("inf")])
+def test_a_current_value_that_is_not_finite_goes_to_people(monkeypatch, bad):
+    d = _decide(monkeypatch, _Cur(_cases({AMOUNT: 900})), bad)
+    assert d.resolution == DE.ESCALATED and d.rationale.startswith("args.amount ")
+
+
+def test_a_reject_precedent_never_says_approved(monkeypatch):
+    cur = _Cur([(11, "reject", "sub-b", AT, {AMOUNT: 900}), (10, "reject", "sub-a", AT, {AMOUNT: 900})])
+    d = _decide(monkeypatch, cur, 5000)
+    assert d.rationale == "args.amount 5000 is more than 20% above the largest earlier value (900)"
+    assert "approved" not in d.rationale
 
 
 def test_a_boolean_is_not_a_number(monkeypatch):
@@ -316,13 +359,13 @@ def test_the_first_failing_field_in_sorted_order_is_named(monkeypatch):
     lc = _lc(involved=(_ranged("TST-0001", 3, fields=("args.zeta", AMOUNT)), _ranged("TST-0002", 1)))
     cur = _Cur(_cases({AMOUNT: 1, "args.zeta": 1}))
     d = _decide(monkeypatch, cur, 5, lc=lc, zeta=5)
-    assert d.rationale == "args.amount 5 is more than 20% above the largest approved (1)"
+    assert d.rationale == "args.amount 5 is more than 20% above the largest earlier value (1)"
 
 
 def test_a_sensitive_value_is_masked_in_the_rationale_and_the_facts(monkeypatch):
     lc = _rlc(sensitive=(AMOUNT,))
     d = _decide(monkeypatch, _Cur(_cases({AMOUNT: 900})), 5000, lc=lc)
-    assert d.rationale == "args.amount ••• is more than 20% above the largest approved (•••)"
+    assert d.rationale == "args.amount ••• is more than 20% above the largest earlier value (•••)"
     assert "5000" not in d.rationale and "900" not in d.rationale
     ok = _decide(monkeypatch, _Cur(_cases({AMOUNT: 900})), 1000, lc=lc)
     assert ok.facts["valueRange"]["fields"] == {AMOUNT: {"value": "•••", "max": "•••", "limit": "•••"}}

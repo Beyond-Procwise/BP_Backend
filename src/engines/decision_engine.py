@@ -2014,9 +2014,17 @@ def _precedent_value_range_pct() -> Optional[float]:
 RANGE_UNAVAILABLE = "precedent value range unavailable"
 
 
-def _is_number(value: Any) -> bool:
-    """An int or float, never a bool (True is 1 to Python, but not a number a person approved)."""
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+def _as_number(value: Any) -> Optional[Decimal]:
+    """The value as the condition evaluator reads a number (policy_condition._number: Decimal of
+    the trimmed text, so "1200" is 1200, and never a bool), or None when it cannot be read.
+    Reading it the evaluator's way matters: a value the policies compared as a number must be
+    range-checked as one, or text such as "1200" would slip past the range."""
+    from services import policy_condition
+
+    try:
+        return policy_condition._number(value, "precedent value range")
+    except policy_condition.ConditionError:
+        return None
 
 
 def _render(value: Any) -> str:
@@ -2025,7 +2033,8 @@ def _render(value: Any) -> str:
 
 def _value_range(lc: Any, ctx: Dict[str, Any], rows: List[Any], pct: Optional[float]) -> tuple:
     """(why, facts): why is None when every numeric condition value of this action is within
-    `pct` percent above the largest value people approved for that field in the cited cases;
+    `pct` percent above the largest value people decided for that field in the cited cases
+    (approve or reject alike; numbers are read as the condition evaluator reads them);
     otherwise the reason it goes to people. No lower bound. A cited case that lacks a number for
     the field is doubt. A sensitive field's values are masked in both why and facts."""
     from services.agent_policy import conflict_live, conflict_payload, enforcement
@@ -2037,20 +2046,20 @@ def _value_range(lc: Any, ctx: Dict[str, Any], rows: List[Any], pct: Optional[fl
     sensitive = set().union(*[enforcement._sensitive(d) for d in docs])
     factor = 1 + Decimal(str(pct)) / 100
     fields: Dict[str, Any] = {}
-    for name in sorted(k for k, v in current.items() if _is_number(v)):
+    for name in sorted(k for k, v in current.items() if _as_number(v) is not None):
         value = current[name]
         cited = [(r[4] if isinstance(r[4], dict) else {}).get(name) for r in rows]
-        if not all(_is_number(v) and Decimal(str(v)).is_finite() for v in cited):
+        numbers = [_as_number(v) for v in cited]
+        if not all(x is not None and x.is_finite() for x in numbers):
             return f"{name} has no number in an earlier case", None
-        top = max(cited, key=lambda v: Decimal(str(v)))
-        limit = Decimal(str(top)) * factor
+        top_number, top = max(zip(numbers, cited), key=lambda p: p[0])
+        limit = top_number * factor
         shown = (lambda v: enforcement.MASK) if name in sensitive else _render
-        try:
-            within = Decimal(str(value)) <= limit
-        except InvalidOperation:      # NaN: never shown to be within
-            within = False
+        number = _as_number(value)
+        within = number.is_finite() and number <= limit     # NaN and infinity are never within
         if not within:
-            return f"{name} {shown(value)} is more than {_render(pct)}% above the largest approved ({shown(top)})", None
+            return (f"{name} {shown(value)} is more than {_render(pct)}% above the largest earlier value "
+                    f"({shown(top)})"), None
         fields[name] = ({"value": enforcement.MASK, "max": enforcement.MASK, "limit": enforcement.MASK}
                         if name in sensitive else {"value": value, "max": top, "limit": float(limit)})
     return None, {"pct": pct, "fields": fields}

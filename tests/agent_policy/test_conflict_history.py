@@ -141,7 +141,7 @@ def test_a_precedent_entry_carries_its_value_range_and_says_so_in_its_reason():
     e = _precedent_row(RANGE)
     assert e["valueRange"] == RANGE
     assert e["decision"]["reason"] == ("On precedent: decided the same way 5 times; "
-                                       "within 20% of the largest approved value")
+                                       "within 20% of the largest earlier value")
 
 
 def test_a_precedent_entry_with_no_range_check_says_so():
@@ -177,5 +177,5 @@ def test_the_csv_reason_of_a_precedent_row_names_the_range():
     [e] = CH.shown([_precedent_row(RANGE)], sensitive={"args.amount"}, unmasked_for=lambda _e: False)
     row = CH.to_csv([e]).split("\r\n")[1]
     assert ('"Precedent","system:precedent","Approve","this_action","2026-10-09T12:00:00+00:00",'
-            '"On precedent: decided the same way 5 times; within 20% of the largest approved value",'
+            '"On precedent: decided the same way 5 times; within 20% of the largest earlier value",'
             '"pc_1 pc_2 pc_3 pc_4 pc_5"') in row
