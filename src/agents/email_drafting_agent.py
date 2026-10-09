@@ -3151,18 +3151,15 @@ class EmailDraftingAgent(BaseAgent):
 
 
     @staticmethod
-    def _extract_ollama_message(response: Dict[str, Any]) -> str:
-        if not isinstance(response, dict):
-            return ""
-        message = response.get("message")
-        if isinstance(message, dict):
-            content = message.get("content")
-            if isinstance(content, str):
-                return content.strip()
-        content = response.get("response")
-        if isinstance(content, str):
-            return content.strip()
-        return ""
+    def _extract_ollama_message(response: Any) -> str:
+        """The model's text from whatever ``call_ollama`` returned. One reader, shared with email_intent.
+
+        This used to require a dict. The ollama client returns a ChatResponse object, so every real reply read as ""
+        and every model-written email (``_chat``, the counter compose, the repair pass) fell back to its template.
+        """
+        from src.services.email_intent import _extract_ollama_message as read
+
+        return read(response)
 
     def _instruction_sources_from_policy(self, policy: Dict[str, Any]) -> List[Any]:
         sources: List[Any] = []
