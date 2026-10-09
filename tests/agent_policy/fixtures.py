@@ -70,3 +70,18 @@ REGISTRY = registry.snapshot_from_rows([
     _i("args.currency", "currency", "string"),
     _i("agg.refunds_30d", "refunds in 30 days", "number", "total:refunds_30d", "planned"),
 ])
+
+
+def precedent_n(monkeypatch, n, *, missing=False):
+    """Set the governed precedent count (agent_policy_conflicts.precedent_count) every fresh read
+    sees. missing=True: the row does not exist, so the read raises LimitUnavailable."""
+    from src.services import governed_limits as GL
+
+    class _Engine:
+        def get_policy(self, slug):
+            if missing or slug != "agent_policy_conflicts":
+                return None
+            return {"policyName": "AgentPolicyConflictPolicy",
+                    "details": {"policy_identifier": slug, "rules": {"precedent_count": n}}}
+
+    monkeypatch.setattr(GL, "_fresh_engine", lambda: _Engine())

@@ -5,7 +5,7 @@ from scripts.agent_policy import seed_registry
 def test_settings_defaults_are_the_ruled_values():
     d = settings.DEFAULTS
     assert d["response_time"] == "PT4H" and d["response_time_basis"] == "clock"
-    assert d["live_conflict_repeat"] == 5
+    assert "live_conflict_repeat" not in d, "N is the governed agent_policy_conflicts.precedent_count"
     assert d["learning"] == {"min_decisions": 30, "min_days": 30, "min_approvers": 3,
                              "wilson_lower": 0.85, "median_seconds_floor": 30,
                              "not_yet_more": 30, "dismiss_more": 30}
