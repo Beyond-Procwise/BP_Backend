@@ -632,6 +632,28 @@ def promote(raw_id: int, doc_type: str, *,
             # with the correct attempt rather than silently duplicating attempt=1.
             _already_promoted = raw_data.get("promotion_status") == "promoted"
 
+            # Only the newest read of a document may write _stg. On 2026-07-30 nineteen
+            # documents were read twice, an older pipeline at 18:25 (every figure missed,
+            # held by a blocking missing_required) and a fixed one at 19:41 (right, promoted).
+            # At 20:40 a dedup clean-up dismissed the older reads' blockers as duplicates of
+            # the newer reads', which released them here, and each overwrote its newer, good
+            # _stg row with nothing. A read whose document already has a NEWER promoted read
+            # is superseded: it is left as it is and does not promote. (Its row keeps its
+            # status; the CHECK constraint has no 'superseded' value.)
+            _doc_pk = raw_data.get("doc_pk_candidate")
+            if _doc_pk:
+                cur.execute(
+                    f"SELECT raw_id FROM {raw_t} WHERE doc_pk_candidate = %s AND raw_id > %s "
+                    f"AND promotion_status = 'promoted' ORDER BY raw_id DESC LIMIT 1",
+                    (_doc_pk, raw_id))
+                _newer = cur.fetchone()
+                if _newer:
+                    conn.rollback()
+                    log.info("promote: raw_id=%s (%s %s) superseded by newer promoted read raw_id=%s; "
+                             "not promoting", raw_id, doc_type, _doc_pk, _newer[0])
+                    return {"ok": False, "doc_pk": _doc_pk, "reason": "superseded_by_newer_read",
+                            "newer_raw_id": _newer[0]}
+
             # Safety net: guarantee COMPUTABLE columns (exchange_rate_to_usd,
             # converted_amount_usd, tax_amount, *_total_incl_tax) are populated
             # at promotion time, even when the upstream context layer did not

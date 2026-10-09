@@ -1000,6 +1000,12 @@ def refresh_rereads(cur, doc_types=("quote", "invoice", "purchase_order")) -> di
                     cur.execute(f"update {ltrgt} set " + ", ".join(f"{c} = coalesce({c}, %s)" for c in vals)
                                 + f" where {pk} = %s and {lno} = %s", [*vals.values(), r["pk"], n])
             done += 1
+            # A re-read that was once refused and is now applied: its finding no longer holds.
+            cur.execute("update proc.bp_extraction_discrepancy set status = 'resolved', resolved_at = now(), "
+                        "resolution_action = 'dismiss', resolved_by = 'refresh_rereads', "
+                        "notes = coalesce(notes, '') || ' [resolved: a later read was applied]' "
+                        "where doc_pk_candidate = %s and issue_type = 'reread_not_applied' and status = 'open'",
+                        (str(r["pk"]),))
             record_action(
                 phase=PHASE_CONSOLIDATION, action_type="refresh_from_reread", doc_type=dt,
                 doc_pk=str(r["pk"]), agent="linking_engine", status="ok",
