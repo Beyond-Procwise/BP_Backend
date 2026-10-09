@@ -454,3 +454,14 @@ an email that was asked to carry no ask ("tell them we will come back next week"
 Moved to `deploy/sql/2026-10-09_email_brief_plan_prompt_held.sql`, in no pack and never applied by the rehearsal (the eval harness
 still loads it so the planner code path stays tested). Pack (b) now installs two prompts, classify and judge. With no planner row the
 stage reports `unavailable` and drafts are written from the request alone, as on bp_testdb today. Rehearsal re-run: PASS.
+
+
+## Pack (b) applied to bp_testdb (2026-10-09 21:26 UTC, by request)
+
+Applied from origin/Development, hashes equal to the rehearsed ones: `2026-10-08_email_agent_steering.sql` (7f21b66f8a5f762b),
+`2026-10-08_email_tone_rules.sql` (436d01b122b0807b), `2026-10-08_email_assurance_prompts.sql` (25dfc1508506e4cd: classify and judge
+only; the planner prompt is held). procwise restarted 21:26:57, healthy. Checked through DB-backed engines: `email_family_classify` and
+`email_draft_judge` resolve, `email_brief_plan` does not (as intended), EmailToneRules and EmailSteeringRules load. From now on the
+running service classifies free-text requests, derives tone, steers the writer and judges drafts (the review flag can fire).
+Not applied: the roles file, anything on bp_sqldb. A standalone `EmailDraftingAgent()` has an EMPTY prompt engine (no DB), so it
+reports every prompt missing; check prompts through a DB-backed PromptEngine, as above.

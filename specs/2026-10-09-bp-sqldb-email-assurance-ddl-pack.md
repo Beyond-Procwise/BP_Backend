@@ -1,7 +1,6 @@
 # bp_sqldb: email assurance DDL pack
 
-Rewritten 2026-10-08 from the real files (it had grown a trail of addenda); refreshed after the pack-split fix below. **NOT APPLIED to bp_sqldb, to its cluster peers, or to anywhere
-shared.** Nothing here is applied until live verification has passed (your ruling of 2026-10-08) and you say so.
+Rewritten 2026-10-08 from the real files (it had grown a trail of addenda); refreshed after the pack-split fix below. **NOT APPLIED to bp_sqldb or its cluster peers.** On bp_testdb: pack (a) and pack (b) are applied (pack (b) on 2026-10-09 21:26 UTC); the roles file is not. Nothing here is applied until live verification has passed (your ruling of 2026-10-08) and you say so.
 
 ## What it is
 
