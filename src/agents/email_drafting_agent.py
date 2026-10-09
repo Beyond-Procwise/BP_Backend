@@ -2598,7 +2598,8 @@ class EmailDraftingAgent(BaseAgent):
         failed = [v for v in run.check(body) if v["severity"] == "fail"]
         if not failed:
             return body, False
-        repaired = self._repair_assured_body(body, failed)
+        held = (run.inputs.reasoned.get("response_deadline") or {}).get("value") if run.inputs.reasoned else None
+        repaired = self._repair_assured_body(body, failed, deadline=str(held) if held else None)
         if not repaired or repaired == body:
             return body, False
         # A repair is accepted only if it does what it was asked: fewer failures, and still the
@@ -2623,10 +2624,15 @@ class EmailDraftingAgent(BaseAgent):
             return body, False
         return repaired, True
 
-    def _repair_assured_body(self, body: str, failed: List[Dict[str, str]]) -> Optional[str]:
-        """Ask the model once to remove what the checks rejected. None if it cannot."""
+    def _repair_assured_body(self, body: str, failed: List[Dict[str, str]], *, deadline: Optional[str] = None) -> Optional[str]:
+        """Ask the model once to remove what the checks rejected. None if it cannot, or if nothing is repairable."""
 
-        issues = "\n".join(f"- {v['kind']}: {v['detail']}" for v in failed)
+        from src.services.draft_assurance import repair as repair_mod
+
+        steps = repair_mod.instructions(failed, deadline=deadline)
+        if not steps:
+            return None                         # e.g. only a missing deadline we do not hold: a person adds it, not a model
+        issues = "\n".join(f"- {line}" for line in steps)
         model_name = getattr(
             self.agent_nick.settings, "negotiation_email_model", DEFAULT_NEGOTIATION_MODEL
         )

@@ -84,7 +84,7 @@ def test_the_writer_inventing_a_po_number_is_caught_even_with_good_stages(monkey
     from agents import email_drafting_agent as module
     agent = _agent(monkeypatch, good_model)
     monkeypatch.setattr(module, "_chat", lambda m, s, u, **k: "Subject: Price\nPlease confirm PO-99999 within the week?")
-    monkeypatch.setattr(agent, "_repair_assured_body", lambda b, f: None)
+    monkeypatch.setattr(agent, "_repair_assured_body", lambda b, f, **k: None)
     kinds = {v["kind"] for v in _prompt(agent)["assurance"]["violations"]}
     assert "ungrounded_reference" in kinds
 
@@ -93,7 +93,7 @@ def test_the_writer_stating_a_figure_in_no_fact_is_caught(monkeypatch):
     from agents import email_drafting_agent as module
     agent = _agent(monkeypatch, good_model)
     monkeypatch.setattr(module, "_chat", lambda m, s, u, **k: "Subject: Price\nWe will pay 61.25 GBP. Please confirm within the week?")
-    monkeypatch.setattr(agent, "_repair_assured_body", lambda b, f: None)
+    monkeypatch.setattr(agent, "_repair_assured_body", lambda b, f, **k: None)
     assert any(v["kind"] == "ungrounded_figure" for v in _prompt(agent)["assurance"]["violations"])
 
 
@@ -163,7 +163,7 @@ def _broken_writer(agent, monkeypatch):
 def test_a_refusal_is_not_accepted_as_a_repair(monkeypatch):
     agent = _agent(monkeypatch, good_model)
     _broken_writer(agent, monkeypatch)
-    monkeypatch.setattr(agent, "_repair_assured_body", lambda b, f: "I'm sorry, I cannot help with that request, please try again later today")
+    monkeypatch.setattr(agent, "_repair_assured_body", lambda b, f, **k: "I'm sorry, I cannot help with that request, please try again later today")
     draft = _prompt(agent)
     assert "61.25" in draft["text"]                                       # the original stays; nothing was destroyed
     a = draft["assurance"]
@@ -174,7 +174,7 @@ def test_a_refusal_is_not_accepted_as_a_repair(monkeypatch):
 def test_a_repair_that_still_fails_is_not_accepted(monkeypatch):
     agent = _agent(monkeypatch, good_model)
     _broken_writer(agent, monkeypatch)
-    monkeypatch.setattr(agent, "_repair_assured_body", lambda b, f: b.replace("61.25", "62.50"))
+    monkeypatch.setattr(agent, "_repair_assured_body", lambda b, f, **k: b.replace("61.25", "62.50"))
     a = _prompt(agent)["assurance"]
     assert a["repaired"] is False and "adds a new problem" in a["repair_rejected"] and "62.50" in a["repair_rejected"]
 
@@ -182,7 +182,7 @@ def test_a_repair_that_still_fails_is_not_accepted(monkeypatch):
 def test_a_repair_that_removes_the_failure_and_keeps_the_email_is_accepted(monkeypatch):
     agent = _agent(monkeypatch, good_model)
     _broken_writer(agent, monkeypatch)
-    monkeypatch.setattr(agent, "_repair_assured_body", lambda b, f: b.replace("We will pay 61.25 GBP. ", ""))
+    monkeypatch.setattr(agent, "_repair_assured_body", lambda b, f, **k: b.replace("We will pay 61.25 GBP. ", ""))
     draft = _prompt(agent)
     assert draft["assurance"]["repaired"] is True and "61.25" not in draft["text"]
 

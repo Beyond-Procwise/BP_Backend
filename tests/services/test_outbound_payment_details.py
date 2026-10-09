@@ -91,7 +91,7 @@ def _bank_prompt(monkeypatch, compose):
     agent = _agent(monkeypatch, good_model)
     monkeypatch.setattr(module, "_chat", lambda m, s, u, **k: compose)
     repairs = []
-    monkeypatch.setattr(agent, "_repair_assured_body", lambda body, failed: repairs.append(failed) or body + " fixed")
+    monkeypatch.setattr(agent, "_repair_assured_body", lambda body, failed, **k: repairs.append(failed) or body + " fixed")
     draft = agent.from_prompt(BANK_REQ, context={"supplier_id": "S-1", "workflow_id": "wf-1", "recipients": ["a@x.test"]})
     return draft["assurance"], repairs
 
@@ -117,7 +117,7 @@ def test_an_ordinary_request_still_gets_its_repair_pass(monkeypatch):
     agent = _agent(monkeypatch, good_model)
     monkeypatch.setattr(module, "_chat", lambda m, s, u, **k: "Subject: Price\nThanks [name], see you.")
     repairs = []
-    monkeypatch.setattr(agent, "_repair_assured_body", lambda body, failed: repairs.append(failed) or None)
+    monkeypatch.setattr(agent, "_repair_assured_body", lambda body, failed, **k: repairs.append(failed) or None)
     agent.from_prompt("Chase the price on PO-77123", context={"supplier_id": "S-1", "workflow_id": "wf-1", "recipients": ["a@x.test"]})
     assert repairs, "the repair pass should still run for an ordinary failing draft"
 

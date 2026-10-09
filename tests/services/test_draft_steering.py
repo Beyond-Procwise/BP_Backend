@@ -139,7 +139,7 @@ def test_a_writer_that_copies_an_exemplars_figure_is_caught_by_the_ordinary_chec
     agent = _agent(monkeypatch, good_model)
     _wire(monkeypatch, agent, store=Store(exemplars=ex))
     monkeypatch.setattr(module, "_chat", lambda m, s, u, **k: "Subject: Price\nWe will pay 99.99 GBP. Please confirm within the week?")
-    monkeypatch.setattr(agent, "_repair_assured_body", lambda b, f: None)
+    monkeypatch.setattr(agent, "_repair_assured_body", lambda b, f, **k: None)
     kinds = {v["kind"] for v in _prompt(agent, requested_by="nick")["assurance"]["violations"]}
     assert "ungrounded_figure" in kinds
 
