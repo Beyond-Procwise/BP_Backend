@@ -385,9 +385,7 @@ def _session_billed_value(cur, session_id: str) -> tuple[dict, dict]:
     need_fx = any(f.get("currency") not in (None, "GBP") for f in findings)
     rates = vs._get_rates() if need_fx else None
     findings = [vs._apply_discrepancy_fx(f, rates) for f in findings]
-    findings = vs.dedupe(findings)
-    findings = vs.supersede_po_level_by_duplicate(findings)
-    findings = vs.supersede_lines_under_overbilled_po(findings)
+    findings = vs.supersede_overlaps(findings)
     value: dict = {}
     for f in findings:
         if f.get("superseded_by"):

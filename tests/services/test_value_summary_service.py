@@ -96,6 +96,73 @@ def test_dedupe_precedence_and_supersede_flag():
     assert len(supp) == 1 and supp[0]["superseded_by"] == kept[0]["id"]
 
 
+# --------------------------------------------------------------------------
+# Same document, same source: two findings are two pieces of money unless one
+# contains the other (2026-10-09: 117 bp_testdb invoices kept a unit-price
+# difference and dropped their whole-invoice duplicate amount).
+# --------------------------------------------------------------------------
+
+def _on(did, amount, issue_type, doc="INV-1", deal="D1"):
+    return _disc_finding(did, amount, status="open", issue_type=issue_type, deal=deal, doc=doc)
+
+
+def _live(findings):
+    return sorted((f["issue_type"], f["amount_gbp"]) for f in findings if f["superseded_by"] is None)
+
+
+def test_a_duplicate_invoice_contains_everything_else_found_on_it_in_either_order():
+    for order in (0, 1):
+        price = _on(1, 31.65, "unit_price_differs_from_po")
+        dup = _on(2, 210.17, "duplicate_invoice")
+        out = vss.dedupe([price, dup] if order == 0 else [dup, price])
+        assert _live(out) == [("duplicate_invoice", 210.17)]
+        assert price["superseded_by"] == "disc:2"
+
+
+def test_two_lines_billed_over_the_po_on_one_invoice_both_count():
+    a, b = _on(1, 500, "line_amount_over_po"), _on(2, 300, "line_amount_over_po")
+    assert _live(vss.dedupe([a, b])) == [("line_amount_over_po", 300), ("line_amount_over_po", 500)]
+
+
+def test_price_and_quantity_findings_on_one_invoice_both_count():
+    out = vss.dedupe([_on(1, 40, "unit_price_differs_from_po"),
+                      _on(2, 60, "quantity_invoiced_above_po")])
+    assert vss.summarise(out)["verified_found_gbp"] == 100.0
+
+
+def test_an_invoice_over_its_po_contains_its_own_line_findings():
+    whole = _on(1, 1000, "amount_over_po")
+    line = _on(2, 700, "line_amount_over_po")
+    other_invoice = _on(3, 90, "line_amount_over_po", doc="INV-2")
+    out = vss.dedupe([line, other_invoice, whole])
+    assert line["superseded_by"] == "disc:1"
+    assert vss.summarise(out)["verified_found_gbp"] == 1090.0
+
+
+def test_a_recovery_opportunity_is_superseded_by_the_duplicate_not_the_price_finding():
+    price = _on(1, 31.65, "unit_price_differs_from_po", doc="INV-9", deal="D-9")
+    dup = _on(2, 210.17, "duplicate_invoice", doc="INV-9", deal="D-9")
+    o = classify_opportunity({"opportunity_id": "O-9", "stage": "agreed",
+        "financial_impact_gbp": 210.17, "realised_savings_gbp": None,
+        "supplier_name": "Techworld", "deal_id": "D-9", "po_id": None, "quote_id": None,
+        "item_description": None, "created_at": datetime.now(timezone.utc), "doc_pk": "INV-9"})
+    vss.dedupe([o, price, dup])
+    assert o["superseded_by"] == "disc:2"        # counted once, in the duplicate
+
+
+def test_supersede_overlaps_runs_every_rule():
+    po = _on(10, 20000, "invoices_exceed_po_total", doc="PO-1")
+    po["po_id"] = "PO-1"
+    line = _on(11, 20000, "line_amount_over_po", doc="INV-A")
+    line["po_id"] = "PO-1"
+    price = _on(12, 31.65, "unit_price_differs_from_po", doc="INV-B")
+    dup = _on(13, 210.17, "duplicate_invoice", doc="INV-B")
+    for f in (price, dup):
+        f["po_id"] = "PO-2"
+    out = vss.supersede_overlaps([po, line, price, dup])
+    assert vss.summarise(out)["verified_found_gbp"] == 20210.17
+
+
 def test_summarise_totals():
     fs = [
         {"tier": "verified", "amount_gbp": 950.0, "recovered_gbp": 950.0,
