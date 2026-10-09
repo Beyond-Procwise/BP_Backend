@@ -2588,6 +2588,11 @@ class EmailDraftingAgent(BaseAgent):
 
         if run is None or run.inputs is None or not body:
             return body, False
+        if run.payment_hold(body):
+            # Ruling 2026-10-09: an email about new or changed bank/payment details goes to a person exactly as written.
+            # A model must never rewrite it into a version that passes the checks.
+            run.repair_skipped = "the email mentions bank or payment details; it is left for a person, never repaired"
+            return body, False
         failed = [v for v in run.check(body) if v["severity"] == "fail"]
         if not failed:
             return body, False

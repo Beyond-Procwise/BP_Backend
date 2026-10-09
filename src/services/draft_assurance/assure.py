@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, Iterable, List, Optional, Set
 
-from . import validator as V
+from . import payment_details, validator as V
 from .facts import FactResolver, ResolvedFact, Unresolved, coerce
 from .family import FamilyConfig
 
@@ -55,6 +55,7 @@ class Inputs:
     never_state: Dict[str, Set[Decimal]] = field(default_factory=dict)
     data: Dict[str, Any] = field(default_factory=dict)
     claims: List[Dict[str, Any]] = field(default_factory=list)   # facts read from Postgres that no person has vouched for
+    request_texts: List[str] = field(default_factory=list)       # what the person asked for: the payment-details rule reads it too
 
     # -- allowed sets --------------------------------------------------------
     def _allowed(self):
@@ -98,6 +99,7 @@ class Inputs:
         out += V.check_patterns(text, self.family.forbidden_patterns)
         out += V.check_required(text, self.family.required_elements, self.data.get("asks") or [])
         out += V.check_length(text, self.family.length_target)
+        out += payment_details.violations(text, self.request_texts)     # a hard rule: no family setting reaches it
         return out
 
     def finalize(self, text: str, recipients: Iterable[str],
@@ -135,6 +137,9 @@ class Inputs:
             "violations": violations,
             "checked_at": datetime.now(timezone.utc).isoformat(),
         }
+        hold = payment_details.hold(text, self.request_texts)
+        if hold:
+            record["payment_details_hold"] = hold
         record.update(stage_fields(extras or {}, record, self.reasoned))
         return record
 
@@ -275,6 +280,11 @@ def stage_fields(extras: Dict[str, Any], record: Dict[str, Any], reasoned: Dict[
         items.append({"id": f"claim:{c['fact']}", "key": f"claim.{c['fact']}",
                       "text": f"{c['label']} was read from the supplier's email by software and has not been confirmed by a person. "
                               "Confirm it, or give the right value.", "resolution": None})
+    # New or changed bank/payment details: a person must look, whatever the family or its mode (ruling 2026-10-09).
+    if record.get("payment_details_hold"):
+        items.append({"id": "payment_details", "key": "payment_details",
+                      "text": "This email or its request mentions bank or payment details. A person must review it before it is sent. "
+                              + payment_details.PORTAL_GUIDANCE, "resolution": None})
     # Tone gaps a person must confirm: a variable whose rule is `assume` that fell back to its default,
     # and any tone word in the instruction that nothing understood. Same mechanism, same screen.
     if tone and tone.get("status") == "captured":
