@@ -184,6 +184,27 @@ def threshold() -> int:
     return n if n > 0 else int(_settings.DEFAULTS["live_conflict_repeat"])
 
 
+def _credited(cur, approvals, member_ids: List[int], verdict: str, actor: str,
+              reason: Optional[str]) -> tuple:
+    """(actor, reason) of the member action that decided the group: for a reject the EARLIEST
+    member reject not written by system:group (a timeout or a person); for an approve the LAST
+    approver. Falls back to the caller's actor when no such row is found."""
+    cur.execute(
+        "SELECT a.decision, a.actioned_by, a.override_reason FROM proc.bp_decision a "
+        "JOIN proc.bp_decision c ON c.subject_type = a.subject_type AND c.subject_id = a.subject_id "
+        "WHERE c.decision_id = ANY(%s) AND c.subject_type = %s AND a.status = 'actioned' "
+        "AND a.decision IN ('approve','reject') AND a.actioned_by IS NOT NULL ORDER BY a.decision_id",
+        (list(member_ids), approvals.SUBJECT_TYPE),
+    )
+    acts = cur.fetchall()
+    if verdict == "reject":
+        rejects = [r for r in acts if r[0] == "reject"]
+        pick = next((r for r in rejects if r[1] != approvals.GROUP_ACTOR), rejects[0] if rejects else None)
+    else:
+        pick = next((r for r in reversed(acts) if r[0] == "approve"), None)
+    return (pick[1], pick[2]) if pick else (actor, reason)
+
+
 def settle_for_group(cur, case: Dict[str, Any], state: Dict[str, int], *, refused: Optional[str], actor: str,
                      reason: Optional[str], now: datetime) -> Optional[int]:
     """The member group of `case` has closed: settle the live case(s) its members name, if still
@@ -193,6 +214,10 @@ def settle_for_group(cur, case: Dict[str, Any], state: Dict[str, int], *, refuse
     member_ids = approvals._member_ids(cur, int(case["decision_id"]), case["facts"])
     approved = refused is None and state.get("rejected", 0) == 0 and state.get("approved", 0) == state.get("total", 0)
     verdict = "approve" if approved else "reject"
+    # Credit the member decision that settled it, never whoever happened to close the group: a
+    # sweep can time one member out while a person is approving its sibling (user ruling Q4: a
+    # timeout never counts as a person's decision).
+    actor, reason = _credited(cur, approvals, member_ids, verdict, actor, reason)
     by_person = not str(actor or "").startswith("system:")
     out: Optional[int] = None
     for live_id in _live_ids(cur, member_ids):

@@ -528,3 +528,33 @@ def test_notify_still_sent_in_live_conflict(conn, world, monkeypatch, ran):
     sent = [x for x in notes(conn, [fs[n["id"]]["firing_id"]]) if x["recipient"] == world.ntf]
     assert [x["message"] for x in sent] == [f"Issuing a refund or credit (policy {n['id']}) is waiting for approval."]
     assert len(lives(conn, world)) == 1
+
+
+@live
+def test_timeout_raced_by_a_persons_approval_settles_as_the_timeout(conn, world, monkeypatch, ran):
+    """Review I1: the sweep times A out while a person holds B (its SKIP LOCKED pass leaves B open,
+    so nothing settles); the person then approves B and closes the group. The live case must
+    settle as the TIMEOUT -- not as that person's reject -- and never count toward repeat-N."""
+    a, b = doc_a(world), doc_b(world)
+    use(monkeypatch, [a, b])
+    run(monkeypatch, stub_tools(world, ran), [_round(world.tool), FINAL], workflow_id=world.wf)
+    ma, mb = members(conn, world)
+    proposed = []
+    monkeypatch.setattr(CL, "maybe_propose", lambda *a_, **k: proposed.append(a_) or [])
+    now = datetime.now(timezone.utc)
+    with A._tx(conn):                      # what _sweep_one wrote for A before skipping the locked B
+        with conn.cursor() as cur:
+            case = A._load_locked(cur, ma["decision_id"])
+            A._record(cur, case, verb="reject", actor=A.TIMEOUT_ACTOR, reason=A.TIMEOUT_REASON, now=now,
+                      level=0, level_name=world.la2)
+            A._update_firing(cur, case["facts"].get("firingId"), result="timed_out", level=0,
+                             actor=A.TIMEOUT_ACTOR, now=now, reason=A.TIMEOUT_REASON,
+                             decision_id=ma["decision_id"])
+    act(conn, world, mb["decision_id"], world.lb)          # the person's approval closes the group
+    [lv] = lives(conn, world)
+    assert (lv["status"], lv["outcome"], lv["decided_by"], lv["by_person"]) == \
+           ("actioned", "reject", A.TIMEOUT_ACTOR, False)
+    [la] = actions(conn, world, CL.SUBJECT_LIVE)
+    assert (la["decision"], la["actioned_by"], la["override_reason"]) == ("reject", A.TIMEOUT_ACTOR, A.TIMEOUT_REASON)
+    assert proposed == [], "a timeout never counts toward repeat-N"
+    assert ran == []
