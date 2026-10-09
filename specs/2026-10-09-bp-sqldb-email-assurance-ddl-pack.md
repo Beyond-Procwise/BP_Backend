@@ -39,7 +39,7 @@ file's sha256, so you can check that the file applied is the file rehearsed.
 | 14b | a | `2026-10-09_email_award_commitment.sql` | `76ce3ef6096b655b` | `2026-10-09_email_award_commitment_rollback.sql` | UPDATE the four family rows' `award_commitment` pattern, only where it is still the original (found live 2026-10-09: "the contract is yours" passed). Applied to bp_testdb 2026-10-09. |
 | 15 | b | `2026-10-08_email_agent_steering.sql` | `7f21b66f8a5f762b` | `2026-10-08_email_agent_steering_rollback.sql` | INSERT `EmailSteeringRules`. **Held back with the tone rules and prompts.** |
 | 16 | b | `2026-10-08_email_tone_rules.sql` | `436d01b122b0807b` | `2026-10-08_email_tone_rules_rollback.sql` | INSERT `EmailToneRules` (with tone `directives`). **Awaiting your review; held back.** |
-| 17 | b | `2026-10-08_email_assurance_prompts.sql` | `960b1850f3b57341` | `2026-10-08_email_assurance_prompts_rollback.sql` | INSERT three rows into `proc.bp_prompt`: classify, plan, judge. **Awaiting your review; held back.** |
+| 17 | b | `2026-10-08_email_assurance_prompts.sql` | `25dfc1508506e4cd` | `2026-10-08_email_assurance_prompts_rollback.sql` | INSERT two rows into `proc.bp_prompt`: classify and judge (the planner prompt is HELD outside the pack since 2026-10-09: `2026-10-09_email_brief_plan_prompt_held.sql`, never applied). **Awaiting your review; held back.** |
 | 18 | roles | `2026-10-09_email_agent_roles.sql` | `293fa6f25bd1c068` | `2026-10-09_email_agent_roles_rollback.sql` | CREATE two NOLOGIN roles (cluster-wide) and the grants listed below. **Its own change request; see `2026-10-08-email-agent-roles-change-request.md`.** |
 
 Not in any pack, on purpose: login roles and passwords (created by an operator, out of band), the `EMAIL_AGENT_*` environment variables,
@@ -167,7 +167,7 @@ The `*_rollback.sql` files in reverse order. Rollback removes the rows by `creat
 
 ## Rehearsal results (2026-10-08; a restored COPY of bp_sqldb's structure in a disposable Postgres 16 container)
 
-Run with `python -m evals.email.rehearsal` (re-runnable before the real apply). **File 17 (the prompts) changed on 2026-10-09** (the planner prompt, after a live A/B: 5/8 good briefs vs 3/8, none malformed); its hash above is the new one. **Rehearsal re-run 2026-10-09 18:38 UTC with files 17 and 14b: PASS** (rollback fingerprint equal, re-apply identical). Full log: `evals/email/rehearsal-log.md`.
+Run with `python -m evals.email.rehearsal` (re-runnable before the real apply). **File 17 (the prompts) changed on 2026-10-09** (the planner prompt, after a live A/B: 5/8 good briefs vs 3/8, none malformed); its hash above is the new one. **Rehearsal re-run 2026-10-09 18:38 UTC with files 17 and 14b: PASS**; re-run again ~20:55 UTC after the planner prompt was moved out of file 17: PASS (rollback fingerprint equal, re-apply identical). Full log: `evals/email/rehearsal-log.md`.
 
 - **The copy:** schema-only `pg_dump` of nine real tables (`supplier_response` with its sequence, `bp_supplier`, `workflow_email_tracking`,
   `bp_policy`, `bp_prompt`, `bp_approval`, `bp_mailbox_binding`, `bp_agent_actions`, `draft_rfq_emails`) with their real constraints and

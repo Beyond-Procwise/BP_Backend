@@ -49,6 +49,10 @@ MIGRATIONS: List[str] = [
 ]
 
 
+#: Loaded by the evals so a code path stays tested, but in NO deployment pack and never applied by the rehearsal: the planner prompt,
+#: held back 2026-10-09 (a live A/B showed the brief does not improve drafts and doubles the time per draft).
+HELD = ("2026-10-09_email_brief_plan_prompt_held.sql",)
+
 # The groups the DDL pack is applied in (specs/2026-10-09-bp-sqldb-email-assurance-ddl-pack.md). (a) must work ALONE: it is applied
 # first and (b) waits for live verification. tests/email_evals/test_pack_split.py proves it.
 PACK_B = ("2026-10-08_email_agent_steering.sql", "2026-10-08_email_tone_rules.sql", "2026-10-08_email_assurance_prompts.sql")
@@ -125,7 +129,7 @@ def load(conn, skip=(), generate=None) -> None:
             cur.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public")
             cur.execute((HERE / "schema.sql").read_text())
             cur.execute((HERE / "seed_policies.sql").read_text())
-        for name in MIGRATIONS:
+        for name in (*MIGRATIONS, *HELD):
             if name not in skip:
                 cur.execute((SQL / name).read_text())
 
@@ -135,5 +139,5 @@ def rollback_all(conn) -> None:
 
     conn.autocommit = True
     with conn.cursor() as cur:
-        for name in reversed(MIGRATIONS):
+        for name in reversed((*MIGRATIONS, *HELD)):
             cur.execute((SQL / name.replace(".sql", "_rollback.sql")).read_text())

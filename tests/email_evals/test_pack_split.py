@@ -37,10 +37,15 @@ def pack_a_only(eval_dsn):
     admin.cursor().execute("CREATE DATABASE pack_a_probe")
     conn = psycopg2.connect(eval_dsn.rsplit("/", 1)[0] + "/pack_a_probe")
     conn.autocommit = True
-    evaldb.load(conn, skip=evaldb.PACK_B + evaldb.ROLES + evaldb.PRODUCT, generate=True)     # no product-table change either
+    evaldb.load(conn, skip=evaldb.PACK_B + evaldb.ROLES + evaldb.PRODUCT + evaldb.HELD, generate=True)     # no product-table change either
     yield conn
     conn.close()
     admin.cursor().execute("DROP DATABASE IF EXISTS pack_a_probe")
+
+
+def test_the_held_planner_prompt_is_in_no_pack_and_never_rehearsed():
+    assert set(evaldb.HELD).isdisjoint(evaldb.MIGRATIONS)       # the rehearsal and every pack are built from MIGRATIONS
+    assert "SELECT 'email_brief_plan'" not in (evaldb.SQL / "2026-10-08_email_assurance_prompts.sql").read_text()
 
 
 def test_pack_a_alone_contains_no_pack_b_rows(pack_a_only):
