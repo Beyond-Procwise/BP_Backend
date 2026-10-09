@@ -53,7 +53,7 @@ def doc_type_rows():
         cur.execute("""
             SELECT concept_code, role, default_parent_type, execution_mode,
                    aliases, identifiers, structural_signals, pipeline_doc_type,
-                   status, source, requires_parent_evidence, parent_evidence_phrases
+                   status, source, requires_parent_evidence, parent_evidence_phrases, title_only
               FROM proc.bp_document_type
         """)
         cols = [d[0] for d in cur.description]
@@ -311,6 +311,7 @@ def test_document_type_rows_equal_the_seed_column_for_column(doc_type_rows):
              seed.requires_parent_evidence),
             ("parent_evidence_phrases", list(r["parent_evidence_phrases"] or []),
              list(seed.parent_evidence_phrases)),
+            ("title_only", bool(r["title_only"]), seed.title_only),
         ]
         if r["source"] == "seed":
             pairs.append(("status", r["status"], seed.status))

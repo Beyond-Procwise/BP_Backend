@@ -528,25 +528,6 @@ def resolve_document_type(
                     # inside 'Bill-To Address'). Never scored or returned.
                     hits.append((code, "signal_span", st, len(folded), folded))
 
-    # Longest match wins: 'agreement' inside 'framework agreement' is the same
-    # words read twice, not a second type claiming the page. Identical spans
-    # from different concepts are KEPT, since that is a genuine collision and
-    # must surface as a tie. One sweep: sorted by (start, -length), a hit is
-    # covered when an earlier, different span already reaches its end.
-    hits.sort(key=lambda h: (h[2], -h[3], h[0]))
-    kept_hits: List[Tuple[str, str, int, int, str]] = []
-    max_end = -1
-    i = 0
-    while i < len(hits):
-        span = (hits[i][2], hits[i][2] + hits[i][3])
-        j = i
-        while j < len(hits) and (hits[j][2], hits[j][2] + hits[j][3]) == span:
-            j += 1
-        if span[1] > max_end:
-            kept_hits.extend(h for h in hits[i:j] if h[1] != "signal_span")
-        max_end = max(max_end, span[1])
-        i = j
-
     # Rules A, B and C: the document's title is the FIRST segment that IS a
     # type phrase, and only the concepts it names reach tier 1.
     #
@@ -594,6 +575,37 @@ def resolve_document_type(
             continue
         title_concepts, title_span = named, (a, b)
         break
+
+    # A title-only type that is not this page's title is removed outright, as if
+    # it were not in the vocabulary: no region, so tier 2 never scores it, and
+    # no hit, so 'data processing agreement' in a clause still reads as the bare
+    # 'agreement' it read as before the type existed. Clause wording ('the
+    # Supplier does not guarantee', 'the DPA at Schedule 3') is not the page
+    # saying what it is. The title is found first precisely so this can happen
+    # BEFORE the longest-match sweep.
+    hits = [
+        h for h in hits
+        if h[0] in title_concepts or not vocab.document_types[h[0]].title_only
+    ]
+
+    # Longest match wins: 'agreement' inside 'framework agreement' is the same
+    # words read twice, not a second type claiming the page. Identical spans
+    # from different concepts are KEPT, since that is a genuine collision and
+    # must surface as a tie. One sweep: sorted by (start, -length), a hit is
+    # covered when an earlier, different span already reaches its end.
+    hits.sort(key=lambda h: (h[2], -h[3], h[0]))
+    kept_hits: List[Tuple[str, str, int, int, str]] = []
+    max_end = -1
+    i = 0
+    while i < len(hits):
+        span = (hits[i][2], hits[i][2] + hits[i][3])
+        j = i
+        while j < len(hits) and (hits[j][2], hits[j][2] + hits[j][3]) == span:
+            j += 1
+        if span[1] > max_end:
+            kept_hits.extend(h for h in hits[i:j] if h[1] != "signal_span")
+        max_end = max(max_end, span[1])
+        i = j
 
     # A concept's region is the evidence that COUNTED for it. For a tier-1
     # concept that is the title segment alone; its other mentions decided

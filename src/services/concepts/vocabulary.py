@@ -48,7 +48,7 @@ _DOC_TYPE_SQL = """
     SELECT concept_code, role, default_parent_type, execution_mode,
            aliases, identifiers, structural_signals, pipeline_doc_type,
            status, requires_parent_evidence, parent_evidence_phrases,
-           recorded_at
+           title_only, recorded_at
       FROM proc.bp_document_type
      WHERE status = 'active'
 """
@@ -158,6 +158,7 @@ def build_vocabulary(
             # "unflagged" rather than raise.
             requires_parent_evidence=bool(row.get("requires_parent_evidence") or False),
             parent_evidence_phrases=tuple(row.get("parent_evidence_phrases") or ()),
+            title_only=bool(row.get("title_only") or False),
         )
         # The concept's own name is always an alias of itself.
         for alias in (*aliases, code.split(".", 1)[-1]):
@@ -200,6 +201,7 @@ SEED_DOC_TYPE_ROWS = [
         "status": d.status,
         "requires_parent_evidence": d.requires_parent_evidence,
         "parent_evidence_phrases": list(d.parent_evidence_phrases),
+        "title_only": d.title_only,
     }
     for d in DOCUMENT_TYPES.values()
 ]
