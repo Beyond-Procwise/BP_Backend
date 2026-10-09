@@ -329,6 +329,31 @@ def is_non_charge_line(description: Any) -> bool:
     return bool(_FOOTER_RE.search(s))
 
 
+def missing_number_lines(line_items: list, numeric_keys) -> tuple[list[int], bool]:
+    """Which captured lines to flag for carrying no quantity, price or amount.
+
+    Returns (indices, none_priced). Rows after the document's last priced line are
+    its terms / notes / footer block, however they are worded ("Lead time /
+    service", "Scope & assumptions", a bullet), and are not flagged: across the
+    corpus (21,099 quotes, 12,411 invoices, 5,042 POs) every unpriced row sat
+    after the last priced one, and the word list in is_non_charge_line missed
+    most of them, raising one warning per heading per version. An unpriced row
+    before or between priced rows is still a line whose numbers were lost.
+    none_priced is True when no line carries a number at all — an extraction
+    miss the caller reports once for the document, not once per line.
+    """
+    def has_numbers(li) -> bool:
+        return any(li.get(k) not in (None, "", 0) for k in numeric_keys)
+
+    priced = [i for i, li in enumerate(line_items) if has_numbers(li)]
+    if not priced:
+        return [], True
+    return [
+        i for i, li in enumerate(line_items[:priced[-1]])
+        if not has_numbers(li) and not is_non_charge_line(li.get("item_description"))
+    ], False
+
+
 def _po_uploaded_but_unpromoted(po_id: str) -> bool:
     """True when the cited PO exists in the raw tier or as an uploaded file,
     i.e. it reached the system but has not been promoted to _stg/_trgt yet
