@@ -19,6 +19,7 @@ them, read() is both for one viewer. Nothing here writes.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Set
@@ -193,3 +194,52 @@ def read(cur, *, policy_key: Optional[str] = None, pair_key: Optional[str] = Non
          limit: int = HISTORY_LIMIT) -> List[Dict[str, Any]]:
     entries = raw(cur, policy_key=policy_key, pair_key=pair_key, limit=limit)
     return shown(entries, sensitive=sensitive_of(cur, entries), unmasked_for=lambda e: may_see(viewer, e))
+
+
+# ---------------------------------------------------------------------------- export
+HEADER = ("Case", "Kind", "Raised", "Policies", "Decided by", "Name", "Decision", "Scope", "Decided at",
+          "Reason", "Cited cases")
+KIND_WORDS = {"policy": "Between policies", "live": "During an action"}
+DECIDED_BY_WORDS = {"person": "Person", "standing_rule": "Standing rule", "precedent": "Precedent",
+                    "timeout": "Timeout", "block": "Not allowed (block)", "retired": "Policy retired"}
+_DECISION_WORDS = {"approve": "Approve", "reject": "Reject", "moot": "Closed: policy retired",
+                   "block": "Blocked", "standing_rule": "Decided by a standing rule"}
+_FORMULA = re.compile(r"^\s*[=+\-@]")
+_CONTROL = re.compile(r"^[\t\r]")
+
+
+def csv_cell(v: Any) -> str:
+    """One quoted CSV cell, neutralised against formula injection with the UI's inventory csvCell
+    rule: a cell a spreadsheet would read as a formula (=, +, -, @, even after leading spaces), or
+    one starting with a tab or CR, gets a leading apostrophe."""
+    s = "" if v is None else str(v)
+    if _FORMULA.match(s) or _CONTROL.match(s):
+        s = "'" + s
+    return '"' + s.replace('"', '""') + '"'
+
+
+def decision_words(option: Optional[str]) -> str:
+    if option is None:
+        return ""
+    if option in _DECISION_WORDS:
+        return _DECISION_WORDS[option]
+    from services.agent_policy.conflict_cases import option_label   # lazily: conflict_cases pulls in approvals
+    return option_label(option)
+
+
+def to_csv(entries: List[Dict[str, Any]]) -> str:
+    """The (already masked) entries as CSV, one row per case, CRLF line ends."""
+    lines = [",".join(csv_cell(h) for h in HEADER)]
+    for e in entries or []:
+        d = e.get("decision") or {}
+        by = d.get("decidedBy") or {}
+        waiting = bool(e.get("isOpen"))
+        lines.append(",".join(csv_cell(v) for v in (
+            e.get("caseId"), KIND_WORDS.get(e.get("kind"), e.get("kind")), e.get("raisedAt"),
+            "; ".join(f"{p.get('id')} v{p.get('version')}" for p in e.get("policies") or []),
+            "" if waiting else DECIDED_BY_WORDS.get(by.get("kind"), ""),
+            None if waiting else by.get("name"),
+            "Waiting for a decision" if waiting else decision_words(d.get("option")),
+            d.get("scope"), d.get("decidedAt"), d.get("reason"),
+            " ".join(e.get("citedCases") or []))))
+    return "\r\n".join(lines) + "\r\n"

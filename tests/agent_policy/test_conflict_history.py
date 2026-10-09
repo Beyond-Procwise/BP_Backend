@@ -70,3 +70,37 @@ def test_raw_needs_exactly_one_key():
         CH.raw(object())
     with pytest.raises(ValueError):
         CH.raw(object(), policy_key="TST-0001", pair_key="TST-0001|TST-0002")
+
+
+# ---------------------------------------------------------------------------- CSV
+@pytest.mark.parametrize("v", ["=1+1", "+1", "-1", "@SUM(A1)", "\t=1", "\r=1", "  =1+1", "\tfoo", "\rbar"])
+def test_csv_cell_neutralises_formulas_like_the_ui(v):
+    assert CH.csv_cell(v).strip('"').startswith("'")
+
+
+def test_csv_cell_quotes_commas_and_quotes_and_blanks_none():
+    assert CH.csv_cell('a,"b"') == '"a,""b"""'
+    assert CH.csv_cell(None) == '""'
+
+
+def test_to_csv_has_the_header_and_one_row_per_case():
+    open_case = {**_entry(), "caseId": "pc_10", "kind": "policy", "isOpen": True, "decision": None}
+    precedent = {**_entry(), "caseId": "pc_11", "citedCases": ["pc_9", "pc_8"],
+                 "decision": {"option": "reject", "scope": "this_action",
+                              "decidedBy": {"kind": "precedent", "name": "system:precedent"},
+                              "decidedAt": "2026-10-09T12:00:00+00:00", "reason": "=cmd|' /C calc'!A0"}}
+    text = CH.to_csv([precedent, open_case, _entry()])
+    lines = text.split("\r\n")
+    assert text.endswith("\r\n") and lines[-1] == ""
+    assert lines[0] == '"Case","Kind","Raised","Policies","Decided by","Name","Decision","Scope","Decided at","Reason","Cited cases"'
+    assert lines[1] == ('"pc_11","During an action","2026-10-09T10:00:00+00:00","TST-0001 v1; TST-0002 v1",'
+                        '"Precedent","system:precedent","Reject","this_action","2026-10-09T12:00:00+00:00",'
+                        '"\'=cmd|\' /C calc\'!A0","pc_9 pc_8"')
+    assert lines[2].startswith('"pc_10","Between policies",') and '"Waiting for a decision"' in lines[2]
+    assert '"Person","sub-b","Approve"' in lines[3]
+
+
+def test_decision_words_use_the_screen_labels():
+    assert CH.decision_words("keep_both:FIN-0001") == "Keep both: FIN-0001 takes priority"
+    assert CH.decision_words("moot") == "Closed: policy retired"
+    assert CH.decision_words(None) == ""
