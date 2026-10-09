@@ -154,6 +154,24 @@ def _render_result(value: Any) -> str:
     return text
 
 
+@dataclass
+class _RanOnPrecedent:
+    """The gate allowed the call on precedent: the handler runs, and the model is told so in one
+    line after the tool's own result (``note``). Every other allow is ``None``, unchanged."""
+
+    note: str
+
+
+def _precedent_note(to_agent: Dict[str, Any]) -> str:
+    return ("Note: this action ran without a person approving it, on precedent (decided the same way "
+            f"{to_agent.get('precedentCount')} times before, case {to_agent.get('conflictCaseId')}).")
+
+
+def _with_note(content: str, allowed: Optional["_RanOnPrecedent"]) -> str:
+    """The tool message the model reads: the result as rendered, then the precedent note, if any."""
+    return content if allowed is None else f"{content}\n{allowed.note}"
+
+
 def _policy_refusal(
     name: str,
     args: Dict[str, Any],
@@ -165,9 +183,10 @@ def _policy_refusal(
 ) -> Optional[Dict[str, Any]]:
     """The agent-policy gate, consulted immediately before a handler runs.
 
-    None means run the tool. Otherwise the dict is what the model is told instead, and the
-    handler is never called. The gate never raises; should it be unreachable at all, the
-    call is refused (fail closed) exactly as the gate refuses when policies cannot be checked.
+    None means run the tool. A ``_RanOnPrecedent`` means run it too, and tell the model it ran
+    on precedent. Otherwise the dict is what the model is told instead, and the handler is never
+    called. The gate never raises; should it be unreachable at all, the call is refused (fail
+    closed) exactly as the gate refuses when policies cannot be checked.
     """
     # The kill switch is read here, before the gate is imported, so switching enforcement off
     # works even when the gate itself cannot load. With it on, an import failure refuses.
@@ -181,7 +200,10 @@ def _policy_refusal(
                 "reason": "Policy checks are unavailable, so this action was not run."}
     verdict = gate.before_tool(tool_name=name, args=args, agent=agent, reason=reason,
                                workflow_id=workflow_id, user_id=user_id)
-    return None if verdict.allow else (verdict.to_agent or dict(gate.UNAVAILABLE))
+    if verdict.allow:
+        told = verdict.to_agent or {}
+        return _RanOnPrecedent(_precedent_note(told)) if told.get("precedent") is True else None
+    return verdict.to_agent or dict(gate.UNAVAILABLE)
 
 
 def _chat(
@@ -373,6 +395,9 @@ def run_tools_stream(
             if tool is not None:
                 refusal = _policy_refusal(name, args, agent=agent, reason=content,
                                           workflow_id=workflow_id, user_id=user_id)
+            allowed = refusal if isinstance(refusal, _RanOnPrecedent) else None
+            if allowed is not None:
+                refusal = None
             if tool is None:
                 record = ToolCall(name=name, arguments=args, ok=False, error=f"unknown tool '{name}'")
             elif refusal is not None:
@@ -396,9 +421,9 @@ def run_tools_stream(
                     "content": (
                         json.dumps(refusal, default=str)
                         if refusal is not None
-                        else _render_result(
+                        else _with_note(_render_result(
                             record.result if record.ok else {"error": record.error}
-                        )
+                        ), allowed)
                     ),
                 }
             )
@@ -490,6 +515,9 @@ def run_tools(
                 refusal = _policy_refusal(name, args, agent=agent,
                                           reason=message.get("content"),
                                           workflow_id=workflow_id, user_id=user_id)
+            allowed = refusal if isinstance(refusal, _RanOnPrecedent) else None
+            if allowed is not None:
+                refusal = None
             if tool is None:
                 record = ToolCall(
                     name=name,
@@ -527,9 +555,9 @@ def run_tools(
                     "content": (
                         json.dumps(refusal, default=str)
                         if refusal is not None
-                        else _render_result(
+                        else _with_note(_render_result(
                             record.result if record.ok else {"error": record.error}
-                        )
+                        ), allowed)
                     ),
                 }
             )

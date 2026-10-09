@@ -102,7 +102,10 @@ first, escalate rather than guess), and returns the module's existing `Decision`
    never count, so the engine cannot reinforce itself.
 4. Fewer than N found → **escalated** ("only k of N decisions by people on this exact clash").
 5. All N have the same outcome → **resolved** with that outcome. Otherwise → **escalated** ("decisions disagree").
-6. Any lookup error → **escalated**, never resolved.
+6. The self-approval bar (stage 3) binds precedent too (final review C1): when the requester is the same person
+   (`approvals._same_person`) as the credited decider of any cited case, or as any member approver of one →
+   **escalated** ("the requester decided an earlier case of this clash"). R3 does not override it.
+7. Any lookup error → **escalated**, never resolved.
 
 **On resolved approve.** In the gate's single transaction:
 - write the live case closed: `decision='approve'`, `actioned_by='system:precedent'`, `decision_scope='this_action'`,
@@ -111,7 +114,11 @@ first, escalate rather than guess), and returns the module's existing `Decision`
 - **the tool runs now**;
 - notify both policies' owners and every decider of each involved approve policy (`"<action> ran on precedent: decided the
   same way N times before (pc_…)"`, no input values);
-- `to_agent` carries `conflictCaseId` and `precedent: true`.
+- `to_agent` carries `conflictCaseId`, `precedent: true` and `precedentCount` (N); the model reads the tool's own result
+  followed by one line: "Note: this action ran without a person approving it, on precedent (decided the same way N times
+  before, case pc_…)." (final review I1). Every other allowed call reads exactly as before.
+- the live record's `created_at` and its decision time are one clock (`now`), on both rows; so are a block record's and a
+  standing rule's (final review M1).
 
 **On resolved reject.** The same record with `decision='reject'`. The tool is refused (result `blocked`, reason code
 `refused_on_precedent`), and the agent is told why in one sentence. The same notifications are sent.

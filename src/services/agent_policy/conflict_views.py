@@ -8,7 +8,8 @@ Who decides (user ruling Q3): anyone linked to EITHER owner name; Admin is not a
 Masking (global constraint, stage 3 rule): the overlap example is the witness, and it can hold
 an action's own values (raise_block_pairs and maybe_propose copy a live action's condition
 values into it). A sensitive field shows enforcement.MASK unless the caller may decide the case
-(linked to an owner; status aside, as approval_views.can_decide). The sensitive set is stage 3's:
+(linked to an owner; status aside, as approval_views.can_decide) or holds the Admin role (final
+review I4: the same as its conflictHistory, design §3.1). The sensitive set is stage 3's:
 the union over the case's own policy versions and every live policy (approval_views.sensitive_for).
 """
 from __future__ import annotations
@@ -144,7 +145,9 @@ def _views(cur, cases: List[Dict[str, Any]], principal, mapping, *, is_admin: bo
         ok = may_decide(principal, c, mapping)
         full = CH.may_see(reader, CH.parties(c["facts"].get("policies") or []))
         shown = _shown_actions(c, acts.get(int(c["decision_id"]), []), full=full, sensitive=sensitive)
-        v = view(c, unmasked=ok, decidable=ok, sensitive=sensitive, heads=heads, actions=shown)
+        # the Admin role reads the case's own example unmasked too, as its history (design §3.1):
+        # one response never shows a value both masked and unmasked. Deciding stays owner-linked.
+        v = view(c, unmasked=ok or bool(is_admin), decidable=ok, sensitive=sensitive, heads=heads, actions=shown)
         if with_history:
             v["history"] = shown
         out.append(v)

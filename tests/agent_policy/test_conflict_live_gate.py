@@ -225,6 +225,16 @@ def test_last_level_only_keeps_one_level_that_rejects_on_timeout():
     assert "unroutable" not in json.loads(params[4]), "only the last level's name must be linked"
 
 
+@pytest.mark.parametrize("decision", ["approve", "reject"])
+def test_insert_live_decided_approve_or_reject_needs_the_precedent_actor_explicitly(decision):
+    """Final review: only precedent records approve/reject, and it must say so; a missing actor
+    is an error, never a default."""
+    for actor in (None, "", CL.STANDING_RULE, "sub-someone"):
+        with pytest.raises(ValueError):
+            CL.insert_live(_Cur([], iter(range(1, 9))), None, ctx={}, action={}, now=_FixedNow.now(),
+                           default_response_time="PT4H", status="actioned", decision=decision, actor=actor)
+
+
 # ------------------------------------------------------------------ live fixtures
 @pytest.fixture
 def conn():

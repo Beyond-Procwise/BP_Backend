@@ -21,7 +21,8 @@ conflict (kind None) every statement is exactly stage 3's. Otherwise, in the sam
   escalation level only, all naming the open live record; every member must approve.
 - human, on a fresh call: the decision engine (decision_engine.decide_live_conflict) may decide it
   on precedent: the action runs, or is refused with refused_on_precedent; otherwise it goes to
-  people as below, with the clash's history attached.
+  people as below, with the clash's history attached. Precedent never decides for a requester
+  who decided (or approved a member case of) a case it cites: the self-approval bar holds.
 The agent is told the live case as ``conflictCaseId``.
 """
 from __future__ import annotations
@@ -320,6 +321,23 @@ def _before_tool(*, tool_name, args, agent, reason, workflow_id, user_id, starte
     return GateResult(allow=False, to_agent=to_agent, firing_ids=firing_ids, case_ids=case_ids)
 
 
+def _history_snapshot(cur, lc) -> List[Dict[str, Any]]:
+    """The clash's history for the people deciding it, read in a savepoint: a failed read is rolled
+    back on its own, logged by type only, and the clash still goes to people, without history.
+    It never refuses the call."""
+    cur.execute("SAVEPOINT live_conflict_history")
+    try:
+        out = conflict_history.raw(cur, pair_key=conflict_detect.pair_key(*[str(h["id"]) for h in lc.involved]),
+                                   limit=conflict_history.IN_CASE_LIMIT)
+    except Exception as exc:  # noqa: BLE001 - type only: a driver message can quote stored values
+        cur.execute("ROLLBACK TO SAVEPOINT live_conflict_history")
+        cur.execute("RELEASE SAVEPOINT live_conflict_history")
+        logger.error("conflict history unavailable for an escalated clash: %s", type(exc).__name__)
+        return []
+    cur.execute("RELEASE SAVEPOINT live_conflict_history")
+    return out
+
+
 def _record_block(conn, lc, *, action, ctx, now) -> int:
     """A live conflict involving a block (the block still blocks): the closed live record and a
     policy case for every pair containing the block. Returns the live record's id."""
@@ -340,7 +358,8 @@ def _consult_precedent(conn, lc, *, ctx, digest, tool_name, workflow_id, user_id
         if any(_open_case_for(cur, key=str(h["id"]), tool_name=tool_name, digest=digest,
                               workflow_id=workflow_id, requested_by=user_id) for h in lc.required):
             return None
-        return DE.decide_live_conflict(cur, lc, ctx=ctx, now=now)
+        # the requester too: precedent never decides for someone who decided a case it cites
+        return DE.decide_live_conflict(cur, lc, ctx=ctx, now=now, requester=user_id)
 
 
 def _notify_precedent(cur, lc, firing_of, decision, case: str, tool_name: str) -> None:
@@ -384,10 +403,11 @@ def _record_precedent(conn, lc, verdict, matched, decision, *, action, ctx, tool
 
 def _precedent_answer(decision, live_id: int, firing_ids: List[int]) -> GateResult:
     case = conflict_payload.case_id(live_id)
-    if decision.decision == "approve":
-        return GateResult(allow=True, to_agent={"result": "allowed", "conflictCaseId": case, "precedent": True},
-                          firing_ids=firing_ids)
     n = len(decision.evidence)
+    if decision.decision == "approve":
+        # tool_runtime tells the model, after the tool's own result, that it ran on precedent
+        return GateResult(allow=True, firing_ids=firing_ids, to_agent={
+            "result": "allowed", "conflictCaseId": case, "precedent": True, "precedentCount": n})
     return GateResult(allow=False, firing_ids=firing_ids, to_agent={
         "result": "blocked", "reasonCode": PRECEDENT_REFUSED,
         "reason": f"People refused this same action {n} times before, so it was refused on precedent ({case}).",
@@ -439,9 +459,7 @@ def _open_cases(conn, verdict, firing_of, *, action, ctx, digest, tool_name, wor
         if live_id is None and len(reused) < len(needed):
             with conn.cursor() as cur:
                 if lc.kind == "human":
-                    extra_live: Dict[str, Any] = {"history": conflict_history.raw(
-                        cur, pair_key=conflict_detect.pair_key(*[str(h["id"]) for h in lc.involved]),
-                        limit=conflict_history.IN_CASE_LIMIT)}
+                    extra_live: Dict[str, Any] = {"history": _history_snapshot(cur, lc)}
                     if note:
                         extra_live["precedent"] = {"why": note}
                     live_id = conflict_live.insert_live(cur, lc, ctx=ctx, action=action, now=now,

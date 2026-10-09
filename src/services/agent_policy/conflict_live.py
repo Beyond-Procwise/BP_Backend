@@ -97,16 +97,18 @@ def insert_live(cur, lc, *, ctx: Dict[str, Any], action: Dict[str, Any], now: da
 
     status 'open' -> decision 'approve_or_reject', waiting for its member cases;
     status 'actioned' -> closed now by the system: 'block' | 'standing_rule', or 'approve' |
-    'reject' decided on precedent (actor PRECEDENT only). A closed record carries
-    facts.decidedBy and facts.versionsAtDecision. extra_facts are merged into the facts (an
+    'reject' decided on precedent (actor=PRECEDENT, given explicitly). A closed record carries
+    facts.decidedBy and facts.versionsAtDecision. created_at is `now` on both rows, the clock the
+    decision time is written from, so a closed record is never decided before it was raised. extra_facts are merged into the facts (an
     escalated clash's history); extra_evidence follows the overlap entry (cited precedents)."""
     if status not in ("open", "actioned"):
         raise ValueError(f"status must be 'open' or 'actioned', got {status!r}")
     if status == "actioned" and decision not in _AUTO:
         raise ValueError("an actioned live case needs decision 'block', 'standing_rule', 'approve' or "
                          f"'reject', got {decision!r}")
-    if status == "actioned" and decision in ("approve", "reject") and (actor or PRECEDENT) != PRECEDENT:
-        raise ValueError("only precedent records a live case as decided approve or reject")
+    if status == "actioned" and decision in ("approve", "reject") and actor != PRECEDENT:
+        # explicitly: a missing actor is an error, never a default
+        raise ValueError("only precedent records a live case as decided approve or reject: pass actor=PRECEDENT")
     docs = sorted((h["policy"] for h in lc.involved), key=lambda d: str(d.get("id")))
     keys = [str(d.get("id")) for d in docs]
     key = conflict_detect.pair_key(*keys)
@@ -147,8 +149,9 @@ def insert_live(cur, lc, *, ctx: Dict[str, Any], action: Dict[str, Any], now: da
         INSERT INTO proc.bp_decision (
             subject_type, subject_id, decision, resolution, rationale, status,
             policy_id, policy_name, facts, evidence, workflow_id, agent, created_by,
-            options, respond_by, on_timeout, decision_scope, actioned_by, actioned_at, override_reason
-        ) VALUES (%s,%s,%s,%s,%s,%s,NULL,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            options, respond_by, on_timeout, decision_scope, actioned_by, actioned_at, override_reason,
+            created_at
+        ) VALUES (%s,%s,%s,%s,%s,%s,NULL,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         RETURNING decision_id
         """,
         (cols["subject_type"], key, decision, "escalated" if open_ else "resolved",
@@ -156,17 +159,17 @@ def insert_live(cur, lc, *, ctx: Dict[str, Any], action: Dict[str, Any], now: da
          json.dumps(facts, default=str), json.dumps(evidence, default=str), action.get("workflowId"),
          action.get("agent"), action.get("userId") or f"agent:{action.get('agent') or 'unknown'}",
          json.dumps(cols["options"]), respond_by, cols["on_timeout"], scope, actor,
-         None if open_ else now, None if open_ else reason),
+         None if open_ else now, None if open_ else reason, now),
     )
     decision_id = int(cur.fetchone()[0])
     cur.execute("UPDATE proc.bp_decision SET facts = facts || %s::jsonb WHERE decision_id = %s",
                 (json.dumps({"caseId": conflict_payload.case_id(decision_id)}), decision_id))
     cur.execute(
         "INSERT INTO proc.bp_agent_policy_conflict (decision_id, kind, pair_key, policy_keys, policy_versions, "
-        "raised_by, is_open, outcome, decided_by, decided_at, by_person) "
-        "VALUES (%s, 'live', %s, %s, %s, 'live', %s, %s, %s, %s, %s)",
+        "raised_by, is_open, outcome, decided_by, decided_at, by_person, created_at) "
+        "VALUES (%s, 'live', %s, %s, %s, 'live', %s, %s, %s, %s, %s, %s)",
         (decision_id, key, keys, json.dumps(versions), open_, None if open_ else decision,
-         None if open_ else actor, None if open_ else now, None if open_ else False),
+         None if open_ else actor, None if open_ else now, None if open_ else False, now),
     )
     return decision_id
 
