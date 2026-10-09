@@ -921,7 +921,115 @@ def _promote(conn, doc_types, limit) -> dict:
                 details.append({"doc_type": doc_type, "doc_pk": pk_val, "action": "held",
                                 "reason": reason, "F": link["F"] if link else None})
 
-    return {"promoted": promoted, "held": held, "by_reason": by_reason, "details": details}
+    # A document already in _trgt that has since been re-read: carry the better read across.
+    reread = refresh_rereads(cur)
+    return {"promoted": promoted, "held": held, "by_reason": by_reason, "details": details,
+            "reread": reread}
+
+
+# ---------------------------------------------------------------------------
+# Re-reads: a document already in _trgt, read again
+# ---------------------------------------------------------------------------
+# Both promotion paths copied a document into _trgt only while it was ABSENT there, so a
+# re-read fixed _stg and left _trgt -- the only tier the product reads -- on the old figures
+# (Aureus AUR-2025-0619 V1 kept its 3-year subtotals as line costs for ten weeks). But most
+# re-reads on record are WORSE, not better: of 22 documents whose _stg is newer than _trgt on
+# 2026-10-09, 19 had lost their total and every priced line. So a re-read refreshes _trgt
+# only when it is at least as complete as what _trgt holds; a less complete one never
+# overwrites it, and says so once, as a finding on the document.
+#
+# doc_type -> (stg, trgt, pk, lines_stg, lines_trgt, header money column, line money column,
+#              line number column)
+_REREAD = {
+    "quote": ("proc.bp_quote_stg", "proc.bp_quote_trgt", "quote_id", "proc.bp_quote_line_items_stg",
+              "proc.bp_quote_line_items_trgt", "total_amount", "line_total", "line_number"),
+    "invoice": ("proc.bp_invoice_stg", "proc.bp_invoice_trgt", "invoice_id", "proc.bp_invoice_line_items_stg",
+                "proc.bp_invoice_line_items_trgt", "invoice_amount", "line_amount", "line_no"),
+    "purchase_order": ("proc.bp_purchase_order_stg", "proc.bp_purchase_order_trgt", "po_id",
+                       "proc.bp_po_line_items_stg", "proc.bp_po_line_items_trgt", "total_amount",
+                       "line_total", "line_number"),
+}
+# Kept from the _trgt row on a refresh: who and when it was first recorded.
+_REREAD_KEEP = {"created_date", "created_by"}
+# Per line, the deal stamps _copy_lines would drop (deal columns are never copied stg->trgt,
+# and document_id exists only in _trgt). Restored by line number.
+_LINE_STAMPS = ("deal_id", "deal_name", "document_id")
+
+
+def reread_verdict(stg_total, trgt_total, stg_priced: int, trgt_priced: int) -> Optional[str]:
+    """None when a re-read may replace what _trgt holds; else why it may not. Pure."""
+    if trgt_total is not None and stg_total is None:
+        return "the re-read has no total"
+    if stg_priced < trgt_priced:
+        return f"the re-read prices {stg_priced} lines, the record {trgt_priced}"
+    return None
+
+
+def refresh_rereads(cur, doc_types=("quote", "invoice", "purchase_order")) -> dict:
+    """Refresh each _trgt document whose _stg read is newer and no less complete; leave the
+    rest and raise one open finding on each. Returns {doc_type: {"refreshed": n, "kept": n}}."""
+    out: dict = {}
+    for dt in doc_types:
+        stg, trgt, pk, lstg, ltrgt, tot, amt, lno = _REREAD[dt]
+        rows = _rows(cur, f"""
+            select s.{pk} as pk, s.{tot} as stg_total, t.{tot} as trgt_total,
+                   (select count(*) from {lstg} l where l.{pk} = s.{pk} and l.{amt} is not null) as stg_priced,
+                   (select count(*) from {ltrgt} l where l.{pk} = s.{pk} and l.{amt} is not null) as trgt_priced
+              from {stg} s join {trgt} t on t.{pk} = s.{pk}
+             where s.last_modified_date > coalesce(t.last_modified_date, t.created_date, '-infinity'::timestamp)""")
+        done = kept = 0
+        for r in rows:
+            why = reread_verdict(r["stg_total"], r["trgt_total"], int(r["stg_priced"]), int(r["trgt_priced"]))
+            if why:
+                kept += 1
+                _flag_reread_kept(cur, dt, r["pk"], why)
+                continue
+            staged = _rows(cur, f"select * from {stg} where {pk} = %s", (r["pk"],))[0]
+            cols = [c for c in _copyable_cols(cur, stg, trgt) if c not in _REREAD_KEEP]
+            stamps = {}
+            if all(c in _table_columns(cur, ltrgt) for c in (lno,)):
+                have = [c for c in _LINE_STAMPS if c in _table_columns(cur, ltrgt)]
+                if have:
+                    for ln in _rows(cur, f"select {lno} as n, {', '.join(have)} from {ltrgt} where {pk} = %s", (r["pk"],)):
+                        stamps[ln["n"]] = {c: ln[c] for c in have}
+            _upsert(cur, trgt, pk, staged, cols)
+            n_lines = _copy_lines(cur, pk, r["pk"], lstg, ltrgt)
+            for n, vals in stamps.items():
+                vals = {c: v for c, v in vals.items() if v is not None}
+                if vals:
+                    cur.execute(f"update {ltrgt} set " + ", ".join(f"{c} = coalesce({c}, %s)" for c in vals)
+                                + f" where {pk} = %s and {lno} = %s", [*vals.values(), r["pk"], n])
+            done += 1
+            record_action(
+                phase=PHASE_CONSOLIDATION, action_type="refresh_from_reread", doc_type=dt,
+                doc_pk=str(r["pk"]), agent="linking_engine", status="ok",
+                summary=f"refreshed {dt} {r['pk']} from its re-read: total {r['trgt_total']} -> {r['stg_total']}",
+                details={"total_before": str(r["trgt_total"]), "total_after": str(r["stg_total"]),
+                         "priced_lines_before": int(r["trgt_priced"]), "priced_lines_after": int(r["stg_priced"]),
+                         "lines": n_lines})
+        out[dt] = {"refreshed": done, "kept": kept}
+    return out
+
+
+def _flag_reread_kept(cur, doc_type: str, doc_pk, why: str) -> None:
+    """One open finding per document whose re-read was not applied, so a person sees that the
+    record still holds the earlier read and why. Not repeated while it is open."""
+    cur.execute("select 1 from proc.bp_extraction_discrepancy where doc_pk_candidate = %s "
+                "and issue_type = 'reread_not_applied' and status = 'open' limit 1", (str(doc_pk),))
+    if cur.fetchone():
+        return
+    raw_t = {"quote": "proc.bp_quote_raw", "invoice": "proc.bp_invoice_raw",
+             "purchase_order": "proc.bp_purchase_order_raw"}[doc_type]
+    cur.execute(f"select raw_id, source_file from {raw_t} where doc_pk_candidate = %s "
+                f"order by raw_id desc limit 1", (str(doc_pk),))
+    raw = cur.fetchone()
+    cur.execute(
+        "insert into proc.bp_extraction_discrepancy (doc_type, raw_id, source_file, doc_pk_candidate, "
+        " field_name, issue_type, severity, status, notes, blocks_promotion, created_at) "
+        "values (%s, %s, %s, %s, 'document', 'reread_not_applied', 'warning', 'open', %s, false, now())",
+        (doc_type, raw[0] if raw else None, raw[1] if raw else f"trgt:{doc_pk}", str(doc_pk),
+         f"A later read of this document was not applied because {why}; the record keeps the "
+         f"earlier read. Re-read it again, or check the earlier figures stand."))
 
 
 # ---------------------------------------------------------------------------
