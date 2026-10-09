@@ -224,20 +224,61 @@ def _norm_item(s: Any) -> str:
     return re.sub(r"\s+", " ", str(s or "")).strip().lower()
 
 
+# Two discrepancies on one document are two pieces of money unless one contains the other.
+# A duplicate invoice puts the whole invoice at risk, so everything else found on it is
+# inside that figure; an invoice billed above its PO in total contains the line-level
+# over-PO findings on the same invoice (the PO-level analogue is
+# supersede_lines_under_overbilled_po). The rank orders a document's discrepancies so the
+# containing finding is met first.
+_WHOLE_INVOICE = "duplicate_invoice"
+_INVOICE_OVER_PO = "amount_over_po"
+_LINE_OVER_PO = ("line_amount_over_po", "quantity_invoiced_above_po", "unit_price_differs_from_po")
+
+
+def _doc_rank(f: dict) -> int:
+    return {_WHOLE_INVOICE: 0, _INVOICE_OVER_PO: 1}.get(f.get("issue_type"), 2)
+
+
+def _contains(winner: dict, f: dict) -> bool:
+    """Is ``f``'s money inside ``winner``'s? Both are discrepancies on one document."""
+    if winner.get("issue_type") == _WHOLE_INVOICE:
+        return True
+    return winner.get("issue_type") == _INVOICE_OVER_PO and f.get("issue_type") in _LINE_OVER_PO
+
+
 def dedupe(findings: list[dict]) -> list[dict]:
     """Same £ in several sources counts once, in the strongest source. Suppressed
-    duplicates stay in the list flagged superseded_by (the drawer explains, never omits)."""
+    duplicates stay in the list flagged superseded_by (the drawer explains, never omits).
+
+    Within the discrepancy source a document's findings are NOT collapsed to one: until
+    2026-10-09 they were, and which one survived was row order. On bp_testdb 117
+    invoices carried a duplicate-invoice finding and a unit-price finding; the price
+    difference was kept and the duplicate's whole-invoice amount (~10.5M native) dropped.
+    Now a discrepancy is superseded by another on its document only when its money is
+    inside the other's (_contains); otherwise both count."""
     best: dict[tuple, dict] = {}
-    for f in sorted(findings, key=lambda f: _PRECEDENCE[f["source"]]):
+    for f in sorted(findings, key=lambda f: (_PRECEDENCE[f["source"]], _doc_rank(f), str(f["id"]))):
         key = (f.get("deal_id"), f.get("doc_pk"), _norm_item(f.get("title") if f["source"] == "benchmark" else None))
         if f.get("deal_id") is None and f.get("doc_pk") is None:
             best[("solo", f["id"], "")] = f           # nothing to collide on
             continue
-        if key in best:
-            f["superseded_by"] = best[key]["id"]
-        else:
+        if key not in best:
             best[key] = f
+            continue
+        winner = best[key]
+        if f["source"] == "discrepancy" and winner["source"] == "discrepancy" \
+                and not _contains(winner, f):
+            continue                                  # distinct money on the same document
+        f["superseded_by"] = winner["id"]
     return findings
+
+
+def supersede_overlaps(findings: list[dict]) -> list[dict]:
+    """Every rule that stops one £ being counted twice, in the order they must run. The
+    one entry point for anything valuing findings (Value Found, the upload summary)."""
+    findings = dedupe(findings)
+    findings = supersede_po_level_by_duplicate(findings)     # R6: before the line pass
+    return supersede_lines_under_overbilled_po(findings)
 
 
 _KEY = {"finding": "disc", "opportunity": "opp"}
@@ -639,9 +680,7 @@ def build_value_summary(conn=None) -> dict:
         log.exception("value_summary_service: benchmark source failed")
         sources["benchmark"] = "unavailable"
 
-    findings = dedupe(findings)
-    findings = supersede_po_level_by_duplicate(findings)     # R6: before the line pass
-    findings = supersede_lines_under_overbilled_po(findings)
+    findings = supersede_overlaps(findings)
     findings = apply_ledger(findings + claimed_unpriced, ledger_rows)
     summary = summarise(findings)
     summary.update(ledger_totals(ledger_rows))
