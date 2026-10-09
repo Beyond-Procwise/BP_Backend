@@ -341,3 +341,14 @@ def test_the_real_range_is_the_governed_fresh_value(monkeypatch):
     precedent_range(monkeypatch, None, missing=True)
     with pytest.raises(GL.LimitUnavailable):
         DE._precedent_value_range_pct()
+
+
+@pytest.mark.parametrize("flag", [True, False])
+def test_a_boolean_range_is_unreadable_never_one_or_zero(monkeypatch, caplog, flag):
+    with caplog.at_level("WARNING", logger=DE.__name__):
+        d = _decide(monkeypatch, _Cur(_cases({AMOUNT: 900}, {AMOUNT: 900})), 900, pct=flag)
+    assert (d.resolution, d.rationale) == (DE.ESCALATED, "precedent value range unavailable")
+    assert "goes to people: TypeError" in caplog.text
+    precedent_range(monkeypatch, flag)
+    with pytest.raises(TypeError):
+        DE._precedent_value_range_pct()

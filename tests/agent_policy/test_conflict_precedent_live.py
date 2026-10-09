@@ -496,6 +496,17 @@ def test_precedent_applies_only_within_the_governed_value_range(conn, world, mon
     assert (lv["decision"], lv["actioned_by"]) == ("approve", "system:precedent")
     assert lv["facts"]["valueRange"] == {"pct": 20.0, "fields": {
         "args.amount": {"value": 1000, "max": 900, "limit": 1080.0}}}
+    from services.agent_policy import conflict_detect
+    from services.agent_policy import conflict_history as CH
+    with conn.cursor() as cur:
+        entries = CH.read(cur, pair_key=conflict_detect.pair_key(world.key("A"), world.key("B")),
+                          viewer=CH.ANONYMOUS)
+    [e] = [x for x in entries if x["caseId"] == f"pc_{lv['decision_id']}"]
+    sentence = "On precedent: decided the same way 5 times; within 20% of the largest approved value"
+    assert e["decision"]["reason"] == sentence
+    assert e["valueRange"]["pct"] == 20.0 and set(e["valueRange"]["fields"]) == {"args.amount"}
+    [row] = [r for r in CH.to_csv(entries).split("\r\n") if r.startswith(f'"pc_{lv["decision_id"]}"')]
+    assert f'"{sentence}"' in row
 
     wf, out = call_for(monkeypatch, world, docs, ran, 1200)
     assert out["result"] == "paused_for_approval" and [r["amount"] for r in ran] == [1000]
