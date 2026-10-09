@@ -69,3 +69,36 @@ def test_a_repair_that_only_removes_failures_is_kept(monkeypatch):
                CLEAN: []})
     body, repaired = _agent_returning(monkeypatch, CLEAN)._assure_composed(run, ORIGINAL)
     assert (body, repaired) == (CLEAN, True) and run.repair_rejected is None
+
+
+# --- reading the model's reply ---------------------------------------------------------------------------------------------------
+# The drafter's extractor required a dict, and the ollama client returns a ChatResponse object, so every real reply read as ""
+# and every model-written email fell back to its template (found live 2026-10-09; the same bug was fixed in email_intent 2026-07-28).
+
+def _chat_response(text):
+    from ollama._types import ChatResponse, Message
+    return ChatResponse(model="BeyondProcwise/AgentNick:unified", message=Message(role="assistant", content=text))
+
+
+def test_the_drafter_reads_a_real_ollama_chat_response():
+    assert EmailDraftingAgent._extract_ollama_message(_chat_response("  Dear Sam, please confirm.  ")) == "Dear Sam, please confirm."
+
+
+def test_the_drafter_still_reads_plain_dicts_in_both_shapes():
+    assert EmailDraftingAgent._extract_ollama_message({"message": {"content": "chat"}}) == "chat"
+    assert EmailDraftingAgent._extract_ollama_message({"response": "generate"}) == "generate"
+    assert EmailDraftingAgent._extract_ollama_message(None) == ""
+
+
+def test_chat_returns_the_models_text_not_an_empty_string(monkeypatch):
+    agent = EmailDraftingAgent()
+    monkeypatch.setattr(agent, "call_ollama", lambda **kw: _chat_response("Dear Sam, thank you for your quote."))
+    assert module._chat(AGENTNICK, "system", "user", agent=agent) == "Dear Sam, thank you for your quote."
+
+
+def test_the_repair_pass_returns_the_models_repair(monkeypatch):
+    agent = EmailDraftingAgent()
+    fixed = "Thank you for your offer of 47.50 GBP. We propose 44.80 GBP. Please confirm by 30 October 2026."
+    monkeypatch.setattr(agent, "call_ollama", lambda **kw: _chat_response(fixed))
+    out = agent._repair_assured_body("Thank you. [name]", [{"kind": "unresolved_placeholder", "detail": "[name]"}])
+    assert out is not None and fixed in out                     # the body is wrapped in <p> by the sanitiser, as every draft is
