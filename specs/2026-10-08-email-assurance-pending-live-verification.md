@@ -447,3 +447,10 @@ deterministic check (figures, dates, deadline, contact details, bank details, aw
 Also seen in the 20-request run: "12-month commitment" in the person's own request was flagged as an ungrounded figure (12) once the
 request was classified as a counter, whose carried keys do not include the request text; and the judge scored "clarity of ask" 1 on
 an email that was asked to carry no ask ("tell them we will come back next week"), a false flag of the kind the flag metrics are for.
+
+
+## Planner prompt held out of pack (b) (ruling 2026-10-09)
+
+Moved to `deploy/sql/2026-10-09_email_brief_plan_prompt_held.sql`, in no pack and never applied by the rehearsal (the eval harness
+still loads it so the planner code path stays tested). Pack (b) now installs two prompts, classify and judge. With no planner row the
+stage reports `unavailable` and drafts are written from the request alone, as on bp_testdb today. Rehearsal re-run: PASS.
