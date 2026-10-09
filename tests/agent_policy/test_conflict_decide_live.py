@@ -395,3 +395,43 @@ def test_close_moot_only_closes_cases_naming_the_key(conn, world):
     assert open_ == {did: False, other: True}
     with conn.cursor() as cur:
         assert CC.open_cases_by_policy(cur)[a] == [f"pc_{other}"]
+
+
+def test_scan_closes_open_case_of_policy_whose_moot_close_failed(conn, world, monkeypatch):
+    a, b, did = _pair(conn, world)
+
+    def broken(*args, **kw):
+        raise RuntimeError("moot close down")
+    monkeypatch.setattr(CC, "close_moot", broken)
+    hdr = {"X-Gateway-Key": "k1", "X-User-Sub": "u1", "X-User-Email": "u1@x",
+           "X-User-Groups": json.dumps(["PROCWISE_ADMIN"])}
+    r = _router_client(monkeypatch).post(f"/agent-policies/{a}/retire",
+                                         json={"baseVersion": 1, "changeNote": "no longer needed"}, headers=hdr)
+    assert r.status_code == 200                                   # the retire is never undone
+    assert _row(conn, "SELECT is_open FROM proc.bp_agent_policy_conflict WHERE decision_id = %s",
+                (did,))["is_open"] is True
+    monkeypatch.undo()
+    stats = CC.detect_all(conn, now=LATER, among=[a, b])           # the scan is the backstop
+    assert stats["mooted"] == 1
+    cr = _row(conn, "SELECT * FROM proc.bp_agent_policy_conflict WHERE decision_id = %s", (did,))
+    assert cr["is_open"] is False and cr["outcome"] == "moot" and cr["by_person"] is False
+    act = _row(conn, "SELECT * FROM proc.bp_decision WHERE subject_type = %s AND subject_id = %s AND decision = 'moot'",
+               (CC.SUBJECT_POLICY, "|".join(sorted([a, b]))))
+    assert act["actioned_by"] == "system:retired" and act["override_reason"] == f"{a} was retired"
+    assert CC.detect_all(conn, now=LATER, among=[a, b])["mooted"] == 0
+
+
+def test_decide_on_case_naming_a_retired_policy_closes_it_moot(conn, world):
+    a, b, did = _pair(conn, world)
+    repo.retire(conn, b, base_version=1, actor="test", change_note="retired behind the case's back")  # no moot close
+    e = _refused(conn, did, _who(world.email_a), f"keep_both:{b}")
+    assert (e.code, e.status) == ("not_open", 409) and e.message == f"{b} was retired; this conflict is closed."
+    cr = _row(conn, "SELECT * FROM proc.bp_agent_policy_conflict WHERE decision_id = %s", (did,))
+    assert cr["is_open"] is False and cr["outcome"] == "moot" and cr["by_person"] is False
+    assert cr["decided_by"] == "system:retired"
+    acts = _rows(conn, "SELECT decision, override_reason FROM proc.bp_decision WHERE subject_type = %s "
+                       "AND subject_id = %s AND decision_id <> %s", (CC.SUBJECT_POLICY, "|".join(sorted([a, b])), did))
+    assert acts == [{"decision": "moot", "override_reason": f"{b} was retired"}]
+    assert _rows(conn, "SELECT 1 FROM proc.bp_agent_policy_conflict_rule WHERE pair_key = %s",
+                 ("|".join(sorted([a, b])),)) == []
+    assert _row(conn, "SELECT status FROM proc.bp_decision WHERE decision_id = %s", (did,))["status"] == "actioned"

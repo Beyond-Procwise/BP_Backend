@@ -328,7 +328,7 @@ def detect_all(conn, *, now: Optional[datetime] = None, among: Optional[List[str
     of NEW cases per whole scan. Policies, the decider map and settings are read once; each policy's
     raises run in their own transaction. Never raises. `among` narrows the scan (tests)."""
     now = now or datetime.now(timezone.utc)
-    stats: Dict[str, Any] = {"pairs": 0, "raised": 0, "errors": 0, "capped": False}
+    stats: Dict[str, Any] = {"pairs": 0, "raised": 0, "errors": 0, "capped": False, "mooted": 0}
     try:
         cap = cap_of(_settings.load_settings(conn))
         mapping = deciders.load_map(conn)
@@ -337,6 +337,7 @@ def detect_all(conn, *, now: Optional[datetime] = None, among: Optional[List[str
         logger.error("conflict scan could not load policies: %s", type(exc).__name__)
         stats["errors"] += 1
         return stats
+    _close_moot_backstop(conn, now=now, among=among, stats=stats)
     budget = {"left": cap}
     for key in sorted(latest):
         saved, examples = latest[key]
@@ -474,6 +475,14 @@ def _write_rule(cur, *, pair: str, prevails: str, yields: str, case_decision_id:
     )
 
 
+def _retired_of(cur, keys: List[str]) -> Optional[str]:
+    """The first of the keys whose policy is retired, if any."""
+    cur.execute("SELECT policy_key FROM proc.bp_agent_policy WHERE policy_key = ANY(%s) AND status = 'retired' "
+                "ORDER BY policy_key LIMIT 1", (list(keys),))
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
 def _invalidate_enforcement() -> None:
     from services.agent_policy import live_policies   # lazily: live_policies imports the repo, which imports us
     live_policies.invalidate()
@@ -510,6 +519,7 @@ def decide_policy(conn, decision_id: int, *, principal, option: str, reason: Opt
                                   "Only someone linked to one of the policies' owners can decide this.", 403)
 
     verb, _, chosen = option.partition(":")
+    retired: Optional[str] = None
     with approvals._tx(conn):
         with conn.cursor() as cur:
             _permitted(_case(cur, decision_id, lock=False))      # refused callers never take the lock
@@ -517,20 +527,30 @@ def decide_policy(conn, decision_id: int, *, principal, option: str, reason: Opt
             _permitted(case)                                     # it may have been decided meanwhile
             pair = str(case["subject_id"])
             keys = pair.split("|")
-            facts = dict(case["facts"])
-            facts["caseId"] = conflict_payload.case_id(decision_id)
-            facts["limitText"] = limit_text if verb == "limit" else None
-            facts["versionsAtDecision"] = _latest_versions(cur, keys)
-            scope = conflict_payload.scope_of(option)
-            action_id = _record_action(cur, case, decision=option, actor=actor, now=now, reason=reason,
-                                       scope=scope, facts=facts)
-            _close_conflict(cur, decision_id, outcome=option, actor=actor, now=now, by_person=True)
-            if verb == "keep_both":
-                other = next(k for k in keys if k != chosen)
-                _write_rule(cur, pair=pair, prevails=chosen, yields=other, case_decision_id=decision_id,
-                            action_id=action_id, actor=actor, now=now)
-            _notify(cur, _case_owners(case["facts"]),
-                    f"The conflict between {keys[0]} and {keys[1]} was decided: {option_label(option)}.", decision_id)
+            retired = _retired_of(cur, keys)
+            if retired:
+                # retired behind the case's back (its moot close failed): close it as moot in this
+                # transaction, commit, then refuse below; no decision and no rule is written
+                _moot(cur, case, retired, now=now)
+            else:
+                facts = dict(case["facts"])
+                facts["caseId"] = conflict_payload.case_id(decision_id)
+                facts["limitText"] = limit_text if verb == "limit" else None
+                facts["versionsAtDecision"] = _latest_versions(cur, keys)
+                scope = conflict_payload.scope_of(option)
+                action_id = _record_action(cur, case, decision=option, actor=actor, now=now, reason=reason,
+                                           scope=scope, facts=facts)
+                _close_conflict(cur, decision_id, outcome=option, actor=actor, now=now, by_person=True)
+                if verb == "keep_both":
+                    other = next(k for k in keys if k != chosen)
+                    _write_rule(cur, pair=pair, prevails=chosen, yields=other, case_decision_id=decision_id,
+                                action_id=action_id, actor=actor, now=now)
+                _notify(cur, _case_owners(case["facts"]),
+                        f"The conflict between {keys[0]} and {keys[1]} was decided: {option_label(option)}.",
+                        decision_id)
+    if retired:
+        _invalidate_enforcement()
+        raise ConflictRefused("not_open", f"{retired} was retired; this conflict is closed.", 409)
     _invalidate_enforcement()
     row = {"decision_id": decision_id, "decision": option, "decision_scope": scope, "actioned_by": actor,
            "actioned_at": now.isoformat(), "override_reason": reason}
@@ -540,9 +560,22 @@ def decide_policy(conn, decision_id: int, *, principal, option: str, reason: Opt
     return out
 
 
+def _moot(cur, case: Dict[str, Any], policy_key: str, *, now: datetime) -> None:
+    """Close one locked open case as moot because policy_key was retired (caller's transaction)."""
+    reason = f"{policy_key} was retired"
+    did = int(case["decision_id"])
+    facts = dict(case["facts"])
+    facts["caseId"] = conflict_payload.case_id(did)
+    _record_action(cur, case, decision=MOOT, actor=RETIRED_ACTOR, now=now, reason=reason,
+                   scope="this_action", facts=facts)
+    _close_conflict(cur, did, outcome=MOOT, actor=RETIRED_ACTOR, now=now, by_person=False)
+    keys = str(case["subject_id"]).split("|")
+    _notify(cur, _case_owners(case["facts"]),
+            f"The conflict between {keys[0]} and {keys[1]} was closed: {reason}.", did)
+
+
 def close_moot(conn, policy_key: str, *, now: datetime) -> int:
     """Close every open policy case naming a retired policy as moot. Returns how many were closed."""
-    reason = f"{policy_key} was retired"
     closed = 0
     with approvals._tx(conn):
         with conn.cursor() as cur:
@@ -552,18 +585,41 @@ def close_moot(conn, policy_key: str, *, now: datetime) -> int:
                 case = _case(cur, int(did), lock=True)
                 if case is None or case["status"] != "open":
                     continue                                     # decided between the read and the lock
-                facts = dict(case["facts"])
-                facts["caseId"] = conflict_payload.case_id(did)
-                _record_action(cur, case, decision=MOOT, actor=RETIRED_ACTOR, now=now, reason=reason,
-                               scope="this_action", facts=facts)
-                _close_conflict(cur, int(did), outcome=MOOT, actor=RETIRED_ACTOR, now=now, by_person=False)
-                keys = str(case["subject_id"]).split("|")
-                _notify(cur, _case_owners(case["facts"]),
-                        f"The conflict between {keys[0]} and {keys[1]} was closed: {reason}.", int(did))
+                _moot(cur, case, policy_key, now=now)
                 closed += 1
     if closed:
         _invalidate_enforcement()
     return closed
+
+
+def _retired_with_open_cases(conn, among: Optional[List[str]]) -> List[str]:
+    """Retired policies that still have an open policy case (their moot close after the retire failed)."""
+    sql = ("SELECT DISTINCT p.policy_key FROM proc.bp_agent_policy_conflict c "
+           "JOIN proc.bp_agent_policy p ON p.policy_key = ANY(c.policy_keys) "
+           "WHERE c.kind = 'policy' AND c.is_open AND p.status = 'retired'")
+    params: List[Any] = []
+    if among is not None:
+        sql += " AND p.policy_key = ANY(%s)"
+        params.append(list(among))
+    with conn.cursor() as cur:
+        cur.execute(sql + " ORDER BY p.policy_key", params)
+        return [r[0] for r in cur.fetchall()]
+
+
+def _close_moot_backstop(conn, *, now: datetime, among: Optional[List[str]], stats: Dict[str, Any]) -> None:
+    """The scan's backstop for a retire whose moot close failed. Never counts against the case cap."""
+    try:
+        keys = _retired_with_open_cases(conn, among)
+    except Exception as exc:  # noqa: BLE001
+        stats["errors"] += 1
+        logger.error("conflict scan could not list retired policies with open cases: %s", type(exc).__name__)
+        return
+    for key in keys:
+        try:
+            stats["mooted"] += close_moot(conn, key, now=now)
+        except Exception as exc:  # noqa: BLE001 - one policy must not stop the scan
+            stats["errors"] += 1
+            logger.error("conflict scan could not close cases of retired %s: %s", key, type(exc).__name__)
 
 
 # ---------------------------------------------------------------------------- standing rules + overlay

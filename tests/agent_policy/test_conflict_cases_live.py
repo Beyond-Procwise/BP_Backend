@@ -271,7 +271,7 @@ def test_detect_all_scans_and_reads_everything_once(conn, world, monkeypatch):
     monkeypatch.setattr(CC, "_load", spy("load", CC._load))
     monkeypatch.setattr(CC._settings, "load_settings", spy("settings", CC._settings.load_settings))
     stats = CC.detect_all(conn, now=NOW, among=[a, b])     # the shared DB: narrowed to this test's policies
-    assert stats == {"pairs": 2, "raised": 1, "errors": 0, "capped": False}
+    assert stats == {"pairs": 2, "raised": 1, "errors": 0, "capped": False, "mooted": 0}
     assert calls == {"snapshot": 1, "map": 1, "load": 0, "settings": 1}
     rows = _conflict_rows(conn, world)
     assert len(rows) == 1 and rows[0]["raised_by"] == "scan"

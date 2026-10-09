@@ -75,7 +75,7 @@ def test_detect_all_never_raises(monkeypatch):
     class _Broken:
         def cursor(self):
             raise RuntimeError("down")
-    assert CC.detect_all(_Broken(), now=NOW) == {"pairs": 0, "raised": 0, "errors": 1, "capped": False}
+    assert CC.detect_all(_Broken(), now=NOW) == {"pairs": 0, "raised": 0, "errors": 1, "capped": False, "mooted": 0}
 
 
 def test_cap_is_a_company_setting_default_25():
