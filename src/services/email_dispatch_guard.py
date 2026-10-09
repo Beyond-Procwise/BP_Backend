@@ -484,6 +484,43 @@ def check_dispatch(
                     },
                 )
 
+        # --- 1b2. Bank and payment details: a hard rule, any family, any mode -----
+        # Ruling 2026-10-09. No outgoing email carries an account number, IBAN, sort code,
+        # SWIFT/BIC or routing number, approved or not. One that mentions new or changed
+        # bank or payment details (in its text, or in the request the draft was written
+        # from) goes only with a PERSON's approval, never on agent autonomy, and only if it
+        # points the supplier to the secure supplier portal. Nothing in config softens it.
+        from src.services.draft_assurance import payment_details
+
+        assurance_rec = draft.get("assurance") if isinstance(draft.get("assurance"), dict) else {}
+        details = payment_details.account_details(subject, body)
+        if details:
+            return guardrail.Decision(
+                allowed=False,
+                reason=("this email cannot be sent: it contains bank details ("
+                        + ", ".join(k.replace("_", " ") for k in details)
+                        + "). Point the supplier to the secure supplier portal instead"),
+                policy_name="EmailPaymentDetailsRule",
+                evidence={"account_details": details},           # kinds only, never the values
+            )
+        change = payment_details.mentions_change(subject, body) or (assurance_rec.get("payment_details_hold") or {}).get("payment_change")
+        if change:
+            if approval.get("autonomous"):
+                return guardrail.Decision(
+                    allowed=False,
+                    reason="this email mentions new or changed bank or payment details; it needs a person's approval, not agent autonomy",
+                    policy_name="EmailPaymentDetailsRule",
+                    evidence={"payment_change": change},
+                )
+            if not payment_details.points_to_portal(body):
+                return guardrail.Decision(
+                    allowed=False,
+                    reason=("this email mentions new or changed bank or payment details and does not point the supplier "
+                            "to the secure supplier portal"),
+                    policy_name="EmailPaymentDetailsRule",
+                    evidence={"payment_change": change},
+                )
+
         # --- 1c. The facts the draft rests on have not moved ---------------
         # An approval covers the text. It says nothing about whether the offer,
         # currency or contact that text was written from still read the same in
