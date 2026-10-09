@@ -99,6 +99,7 @@ _ISSUE_LABEL = {
     "price_rises_unstated": "price rises the document does not state",
     "prices_uplifted_across_lines": "prices raised across several lines",
     "quantity_invoiced_above_po": "quantities invoiced above the purchase order",
+    "reread_not_applied": "documents still holding their earlier read (a later read was not applied)",
     "sum_mismatch": "totals that do not add up",
     "tax_percent_mismatch": "tax rates that do not match",
     "unit_price_differs_from_po": "unit prices that differ from the purchase order",
