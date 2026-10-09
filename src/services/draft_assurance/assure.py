@@ -83,6 +83,16 @@ class Inputs:
         nums.add(Decimal(int(self.data.get("round") or 1)))
         return nums, dates, refs
 
+    def _on_record(self) -> List[Any]:
+        """Everything this run holds that a contact detail may legitimately come from: facts, carried and reasoned values,
+        the payload (recipients included) and the person's own words."""
+
+        vals: List[Any] = [f.value for f in self.facts.values()] + list(self.carried.values())
+        vals += [r["value"] for r in self.reasoned.values()] + list(self.request_texts)
+        for v in self.data.values():
+            vals += [str(x) for x in v] if isinstance(v, (list, tuple, set)) else [v]
+        return [v for v in vals if isinstance(v, (str, int, float, Decimal))]
+
     def _verified_numbers(self) -> Set[Decimal]:
         nums: Set[Decimal] = set()
         for f in self.facts.values():
@@ -100,6 +110,7 @@ class Inputs:
         out += V.check_required(text, self.family.required_elements, self.data.get("asks") or [])
         out += V.check_length(text, self.family.length_target)
         out += payment_details.violations(text, self.request_texts)     # a hard rule: no family setting reaches it
+        out += V.check_contact_details(text, self._on_record())        # no family setting reaches it either
         return out
 
     def finalize(self, text: str, recipients: Iterable[str],
