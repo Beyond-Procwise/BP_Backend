@@ -5,10 +5,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from services.agent_policy import approval_views as AV
+from services.agent_policy import approvals as A
 from services.agent_policy import conflict_cases as CC
 from services.agent_policy import conflict_history as CH
 from services.agent_policy.enforcement import MASK
 from tests.agent_policy import test_conflict_live_gate as LG
+from tests.agent_policy.fixtures import precedent_n
 from tests.agent_policy.test_conflict_endpoints_live import (  # noqa: F401 - fixtures
     ADMIN, NOW, STRANGER, _a, _as, _b, _c, _design_case, _gate, client, conn, world)
 
@@ -122,3 +125,32 @@ def test_the_conflicts_screen_masks_a_policy_case_reason_everywhere_for_a_strang
         [row] = [v for v in client.get("/agent-policies/conflicts?status=all", headers=hdr).json()["conflicts"]
                  if v["decisionId"] == did]
         assert row["decision"]["reason"] == reason
+
+
+def test_the_paused_clash_card_carries_its_history_masked_per_approver(conn, world, monkeypatch):
+    precedent_n(monkeypatch, 3)
+    (a, da), (b, db) = _a(conn, world), _b(conn, world)          # args.amount is sensitive in both
+    last = {a: world.la2, b: world.lb}
+
+    def paused(i):
+        wf = f"{world.wf}-h{i}"
+        world.wfs.append(wf)
+        LG.use(monkeypatch, [da, db])
+        res, _ = LG.run(monkeypatch, LG.stub_tools(world, []), [LG._round(world.tool), LG.FINAL], workflow_id=wf)
+        assert res.calls[0].result["result"] == "paused_for_approval"
+        return LG.rows(conn, "SELECT decision_id, policy_name FROM proc.bp_decision WHERE subject_type = %s "
+                             "AND workflow_id = %s AND decision = 'approve_or_reject' ORDER BY decision_id",
+                       (A.SUBJECT_TYPE, wf))
+
+    for i in range(2):
+        for m in paused(i):
+            LG.act(conn, world, m["decision_id"], last[m["policy_name"]], reason=REASON)
+    [ma] = [m for m in paused(2) if m["policy_name"] == a]
+    stranger = SimpleNamespace(subject="tst-stranger", email="s@example.test", claims={"cognito:groups": []})
+    seen = AV.get_case(conn, ma["decision_id"], stranger, is_admin=True)["conflict"]
+    assert [h["decision"]["reason"] for h in seen["history"]] == [f"Paying the {MASK} refund is fine."] * 2
+    assert all(h["example"]["args.amount"] == MASK for h in seen["history"])
+    assert seen["precedentNote"] == "only 2 of 3 decisions by people on this exact clash"
+    mine = AV.get_case(conn, ma["decision_id"], LG.who(world, world.la2), is_admin=False)["conflict"]
+    assert [h["decision"]["reason"] for h in mine["history"]] == [REASON] * 2
+    assert not any(k.startswith("_") for h in mine["history"] for k in h)
