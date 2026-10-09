@@ -25,7 +25,7 @@ ASSURANCE = {"family_id": "negotiation_counter", "family_version": 1, "mode": "s
 def test_the_groups_partition_the_migrations_exactly():
     assert set(evaldb.PACK_A) | set(evaldb.PACK_B) | set(evaldb.ROLES) | set(evaldb.PRODUCT) == set(evaldb.MIGRATIONS)
     assert not (set(evaldb.PACK_A) & set(evaldb.PACK_B)) and not (set(evaldb.PACK_A) & set(evaldb.ROLES)) and not (set(evaldb.PACK_B) & set(evaldb.ROLES))
-    assert len(evaldb.PACK_A) == 13 and len(evaldb.PACK_B) == 3 and len(evaldb.ROLES) == 1 and len(evaldb.PRODUCT) == 1
+    assert len(evaldb.PACK_A) == 14 and len(evaldb.PACK_B) == 3 and len(evaldb.ROLES) == 1 and len(evaldb.PRODUCT) == 1
 
 
 @pytest.fixture

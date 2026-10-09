@@ -612,7 +612,11 @@ def _build_rfq_table_html(
 RFQ_TABLE_HEADER = _build_rfq_table_html([])
 
 
-DEFAULT_NEGOTIATION_MODEL = "mistral"
+# AgentNick is the only model (hard constraint). This was "mistral", which worked only because mistral is not
+# installed and call_ollama fell back to AgentNick; installing it would have silently switched every counter email.
+DEFAULT_NEGOTIATION_MODEL = "BeyondProcwise/AgentNick:unified"
+
+from src.services.draft_assurance.frame import BODY_ONLY as _BODY_ONLY, strip_frame as _strip_frame   # greeting and sign-off are code, not the model's
 
 
 class EmailDraftingAgent(BaseAgent):
@@ -1649,7 +1653,7 @@ class EmailDraftingAgent(BaseAgent):
                 f"Context (JSON):\n{json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
                 "Write a professional negotiation counter email with an explicit Subject line. "
                 "Summarise the commercial position, list the key asks as bullet points, and close "
-                "with a clear call to action."
+                "with a clear call to action. " + _BODY_ONLY
             )
             user_prompt = self._with_guidance(user_prompt, assurance_run)
 
@@ -1671,6 +1675,7 @@ class EmailDraftingAgent(BaseAgent):
                 response_text = ""
 
             subject_line, body_text = self._split_subject_and_body(response_text)
+            body_text = _strip_frame(body_text)   # the model's own greeting/signature, removed while its lines are still lines
             fallback_text = self._build_negotiation_fallback(
                 unique_id,
                 decision_data.get("counter_price"),
@@ -1688,6 +1693,9 @@ class EmailDraftingAgent(BaseAgent):
 
         # Checked on the composed text, before the recap and thread history that quote the
         # supplier's own words are added.
+        if not use_negotiation_content:
+            # Framed only when this agent wrote it (model or template); a message the caller supplied goes as given.
+            body_text = self._framed(body_text or fallback_text or "", supplier_id)
         composed, assurance_repaired = self._assure_composed(
             assurance_run, body_text or fallback_text or ""
         )
@@ -1899,7 +1907,8 @@ class EmailDraftingAgent(BaseAgent):
         user_prompt = (
             f"Context (JSON):\n{json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
             "Compose a professional procurement email with a clear Subject line and structured body. "
-            "Keep the tone courteous and do not expose internal scoring or analysis logic."
+            "Keep the tone courteous and do not expose internal scoring or analysis logic. "
+            + _BODY_ONLY
         )
         user_prompt = self._with_guidance(user_prompt, assurance_run)
 
@@ -1911,6 +1920,7 @@ class EmailDraftingAgent(BaseAgent):
             response_text = ""
 
         subject_line, body_text = self._split_subject_and_body(response_text)
+        body_text = _strip_frame(body_text)   # the model's own greeting/signature, removed while its lines are still lines
         if not body_text:
             body_text = prompt_text
 
@@ -1935,7 +1945,7 @@ class EmailDraftingAgent(BaseAgent):
             polish_prompt = (
                 f"Context (JSON):\n{json.dumps(polish_payload, ensure_ascii=False, default=str)}\n\n"
                 "Polish this procurement email for clarity and executive tone. Return the refined email "
-                "starting with a Subject line."
+                "starting with a Subject line. " + _BODY_ONLY
             )
             try:
                 polished_text = _chat(
@@ -1945,6 +1955,7 @@ class EmailDraftingAgent(BaseAgent):
                 logger.exception("Failed to polish composed email")
                 polished_text = ""
             polish_subject, polish_body = self._split_subject_and_body(polished_text)
+            polish_body = _strip_frame(polish_body)   # the model's own greeting/signature, removed while its lines are still lines
             if polish_subject:
                 subject = self._clean_subject_text(polish_subject, subject)
             if polish_body:
@@ -1959,6 +1970,12 @@ class EmailDraftingAgent(BaseAgent):
         if plain_text:
             plain_text = self._clean_body_text(plain_text)
 
+        if plain_text:
+            plain_text = self._framed(plain_text, supplier_id)
+            sanitised_html = self._clean_body_text(
+                self._sanitise_generated_body(self._render_html_from_text(plain_text))
+                or self._render_html_from_text(plain_text)
+            )
         # Checked after the polish pass, which is a second model touching the text.
         composed, assurance_repaired = self._assure_composed(assurance_run, plain_text or "")
         if assurance_repaired:
@@ -2210,6 +2227,7 @@ class EmailDraftingAgent(BaseAgent):
             return subject, body
 
         clean_subject, clean_body = self._split_subject_and_body(polished)
+        clean_body = _strip_frame(clean_body)   # the model's own greeting/signature, removed while its lines are still lines
         if clean_subject:
             subject = self._clean_subject_text(clean_subject, subject or DEFAULT_NEGOTIATION_SUBJECT)
         if clean_body:
@@ -2390,7 +2408,7 @@ class EmailDraftingAgent(BaseAgent):
             levers_list=levers_formatted,
             strategic_elements=strategic_formatted,
             cta_guidance=cta_guidance,
-        )
+        ) + "\n\n" + _BODY_ONLY
         user_prompt = self._with_guidance(user_prompt, assurance_run)
 
         model_name = getattr(
@@ -2583,15 +2601,41 @@ class EmailDraftingAgent(BaseAgent):
             logger.exception("RFQ assurance could not finish for supplier %s", supplier_id)
             return self._unassured_record("rfq_batch", f"{type(exc).__name__}: {exc}")
 
+    def _framed(self, text: str, supplier_id: Optional[Any]) -> str:
+        """Greeting and sign-off are code, never the model's (draft_assurance/frame.py). Empty text stays empty."""
+
+        from src.services.draft_assurance import frame as frame_mod
+
+        if not (text or "").strip():
+            return text or ""
+        return frame_mod.frame(text, contact_name=self._master_contact(supplier_id).name if supplier_id else None)
+
     def _assure_composed(self, run, body: str):
         """One repair pass over ``body`` if it fails a check. Returns ``(body, repaired)``."""
 
         if run is None or run.inputs is None or not body:
             return body, False
+        if run.payment_hold(body):
+            # Ruling 2026-10-09: an email about new or changed bank/payment details goes to a person exactly as written.
+            # A model must never rewrite it into a version that passes the checks.
+            run.repair_skipped = "the email mentions bank or payment details; it is left for a person, never repaired"
+            return body, False
         failed = [v for v in run.check(body) if v["severity"] == "fail"]
         if not failed:
             return body, False
-        repaired = self._repair_assured_body(body, failed)
+        held = (run.inputs.reasoned.get("response_deadline") or {}).get("value") if run.inputs.reasoned else None
+        repaired = self._repair_assured_body(body, failed, deadline=str(held) if held else None)
+        if not repaired or repaired == body:
+            return body, False
+        # The repair rewrites the body only: the greeting and sign-off the code put there are put back exactly, before
+        # the repaired text is checked (live 2026-10-09 a repair dropped the sign-off).
+        from src.services.draft_assurance import frame as frame_mod
+
+        if "<" in body:
+            kept = frame_mod.reframe_like(self._html_to_plain_text(body), self._html_to_plain_text(repaired))
+            repaired = self._clean_body_text(self._sanitise_generated_body(self._render_html_from_text(kept)))
+        else:
+            repaired = frame_mod.reframe_like(body, repaired)
         if not repaired or repaired == body:
             return body, False
         # A repair is accepted only if it does what it was asked: fewer failures, and still the
@@ -2600,6 +2644,14 @@ class EmailDraftingAgent(BaseAgent):
         from src.services.draft_assurance.capture import word_distance
 
         left = [v for v in run.check(repaired) if v["severity"] == "fail"]
+        before = {(v["kind"], v["detail"]) for v in failed}
+        added = [v for v in left if (v["kind"], v["detail"]) not in before]
+        if added:
+            # Fewer failures is not enough: a repair that swaps one problem for a new one (a [name] for a [deadline])
+            # has not repaired anything. Seen live 2026-10-09.
+            run.repair_rejected = ("the repaired text adds a new problem: "
+                                   + ", ".join(f"{v['kind']} {v['detail']}" for v in added))
+            return body, False
         if len(left) >= len(failed):
             run.repair_rejected = "the repaired text did not reduce the failures"
             return body, False
@@ -2608,10 +2660,15 @@ class EmailDraftingAgent(BaseAgent):
             return body, False
         return repaired, True
 
-    def _repair_assured_body(self, body: str, failed: List[Dict[str, str]]) -> Optional[str]:
-        """Ask the model once to remove what the checks rejected. None if it cannot."""
+    def _repair_assured_body(self, body: str, failed: List[Dict[str, str]], *, deadline: Optional[str] = None) -> Optional[str]:
+        """Ask the model once to remove what the checks rejected. None if it cannot, or if nothing is repairable."""
 
-        issues = "\n".join(f"- {v['kind']}: {v['detail']}" for v in failed)
+        from src.services.draft_assurance import repair as repair_mod
+
+        steps = repair_mod.instructions(failed, deadline=deadline)
+        if not steps:
+            return None                         # e.g. only a missing deadline we do not hold: a person adds it, not a model
+        issues = "\n".join(f"- {line}" for line in steps)
         model_name = getattr(
             self.agent_nick.settings, "negotiation_email_model", DEFAULT_NEGOTIATION_MODEL
         )
@@ -2634,6 +2691,10 @@ class EmailDraftingAgent(BaseAgent):
             logger.exception("assurance repair pass failed")
             return None
         text = self._clean_body_text(self._sanitise_generated_body(text or ""))
+        if text and "<" not in body:
+            # Same format out as in: the free-text path renders plain text to HTML itself, and wrapping it here first
+            # escaped the tags a second time (a repaired draft showed literal "&lt;p&gt;", found live 2026-10-09).
+            text = self._html_to_plain_text(text).strip()
         return text if text and len(text.strip()) >= 40 else None
 
     def _handle_negotiation_counter(self, context: AgentContext, data: Dict[str, Any]) -> AgentOutput:
@@ -2666,11 +2727,19 @@ class EmailDraftingAgent(BaseAgent):
         steer = {"assurance_run": assurance_run} if assurance_run is not None and assurance_run.guidance() else {}
         email_text = self._draft_intelligent_negotiation_email(context, combined_data, **steer)
         subject_line, body_text = self._split_subject_and_body(email_text)
+        body_text = _strip_frame(body_text)   # the model's own greeting/signature, removed while its lines are still lines
         body_content = self._sanitise_generated_body(body_text)
         body_clean = self._clean_body_text(body_content)
         body = body_clean
 
         subject_line, body = self._maybe_polish_negotiation_email(subject_line, body)
+        if body and body.strip():
+            # The model's own greeting and signature are removed and the fixed sign-off added; the greeting is added below,
+            # above the recap, naming the contact on record (draft_assurance/frame.py).
+            from src.services.draft_assurance import frame as frame_mod
+
+            body = self._clean_body_text(self._sanitise_generated_body(
+                self._render_html_from_text(frame_mod.close(self._html_to_plain_text(body)))))
 
         # One repair pass, then whatever is left is shown, flagged. Checked on the
         # composed text only: the recap and thread history added below quote the
@@ -2714,7 +2783,8 @@ class EmailDraftingAgent(BaseAgent):
             subject = DEFAULT_NEGOTIATION_SUBJECT
 
         contact_name = (
-            combined_data.get("contact_name")
+            self._master_contact(supplier_id).name
+            or combined_data.get("contact_name")
             or combined_data.get("supplier_contact")
             or combined_data.get("metadata", {}).get("supplier_contact")
             or supplier_name
@@ -3136,18 +3206,15 @@ class EmailDraftingAgent(BaseAgent):
 
 
     @staticmethod
-    def _extract_ollama_message(response: Dict[str, Any]) -> str:
-        if not isinstance(response, dict):
-            return ""
-        message = response.get("message")
-        if isinstance(message, dict):
-            content = message.get("content")
-            if isinstance(content, str):
-                return content.strip()
-        content = response.get("response")
-        if isinstance(content, str):
-            return content.strip()
-        return ""
+    def _extract_ollama_message(response: Any) -> str:
+        """The model's text from whatever ``call_ollama`` returned. One reader, shared with email_intent.
+
+        This used to require a dict. The ollama client returns a ChatResponse object, so every real reply read as ""
+        and every model-written email (``_chat``, the counter compose, the repair pass) fell back to its template.
+        """
+        from src.services.email_intent import _extract_ollama_message as read
+
+        return read(response)
 
     def _instruction_sources_from_policy(self, policy: Dict[str, Any]) -> List[Any]:
         sources: List[Any] = []

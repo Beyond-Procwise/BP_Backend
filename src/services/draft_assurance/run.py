@@ -15,7 +15,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
-from . import accountability, authority as authority_mod, inbound as inbound_mod, stages, steering as steering_mod, tone as tone_mod
+from . import accountability, authority as authority_mod, inbound as inbound_mod, payment_details, stages, steering as steering_mod, tone as tone_mod
 from .assure import Inputs, prepare_inputs
 from .brief import counter_brief
 from .family import FamilyConfig, FamilyConfigUnavailable, list_families, list_labels, load_family
@@ -52,6 +52,7 @@ class AssuranceRun:
     instruction: Optional[str] = None
     request: Optional[str] = None
     repair_rejected: Optional[str] = None
+    repair_skipped: Optional[str] = None                     # why the repair pass was not run at all (the payment-details rule)
     steering: Optional[steering_mod.Steering] = None          # what steers the writer: tone, the author's style rules, exemplars
     inbound_block: Optional[Dict[str, Any]] = None            # {"state": clear|blocked|unknown|not_checked, "flag_ids": [...]}: a flagged reply on this thread
 
@@ -66,6 +67,18 @@ class AssuranceRun:
         if state == "unknown":
             return "whether this supplier's thread holds an unreviewed payment-detail request could not be checked, so nothing is drafted"
         return None
+
+    def request_texts(self) -> List[str]:
+        """What the person asked for, every way it arrives. The payment-details rule screens these as well as the draft."""
+
+        seen: List[str] = []
+        for t in (self.request, self.instruction, self.data.get("prompt"), self.data.get("instruction")):
+            if isinstance(t, str) and t.strip() and t not in seen:
+                seen.append(t)
+        return seen
+
+    def payment_hold(self, body: str) -> Optional[Dict[str, Any]]:
+        return payment_details.hold(body, self.request_texts())
 
     def guidance(self) -> str:
         """The block appended to the writer's user message. Empty when nothing steers (the prompt is then unchanged)."""
@@ -89,6 +102,11 @@ class AssuranceRun:
             # Nothing was checked, but a draft on a flagged thread is still marked: the mark does not depend on a family loading.
             marks = ({"violations": [{"kind": "inbound_flag_unreviewed", "severity": "fail", "detail": blocked}]}
                      if blocked and (self.inbound_block or {}).get("state") in ("blocked", "unknown") else {})
+            # The payment-details rule does not depend on a family loading either.
+            pay = payment_details.violations(composed, self.request_texts())
+            if pay:
+                marks = {"violations": list(marks.get("violations") or []) + pay,
+                         "payment_details_hold": payment_details.hold(composed, self.request_texts())}
             return {"status": "unassured", "reason": self.error or "not run", **base, **marks,
                     **({"inbound_block": dict(self.inbound_block)} if self.inbound_block and self.inbound_block.get("state") != "not_checked" else {}),
                     "stage_status": {"all": {"status": "not_run", "reason": self.error or "not run"}},
@@ -103,6 +121,10 @@ class AssuranceRun:
             brief = counter_brief(self.data, inp, self.tone)
         # Stage 4: the judge scores what was written; it never gates, and never invents a score.
         judge = self._judge(composed, brief if isinstance(brief, dict) else None, facts)
+        if (judge or {}).get("review_flag"):
+            # Logged every time so the false-flag rate can be measured; the flag itself rides in the stored judgement.
+            logger.warning("email judge flag: family=%s workflow=%s criteria=%s overall=%s", fam.family_id,
+                           self.data.get("workflow_id"), judge["review_flag"]["criteria"], judge.get("overall"))
         extras = {**base, "tone": self.tone, "brief": brief, "judge": judge,
                   "authority": self._authority(fam),
                   "classification": self.classification,
@@ -120,6 +142,8 @@ class AssuranceRun:
         record["read_control"] = env.access.get("control")        # dedicated_role | interim_readonly_session | unenforced
         if self.repair_rejected:
             record["repair_rejected"] = self.repair_rejected
+        if self.repair_skipped:
+            record["repair_skipped"] = self.repair_skipped
         return record
 
     def _judge(self, text: str, brief: Optional[Dict[str, Any]], facts: Dict[str, Any]) -> Dict[str, Any]:
@@ -195,6 +219,7 @@ def begin(env: Env, data: Dict[str, Any], *, slug: Optional[str], workflow_id: O
             # What the caller supplied always wins over a candidate the model proposed.
             lk = {**candidates, **data, **(lookup or {}), "workflow_id": workflow_id or data.get("workflow_id")}
             run.inputs = prepare_inputs(conn, family, data, lookup_keys=lk)
+            run.inputs.request_texts = run.request_texts()
             directives = None
             try:
                 rules = tone_mod.load_rules(env.policy_engine)

@@ -24,8 +24,25 @@ _DATE = re.compile(
     rf"|\d{{4}}-\d{{2}}-\d{{2}}|\d{{1,2}}/\d{{1,2}}(?:/\d{{2,4}})?)\b", re.IGNORECASE)
 _NUMBER = re.compile(r"(?<![\w.])\d[\d,]*(?:\.\d+)?(?![\w])(?!\s?(?:st|nd|rd|th)\b)")
 _PLACEHOLDER = re.compile(r"\[[^\]\n]{2,}\]")
-_DEADLINE = re.compile(r"\bwithin\s+\d+\s+(?:business\s+|working\s+)?(?:hours?|days?|weeks?)\b",
-                       re.IGNORECASE)
+# A deadline is a target STATED AS A DEADLINE: a cue ("by", "no later than", "deadline is"...) then a date,
+# a day, or a time. A bare date is not one: "our contract started 1 March 2025" or "PO 12/34" used to pass.
+# Kept apart from _DATE on purpose: _DATE also decides which figures are dates, and widening it moves that check.
+_MON = _MONTHS + "|jan|feb|mar|apr|jun|jul|aug|sept?|oct|nov|dec"
+_DAY = "monday|tuesday|wednesday|thursday|friday|saturday|sunday"
+_TARGET = (
+    rf"(?:\d{{1,2}}(?:st|nd|rd|th)?\s+(?:{_MON})\b\.?(?:\s+\d{{4}})?"
+    rf"|(?:{_MON})\b\.?\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s+\d{{4}})?"
+    rf"|\d{{4}}-\d{{2}}-\d{{2}}|\d{{1,2}}/\d{{1,2}}(?:/\d{{2,4}})?"
+    rf"|(?:(?:this|next)\s+)?(?:{_DAY})\b"
+    rf"|\d{{1,2}}(?:st|nd|rd|th)"
+    rf"|today|tonight|tomorrow"
+    rf"|(?:the\s+)?end\s+of\s+(?:the\s+|this\s+|next\s+)?(?:business\s+|working\s+)?(?:day|week|month)"
+    rf"|close\s+of\s+(?:business|play)|cob|eod|eow|noon|midday|\d{{1,2}}(?::\d{{2}})?\s*(?:am|pm))\b")
+_DEADLINE = re.compile(
+    rf"\b(?:by|before|until|till|no\s+later\s+than|not\s+later\s+than|on\s+or\s+before|deadline(?:\s+\w+){{0,4}}\s+(?:is|of|:)|due)"
+    rf"\s*:?\s+(?:the\s+)?{_TARGET}"
+    rf"|\bwithin\s+(?:the\s+next\s+)?\d+\s+(?:business\s+|working\s+)?(?:hours?|days?|weeks?)\b",
+    re.IGNORECASE)
 
 
 def to_decimal(token: Any) -> Optional[Decimal]:
@@ -129,6 +146,37 @@ def check_patterns(text: str, patterns: Dict[str, str]) -> List[Dict[str, str]]:
     return out
 
 
+_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
+# A phone number: an optional +, then digits with spaces, dots, dashes or brackets, at least 9 digits in all. A date has 8 at
+# most and a reference keeps its letter prefix (the lookbehind refuses a run that follows a letter or a dash).
+_PHONE = re.compile(r"(?<![\w-])\+?\(?\d[\d\s().-]{7,}\d(?![\w-])")
+
+
+def _digits(value: Any) -> str:
+    return re.sub(r"\D", "", str(value))
+
+
+def check_contact_details(text: str, allowed: Iterable[Any]) -> List[Dict[str, str]]:
+    """Email addresses and phone numbers that are not on record. Found live 2026-10-09: model drafts invent both."""
+
+    pool = " ".join(str(a) for a in allowed if a is not None).lower()
+    pool_digits = {_digits(a) for a in re.split(r"[\s,;]+", " ".join(str(a) for a in allowed if a is not None)) if _digits(a)}
+    pool_digits |= {_digits(a) for a in allowed if a is not None and _digits(a)}
+    out = []
+    for m in _EMAIL.finditer(text or ""):
+        if m.group(0).lower() not in pool:
+            out.append(_v("ungrounded_contact_detail", m.group(0)))
+    scrubbed = _EMAIL.sub(" ", text or "")
+    for m in _PHONE.finditer(scrubbed):
+        raw = m.group(0).strip(" .-")
+        digits = _digits(raw)
+        if len(digits) < 9 or _DATE.fullmatch(raw):
+            continue
+        if digits not in pool_digits:
+            out.append(_v("ungrounded_contact_detail", raw))
+    return out
+
+
 def check_required(text: str, elements: List[str], asks: Iterable[str]) -> List[Dict[str, str]]:
     out = []
     for name in elements:
@@ -136,7 +184,7 @@ def check_required(text: str, elements: List[str], asks: Iterable[str]) -> List[
             ok = "?" in text or re.search(r"\bplease\b", text, re.IGNORECASE) or any(
                 str(a).strip() and str(a).strip().lower() in text.lower() for a in asks)
         elif name == "deadline":
-            ok = bool(_DATE.search(text) or _DEADLINE.search(text))
+            ok = bool(_DEADLINE.search(text))
         else:
             out.append(_v("unknown_required_element", name))
             continue
