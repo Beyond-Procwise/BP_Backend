@@ -14,19 +14,20 @@ import hmac
 import json
 import logging
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from api.auth import Principal
 from repositories import agent_policy_repo as repo
 from services import agent_actions, rbac
-from services.agent_policy import (approval_views, approvals, conditions, conflict_cases, conflict_history,
-                                   conflict_views, contract, documents, live_policies, readiness, run_runner,
+from services.agent_policy import (approval_views, approvals, conditions, conflict_cases, conflict_detect,
+                                   conflict_history, conflict_views, contract, documents, live_policies, readiness, run_runner,
                                    run_store, sections)
 from services.agent_policy.compiler import compile_policy
 from services.agent_policy.registry import load_registry
@@ -481,6 +482,45 @@ def list_conflicts(status: str = Query(default="open", pattern="^(open|closed|al
     role = _require(p, "Viewer", "agent_policy.read", {})
     with _conn() as conn:
         return {"conflicts": conflict_views.list_conflicts(conn, p, status=status, is_admin=role == "Admin")}
+
+
+_PAIR_RE = re.compile(r"[A-Z]{3}-[0-9]{4,}(\|[A-Z]{3}-[0-9]{4,}){1,19}")
+
+
+def _csv(text: str, filename: str) -> Response:
+    # text/csv: OutputSafety scrubs JSON and SSE only, so the customer's own words pass unchanged;
+    # formulas are neutralised by conflict_history.csv_cell.
+    return Response(content=text, media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@router.get("/conflicts/history.csv")
+def export_pair_history(pair: str = Query(..., max_length=400), p: Principal = Depends(gateway_principal)):
+    role = _require(p, "Viewer", "agent_policy.read", {"pair": pair})
+    key = conflict_detect.pair_key(*pair.split("|")) if _PAIR_RE.fullmatch(pair) else ""
+    if "|" not in key:
+        raise HTTPException(status_code=422, detail="pair must be two or more policy ids joined by |")
+    with _conn() as conn:
+        who = conflict_history.viewer(conn, p, is_admin=role == "Admin")
+        with conn.cursor() as cur:
+            entries = conflict_history.read(cur, pair_key=key, viewer=who)
+    return _csv(conflict_history.to_csv(entries), f"conflict-history-{key.replace('|', '_')}.csv")
+
+
+@router.get("/{key}/conflicts/history.csv")
+def export_policy_history(key: str, p: Principal = Depends(gateway_principal)):
+    role = _require(p, "Viewer", "agent_policy.read", {"policy": key})
+    if not approval_views.KEY_RE.match(key):
+        raise HTTPException(status_code=404, detail="no such policy")
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM proc.bp_agent_policy WHERE policy_key = %s", (key,))
+            if cur.fetchone() is None:
+                raise HTTPException(status_code=404, detail="no such policy")
+        who = conflict_history.viewer(conn, p, is_admin=role == "Admin")
+        with conn.cursor() as cur:
+            entries = conflict_history.read(cur, policy_key=key, viewer=who)
+    return _csv(conflict_history.to_csv(entries), f"conflict-history-{key}.csv")
 
 
 @router.get("/conflicts/{decision_id}")
