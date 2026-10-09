@@ -269,6 +269,43 @@ def test_missing_ask_and_deadline_are_reported(family):
     assert set(kinds) == {"explicit_ask", "deadline"}
 
 
+# A deadline is a date or time STATED AS A DEADLINE. Any date anywhere used to count, so a draft that
+# mentioned when the contract started, or a reference like "PO 12/34", passed with no deadline at all
+# (found 2026-10-09 checking the judge's missed-deadline control by hand).
+@pytest.mark.parametrize("text", [
+    "Please reply by 6 November 2026.",
+    "Could you confirm by 6 Nov?",
+    "We need your answer no later than 2026-11-06.",
+    "Please confirm on or before 06/11/2026.",
+    "Please reply within 3 working days.",
+    "Please reply by Friday.",
+    "Please let us know by next Tuesday.",
+    "Please confirm by close of business tomorrow.",
+    "Please reply by end of the week.",
+    "Please confirm by COB today.",
+    "The deadline for your reply is 30 October 2026.",
+    "Please reply before 30 October.",
+    "Could you respond by noon on Thursday?",
+    "Please respond by the 30th.",
+    "We would appreciate your response by Friday, 30 October.",
+])
+def test_a_stated_deadline_counts(text):
+    assert V.check_required(text, ["deadline"], []) == []
+
+
+@pytest.mark.parametrize("text", [
+    "Thank you for your offer of 9,200.00 GBP. We can agree 8,600.00 GBP.",
+    "Our contract started 1 March 2025; can you accept 44.80?",
+    "Please see PO 12/34 attached and confirm.",
+    "Your quote dated 6 November 2026 is noted; can you improve it?",
+    "We would be glad to hear from you as soon as possible.",
+    "Please reply when you can.",
+    "We have worked together since March 2020.",
+])
+def test_a_date_that_is_not_a_deadline_does_not_count(text):
+    assert [v["detail"] for v in V.check_required(text, ["deadline"], [])] == ["deadline"]
+
+
 def test_a_recipient_not_on_the_supplier_master_fails(family):
     out = _inputs(family).finalize(GOOD, ["attacker@evil.test"], ["a@x.test"])
     assert any(v["kind"] == "recipient_not_on_master" for v in out["violations"])
