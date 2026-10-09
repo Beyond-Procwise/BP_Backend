@@ -337,8 +337,9 @@ def _fmt_name(cluster: list[dict], quote_lines: dict) -> str:
     anchor = min(b["quote_id"] for b in cluster)
     lines = sorted(quote_lines.get(anchor) or [{}],
                    key=lambda l: (l.get("line_number") is None, l.get("line_number") or 0))
-    desc = (lines[0].get("item_description") or "Sourcing event")[:60]
-    return f"{desc} — {len(cluster)} bidders"
+    # The name only: it becomes the deal's name on confirm, and the bidder count is a
+    # separate fact (proposal members) that the summary states once, from its own count.
+    return (lines[0].get("item_description") or "Sourcing event")[:60]
 
 
 def cluster_batch(*, quotes, quote_lines, purchase_orders, po_lines, invoices, declared=None) -> dict:

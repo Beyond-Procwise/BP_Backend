@@ -20,6 +20,8 @@ catch up, exactly like the promotion steps before them.
 from __future__ import annotations
 
 import logging
+import re
+from typing import Optional
 
 from src.services.db import get_conn
 from src.services.deal_assignment_service import is_established_deal
@@ -64,68 +66,185 @@ def _generate_proposals(batch_deal_id: str, session_id: str) -> dict:
     return _generate(batch_deal_id, session_id)
 
 
-def compose_session_summary(*, total: int, linked: int, held: int, duplicates: int,
-                            proposals: list, critical: int, warnings: int,
-                            top_issues: list) -> str:
-    """Deterministic executive summary of an upload session. Every number is
-    counted, never generated — this is what the report shows the moment the
-    analysis is ready; no LLM call sits on the hot path."""
-    parts = [f"{total} document{'s' if total != 1 else ''} were received in this upload: "
-             f"{linked} analysed and linked"
-             + (f", {held} held for data review" if held else "")
-             + (f", {duplicates} duplicate{'s' if duplicates != 1 else ''} of earlier uploads"
-                if duplicates else "") + "."]
+# The stored-summary tag. v2: verdict first, one facts object, every finding type named.
+SUMMARY_MODEL = "session-postprocess/deterministic-v2"
 
-    if proposals:
-        lines = []
-        for p in proposals:
-            bits = [f"{p['bids']} bidder{'s' if p['bids'] != 1 else ''}"]
-            if p.get("pos"):
-                bits.append(f"{p['pos']} purchase order{'s' if p['pos'] != 1 else ''}")
-            if p.get("invoices"):
-                bits.append(f"{p['invoices']} invoice{'s' if p['invoices'] != 1 else ''}")
-            conf = (f", {round(float(p['confidence']))}% confidence"
-                    if p.get("confidence") is not None else "")
-            lines.append(f"• {p['proposed_name']} ({', '.join(bits)}{conf})")
-        parts.append("The documents group into "
-                     f"{len(proposals)} proposed deal{'s' if len(proposals) != 1 else ''}, "
-                     "awaiting your confirmation:\n" + "\n".join(lines))
-
-    if critical or warnings:
-        sev = []
-        if critical:
-            sev.append(f"{critical} critical issue{'s' if critical != 1 else ''}")
-        if warnings:
-            sev.append(f"{warnings} warning{'s' if warnings != 1 else ''}")
-        issues = "Findings: " + " and ".join(sev) + "."
-        if top_issues:
-            issues += "\n" + "\n".join(f"• {t}" for t in top_issues)
-        parts.append(issues)
-    else:
-        parts.append("No critical issues were found in this upload.")
-
-    if proposals:
-        parts.append("Next step: review and confirm the proposed deals, then clear "
-                     "any critical findings in Data Validation & Actions.")
-    return "\n\n".join(parts)
-
-
-# Plain-language labels for the issue codes worth naming in an executive
-# summary (mirrors the UI's ISSUE_TITLE map for the same codes).
+# Plain-language name for every finding type, as a lower-case noun phrase so it
+# reads both inside a sentence ("mostly lines with no quantity or price") and,
+# capitalised, as a bullet label. A type missing here still renders, from its
+# code, so a new detector never produces a blank.
 _ISSUE_LABEL = {
-    "po_not_found": "cite a purchase order that is not in the system",
-    "po_pending_review": "cite a purchase order still in extraction review",
-    "missing_required": "have a required value that could not be read",
-    "amount_over_po": "bill above their purchase order",
-    "line_amount_over_po": "bill a line above the purchase order",
-    "line_not_on_po": "charge a line that is not on the purchase order",
-    "duplicate_document": "duplicate an already-analysed document",
-    "net_exceeds_gross": "state a net amount above the gross amount",
+    "amount_over_po": "amounts billed above the purchase order",
+    "contract_parent_proposed": "proposed links to a parent contract",
+    "currency_ambiguous": "amounts in an unclear currency",
+    "duplicate_document": "documents already analysed in an earlier upload",
+    "duplicate_invoice": "possible duplicate invoices",
+    "invariant_failed": "internal consistency checks that failed",
+    "invoice_cites_missing_po": "invoices citing a purchase order that is missing",
+    "invoices_exceed_po_total": "invoices above the purchase order total",
+    "line_amount_not_qty_x_price": "line amounts that are not quantity × unit price",
+    "line_amount_over_po": "lines billed above the purchase order",
+    "line_missing_amount": "lines with no amount",
+    "line_missing_numbers": "lines with no quantity or price",
+    "line_not_on_po": "lines charged that are not on the purchase order",
+    "line_sum_mismatch": "lines that do not sum to the document total",
+    "line_total_mismatch": "line totals that do not add up",
+    "missing_line_items": "documents with no line items",
+    "missing_required": "required values that could not be read",
+    "net_exceeds_gross": "net amounts above the gross amount",
+    "po_line_not_billed": "purchase-order lines not yet billed",
+    "po_not_found": "purchase orders cited that are not in the system",
+    "po_pending_review": "purchase orders cited that are still in extraction review",
+    "po_reference_missing": "documents with no purchase-order reference",
+    "price_rises_unstated": "price rises the document does not state",
+    "prices_uplifted_across_lines": "prices raised across several lines",
+    "quantity_invoiced_above_po": "quantities invoiced above the purchase order",
+    "sum_mismatch": "totals that do not add up",
+    "tax_percent_mismatch": "tax rates that do not match",
+    "unit_price_differs_from_po": "unit prices that differ from the purchase order",
+    "uplift_above_stated": "price rises above the stated uplift",
+    "value_derived": "values worked out rather than read",
 }
 
+# Findings whose sample value is a reference worth quoting (the PO number cited).
+_QUOTE_SAMPLE = ("po_not_found", "po_pending_review", "invoice_cites_missing_po")
 
-def _session_facts(cur, session_id: str) -> dict:
-    """Counted facts about a session: document outcomes and open findings."""
+# How many finding types the summary names; the rest are counted, not dropped.
+_TOP_ISSUES = 3
+
+# Proposals named before 2026-10-09 carry their bidder count in the name
+# ("… — 3 bidders"). The count is now a separate fact, so a stored name is shown without it.
+_BIDDER_SUFFIX = re.compile(r"\s+—\s+\d+\s+bidders?\s*$")
+
+
+def issue_label(issue_type: str) -> str:
+    return _ISSUE_LABEL.get(issue_type) or issue_type.replace("_", " ")
+
+
+def _n(count: int, singular: str, plural: Optional[str] = None) -> str:
+    return f"{count} {singular if count == 1 else (plural or singular + 's')}"
+
+
+def _cap(text: str) -> str:
+    return text[:1].upper() + text[1:]
+
+
+def _bids(p: dict) -> str:
+    return _n(p["bids"], "competing bid") if p["bids"] > 1 else _n(p["bids"], "bid")
+
+
+def _proposal_bits(p: dict) -> str:
+    bits = [_bids(p)]
+    if p.get("pos"):
+        bits.append(_n(p["pos"], "purchase order"))
+    if p.get("invoices"):
+        bits.append(_n(p["invoices"], "invoice"))
+    if p.get("confidence") is not None:
+        bits.append(f"{round(float(p['confidence']))}% grouping confidence")
+    return ", ".join(bits)
+
+
+def compose_session_summary(facts: dict) -> str:
+    """Deterministic executive summary of an upload session.
+
+    Every sentence is rendered from ``facts`` (see ``session_summary_facts``), so
+    every number in the text is a counted one; no LLM call sits on the hot path.
+    Same shape as the confirmed-deal summary (deal_summary._build_prompt): a lead,
+    "Key Outcomes:" bullets, a one-sentence "Conclusion:", so a deal reads the same
+    way before and after it is confirmed. Here the lead is the verdict: is there a
+    deal to confirm, and does anything block it.
+    """
+    docs = facts["documents"]
+    proposals = facts["proposals"]
+    findings = facts["findings"]
+    pending = [p for p in proposals if p["status"] == "proposed"]
+    confirmed = [p for p in proposals if p["status"] == "confirmed"]
+    critical = [f for f in findings if f["severity"] == "critical"]
+    n_critical = sum(f["count"] for f in critical)
+    n_warning = sum(f["count"] for f in findings if f["severity"] == "warning")
+
+    # ---- lead: the verdict --------------------------------------------------
+    if pending and n_critical:
+        lead = (f"{_n(len(pending), 'proposed deal is', 'proposed deals are')} waiting for "
+                f"you, but {_n(n_critical, 'critical finding')} should be cleared before you "
+                f"confirm {'it' if len(pending) == 1 else 'them'}.")
+    elif len(pending) == 1:
+        lead = f"1 proposed deal is ready to confirm: {pending[0]['name']}, with {_bids(pending[0])}."
+    elif pending:
+        lead = f"{len(pending)} proposed deals are ready to confirm."
+    elif len(confirmed) == 1:
+        lead = f"This upload's deal has been confirmed: {confirmed[0]['name']}."
+    elif confirmed:
+        lead = f"{len(confirmed)} deals from this upload have been confirmed."
+    elif docs["total"] and not docs["linked"]:
+        lead = "No deal could be proposed: none of the documents could be analysed yet."
+    else:
+        lead = "No deal could be proposed: the documents did not group into a sourcing event."
+
+    if n_critical and pending:   # the lead already states the critical count
+        if n_warning:
+            lead += f" There {'is' if n_warning == 1 else 'are'} also {_n(n_warning, 'data warning')}."
+    elif n_critical:
+        also = f", with {_n(n_warning, 'data warning')}" if n_warning else ""
+        lead += (f" {_cap(_n(n_critical, 'critical finding'))} "
+                 f"{'is' if n_critical == 1 else 'are'} open{also}.")
+    elif n_warning:
+        top = max((f for f in findings if f["severity"] == "warning"), key=lambda f: f["count"])
+        mostly = "" if top["count"] == n_warning else "mostly "
+        blocks = "none of them block confirmation" if pending else "none of them is critical"
+        lead += (f" {_cap(_n(n_warning, 'data warning'))}, {mostly}{issue_label(top['issue_type'])}"
+                 f"; {blocks}.")
+    else:
+        lead += " There are no open findings."
+
+    # ---- key outcomes ---------------------------------------------------------
+    bullets = []
+    for p in pending:
+        bullets.append(f"• Proposed deal: {p['name']} — {_proposal_bits(p)}")
+    for p in confirmed:
+        bullets.append(f"• Confirmed deal: {p['name']} — {_proposal_bits(p)}")
+    named = findings[:_TOP_ISSUES]   # ordered critical first, then by count
+    for f in named:
+        kind = {"critical": "critical finding", "warning": "warning"}.get(f["severity"], "note")
+        line = (f"• {_cap(issue_label(f['issue_type']))}: {_n(f['count'], kind)} across "
+                f"{_n(f['docs'], 'document')}")
+        if f["issue_type"] in _QUOTE_SAMPLE and f.get("sample_ref"):
+            line += f" (e.g. {f['sample_ref']})"
+        bullets.append(line)
+    rest = findings[_TOP_ISSUES:]
+    if rest:
+        bullets.append(f"• Other findings: {_n(sum(f['count'] for f in rest), 'more finding')} "
+                       f"of {_n(len(rest), 'other type')}")
+    doc_bits = [f"{docs['linked']} analysed and linked"]
+    if docs["held"]:
+        doc_bits.append(f"{docs['held']} held for data review")
+    if docs["duplicates"]:
+        doc_bits.append(_n(docs["duplicates"], "duplicate") + " of earlier uploads")
+    bullets.append(f"• Documents: {docs['total']} received — {', '.join(doc_bits)}")
+
+    # ---- conclusion: the next step follows the findings -------------------------
+    where = "in Data Validation & Actions"
+    if n_critical:
+        types = ", ".join(issue_label(f["issue_type"]) for f in critical[:_TOP_ISSUES])
+        step = f"Clear the {_n(n_critical, 'critical finding')} ({types}) {where}"
+        step += ", then confirm the deal." if len(pending) == 1 else (
+            ", then confirm the deals." if pending else ".")
+    elif pending:
+        step = "Confirm the deal" if len(pending) == 1 else "Review and confirm the proposed deals"
+        step += (f"; the warnings can be triaged later {where}." if n_warning else ".")
+    elif n_warning:
+        step = f"Nothing needs a decision; the warnings can be triaged {where}."
+    else:
+        step = "Nothing needs your attention."
+    if docs["held"]:
+        held = f"review the {_n(docs['held'], 'document')} held for data review"
+        step = (_cap(held) + f" {where}." if step.startswith("Nothing")
+                else step[:-1] + f", and {held}.")
+
+    return "\n\n".join([lead, "Key Outcomes:\n" + "\n".join(bullets), "Conclusion:\n" + step])
+
+
+def _session_documents(cur, session_id: str) -> dict:
     cur.execute(
         "select coalesce(doc_action, 'processed'), count(*) "
         "from proc.process_monitor where session_id = %s group by 1", (session_id,))
@@ -134,9 +253,16 @@ def _session_facts(cur, session_id: str) -> dict:
     held = counts.get("needs_review", 0)
     duplicates = counts.get("duplicate", 0)
     linked = total - held - duplicates - counts.get("unsupported", 0)
+    return {"total": total, "linked": linked, "held": held, "duplicates": duplicates}
 
+
+def _session_facts(cur, session_id: str) -> list[dict]:
+    """Open findings for this session's documents, one row per issue type × severity,
+    critical first then by count."""
     # Open findings for this session's documents, via the raw tier's
-    # process_monitor linkage (the only reliable doc->session join).
+    # process_monitor linkage (the only reliable doc->session join). Only
+    # status 'open', as the report's "Items to validate" tile counts: a finding
+    # a person ignored is not one the summary should still announce.
     cur.execute(
         """
         with pks as (
@@ -153,7 +279,7 @@ def _session_facts(cur, session_id: str) -> dict:
                count(distinct d.doc_pk_candidate) as docs,
                min(d.raw_value) as sample_ref
           from proc.bp_extraction_discrepancy d
-         where coalesce(d.status, 'open') <> 'resolved'
+         where coalesce(d.status, 'open') = 'open'
            and d.doc_pk_candidate in (select doc_pk_candidate from pks)
            -- Document-type findings are reporting notes, not problems with the
            -- document's data; keep in step with
@@ -161,56 +287,53 @@ def _session_facts(cur, session_id: str) -> dict:
            and d.issue_type not in ('document_type_disagreement',
                                     'unresolved_document_type')
          group by d.issue_type, d.severity
-         order by (d.severity = 'critical') desc, count(*) desc
+         order by (d.severity = 'critical') desc, (d.severity = 'warning') desc,
+                  count(*) desc, d.issue_type
         """, {"sid": session_id})
-    rows = cur.fetchall()
-    critical = sum(r[2] for r in rows if r[1] == "critical")
-    warnings = sum(r[2] for r in rows if r[1] == "warning")
-    top_issues = []
-    _singular = {"cite": "cites", "have": "has", "bill": "bills", "charge": "charges",
-                 "duplicate": "duplicates", "state": "states"}
-    for issue_type, severity, n, docs, sample_ref in rows:
-        if severity != "critical" or issue_type not in _ISSUE_LABEL:
-            continue
-        label = _ISSUE_LABEL[issue_type]
-        if docs == 1:
-            verb, _, rest = label.partition(" ")
-            label = f"{_singular.get(verb, verb)} {rest}"
-        line = f"{docs} document{'s' if docs != 1 else ''} {label}"
-        if issue_type in ("po_not_found", "po_pending_review") and sample_ref:
-            line += f" ({sample_ref})"
-        top_issues.append(line)
-    return {"total": total, "linked": linked, "held": held, "duplicates": duplicates,
-            "critical": critical, "warnings": warnings, "top_issues": top_issues[:5]}
+    return [{"issue_type": t, "severity": sev, "count": n, "docs": docs, "sample_ref": ref}
+            for t, sev, n, docs, ref in cur.fetchall()]
+
+
+def _session_proposals(cur, batch_deal_id: str) -> list[dict]:
+    """The batch's live proposals (proposed or confirmed; rejected and superseded
+    ones are history), with the bid / PO / invoice counts read from their members."""
+    cur.execute(
+        "select p.proposal_id, p.proposed_name, p.confidence, p.status, p.deal_id, "
+        "  count(*) filter (where m.doc_type='quote' "
+        "    and m.role is distinct from 'earlier_round') as bids, "
+        "  count(*) filter (where m.doc_type='po') as pos, "
+        "  count(*) filter (where m.doc_type='invoice') as invoices "
+        "from proc.bp_deal_proposal p "
+        "join proc.bp_deal_proposal_member m on m.proposal_id = p.proposal_id "
+        "where p.batch_deal_id = %s and p.status in ('proposed', 'confirmed') "
+        "group by p.proposal_id order by p.confidence desc nulls last, p.proposal_id",
+        (batch_deal_id,))
+    return [{"proposal_id": pid, "name": _BIDDER_SUFFIX.sub("", name or "") or "Sourcing event",
+             "confidence": conf, "status": status, "deal_id": deal_id,
+             "bids": bids, "pos": pos, "invoices": inv}
+            for pid, name, conf, status, deal_id, bids, pos, inv in cur.fetchall()]
+
+
+def session_summary_facts(cur, batch_deal_id: str, session_id: str) -> dict:
+    """The one facts object the executive summary is rendered from."""
+    return {"documents": _session_documents(cur, session_id),
+            "proposals": _session_proposals(cur, batch_deal_id),
+            "findings": _session_facts(cur, session_id)}
 
 
 def store_session_summary(conn, batch_deal_id: str, session_id: str,
-                          proposals_out: dict) -> bool:
+                          proposals_out: Optional[dict] = None) -> bool:
     """Compose + persist the analysis summary for the batch label, so
     GET /deals/{batch}/summary answers immediately. One row per deal_id
     (same contract as deal_analysis_service.upsert_analysis_row). The sweep's
     LLM narrative still owns real confirmed deals; it skips deal_ids that
-    already carry a current row, which is exactly right for a draft analysis."""
+    already carry a current row, which is exactly right for a draft analysis.
+
+    Proposals are read back from proc.bp_deal_proposal (the rows
+    ``proposals_out`` names were just written there), so a later re-render
+    (``refresh_session_summary``) reads exactly what this one did."""
     cur = conn.cursor()
-    facts = _session_facts(cur, session_id)
-    proposals = []
-    for label_out in (proposals_out or {}).values():
-        for pid in label_out.get("proposal_ids", []):
-            cur.execute(
-                "select p.proposed_name, p.confidence, "
-                "  count(*) filter (where m.doc_type='quote' "
-                "    and m.role is distinct from 'earlier_round') as bids, "
-                "  count(*) filter (where m.doc_type='po') as pos, "
-                "  count(*) filter (where m.doc_type='invoice') as invoices "
-                "from proc.bp_deal_proposal p "
-                "join proc.bp_deal_proposal_member m on m.proposal_id = p.proposal_id "
-                "where p.proposal_id = %s group by p.proposal_id, p.proposed_name, p.confidence",
-                (pid,))
-            row = cur.fetchone()
-            if row:
-                proposals.append({"proposed_name": row[0], "confidence": row[1],
-                                  "bids": row[2], "pos": row[3], "invoices": row[4]})
-    text = compose_session_summary(proposals=proposals, **facts)
+    text = compose_session_summary(session_summary_facts(cur, batch_deal_id, session_id))
     cur.execute("select deal_name from proc.process_monitor "
                 "where session_id = %s and coalesce(deal_name,'') <> '' "
                 "order by id limit 1",
@@ -221,11 +344,41 @@ def store_session_summary(conn, batch_deal_id: str, session_id: str,
     cur.execute(
         "insert into proc.bp_analysis_summary "
         "(analysis_id, deal_id, deal_name, summary, model, is_current, generated_at) "
-        "values (gen_random_uuid(), %s, %s, %s, 'session-postprocess/deterministic-v1', "
-        " true, now())",
-        (batch_deal_id, deal_name, text))
+        "values (gen_random_uuid(), %s, %s, %s, %s, true, now())",
+        (batch_deal_id, deal_name, text, SUMMARY_MODEL))
     conn.commit()
     return True
+
+
+def refresh_session_summary(conn, deal_id: str) -> Optional[str]:
+    """Re-render a stored draft summary from today's facts.
+
+    The summary is written once, when the session completes; findings resolved and
+    proposals confirmed afterwards left it announcing what was no longer true (an
+    upload kept reading "87 warnings" after a rule closed all 87). Rendering is a
+    few counted queries, so the live read re-renders and stores the result when it
+    changed. Only rows this module wrote are touched; returns None for any other
+    deal (the caller then serves the stored row as before).
+    """
+    cur = conn.cursor()
+    cur.execute("select summary, model from proc.bp_analysis_summary "
+                "where deal_id = %s and is_current limit 1", (deal_id,))
+    row = cur.fetchone()
+    if row is None or not str(row[1] or "").startswith("session-postprocess/"):
+        return None
+    cur.execute("select session_id from proc.process_monitor "
+                "where deal_id = %s and coalesce(session_id, '') <> '' "
+                "order by id limit 1", (deal_id,))
+    sid = cur.fetchone()
+    if sid is None:
+        return None
+    text = compose_session_summary(session_summary_facts(cur, deal_id, sid[0]))
+    if text != row[0] or row[1] != SUMMARY_MODEL:
+        cur.execute("update proc.bp_analysis_summary set summary = %s, model = %s, "
+                    "generated_at = now() where deal_id = %s and is_current",
+                    (text, SUMMARY_MODEL, deal_id))
+        conn.commit()
+    return text
 
 
 def postprocess_session(session_id: str) -> dict:
