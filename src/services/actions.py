@@ -102,6 +102,12 @@ ACTIONS: Dict[str, str] = {
     "research.web": "share",
     "supplier.clearance.set": "share",
     # --- configuring -----------------------------------------------------
+    # Agent policies (stage 1): reading is open to a Viewer; the gateway key + Approver/Admin
+    # minimums are enforced in api/routers/agent_policies.py.
+    "agent_policy.read": "read",
+    "agent_policy.write": "write",
+    "agent_policy.activate": "configure",
+    "agent_policy.admin": "configure",
     "policy.write": "configure",
     "policy.reload": "configure",
     # Which buyers a Buyer/Viewer may see in reports. Changes what every report shows that person.

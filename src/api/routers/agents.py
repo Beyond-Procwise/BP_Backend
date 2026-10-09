@@ -85,6 +85,9 @@ async def agent_nick_reason(req: ReasonRequest, agent_nick=Depends(get_agent_nic
             req.task,
             max_rounds=req.max_rounds,
             require_tool_use=req.require_tool_use,
+            agent="agent_nick",
+            # the requester, so an approval this call triggers is never decided by them
+            user_id=getattr(principal, "subject", None) or None,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("AgentNick.reason failed")

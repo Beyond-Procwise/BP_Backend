@@ -84,6 +84,7 @@ from api.routers import reports as reports_router
 from api.routers import triage as triage_router
 from api.routers import atb as atb_router
 from api.routers import i18n as i18n_router
+from api.routers import agent_policies as agent_policies_router
 from api.routers import demand_intake as demand_intake_router
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), '..', 'logs')
@@ -531,6 +532,10 @@ app.add_middleware(CORSMiddleware, allow_origins=_origins, allow_credentials=_al
 # could reach the port and knew a session id was served its outcomes.
 # tests/api/test_ws_authentication.py is what now holds this to be true.
 app.include_router(ws_router_mod.router)
+# Agent policies trust only the gateway's key + forwarded identity (design 2026-10-08 §3.2),
+# so they are NOT in _AUTHENTICATED_ROUTERS: the browser never calls them directly.
+app.include_router(agent_policies_router.router)
+app.include_router(agent_policies_router.orchestrator_router)
 
 # The one signed-out translation path: the sign-in screens' text, from cache only. It takes
 # no input text and never calls the model (see api/routers/i18n.py). Listed in _PUBLIC in
@@ -655,6 +660,55 @@ _OPERATOR_PATHS = ("/docs", "/redoc", "/openapi.json", "/models")
 # answers; every other /reports answer, and every error raised in them, is still scrubbed.
 _REPORT_EDITOR = re.compile(r"^/reports/jobs/[^/]+/(draft|preview|versions)$")
 
+# The orchestrator's agent-policy feed: GET, exactly this path, nothing under it. It is
+# key-protected (AGENT_POLICY_ORCHESTRATOR_KEY), read by a machine and never shown to a
+# person. Each policy in it is an enforceable document, and a rewritten field would change
+# what is enforced: the scrubber turned the agent's instruction ("...retry the tool call")
+# into the apology sentence and withheld an excerpt holding "01/04/2026" and a condition
+# value like "DL/2024/001" (final review 2026-10-08, C1). Its error answers carry only fixed
+# words; every other agent-policy answer (the screens) is still scrubbed.
+_AGENT_POLICY_FEED = "/orchestrator/agent-policies/v2/live"
+
+# The agent-policy screens' reads and the upload-link answer (user ruling 2026-10-08). The
+# text in them is the customer's own policy documents -- excerpts, section text, reasons a
+# rule cannot be enforced -- and the names are their own file names. The scrubber withheld a
+# date like "01/04/2026" (two slashes look like a route) and rewrote reasons that mention the
+# orchestrator, so a person reading or comparing their own policy saw "[withheld]". Sign-in
+# (gateway key + user), the role check and the audit are unchanged; only the 2xx body of
+# exactly these method+path pairs is passed through. Anchored: a trailing slash, a child path
+# or another method is still scrubbed, and so is every error answer.
+_AGENT_POLICY_SCREEN_EXEMPT = (
+    ("GET", re.compile(r"^/agent-policies$")),
+    ("GET", re.compile(r"^/agent-policies/[A-Z]{3}-[0-9]{4,}$")),
+    ("GET", re.compile(r"^/agent-policies/taxonomy$")),
+    ("POST", re.compile(r"^/agent-policies/preview$")),
+    ("GET", re.compile(r"^/agent-policies/documents$")),
+    ("GET", re.compile(r"^/agent-policies/documents/[0-9]+/compare$")),
+    ("GET", re.compile(r"^/agent-policies/extraction-runs$")),
+    ("GET", re.compile(r"^/agent-policies/extraction-runs/[0-9]+$")),
+    ("POST", re.compile(r"^/agent-policies/documents/upload-urls$")),
+    # Stage 3 reads (user ruling 2026-10-08, Task 7): approval cases quote the policy excerpt,
+    # the source file name and the action's own values (a deal id like "DL/2024/001"); the
+    # decider map names the customer's Cognito groups (PROCWISE_PROCUMENT_BUYER_ANALYST reads as
+    # an env var). Sensitive inputs are masked by the endpoint itself. Same rules as above.
+    ("GET", re.compile(r"^/agent-policies/approvals$")),
+    ("GET", re.compile(r"^/agent-policies/approvals/[0-9]{1,18}$")),
+    ("GET", re.compile(r"^/agent-policies/notifications$")),
+    ("GET", re.compile(r"^/agent-policies/deciders$")),
+    ("GET", re.compile(r"^/agent-policies/[A-Z]{3}-[0-9]{4,}/firings$")),
+    # Stage 4 conflict reads (user ruling Q5, 2026-10-09): a conflict case quotes both policies'
+    # excerpts and documents and the example action's own values; an unroutable owner can be a
+    # Cognito group name. Sensitive inputs are masked by the endpoint itself. Same rules as above.
+    ("GET", re.compile(r"^/agent-policies/conflicts$")),
+    ("GET", re.compile(r"^/agent-policies/conflicts/[0-9]{1,18}$")),
+)
+
+
+def _agent_policy_screen_exempt(method: str, path: str, status_code: int) -> bool:
+    if not 200 <= status_code < 300:
+        return False
+    return any(method == m and rx.fullmatch(path) for m, rx in _AGENT_POLICY_SCREEN_EXEMPT)
+
 
 @app.exception_handler(StarletteHTTPException)
 async def _safe_http_exception(request: Request, exc: StarletteHTTPException):
@@ -690,6 +744,10 @@ class OutputSafetyMiddleware(BaseHTTPMiddleware):
 
         path = request.url.path
         if any(path.startswith(p) for p in _OPERATOR_PATHS) or _REPORT_EDITOR.match(path):
+            return response
+        if path == _AGENT_POLICY_FEED and request.method == "GET":
+            return response
+        if _agent_policy_screen_exempt(request.method, path, response.status_code):
             return response
         ctype = response.headers.get("content-type", "")
 

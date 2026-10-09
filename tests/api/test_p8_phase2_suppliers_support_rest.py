@@ -97,12 +97,14 @@ def test_the_handler_resolves_the_caller(monkeypatch, module_name, method, path,
 # ---------------------------------------------------------------------------
 _ROUTERS = pathlib.Path(__file__).resolve().parents[2] / "src" / "api" / "routers"
 _WRITE = {"post", "put", "patch", "delete"}
+# gateway_principal: the agent-policy routes trust only the gateway's verified identity (design 3.2).
+_RESOLVERS = {"require_user", "gateway_principal"}
 
 
-def _write_endpoints_without_the_principal() -> list[str]:
+def _write_endpoints_without_the_principal(routers: pathlib.Path = _ROUTERS) -> list[str]:
     """The same parse as scripts/p8_endpoint_scan.py, so the two cannot disagree."""
     missing = []
-    for path in sorted(_ROUTERS.glob("*.py")):
+    for path in sorted(routers.glob("*.py")):
         tree = ast.parse(path.read_text())
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -116,7 +118,7 @@ def _write_endpoints_without_the_principal() -> list[str]:
             takes_principal = any(
                 isinstance(d, ast.Call)
                 and getattr(d.func, "id", getattr(d.func, "attr", "")) == "Depends"
-                and d.args and getattr(d.args[0], "id", "") == "require_user"
+                and d.args and getattr(d.args[0], "id", "") in _RESOLVERS
                 for d in defaults
             )
             if not takes_principal:
@@ -129,6 +131,22 @@ def test_the_scan_sees_the_routers():
     assert len(list(_ROUTERS.glob("*.py"))) > 20, _ROUTERS
     tree = ast.parse((_ROUTERS / "promotion.py").read_text())
     assert any(isinstance(n, ast.FunctionDef) and n.name == "post_approve" for n in ast.walk(tree))
+
+
+def test_the_scan_still_flags_a_write_endpoint_with_neither_resolver(tmp_path):
+    """Accepting gateway_principal must not accept anything: a write with neither is flagged."""
+    (tmp_path / "probe.py").write_text(
+        "from fastapi import APIRouter, Depends\n"
+        "router = APIRouter()\n"
+        "@router.post('/a')\n"
+        "def no_one(x: int = 1):\n    return x\n"
+        "@router.put('/b')\n"
+        "def other_dep(p=Depends(some_other_thing)):\n    return p\n"
+        "@router.post('/c')\n"
+        "def by_user(p=Depends(require_user)):\n    return p\n"
+        "@router.post('/d')\n"
+        "def by_gateway(p=Depends(gateway_principal)):\n    return p\n")
+    assert _write_endpoints_without_the_principal(tmp_path) == ["probe.py:4 no_one", "probe.py:7 other_dep"]
 
 
 def test_every_write_endpoint_resolves_the_caller():

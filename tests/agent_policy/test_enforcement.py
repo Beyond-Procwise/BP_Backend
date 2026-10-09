@@ -1,0 +1,264 @@
+"""enforcement.check (pure) and live_policies.load (cached, fail-closed)."""
+import copy
+
+import pytest
+
+from services.agent_policy import enforcement, live_policies
+from services.agent_policy.compiler import compile_policy
+from tests.agent_policy.fixtures import FORM_EXAMPLE, REGISTRY, SETTINGS
+
+
+def _doc(key="FIN-0012", outcome="approve", mutate=None, status="live"):
+    form = copy.deepcopy(FORM_EXAMPLE)
+    form["checked"] = {"by": "user_8841", "at": "2026-10-08T09:14:00Z"}
+    form["outcome"] = outcome
+    if outcome in ("block", "notify"):
+        form["notify"] = ["Finance Manager"] if outcome == "notify" else []
+    if mutate:
+        mutate(form)
+    return compile_policy(form, policy_key=key, version=1, status=status,
+                          settings=SETTINGS, never_suggest=False)
+
+
+def _ctx(amount=900, **extra):
+    ctx = {"checkpoint": "tool.call.before", "tool.name": "refund.issue", "agent.name": "agent_nick",
+           "agent.reason": "customer asked", "args": {"amount": amount}}
+    ctx.update(extra)
+    return ctx
+
+
+def test_block_wins_over_approve():
+    v = enforcement.check(_ctx(), [_doc("FIN-0001", "approve"), _doc("FIN-0002", "block")])
+    assert v.result == "blocked"
+    assert [h["id"] for h in v.blocks] == ["FIN-0002"]
+    assert [h["id"] for h in v.approvals] == ["FIN-0001"]
+    assert v.to_agent["result"] == "blocked"
+    assert v.to_agent["reasonCode"] == "FIN-0002.over_limit"
+    assert v.to_agent["reason"] == FORM_EXAMPLE["messageForAgent"]
+    assert v.to_agent["messageForPerson"] == FORM_EXAMPLE["messageForPerson"]
+    assert v.to_agent["policies"] == ["FIN-0002"]
+
+
+def test_notify_still_listed_when_blocked():
+    block_with_notify = _doc("FIN-0003", "block", lambda f: f.update(notify=["CFO"]))
+    v = enforcement.check(_ctx(), [_doc("FIN-0002", "notify"), block_with_notify])
+    assert v.result == "blocked"
+    ids = {h["id"]: h["notify"] for h in v.notifies}
+    assert ids == {"FIN-0002": ["Finance Manager"], "FIN-0003": ["CFO"]}
+
+
+def test_two_approve_policies_give_two_approvals():
+    v = enforcement.check(_ctx(), [_doc("FIN-0001"), _doc("FIN-0004")])
+    assert v.result == "paused_for_approval"
+    assert [h["id"] for h in v.approvals] == ["FIN-0001", "FIN-0004"]
+    ta = v.to_agent
+    assert ta["result"] == "paused_for_approval"
+    assert ta["requestIds"] == [] and ta["whilePaused"] == "no_retry"
+    assert ta["respondWithin"] == SETTINGS["response_time"]
+    assert ta["reasonCode"] == "FIN-0001.over_limit"
+
+
+def test_missing_field_with_fail_closed_matches_and_is_recorded():
+    ctx = _ctx()
+    ctx["args"] = {}
+    doc = _doc("FIN-0005", "block", lambda f: f["hidden"].update(onMissingData="fail_closed"))
+    v = enforcement.check(ctx, [doc])
+    assert v.result == "blocked"
+    assert v.blocks[0]["missing"] == ["args.amount"]
+
+
+def test_missing_field_with_fail_open_does_not_match_but_is_recorded():
+    ctx = _ctx()
+    ctx["args"] = {}
+    doc = _doc("FIN-0005", "block", lambda f: f["hidden"].update(onMissingData="fail_open"))
+    v = enforcement.check(ctx, [doc])
+    assert v.result == "allowed" and v.to_agent is None
+    assert v.evaluated[0]["matched"] is False and v.evaluated[0]["missing"] == ["args.amount"]
+
+
+def test_unreadable_condition_blocks():
+    doc = _doc("FIN-0006", "notify")
+    doc["trigger"]["condition"] = {"field": "args.amount", "op": "bogus", "value": 1}
+    v = enforcement.check(_ctx(), [doc])
+    assert v.result == "blocked"
+    assert v.to_agent["reasonCode"] == "FIN-0006.condition_unreadable"
+    assert v.blocks[0]["unreadable"] is True
+
+
+def test_comparison_error_at_run_time_blocks():
+    v = enforcement.check(_ctx(amount="lots"), [_doc("FIN-0007", "notify")])
+    assert v.result == "blocked"
+    assert v.to_agent["reasonCode"] == "FIN-0007.condition_unreadable"
+
+
+def test_different_checkpoint_is_ignored():
+    v = enforcement.check(_ctx(checkpoint="message.send.before"), [_doc("FIN-0001", "block")])
+    assert v.result == "allowed" and v.to_agent is None and v.evaluated == []
+
+
+def test_condition_not_met_is_allowed():
+    v = enforcement.check(_ctx(amount=100), [_doc("FIN-0001", "block")])
+    assert v.result == "allowed" and v.to_agent is None and v.blocks == []
+
+
+def test_sensitive_values_are_masked_in_matched_values():
+    def sensitive(form):
+        form["hidden"]["inputs"][0]["sensitive"] = True
+    v = enforcement.check(_ctx(), [_doc("FIN-0008", "approve", sensitive)])
+    mv = v.approvals[0]["matched_values"]
+    assert mv["args.amount"] == "•••"
+    assert mv["tool.name"] == "refund.issue"
+
+
+def test_mask_helper():
+    doc = _doc(mutate=lambda f: f["hidden"]["inputs"][2].update(sensitive=True))
+    assert enforcement.mask({"agent.reason": "x", "args.amount": 5}, doc) == {"agent.reason": "•••", "args.amount": 5}
+
+
+def test_limit_is_ignored_and_says_so():
+    doc = _doc("FIN-0009", "notify", lambda f: f.update(limit={"on": True, "text": "only the refunds agent"}))
+    v = enforcement.check(_ctx(), [doc])
+    assert v.notifies[0]["limitIgnored"] is True
+    plain = enforcement.check(_ctx(), [_doc("FIN-0010", "notify")])
+    assert plain.notifies[0]["limitIgnored"] is False
+
+
+def test_no_live_policies_is_allowed_with_no_message():
+    v = enforcement.check(_ctx(), [])
+    assert v.result == "allowed" and v.to_agent is None
+    assert v.blocks == v.approvals == v.notifies == []
+
+
+# ---- live_policies ---------------------------------------------------------------------------
+
+class _Calls:
+    def __init__(self, docs):
+        self.docs, self.n = docs, 0
+
+    def __call__(self, conn):
+        self.n += 1
+        return self.docs
+
+
+@pytest.fixture(autouse=True)
+def _fresh_cache():
+    live_policies.invalidate()
+    yield
+    live_policies.invalidate()
+
+
+def test_load_filters_invalid_and_caches(monkeypatch):
+    good, bad = _doc("FIN-0001"), _doc("FIN-0002", mutate=lambda f: f.update(checked=None))
+    calls = _Calls([good, bad, "not a dict"])
+    monkeypatch.setattr(live_policies.repo, "live_documents", calls)
+    monkeypatch.setattr(live_policies, "load_registry", lambda conn=None: REGISTRY)
+    assert [d["id"] for d in live_policies.load(conn=object())] == ["FIN-0001"]
+    live_policies.load(conn=object())
+    assert calls.n == 1
+    live_policies.invalidate()
+    live_policies.load(conn=object())
+    assert calls.n == 2
+
+
+def test_load_failure_raises_policy_store_unavailable(monkeypatch):
+    def boom(conn):
+        raise RuntimeError("db down")
+    monkeypatch.setattr(live_policies.repo, "live_documents", boom)
+    monkeypatch.setattr(live_policies, "load_registry", lambda conn=None: REGISTRY)
+    with pytest.raises(live_policies.PolicyStoreUnavailable):
+        live_policies.load(conn=object())
+
+
+# ---- fix round 1 -----------------------------------------------------------------------------
+
+def test_a_field_sensitive_in_one_policy_is_masked_in_every_hit():
+    def sensitive(form):
+        form["hidden"]["inputs"][0]["sensitive"] = True
+    v = enforcement.check(_ctx(), [_doc("FIN-0001", "approve", sensitive), _doc("FIN-0002", "notify")])
+    assert v.notifies[0]["id"] == "FIN-0002"
+    assert v.notifies[0]["matched_values"]["args.amount"] == "•••"
+    assert all(h["matched_values"]["args.amount"] == "•••" for h in v.evaluated)
+
+
+def _with_sla(doc, within):
+    doc["enforcement"]["intervention"]["sla"]["respondWithin"] = within
+    return doc
+
+
+def test_paused_wait_falls_back_to_the_company_default():
+    doc = _with_sla(_doc("FIN-0001"), None)
+    v = enforcement.check(_ctx(), [doc], default_response_time="PT6H")
+    assert v.to_agent["respondWithin"] == "PT6H"
+
+
+def test_paused_wait_is_the_longest_including_weeks_and_fractions():
+    v = enforcement.check(_ctx(), [_with_sla(_doc("FIN-0001"), "P6D"), _with_sla(_doc("FIN-0002"), "P1W")])
+    assert v.to_agent["respondWithin"] == "P1W"
+    v = enforcement.check(_ctx(), [_with_sla(_doc("FIN-0001"), "PT1.5H"), _with_sla(_doc("FIN-0002"), "PT80M")])
+    assert v.to_agent["respondWithin"] == "PT1.5H"
+
+
+def test_an_unreadable_wait_is_the_company_default_as_the_timer_applies_it():
+    v = enforcement.check(_ctx(), [_with_sla(_doc("FIN-0001"), "PT1H"), _with_sla(_doc("FIN-0002"), "soon")],
+                          default_response_time="PT6H")
+    assert v.to_agent["respondWithin"] == "PT6H"
+    v = enforcement.check(_ctx(), [_with_sla(_doc("FIN-0001"), "P9D"), _with_sla(_doc("FIN-0002"), "soon")])
+    assert v.to_agent["respondWithin"] == "P9D"
+
+
+def test_absent_on_missing_data_fails_closed():
+    ctx = _ctx()
+    ctx["args"] = {}
+    doc = _doc("FIN-0005", "block")
+    del doc["trigger"]["onMissingData"]
+    v = enforcement.check(ctx, [doc])
+    assert v.result == "blocked" and v.blocks[0]["missing"] == ["args.amount"]
+
+
+def test_mutating_a_loaded_doc_does_not_change_the_next_load(monkeypatch):
+    monkeypatch.setattr(live_policies.repo, "live_documents", lambda conn: [_doc("FIN-0001")])
+    monkeypatch.setattr(live_policies, "load_registry", lambda conn=None: REGISTRY)
+    first = live_policies.load(conn=object())
+    first[0]["enforcement"]["outcome"] = "block"
+    first.append({"id": "junk"})
+    again = live_policies.load(conn=object())
+    assert [d["id"] for d in again] == ["FIN-0001"]
+    assert again[0]["enforcement"]["outcome"] == "approve"
+
+
+# ------------------------------------------------------------------ I1: listed actions bound a policy
+def _tool_a_only(form):
+    """A policy on refund.issue whose condition does NOT name the tool, failing closed on a gap."""
+    form["hidden"]["actions"]["tools"] = ["refund.issue"]
+    form["hidden"]["condition"] = {"field": "args.amount", "op": "gt", "value": 500}
+    form["hidden"]["onMissingData"] = "fail_closed"
+
+
+@pytest.mark.parametrize("outcome", ["approve", "block", "notify"])
+def test_a_policy_on_tool_a_never_matches_tool_b(outcome):
+    doc = _doc("FIN-0021", outcome, _tool_a_only)
+    assert doc["context"]["actions"]["tools"] == ["refund.issue"]
+    assert doc["trigger"]["onMissingData"] == "fail_closed"
+    # tool B with the field missing: fail_closed would count it as met, but B is not A's action
+    b = {"checkpoint": "tool.call.before", "tool.name": "supplier_ranking", "args": {}}
+    v = enforcement.check(b, [doc])
+    assert v.result == "allowed" and v.evaluated == [] and not (v.blocks or v.approvals or v.notifies)
+    # tool B over the threshold: still not A's action
+    v = enforcement.check(dict(b, args={"amount": 900}), [doc])
+    assert v.result == "allowed" and v.evaluated == []
+
+
+def test_a_policy_on_tool_a_still_fails_closed_for_tool_a():
+    doc = _doc("FIN-0022", "approve", _tool_a_only)
+    v = enforcement.check({"checkpoint": "tool.call.before", "tool.name": "refund.issue", "args": {}}, [doc])
+    assert v.result == "paused_for_approval" and v.approvals[0]["missing"] == ["args.amount"]
+
+
+def test_a_policy_listing_no_actions_is_not_narrowed():
+    def no_tools(form):
+        _tool_a_only(form)
+        form["hidden"]["actions"]["tools"] = []
+    doc = _doc("FIN-0023", "block", no_tools)
+    v = enforcement.check({"checkpoint": "tool.call.before", "tool.name": "supplier_ranking",
+                           "args": {"amount": 900}}, [doc])
+    assert v.result == "blocked"

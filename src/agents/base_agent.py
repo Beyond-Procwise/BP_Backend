@@ -343,6 +343,7 @@ class BaseAgent:
 
         parts = [p for p in (self.instructions(), kwargs.pop("extra_system", None)) if p]
         kwargs.setdefault("exclude", NODE_TOOL_EXCLUSIONS)
+        kwargs.setdefault("agent", self._governance_slug())   # who is calling, for the policy gate
         return _reason(
             self.agent_nick,
             task,
