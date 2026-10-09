@@ -64,6 +64,21 @@ def _engine() -> Optional[Any]:
     return rbac.policy_engine()
 
 
+def _new_engine() -> Optional[Any]:
+    """A PolicyEngine built for one read. The shared engine (rbac.policy_engine) is cached for a
+    minute and this module caches what it read; a value a customer edits in the policy admin
+    (the gateway's PUT /policy/update/:id writes proc.bp_policy directly) must apply on the next
+    read, without a restart."""
+
+    from src.services import rbac
+
+    return rbac._build_engine()
+
+
+#: The seam a fresh read goes through. Tests replace this, as they replace _engine.
+_fresh_engine = _new_engine
+
+
 def reset_cache() -> None:
     """Forget everything read so far. For tests, and for a governance reload."""
 
@@ -72,14 +87,15 @@ def reset_cache() -> None:
         _WARNED.clear()
 
 
-def _rules(policy: str) -> Dict[str, Any]:
-    with _LOCK:
-        cached = _CACHE.get(policy)
-    if cached is not None:
-        return cached
+def _rules(policy: str, *, fresh: bool = False) -> Dict[str, Any]:
+    if not fresh:
+        with _LOCK:
+            cached = _CACHE.get(policy)
+        if cached is not None:
+            return cached
 
     try:
-        engine = _engine()
+        engine = _fresh_engine() if fresh else _engine()
         row = engine.get_policy(policy) if engine else None
     except Exception as exc:  # noqa: BLE001 - unreadable is not permission
         raise LimitUnavailable(
@@ -110,18 +126,20 @@ def _cast(value: Any, cast: Callable[[Any], Any]) -> Any:
 
 
 def limit(policy: str, rule: str, *, env: Optional[str] = None,
-          cast: Callable[[Any], Any] = float) -> Any:
+          cast: Callable[[Any], Any] = float, fresh: bool = False) -> Any:
     """The governed value of one limit, or raise.
 
     ``policy`` is a ``policy_identifier`` (e.g. ``promotion_thresholds``),
     ``rule`` a key under its ``rules``. ``env`` names the environment variable
-    that still overrides it during the deprecation window.
+    that still overrides it during the deprecation window. ``fresh=True`` reads
+    the row now (a new PolicyEngine, no cache): for a value customers edit while
+    the server runs.
 
     Returns ``None`` only when the policy states ``null`` for the rule, which
     means "no limit" and is not the same as the rule being absent.
     """
 
-    rules = _rules(policy)
+    rules = _rules(policy, fresh=fresh)
     if rule not in rules:
         raise LimitUnavailable(
             f"{policy} does not state {rule!r}; refusing rather than assuming a "

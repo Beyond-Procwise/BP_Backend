@@ -88,5 +88,6 @@ def _governed_limits_available(monkeypatch):
 
     governed_limits.reset_cache()
     monkeypatch.setattr(governed_limits, "_engine", lambda: _SeededPolicyEngine())
+    monkeypatch.setattr(governed_limits, "_fresh_engine", lambda: _SeededPolicyEngine())
     yield
     governed_limits.reset_cache()

@@ -250,3 +250,50 @@ def test_the_in_memory_seed_matches_the_live_rows():
     for slug in sorted(seed):
         assert seed[slug] == live[slug], (
             f"{slug} has drifted:\n  seed = {seed[slug]}\n  live = {live[slug]}")
+
+
+# ---------------------------------------------------------------------------
+# a fresh read: a customer's edit in the policy admin applies without a restart
+# ---------------------------------------------------------------------------
+def _precedent(n):
+    return _Engine({"precedent_count": n}, "agent_policy_conflicts")
+
+
+def test_a_fresh_read_sees_an_edit_without_a_restart(monkeypatch):
+    monkeypatch.setattr(GL, "_engine", lambda: _precedent(5))
+    monkeypatch.setattr(GL, "_fresh_engine", lambda: _precedent(5))
+    assert GL.limit("agent_policy_conflicts", "precedent_count", cast=int) == 5
+    # the gateway's PUT /policy/update/:id writes a new row; a new engine now reads 2
+    monkeypatch.setattr(GL, "_fresh_engine", lambda: _precedent(2))
+    assert GL.limit("agent_policy_conflicts", "precedent_count", cast=int) == 5, "a cached read is still cached"
+    assert GL.limit("agent_policy_conflicts", "precedent_count", cast=int, fresh=True) == 2
+
+
+def test_a_fresh_read_never_uses_the_shared_engine(monkeypatch):
+    def shared():
+        raise AssertionError("the shared, cached engine was used")
+    monkeypatch.setattr(GL, "_engine", shared)
+    monkeypatch.setattr(GL, "_fresh_engine", lambda: _precedent(3))
+    assert GL.limit("agent_policy_conflicts", "precedent_count", cast=int, fresh=True) == 3
+
+
+def test_a_fresh_read_of_a_missing_row_refuses(monkeypatch):
+    monkeypatch.setattr(GL, "_fresh_engine", lambda: _Engine(None, "agent_policy_conflicts"))
+    with pytest.raises(GL.LimitUnavailable):
+        GL.limit("agent_policy_conflicts", "precedent_count", cast=int, fresh=True)
+
+
+def test_a_fresh_read_with_no_engine_refuses(monkeypatch):
+    monkeypatch.setattr(GL, "_fresh_engine", lambda: None)
+    with pytest.raises(GL.LimitUnavailable):
+        GL.limit("agent_policy_conflicts", "precedent_count", cast=int, fresh=True)
+
+
+def test_the_real_fresh_seam_builds_a_new_engine_every_time(monkeypatch):
+    from src.services import rbac
+    built = []
+    monkeypatch.setattr(rbac, "_build_engine", lambda: built.append(1) or _precedent(4))
+    monkeypatch.setattr(GL, "_fresh_engine", GL._new_engine)
+    assert GL.limit("agent_policy_conflicts", "precedent_count", cast=int, fresh=True) == 4
+    assert GL.limit("agent_policy_conflicts", "precedent_count", cast=int, fresh=True) == 4
+    assert built == [1, 1]
