@@ -224,6 +224,19 @@ def _credited(cur, approvals, member_ids: List[int], verdict: str, actor: str,
     return (pick[1], pick[2]) if pick else (actor, reason)
 
 
+def _settled_kind(approvals, actor: Optional[str]) -> str:
+    """decidedBy.kind of the credited member action: a person, the timeout sweep (exactly
+    approvals.TIMEOUT_ACTOR), or any other system actor ("system": a system:group row credited
+    because every reject on file is one, or a system caller's own actor). Only "person" counts
+    as a person's decision."""
+    a = str(actor or "")
+    if a == approvals.TIMEOUT_ACTOR:
+        return "timeout"
+    if not actor or a.startswith("system:"):
+        return "system"
+    return "person"
+
+
 def settle_for_group(cur, case: Dict[str, Any], state: Dict[str, int], *, refused: Optional[str], actor: str,
                      reason: Optional[str], now: datetime) -> Optional[int]:
     """The member group of `case` has closed: settle the live case(s) its members name, if still
@@ -237,7 +250,8 @@ def settle_for_group(cur, case: Dict[str, Any], state: Dict[str, int], *, refuse
     # sweep can time one member out while a person is approving its sibling (user ruling Q4: a
     # timeout never counts as a person's decision).
     actor, reason = _credited(cur, approvals, member_ids, verdict, actor, reason)
-    by_person = not str(actor or "").startswith("system:")
+    kind = _settled_kind(approvals, actor)
+    by_person = kind == "person"
     out: Optional[int] = None
     for live_id in _live_ids(cur, member_ids):
         cur.execute(_LIVE_SQL, (live_id, SUBJECT_LIVE))
@@ -253,9 +267,9 @@ def settle_for_group(cur, case: Dict[str, Any], state: Dict[str, int], *, refuse
         cur.execute("SELECT policy_versions FROM proc.bp_agent_policy_conflict WHERE decision_id = %s", (live_id,))
         pv = cur.fetchone()
         facts["versionsAtDecision"] = dict(_j(pv[0], {}) or {}) if pv else {}
-        # A member group is closed by a person or by the sweep (a timeout); system:group rows are
-        # consequences of another member's decision and _credited skips them.
-        facts["decidedBy"] = conflict_cases.decided_by("person" if by_person else "timeout", actor)
+        if kind == "system":
+            logger.warning("live conflict %s settled by unexpected system actor %s", live_id, actor)
+        facts["decidedBy"] = conflict_cases.decided_by(kind, actor)
         cur.execute(
             """
             INSERT INTO proc.bp_decision (

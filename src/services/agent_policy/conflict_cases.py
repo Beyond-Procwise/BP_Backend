@@ -376,8 +376,9 @@ _LABELS = {"keep_both": "Keep both: {} takes priority", "change": "Change {}", "
            "retire": "Retire {}"}
 
 #: What can close a conflict case (facts.decidedBy.kind), set where it happens and never
-#: derived from an actor string (design §3.1).
-DECIDED_BY_KINDS = ("person", "standing_rule", "precedent", "timeout", "block", "retired")
+#: derived from an actor string (design §3.1). "system" marks a live clash settled by a system
+#: actor other than the timeout sweep, which should not happen and is logged where it does.
+DECIDED_BY_KINDS = ("person", "standing_rule", "precedent", "timeout", "block", "retired", "system")
 
 
 def decided_by(kind: str, name: Optional[str]) -> Dict[str, Any]:

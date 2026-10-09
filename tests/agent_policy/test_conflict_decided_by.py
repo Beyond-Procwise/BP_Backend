@@ -66,3 +66,68 @@ def test_decided_by_refuses_an_unknown_kind():
     assert CC.decided_by("person", "sub-x") == {"kind": "person", "name": "sub-x"}
     with pytest.raises(ValueError):
         CC.decided_by("guess", "system:timeout")
+
+
+# ------------------------------------------- settle_for_group: who settled a live clash (fix round 1)
+class _SettleCur:
+    """Answers the reads settle_for_group makes for one member group and one open live case (id 40)."""
+
+    def __init__(self, acts):
+        self.acts, self.log, self.description, self._last = acts, [], None, ""
+
+    def execute(self, sql, params=None):
+        self._last = " ".join(sql.split())
+        self.log.append((self._last, params))
+
+    def fetchall(self):
+        if "a.override_reason FROM proc.bp_decision a" in self._last:
+            return list(self.acts)
+        if "'liveConflict'" in self._last:
+            return [(40,)]
+        return []
+
+    def fetchone(self):
+        if "RETURNING" in self._last:
+            return (41,)
+        if "SELECT policy_versions" in self._last:
+            return ({"TSB-0101": 1, "TSB-0102": 1},)
+        if "FROM proc.bp_decision WHERE decision_id = %s AND subject_type = %s FOR UPDATE" in self._last:
+            self.description = [(c,) for c in ("decision_id", "subject_id", "resolution", "rationale",
+                                               "policy_name", "facts", "status", "workflow_id")]
+            return (40, "TSB-0101|TSB-0102", "escalated", "why", "TSB-0101|TSB-0102", "{}", "open", "wf")
+        return None
+
+
+def _settle(monkeypatch, acts, *, refused, actor):
+    from services.agent_policy import approvals as A
+    monkeypatch.setattr(A, "_member_ids", lambda cur, did, facts: [11, 12])
+    proposed = []
+    monkeypatch.setattr(CL, "_propose_safely", lambda cur, live_id, now: proposed.append(live_id))
+    cur = _SettleCur(acts)
+    CL.settle_for_group(cur, {"decision_id": 11, "facts": {}}, {"total": 2, "rejected": 1, "approved": 0},
+                        refused=refused, actor=actor, reason=None, now=NOW)
+    facts = next(json.loads(p[6]) for s, p in cur.log if s.startswith("INSERT INTO proc.bp_decision"))
+    by_person = next(p[3] for s, p in cur.log if s.startswith("UPDATE proc.bp_agent_policy_conflict"))
+    return facts, by_person, proposed
+
+
+def test_a_credited_timeout_row_settles_as_a_timeout(monkeypatch):
+    facts, by_person, proposed = _settle(monkeypatch, [("reject", "system:timeout", "timed out")],
+                                         refused="timed_out", actor="system:timeout")
+    assert facts["decidedBy"] == {"kind": "timeout", "name": "system:timeout"}
+    assert facts["versionsAtDecision"] == {"TSB-0101": 1, "TSB-0102": 1}
+    assert by_person is False and proposed == []
+
+
+def test_a_credited_person_settles_as_a_person(monkeypatch):
+    facts, by_person, proposed = _settle(monkeypatch, [("reject", "sub-fm", "no")], refused=None, actor="sub-fm")
+    assert facts["decidedBy"] == {"kind": "person", "name": "sub-fm"}
+    assert by_person is True and proposed == [40]
+
+
+def test_a_credited_group_row_is_system_never_timeout_or_person(monkeypatch, caplog):
+    facts, by_person, proposed = _settle(monkeypatch, [("reject", "system:group", None)],
+                                         refused="rejected", actor="system:group")
+    assert facts["decidedBy"] == {"kind": "system", "name": "system:group"}
+    assert by_person is False and proposed == []
+    assert "settled by unexpected system actor system:group" in caplog.text
