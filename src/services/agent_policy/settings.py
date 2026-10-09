@@ -66,3 +66,22 @@ def precedent_count() -> Optional[int]:
     from src.services import governed_limits
 
     return governed_limits.limit(PRECEDENT_POLICY, PRECEDENT_RULE, cast=int, fresh=True)
+
+
+#: How far above the largest value people approved precedent still applies (Task 12): a governed
+#: percentage on the same row. 20 = up to 20% above; 0 = never above; null = no range check.
+PRECEDENT_RANGE_RULE = "precedent_value_range_pct"
+
+
+def precedent_value_range_pct() -> Optional[float]:
+    """The governed precedent value range, in percent, read fresh like precedent_count. None is a
+    stated null (no range check). Raises governed_limits.LimitUnavailable when the row or rule is
+    missing, and ValueError/TypeError when the value is not a number or is negative."""
+    import math
+
+    from src.services import governed_limits
+
+    pct = governed_limits.limit(PRECEDENT_POLICY, PRECEDENT_RANGE_RULE, cast=float, fresh=True)
+    if pct is not None and not (math.isfinite(pct) and pct >= 0):
+        raise ValueError("the precedent value range must be a number of percent, 0 or more")
+    return pct

@@ -72,16 +72,41 @@ REGISTRY = registry.snapshot_from_rows([
 ])
 
 
-def precedent_n(monkeypatch, n, *, missing=False):
-    """Set the governed precedent count (agent_policy_conflicts.precedent_count) every fresh read
-    sees. missing=True: the row does not exist, so the read raises LimitUnavailable."""
+def _conflict_rule(monkeypatch, rule, value, *, drop_row=False, drop_rule=False):
+    """Every fresh read of agent_policy_conflicts sees `rule` = `value`, on top of whatever the
+    previous fresh read gave (the seed, the live row, or an earlier override), so precedent_n and
+    precedent_range compose. drop_row: the row does not exist. drop_rule: the rule is absent."""
     from src.services import governed_limits as GL
+
+    previous = GL._fresh_engine
 
     class _Engine:
         def get_policy(self, slug):
-            if missing or slug != "agent_policy_conflicts":
+            if drop_row or slug != "agent_policy_conflicts":
                 return None
+            try:
+                before = previous().get_policy(slug) or {}
+            except Exception:  # noqa: BLE001 - an unreadable earlier read: only this rule is known
+                before = {}
+            rules = dict(((before.get("details") or {}).get("rules")) or {})
+            if drop_rule:
+                rules.pop(rule, None)
+            else:
+                rules[rule] = value
             return {"policyName": "AgentPolicyConflictPolicy",
-                    "details": {"policy_identifier": slug, "rules": {"precedent_count": n}}}
+                    "details": {"policy_identifier": slug, "rules": rules}}
 
     monkeypatch.setattr(GL, "_fresh_engine", lambda: _Engine())
+
+
+def precedent_n(monkeypatch, n, *, missing=False):
+    """Set the governed precedent count (agent_policy_conflicts.precedent_count) every fresh read
+    sees. missing=True: the row does not exist, so the read raises LimitUnavailable."""
+    _conflict_rule(monkeypatch, "precedent_count", n, drop_row=missing)
+
+
+def precedent_range(monkeypatch, pct, *, missing=False):
+    """Set the governed precedent value range (agent_policy_conflicts.precedent_value_range_pct)
+    every fresh read sees; None is a stated null (no range check). missing=True: the rule is
+    absent from the row, so the read raises LimitUnavailable."""
+    _conflict_rule(monkeypatch, "precedent_value_range_pct", pct, drop_rule=missing)
