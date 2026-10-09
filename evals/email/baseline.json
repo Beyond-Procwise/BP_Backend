@@ -1,1 +1,1 @@
-{"families": {"negotiation_counter": {"min_cases": 35, "min_pass_rate": 1.0}, "free_prompt": {"min_cases": 26, "min_pass_rate": 1.0}}}
+{"families": {"negotiation_counter": {"min_cases": 36, "min_pass_rate": 1.0}, "free_prompt": {"min_cases": 26, "min_pass_rate": 1.0}}}
