@@ -25,8 +25,8 @@ from pydantic import BaseModel, Field
 from api.auth import Principal
 from repositories import agent_policy_repo as repo
 from services import agent_actions, rbac
-from services.agent_policy import (approval_views, approvals, conditions, conflict_cases, contract, documents,
-                                   live_policies, readiness, run_runner, run_store, sections)
+from services.agent_policy import (approval_views, approvals, conditions, conflict_cases, conflict_views, contract,
+                                   documents, live_policies, readiness, run_runner, run_store, sections)
 from services.agent_policy.compiler import compile_policy
 from services.agent_policy.registry import load_registry
 from services.agent_policy.settings import load_settings
@@ -459,6 +459,72 @@ def put_decider(name: str, body: DeciderBody, p: Principal = Depends(gateway_pri
     # Only the name and the time: group and email values in a 2xx body are withheld by
     # OutputSafety (no exemption for this write), and the screen re-reads GET /deciders.
     return {"name": saved["name"], "savedAt": saved["lastModifiedAt"]}
+
+
+# ---------------------------------------------------------------- conflict cases (stage 4)
+# Declared before /{key}: "conflicts" is never read as a policy key. Viewer is the floor for all
+# three; who may decide is the owners' decider-map links (user ruling Q3), checked in decide_policy.
+
+class ConflictDecideBody(BaseModel):
+    option: str = Field(max_length=64)
+    reason: Optional[str] = Field(default=None, max_length=2000)
+    limitText: Optional[str] = Field(default=None, max_length=500)
+
+
+_CONFLICT_FIELD = {"reason_required": "reason", "limit_required": "limitText"}
+
+
+@router.get("/conflicts")
+def list_conflicts(status: str = Query(default="open", pattern="^(open|closed|all)$"),
+                   p: Principal = Depends(gateway_principal)):
+    _require(p, "Viewer", "agent_policy.read", {})
+    with _conn() as conn:
+        return {"conflicts": conflict_views.list_conflicts(conn, p, status=status)}
+
+
+@router.get("/conflicts/{decision_id}")
+def get_conflict(decision_id: int, p: Principal = Depends(gateway_principal)):
+    _require(p, "Viewer", "agent_policy.read", {"conflict": decision_id})
+    with _conn() as conn:
+        got = conflict_views.get_conflict(conn, decision_id, p)
+    if got is None:
+        raise HTTPException(status_code=404, detail="No such conflict case.")
+    return got
+
+
+@router.post("/conflicts/{decision_id}/decide")
+def decide_conflict(decision_id: int, body: ConflictDecideBody, p: Principal = Depends(gateway_principal)):
+    # audited before (the authorize record) and after (done / refused / error), as decide is
+    _require(p, "Viewer", "agent_policy.conflict_decide", {"conflict": decision_id, "option": body.option})
+
+    def _audit(status: str, summary: str, **details):
+        agent_actions.record_action_or_fail(
+            phase="decide", action_type="agent_policy.conflict_decide", agent="agent_policy_api", status=status,
+            summary=summary, details={"decision": decision_id, "option": body.option, "principal": p.subject,
+                                      **details})
+
+    try:
+        with _conn() as conn:
+            out = conflict_cases.decide_policy(conn, decision_id, principal=p, option=body.option,
+                                               reason=body.reason, limit_text=body.limitText,
+                                               now=datetime.now(timezone.utc))
+    except conflict_cases.ConflictRefused as exc:
+        _audit("refused", f"{p.subject} could not decide conflict {decision_id}: {exc.code}", code=exc.code)
+        if exc.status == 422:
+            return JSONResponse(status_code=422, content={"problems": [
+                {"field": _CONFLICT_FIELD.get(exc.code, "option"), "code": exc.code, "message": exc.message}]})
+        raise HTTPException(status_code=exc.status, detail=exc.message)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("deciding conflict %s failed", decision_id)
+        _audit("error", f"{p.subject} could not decide conflict {decision_id}: {type(exc).__name__}", code="error")
+        raise HTTPException(status_code=500, detail="The decision could not be recorded. Please try again.")
+    # The decision is committed: a failed audit record must not turn it into an error answer.
+    try:
+        _audit("done", f"{p.subject} decided conflict {decision_id}: {out['decision']}", actionId=out["actionId"],
+               applied=out["applied"])
+    except Exception:  # noqa: BLE001
+        logger.exception("conflict decision %s was saved but its audit record failed", decision_id)
+    return out
 
 
 @router.get("/{key}/firings")

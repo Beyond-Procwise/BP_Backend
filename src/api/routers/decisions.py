@@ -38,7 +38,9 @@ router = APIRouter(prefix="/decisions", tags=["Decisions"])
 
 #: Never served by the generic decision reads: their facts carry an agent tool call's raw
 #: arguments, context and reason. /agent-policies/approvals reads them with per-caller masking.
-HIDDEN_SUBJECT_TYPES = ("agent_policy_approval", "agent_policy_replay")
+#: Policy and live conflict cases (stage 4) quote the action's condition values and the
+#: overlap example: /agent-policies/conflicts and the approval card read them, masked per caller.
+HIDDEN_SUBJECT_TYPES = ("agent_policy_approval", "agent_policy_replay", "policy_conflict", "live_conflict")
 _HIDDEN_CLAUSE = "d.subject_type NOT IN (" + ", ".join(f"'{t}'" for t in HIDDEN_SUBJECT_TYPES) + ")"
 
 

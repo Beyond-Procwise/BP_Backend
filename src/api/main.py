@@ -696,6 +696,11 @@ _AGENT_POLICY_SCREEN_EXEMPT = (
     ("GET", re.compile(r"^/agent-policies/notifications$")),
     ("GET", re.compile(r"^/agent-policies/deciders$")),
     ("GET", re.compile(r"^/agent-policies/[A-Z]{3}-[0-9]{4,}/firings$")),
+    # Stage 4 conflict reads (user ruling Q5, 2026-10-09): a conflict case quotes both policies'
+    # excerpts and documents and the example action's own values; an unroutable owner can be a
+    # Cognito group name. Sensitive inputs are masked by the endpoint itself. Same rules as above.
+    ("GET", re.compile(r"^/agent-policies/conflicts$")),
+    ("GET", re.compile(r"^/agent-policies/conflicts/[0-9]{1,18}$")),
 )
 
 

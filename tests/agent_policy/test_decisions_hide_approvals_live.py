@@ -98,3 +98,47 @@ def test_by_id_answers_404_for_agent_policy_rows(client, seeded):
         assert r.status_code == 404 and SECRET not in r.text
     ok = client.get(f"/decisions/{seeded.control_id}")
     assert ok.status_code == 200 and ok.json()["subject_type"] == "tst_ordinary"
+
+
+# ------------------------------------------------------------------ stage 4: conflict cases
+@pytest.fixture
+def conflict_rows(conn):
+    """A policy conflict case and a live conflict case (raw rows; their facts quote action values)."""
+    key = f"TST-{random.randint(10**7, 10**8 - 1)}|TST-{random.randint(10**7, 10**8 - 1)}"
+    ids = {}
+    with conn.cursor() as cur:
+        for st, decision in (("policy_conflict", "resolve_conflict"), ("live_conflict", "approve_or_reject")):
+            cur.execute("INSERT INTO proc.bp_decision (subject_type, subject_id, decision, resolution, rationale, "
+                        "facts, evidence, status, created_by) VALUES (%s, %s, %s, 'escalated', 'x', %s, %s, "
+                        "'open', 'test') RETURNING decision_id",
+                        (st, key, decision, json.dumps({"action": {"args": {"iban": SECRET}}}),
+                         json.dumps([{"kind": "overlap", "example": {"args.iban": SECRET}}])))
+            ids[st] = cur.fetchone()[0]
+    yield ids
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM proc.bp_decision WHERE decision_id = ANY(%s)", (list(ids.values()),))
+
+
+def test_conflict_subject_types_are_hidden():
+    assert {"policy_conflict", "live_conflict"} <= set(decisions_router.HIDDEN_SUBJECT_TYPES)
+    for t in decisions_router.HIDDEN_SUBJECT_TYPES:
+        assert f"'{t}'" in decisions_router._HIDDEN_CLAUSE
+
+
+@live
+def test_list_and_by_id_never_serve_conflict_cases(client, seeded, conflict_rows):
+    for q in ("", "?subject_type=policy_conflict", "?subject_type=live_conflict", "?limit=500"):
+        r = client.get(f"/decisions{q}")
+        assert r.status_code == 200, r.text
+        assert SECRET not in r.text
+        ids = {row["decision_id"] for row in r.json()["data"]}
+        assert not ids & set(conflict_rows.values())
+    for st in ("policy_conflict", "live_conflict"):
+        assert client.get(f"/decisions?subject_type={st}").json() == {"data": [], "total": 0}
+    for did in conflict_rows.values():
+        r = client.get(f"/decisions/{did}")
+        assert r.status_code == 404 and SECRET not in r.text
+    # an ordinary subject type is still served exactly as before
+    ordinary = client.get("/decisions?subject_type=tst_ordinary").json()
+    assert seeded.control_id in {row["decision_id"] for row in ordinary["data"]}
+    assert client.get(f"/decisions/{seeded.control_id}").status_code == 200

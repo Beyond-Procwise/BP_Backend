@@ -19,7 +19,7 @@ import json
 import re
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
-from services.agent_policy import approvals, conditions, deciders
+from services.agent_policy import approvals, conditions, conflict_payload, deciders
 from services.agent_policy.enforcement import MASK
 from services.agent_policy.replay import mask_text
 
@@ -77,6 +77,24 @@ def _live_sensitive(cur) -> Set[str]:
 
 def _mask_values(values: Dict[str, Any], sensitive: Set[str]) -> Dict[str, Any]:
     return {k: (MASK if k in sensitive else v) for k, v in (values or {}).items()}
+
+
+def mask_witness(example: Dict[str, Any], sensitive: Set[str]) -> Dict[str, Any]:
+    """An overlap example (flat field names, "args.amount") with its sensitive values masked."""
+    return _mask_values(example if isinstance(example, dict) else {}, sensitive)
+
+
+def mask_args(args: Dict[str, Any], sensitive: Set[str]) -> Dict[str, Any]:
+    """Tool arguments (bare names, "amount") with the sensitive ones ("args.amount") masked."""
+    return {k: (MASK if f"args.{k}" in sensitive else v) for k, v in (args if isinstance(args, dict) else {}).items()}
+
+
+def overlap_example(evidence: Any) -> Dict[str, Any]:
+    """The witness a conflict case stores in its evidence column."""
+    for e in _j(evidence, []) or []:
+        if isinstance(e, dict) and e.get("kind") == "overlap" and isinstance(e.get("example"), dict):
+            return dict(e["example"])
+    return {}
 
 
 def _lookup(ctx: Dict[str, Any], path: str) -> Any:
@@ -210,9 +228,64 @@ def outcomes(cur, cases: Iterable[Dict[str, Any]]) -> Dict[str, str]:
             for r in cur.fetchall()}
 
 
+# ---------------------------------------------------------------------------- live conflict block
+LIVE_SUBJECT_TYPE = "live_conflict"   # conflict_cases.SUBJECT_LIVE; not imported (it pulls in more)
+
+
+def _live_id(case: Dict[str, Any]) -> Optional[int]:
+    v = case["facts"].get("liveConflict")
+    return int(v) if isinstance(v, int) and not isinstance(v, bool) else None
+
+
+def live_cases(cur, cases: Iterable[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
+    """{live decision_id: its row} for the member cases among `cases` (facts.liveConflict)."""
+    ids = sorted({i for i in (_live_id(c) for c in cases) if i is not None})
+    if not ids:
+        return {}
+    cur.execute("SELECT decision_id, rationale, facts, evidence, options FROM proc.bp_decision "
+                "WHERE decision_id = ANY(%s) AND subject_type = %s", (ids, LIVE_SUBJECT_TYPE))
+    out = {}
+    for r in _rows(cur):
+        r["facts"] = _j(r.get("facts"), {}) or {}
+        r["options"] = _j(r.get("options"), []) or []
+        out[int(r["decision_id"])] = r
+    return out
+
+
+def live_pairs(lives: Iterable[Dict[str, Any]]) -> List[Tuple[str, int]]:
+    """(policy key, version) of every policy a live case involves: their sensitive inputs mask
+    the block too, so a field one involved policy marks sensitive is never shown."""
+    out = []
+    for lv in lives:
+        for p in (lv.get("facts") or {}).get("policies") or []:
+            v = (p or {}).get("version")
+            if (p or {}).get("id") and str(v or "").isdigit():
+                out.append((str(p["id"]), int(v)))
+    return out
+
+
+def conflict_block(live_id: int, live: Optional[Dict[str, Any]], *, unmasked: bool,
+                   sensitive: Set[str]) -> Dict[str, Any]:
+    """The live conflict summary on a member case's card. The action's condition values and the
+    overlap example are masked like the case's own inputs unless the caller may decide."""
+    live = live or {}
+    facts = live.get("facts") or {}
+    summary = facts.get("summary") or {}
+    action = facts.get("action") or {}
+    args = dict(action.get("args") or {})
+    example = overlap_example(live.get("evidence"))
+    if not unmasked:
+        args, example = mask_args(args, sensitive), mask_witness(example, sensitive)
+    return {"caseId": conflict_payload.case_id(live_id), "why": live.get("rationale") or summary.get("why"),
+            "policies": list(facts.get("policies") or []), "prior": facts.get("priorDecisions"),
+            "options": list(live.get("options") or []), "respondWithin": summary.get("respondWithin"),
+            "actionPlain": action.get("plain"), "args": args, "example": example}
+
+
 def case_view(case: Dict[str, Any], *, unmasked: bool, sensitive: Set[str],
               doc: Optional[Dict[str, Any]], decidable: bool,
-              outcome: Optional[str] = None) -> Dict[str, Any]:
+              outcome: Optional[str] = None, live: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """`live`: the live conflict row this case is a member of (facts.liveConflict), if any."""
     facts = case["facts"]
     pol = facts.get("policy") or {}
     action = facts.get("action") or {}
@@ -239,7 +312,7 @@ def case_view(case: Dict[str, Any], *, unmasked: bool, sensitive: Set[str],
             reason = mask_text(reason, dict(action.get("args") or {}), args)
     levels = case["levels"]
     level = case["current_level"]
-    return {
+    view = {
         "id": int(case["decision_id"]),
         "policyKey": pol.get("id") or case.get("policy_name"),
         "policyVersion": pol.get("version"),
@@ -265,6 +338,10 @@ def case_view(case: Dict[str, Any], *, unmasked: bool, sensitive: Set[str],
         "createdAt": _iso(case.get("created_at")),
         "canDecide": bool(decidable and case["status"] == "open"),
     }
+    live_id = _live_id(case)
+    if live_id is not None:
+        view["conflict"] = conflict_block(live_id, live, unmasked=unmasked, sensitive=sensitive)
+    return view
 
 
 def list_cases(conn, principal, *, is_admin: bool, status: str = "open") -> List[Dict[str, Any]]:
@@ -275,14 +352,15 @@ def list_cases(conn, principal, *, is_admin: bool, status: str = "open") -> List
         else:
             shown = load_cases(cur, status, keep=lambda c: may_read(principal, c, mapping, is_admin=is_admin))
         pairs = [p for p in (_pair(c) for c in shown) if p[1] is not None]
-        sensitive = sensitive_for(cur, pairs)
+        lives = live_cases(cur, shown)
+        sensitive = sensitive_for(cur, pairs + live_pairs(lives.values()))
         docs = _compiled(cur, pairs)
         decided = outcomes(cur, shown)
     out = []
     for c in shown:
         ok = can_decide(principal, c, mapping)
         out.append(case_view(c, unmasked=ok, sensitive=sensitive, doc=docs.get(_pair(c)), decidable=ok,
-                             outcome=decided.get(c["subject_id"])))
+                             outcome=decided.get(c["subject_id"]), live=lives.get(_live_id(c))))
     return out
 
 
@@ -360,13 +438,14 @@ def get_case(conn, decision_id: int, principal, *, is_admin: bool) -> Optional[D
         replay = latest_replay(cur, case)
         pairs = [_pair(case)] if _pair(case)[1] is not None else []
         pairs += [(r["policy_key"], r["policy_version"]) for r in firing_rows]
-        sensitive = sensitive_for(cur, pairs)
+        lives = live_cases(cur, [case])
+        sensitive = sensitive_for(cur, pairs + live_pairs(lives.values()))
         docs = _compiled(cur, pairs[:1])
         decided = outcomes(cur, [case])
         group = approvals.group_state(cur, int(case["decision_id"]), facts)
     ok = can_decide(principal, case, mapping)
     view = case_view(case, unmasked=ok, sensitive=sensitive, doc=docs.get(_pair(case)), decidable=ok,
-                     outcome=decided.get(case["subject_id"]))
+                     outcome=decided.get(case["subject_id"]), live=lives.get(_live_id(case)))
     view["history"] = {"decisions": decisions, "notes": notes,
                        "firings": [_firing_view(r, sensitive, reveal=_ctx(case["facts"]) if ok else None)
                                    for r in firing_rows],
@@ -414,6 +493,8 @@ def _link_ref(link: str) -> Dict[str, Any]:
         return {"decisionId": int(ref)}
     if kind == "agent-policy" and KEY_RE.match(ref):
         return {"policyKey": ref}
+    if kind == "conflict" and ref.isascii() and ref.isdigit():
+        return {"conflictId": int(ref)}
     return {}
 
 
@@ -441,6 +522,7 @@ def my_notifications(conn, principal, limit: int, *, is_admin: bool = False) -> 
         ref = _link_ref(r["link"])
         out.append({"id": int(r["notification_id"]), "recipient": r["recipient"], "message": r["message"],
                     "policyKey": ref.get("policyKey") or r["policy_key"], "decisionId": ref.get("decisionId"),
+                    "conflictId": ref.get("conflictId"),
                     "read": me in (r["read_by"] or []), "createdAt": _iso(r["created_at"])})
     return out
 
