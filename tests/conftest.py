@@ -32,7 +32,7 @@ GOVERNED_LIMIT_SEED = {
         "contract_parent_min_score": 65, "contract_parent_separation": 8},
     "reconciliation_tolerances": {
         "amount_tolerance_pct": 0.01, "amount_tolerance_abs": 1.00,
-        "tax_tolerance_pct": 0.1},
+        "tax_tolerance_pct": 0.1, "uplift_tolerance_pp": 0.25},
     "supplier_identity": {
         "review_low": 82, "review_high": 96, "sweep_min_score": 88,
         "research_name_match": 85, "research_propose_conf": 0.75},
