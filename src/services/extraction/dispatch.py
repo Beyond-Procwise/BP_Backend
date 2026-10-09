@@ -1018,6 +1018,36 @@ def dispatch_document(
             _parser_snapshot["commercial_terms"] = _terms
     except Exception:  # noqa: BLE001 -- terms are additive; never block extraction on them
         log.warning("commercial terms capture failed", exc_info=True)
+    # How the price changes over the term (price_schedule.py), for every quote, PO and invoice:
+    # each line's schedule (Year 1 / 2 / 3 ...), the term and uplift the document states, and the
+    # check of one against the other. line_total stays Year 1; nothing printed is changed.
+    _schedule_lines: list = []
+    if doc_type in ("quote", "purchase_order", "invoice"):
+        try:
+            from src.services.extraction import price_schedule as _ps
+            _sched = _ps.schedules(parsed.full_text)
+            _pterms = _ps.pricing_terms(parsed.full_text)
+            _schedule_lines = _sched["lines"]
+            if _schedule_lines or _pterms.get("uplift_pct") is not None or _pterms.get("indexation"):
+                _parser_snapshot["pricing_terms"] = {
+                    **_pterms, "stated_tcv": _sched["stated_tcv"],
+                    "term_total": round(sum(l["term_total"] for l in _schedule_lines), 2) if _schedule_lines else None,
+                    "periods": max((len(l["periods"]) for l in _schedule_lines), default=0),
+                }
+            if _schedule_lines:
+                from src.services.governed_limits import limit as _limit
+                _tol = _limit("reconciliation_tolerances", "uplift_tolerance_pp")
+                for _f in _ps.escalation_findings(_schedule_lines, _pterms, _tol):
+                    discrepancies.append(Discrepancy(
+                        field_name="price_schedule", issue_type=_f["issue_type"], severity="warning",
+                        blocks_promotion=False,
+                        raw_value=f"{max(x['actual_pct'] for x in _f['lines']):.2f}%",
+                        expected_value=(f"{_f['stated_pct']:g}%" if _f["stated_pct"] is not None else None),
+                        computed_value=f"{_f['extra']:.2f}",
+                        notes=_ps.finding_notes(_f),
+                    ))
+        except Exception:  # noqa: BLE001 -- additive; a schedule never blocks extraction
+            log.warning("price schedule analysis failed", exc_info=True)
     try:
         from src.services.extraction import provenance as _prov
         _parser_snapshot["_field_provenance"] = _prov.snapshot(columns, candidates)
@@ -1070,6 +1100,9 @@ def dispatch_document(
             # volume / volume_unit; quantity and unit stay as printed (line_volume.py).
             from src.services.extraction.line_volume import add_line_volumes
             line_items = add_line_volumes(line_items)
+            if _schedule_lines:
+                from src.services.extraction.price_schedule import attach_schedules
+                line_items = attach_schedules(line_items, _schedule_lines)
         try:
             persistence.write_line_items_raw(
                 doc_type=doc_type, raw_id=raw_id, line_items=line_items,
