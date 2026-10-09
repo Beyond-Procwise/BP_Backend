@@ -828,23 +828,40 @@ def dispatch_document(
                 "quantity", "unit_price", "line_amount", "line_total",
                 "total_amount", "total_amount_incl_tax",
             }
-            from src.services.extraction.two_way_match import is_non_charge_line
-            for li_idx, li in enumerate(line_items):
-                if not any(li.get(k) not in (None, "", 0) for k in numeric_keys):
-                    # Terms/footer furniture legitimately has no numbers —
-                    # warning on it buried the real findings 201-deep.
-                    if is_non_charge_line(li.get("item_description")):
-                        continue
-                    discrepancies.append(Discrepancy(
-                        field_name=f"line_items[{li_idx}]",
-                        issue_type="line_missing_numbers",
-                        severity="warning",
-                        blocks_promotion=False,
-                        notes=(
-                            f"line {li_idx + 1} has no quantity / unit_price / "
-                            f"line_amount — only the description was captured"
-                        ),
-                    ))
+            from src.services.extraction.two_way_match import (
+                is_non_charge_line, missing_number_lines,
+            )
+            # Terms/footer rows after the last priced line legitimately have no
+            # numbers — one warning per heading per version buried the real
+            # findings (87 on one three-supplier deal).
+            gaps, none_priced = missing_number_lines(line_items, numeric_keys)
+            if none_priced:
+                charges = [li for li in line_items
+                           if not is_non_charge_line(li.get("item_description"))]
+                discrepancies.append(Discrepancy(
+                    field_name="line_items",
+                    issue_type="line_missing_numbers" if charges else "missing_line_items",
+                    severity="warning",
+                    blocks_promotion=False,
+                    notes=(
+                        f"none of the {len(charges)} lines has a quantity / unit_price / "
+                        f"line_amount — only the descriptions were captured"
+                        if charges else
+                        "only terms / footer rows were captured as lines — no charge "
+                        "line was extracted from this document"
+                    ),
+                ))
+            for li_idx in gaps:
+                discrepancies.append(Discrepancy(
+                    field_name=f"line_items[{li_idx}]",
+                    issue_type="line_missing_numbers",
+                    severity="warning",
+                    blocks_promotion=False,
+                    notes=(
+                        f"line {li_idx + 1} has no quantity / unit_price / "
+                        f"line_amount — only the description was captured"
+                    ),
+                ))
 
             # A line that HAS quantity/unit_price but NO amount is the dangerous
             # case: the check above passes (some numerics are present) and the
