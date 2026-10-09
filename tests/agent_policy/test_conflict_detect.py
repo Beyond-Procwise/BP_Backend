@@ -113,3 +113,17 @@ def test_helpers():
     assert cd.deciders_differ(a, make("B-1", deciders=("CFO",)))
     assert not cd.deciders_differ(a, make("B-1"))
     assert conditions._leaves is conditions.leaves
+
+
+def test_numeric_against_set_on_the_same_field_returns_none_not_an_error():
+    a = make("A-1", cond={"all": [amount("gt", 500)]})
+    b = make("B-1", outcome="block", cond={"all": [{"field": "args.amount", "op": "in", "value": [100, 200]}]})
+    assert cd.witness(a, b) is None
+
+
+def test_real_witness_found_after_a_sentinel_combination_that_cannot_be_evaluated():
+    a = make("A-1", cond={"any": [{"field": "args.amount", "op": "in", "value": [100]}, amount("gt", 1000)]})
+    b = make("B-1", outcome="block", cond={"all": [amount("gt", 500)]})
+    w = cd.witness(a, b)
+    assert w is not None and w["args.amount"] > 1000
+    both_match(a, b, w)

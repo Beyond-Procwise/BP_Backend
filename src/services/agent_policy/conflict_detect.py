@@ -88,6 +88,9 @@ def _matches(doc, engine_cond, flat) -> bool:
         return bool(pc.evaluate(engine_cond, conditions.nest(flat)))
     except pc.MissingField:
         return False          # a design-time witness never relies on missing data
+    except pc.ConditionError:
+        return False          # a candidate the evaluator cannot compare (e.g. the sentinel vs a number) is no match;
+                              # the conditions themselves were validated up front by to_engine
 
 
 def _candidates(field, leaves, examples, tools):
