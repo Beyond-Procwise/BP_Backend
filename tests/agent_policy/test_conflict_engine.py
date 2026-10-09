@@ -110,3 +110,40 @@ def test_notify_hits_never_take_part():
     blk = hit("B-0001", "block", source="Three.pdf")
     lc = classify(verdict(n, blk))
     assert lc.kind is None
+
+
+def _abc(ra, rb, rc=None, ac_same_source=False):
+    a = hit("A-0001", deciders=("Finance",), source="One.pdf", conflicts=ra)
+    b = hit("A-0002", deciders=("Legal",), source="Two.pdf", conflicts=rb)
+    c = hit("A-0003", deciders=("CFO",), source="One.pdf" if ac_same_source else "Three.pdf", conflicts=rc)
+    return verdict(a, b, c)
+
+
+def test_chain_without_the_closing_rule_goes_to_a_human():
+    v = _abc([rule("A-0002", "A-0001")], [rule("A-0003", "A-0002")])
+    assert classify(v).kind == "human"
+
+
+def test_transitive_chain_with_all_three_rules_is_auto():
+    v = _abc([rule("A-0002", "A-0001"), rule("A-0003", "A-0001")], [rule("A-0003", "A-0002")])
+    lc = classify(v)
+    assert lc.kind == "auto"
+    assert [h["id"] for h in lc.required] == ["A-0001"]
+
+
+def test_chain_with_a_non_conflicting_pair_goes_to_a_human():
+    # A and C share a source, so they do not conflict: C must not be dropped by B's rule
+    v = _abc([rule("A-0002", "A-0001")], [rule("A-0003", "A-0002")], ac_same_source=True)
+    assert classify(v).kind == "human"
+
+
+def test_contradictory_rules_go_to_a_human():
+    a = hit("A-0001", deciders=("Finance",), source="One.pdf", conflicts=[rule("A-0002", "A-0001")])
+    b = hit("A-0002", deciders=("Legal",), source="Two.pdf", conflicts=[rule("A-0001", "A-0002")])
+    assert classify(verdict(a, b)).kind == "human"
+
+
+def test_prevails_naming_a_third_policy_goes_to_a_human():
+    a = hit("A-0001", deciders=("Finance",), source="One.pdf", conflicts=[rule("A-0002", "A-0009")])
+    b = hit("A-0002", deciders=("Legal",), source="Two.pdf")
+    assert classify(verdict(a, b)).kind == "human"

@@ -43,16 +43,35 @@ def classify(verdict) -> LiveConflict:
     if any(h["outcome"] == "block" for h in involved):
         # design ruling: Not allowed still blocks; the case is for the record and a policy fix
         return LiveConflict("block_record", involved, pairs)
-    rules = {}
+    # Collect every standing rule per pair. A rule counts only if it names one of the two
+    # members as the winner; two rules naming different winners leave the pair unresolved.
+    found: Dict[str, List[Dict[str, Any]]] = {}
     for h in involved:
         for r in h["policy"].get("conflicts") or []:
             if isinstance(r, dict) and r.get("with") and r.get("prevails"):
-                rules[pair_key(str(h["id"]), str(r["with"]))] = r
-    if all(pair_key(*p) in rules for p in pairs):
-        losers = {(set(p) - {rules[pair_key(*p)]["prevails"]}).pop() for p in pairs
-                  if rules[pair_key(*p)]["prevails"] in p}
-        required = [h for h in verdict.approvals if str(h["id"]) not in losers]
-        if required and len(losers) == len({k for p in pairs for k in p}) - 1:
-            return LiveConflict("auto", involved, pairs, required, set(),
-                                [rules[pair_key(*p)] for p in pairs])
-    return LiveConflict("human", involved, pairs, list(verdict.approvals), {str(h["id"]) for h in involved})
+                key = pair_key(str(h["id"]), str(r["with"]))
+                if str(r["prevails"]) in key.split("|"):
+                    found.setdefault(key, []).append(r)
+    rules: Dict[str, Dict[str, Any]] = {}
+    for key, rs in found.items():
+        if len({str(r["prevails"]) for r in rs}) == 1:
+            rules[key] = rs[0]
+    human = LiveConflict("human", involved, pairs, list(verdict.approvals), {str(h["id"]) for h in involved})
+    if not all(pair_key(*p) in rules for p in pairs):
+        return human
+    ids = [str(h["id"]) for h in involved]
+    losers = {(set(p) - {str(rules[pair_key(*p)]["prevails"])}).pop() for p in pairs}
+    winners = [k for k in ids if k not in losers]
+    if len(winners) != 1:
+        return human
+    w = winners[0]
+    # the winner must be in a pair with every other involved policy and prevail in each
+    for k in ids:
+        if k != w and (pair_key(w, k) not in {pair_key(*p) for p in pairs}
+                       or str(rules[pair_key(w, k)]["prevails"]) != w):
+            return human
+    required = [h for h in verdict.approvals if str(h["id"]) not in losers]
+    if not required:
+        return human
+    return LiveConflict("auto", involved, pairs, required, set(),
+                        [rules[pair_key(*p)] for p in pairs])
