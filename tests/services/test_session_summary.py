@@ -176,6 +176,7 @@ def test_warnings_name_the_top_three_types_and_count_the_rest():
 def test_a_finding_type_without_a_label_still_reads():
     assert issue_label("brand_new_check") == "brand new check"
     assert issue_label("line_missing_numbers") == "lines with no quantity or price"
+    assert issue_label("reread_not_applied").startswith("documents still holding their earlier read")
 
 
 # ---- other states ---------------------------------------------------------------------
