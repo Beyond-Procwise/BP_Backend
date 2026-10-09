@@ -35,8 +35,12 @@ SUBJECT_POLICY = conflict_cases.SUBJECT_POLICY
 OPTIONS = ["approve", "reject"]            # Task 3 review: live options are exactly these
 NOT_ALLOWED = "system:not_allowed"
 STANDING_RULE = "system:standing_rule"
+PRECEDENT = "system:precedent"
 _AGENT = "agent_policy_conflicts"
-_AUTO = {"block": (NOT_ALLOWED, "this_action"), "standing_rule": (STANDING_RULE, "standing_rule")}
+#: decision -> (actor, scope) for a live case recorded closed; approve/reject only on precedent
+_AUTO = {"block": (NOT_ALLOWED, "this_action"), "standing_rule": (STANDING_RULE, "standing_rule"),
+         "approve": (PRECEDENT, "this_action"), "reject": (PRECEDENT, "this_action")}
+_KIND = {"block": "block", "standing_rule": "standing_rule", "approve": "precedent", "reject": "precedent"}
 
 
 def _j(v: Any, default=None):
@@ -86,18 +90,27 @@ def _prior(cur, key: str) -> Dict[str, Any]:
 
 def insert_live(cur, lc, *, ctx: Dict[str, Any], action: Dict[str, Any], now: datetime,
                 default_response_time: str, status: str, decision: Optional[str] = None,
-                actor: Optional[str] = None, reason: Optional[str] = None) -> int:
+                actor: Optional[str] = None, reason: Optional[str] = None,
+                extra_facts: Optional[Dict[str, Any]] = None,
+                extra_evidence: Optional[List[Dict[str, Any]]] = None) -> int:
     """Record one live conflict on the caller's cursor. Returns its decision_id.
 
     status 'open' -> decision 'approve_or_reject', waiting for its member cases;
-    status 'actioned' -> decision 'block' | 'standing_rule', closed now by the system."""
+    status 'actioned' -> closed now by the system: 'block' | 'standing_rule', or 'approve' |
+    'reject' decided on precedent (actor PRECEDENT only). A closed record carries
+    facts.decidedBy and facts.versionsAtDecision. extra_facts are merged into the facts (an
+    escalated clash's history); extra_evidence follows the overlap entry (cited precedents)."""
     if status not in ("open", "actioned"):
         raise ValueError(f"status must be 'open' or 'actioned', got {status!r}")
     if status == "actioned" and decision not in _AUTO:
-        raise ValueError(f"an actioned live case needs decision 'block' or 'standing_rule', got {decision!r}")
+        raise ValueError("an actioned live case needs decision 'block', 'standing_rule', 'approve' or "
+                         f"'reject', got {decision!r}")
+    if status == "actioned" and decision in ("approve", "reject") and (actor or PRECEDENT) != PRECEDENT:
+        raise ValueError("only precedent records a live case as decided approve or reject")
     docs = sorted((h["policy"] for h in lc.involved), key=lambda d: str(d.get("id")))
     keys = [str(d.get("id")) for d in docs]
     key = conflict_detect.pair_key(*keys)
+    versions = {str(d.get("id")): _version(d) for d in docs}
     args = dict((action or {}).get("args") or {})
     approve_docs = [d for d in docs if (d.get("enforcement") or {}).get("outcome") == "approve"]
     within = (max((_within(d, default_response_time) for d in approve_docs), key=durations.parse)
@@ -116,6 +129,8 @@ def insert_live(cur, lc, *, ctx: Dict[str, Any], action: Dict[str, Any], now: da
     facts = dict(cols["facts"])
     facts["pairs"] = [list(p) for p in lc.pairs]
     facts["requestedBy"] = action.get("userId")
+    facts.update(dict(extra_facts or {}))
+    evidence = list(cols["evidence"]) + [dict(e) for e in extra_evidence or []]
 
     open_ = status == "open"
     if open_:
@@ -125,6 +140,8 @@ def insert_live(cur, lc, *, ctx: Dict[str, Any], action: Dict[str, Any], now: da
         actor = actor or _AUTO[decision][0]
         scope = _AUTO[decision][1]
         respond_by = None
+        facts["decidedBy"] = conflict_cases.decided_by(_KIND[decision], actor)
+        facts["versionsAtDecision"] = dict(versions)
     cur.execute(
         """
         INSERT INTO proc.bp_decision (
@@ -136,7 +153,7 @@ def insert_live(cur, lc, *, ctx: Dict[str, Any], action: Dict[str, Any], now: da
         """,
         (cols["subject_type"], key, decision, "escalated" if open_ else "resolved",
          conflict_payload.why_line(docs), "open" if open_ else "actioned", key,
-         json.dumps(facts, default=str), json.dumps(cols["evidence"], default=str), action.get("workflowId"),
+         json.dumps(facts, default=str), json.dumps(evidence, default=str), action.get("workflowId"),
          action.get("agent"), action.get("userId") or f"agent:{action.get('agent') or 'unknown'}",
          json.dumps(cols["options"]), respond_by, cols["on_timeout"], scope, actor,
          None if open_ else now, None if open_ else reason),
@@ -144,7 +161,6 @@ def insert_live(cur, lc, *, ctx: Dict[str, Any], action: Dict[str, Any], now: da
     decision_id = int(cur.fetchone()[0])
     cur.execute("UPDATE proc.bp_decision SET facts = facts || %s::jsonb WHERE decision_id = %s",
                 (json.dumps({"caseId": conflict_payload.case_id(decision_id)}), decision_id))
-    versions = {str(d.get("id")): _version(d) for d in docs}
     cur.execute(
         "INSERT INTO proc.bp_agent_policy_conflict (decision_id, kind, pair_key, policy_keys, policy_versions, "
         "raised_by, is_open, outcome, decided_by, decided_at, by_person) "
@@ -234,6 +250,12 @@ def settle_for_group(cur, case: Dict[str, Any], state: Dict[str, int], *, refuse
         facts = dict(_j(live["facts"], {}) or {})
         facts["caseId"] = conflict_payload.case_id(live_id)
         facts["memberCases"] = list(member_ids)
+        cur.execute("SELECT policy_versions FROM proc.bp_agent_policy_conflict WHERE decision_id = %s", (live_id,))
+        pv = cur.fetchone()
+        facts["versionsAtDecision"] = dict(_j(pv[0], {}) or {}) if pv else {}
+        # A member group is closed by a person or by the sweep (a timeout); system:group rows are
+        # consequences of another member's decision and _credited skips them.
+        facts["decidedBy"] = conflict_cases.decided_by("person" if by_person else "timeout", actor)
         cur.execute(
             """
             INSERT INTO proc.bp_decision (

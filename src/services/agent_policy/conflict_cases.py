@@ -375,6 +375,17 @@ _PENDING_VERBS = ("change", "limit", "retire")
 _LABELS = {"keep_both": "Keep both: {} takes priority", "change": "Change {}", "limit": "Limit {}",
            "retire": "Retire {}"}
 
+#: What can close a conflict case (facts.decidedBy.kind), set where it happens and never
+#: derived from an actor string (design §3.1).
+DECIDED_BY_KINDS = ("person", "standing_rule", "precedent", "timeout", "block", "retired")
+
+
+def decided_by(kind: str, name: Optional[str]) -> Dict[str, Any]:
+    """facts.decidedBy for the row that closes a conflict case."""
+    if kind not in DECIDED_BY_KINDS:
+        raise ValueError(f"unknown decidedBy kind {kind!r}")
+    return {"kind": kind, "name": name}
+
 
 class ConflictRefused(Exception):
     """A refused decision. `status` is the HTTP status a router should answer with
@@ -537,6 +548,7 @@ def decide_policy(conn, decision_id: int, *, principal, option: str, reason: Opt
                 facts["caseId"] = conflict_payload.case_id(decision_id)
                 facts["limitText"] = limit_text if verb == "limit" else None
                 facts["versionsAtDecision"] = _latest_versions(cur, keys)
+                facts["decidedBy"] = decided_by("person", actor)
                 scope = conflict_payload.scope_of(option)
                 action_id = _record_action(cur, case, decision=option, actor=actor, now=now, reason=reason,
                                            scope=scope, facts=facts)
@@ -566,6 +578,7 @@ def _moot(cur, case: Dict[str, Any], policy_key: str, *, now: datetime) -> None:
     did = int(case["decision_id"])
     facts = dict(case["facts"])
     facts["caseId"] = conflict_payload.case_id(did)
+    facts["decidedBy"] = decided_by("retired", RETIRED_ACTOR)
     _record_action(cur, case, decision=MOOT, actor=RETIRED_ACTOR, now=now, reason=reason,
                    scope="this_action", facts=facts)
     _close_conflict(cur, did, outcome=MOOT, actor=RETIRED_ACTOR, now=now, by_person=False)
