@@ -63,3 +63,25 @@ def test_periods_split_and_since_filters(db):
 def test_unknown_bucket_is_refused_before_it_reaches_sql(db):
     with pytest.raises(ValueError):
         metrics.by_family(db, bucket="week'); DROP TABLE x;--")
+
+
+def _flag(db, uid):
+    with db.cursor() as cur:
+        cur.execute("""UPDATE email_agent.bp_draft_capture
+                          SET judge = judge || '{"review_flag": {"criteria": {"concise": 1}, "at_or_below": 2, "blocks": false}}'::jsonb
+                        WHERE unique_id = %s""", (uid,))
+
+
+def test_judge_flags_are_counted_with_what_people_then_did(db):
+    # The judge flag is advisory until calibrated (ruling 2026-10-09). To learn its false-flag rate we need, per family:
+    # how many drafts it flagged, how many of those were sent, and how many were sent with no edit at all
+    # (a person read the flagged draft and changed nothing: the likeliest false flags).
+    _flag(db, sent(db))                                                        # flagged, sent untouched
+    _flag(db, sent(db, edit=lambda t: t.replace("44.80", "40.00")))            # flagged, edited before sending
+    _flag(db, sent(db, record=False))                                          # flagged, never sent
+    sent(db)                                                                   # not flagged
+    row = _by(metrics.by_family(db), "negotiation_counter")[0]
+    assert row["drafts"] == 4
+    assert row["judge_flagged"] == 3 and row["judge_flag_rate"] == 0.75
+    assert row["judge_flagged_sent"] == 2 and row["judge_flagged_sent_unedited"] == 1
+    assert row["judge_flag_unedited_rate"] == 0.5

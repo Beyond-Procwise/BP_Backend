@@ -235,6 +235,32 @@ def test_without_a_governed_judge_prompt_there_is_no_score():
     assert stages.judge_draft(fake({}), None, RUBRIC, text="x", brief=None, facts={})["status"] == "unavailable"
 
 
+# Ruling 2026-10-09: any single criterion at 2 or lower flags the draft for a person. A flag, never a block,
+# until the judge is calibrated: the live run caught 6 of 13 deliberately bad drafts on the OVERALL score, and a
+# missing deadline scored 1 on its own criterion while the overall stayed at 4.2.
+def test_one_criterion_at_two_or_lower_flags_the_draft_even_when_the_overall_is_high():
+    r = judge({"scores": dict(completeness=5, clarity_of_ask=5, tone_fit=5, concision=2)})
+    assert r["overall"] == 4.25
+    assert r["review_flag"] == {"criteria": {"concision": 2}, "at_or_below": 2, "blocks": False}
+
+
+def test_every_low_criterion_is_named_in_the_flag():
+    r = judge({"scores": dict(completeness=1, clarity_of_ask=2, tone_fit=3, concision=5)})
+    assert r["review_flag"]["criteria"] == {"completeness": 1, "clarity_of_ask": 2}
+
+
+def test_three_everywhere_raises_no_flag():
+    assert judge({"scores": dict(completeness=3, clarity_of_ask=3, tone_fit=3, concision=3)})["review_flag"] is None
+
+
+def test_a_judge_flag_never_makes_a_draft_not_ready():
+    flagged = {"status": "scored", "scores": {"concise": 1}, "overall": 1.0,
+               "review_flag": {"criteria": {"concise": 1}, "at_or_below": 2, "blocks": False}}
+    from src.services.draft_assurance.assure import stage_fields
+    out = stage_fields({"judge": flagged}, {}, {})
+    assert out["ready"] is True and out["judge"]["review_flag"]["criteria"] == {"concise": 1}
+
+
 # --- authority guardrail ---------------------------------------------------------------------
 
 def _engine(limit="10000", currency="GBP", governed=True):
