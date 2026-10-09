@@ -148,7 +148,7 @@ def precedent_reason(n: int, value_range: Any) -> str:
     if pct is None:
         return out + "; no value range applied"
     shown = int(pct) if isinstance(pct, float) and pct.is_integer() else pct
-    return out + f"; within {shown}% of the largest approved value"
+    return out + f"; within {shown}% of the largest earlier value"
 
 
 def mask_value_range(value_range: Any, sensitive: Set[str]) -> Any:

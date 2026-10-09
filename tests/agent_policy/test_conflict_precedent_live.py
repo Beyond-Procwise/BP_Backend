@@ -502,7 +502,7 @@ def test_precedent_applies_only_within_the_governed_value_range(conn, world, mon
         entries = CH.read(cur, pair_key=conflict_detect.pair_key(world.key("A"), world.key("B")),
                           viewer=CH.ANONYMOUS)
     [e] = [x for x in entries if x["caseId"] == f"pc_{lv['decision_id']}"]
-    sentence = "On precedent: decided the same way 5 times; within 20% of the largest approved value"
+    sentence = "On precedent: decided the same way 5 times; within 20% of the largest earlier value"
     assert e["decision"]["reason"] == sentence
     assert e["valueRange"]["pct"] == 20.0 and set(e["valueRange"]["fields"]) == {"args.amount"}
     [row] = [r for r in CH.to_csv(entries).split("\r\n") if r.startswith(f'"pc_{lv["decision_id"]}"')]
@@ -512,5 +512,10 @@ def test_precedent_applies_only_within_the_governed_value_range(conn, world, mon
     assert out["result"] == "paused_for_approval" and [r["amount"] for r in ran] == [1000]
     [lv] = live_of(conn, wf)
     assert (lv["status"], lv["is_open"]) == ("open", True)
-    assert lv["facts"]["precedent"] == {"why": "args.amount 1200 is more than 20% above the largest approved (900)"}
+    assert lv["facts"]["precedent"] == {"why": "args.amount 1200 is more than 20% above the largest earlier value (900)"}
     assert len(members_of(conn, wf)) == 2, "both approvals go to people"
+
+    wf, out = call_for(monkeypatch, world, docs, ran, "1200")   # a number sent as text (review fix)
+    assert out["result"] == "paused_for_approval" and [r["amount"] for r in ran] == [1000]
+    [lv] = live_of(conn, wf)
+    assert lv["facts"]["precedent"] == {"why": "args.amount 1200 is more than 20% above the largest earlier value (900)"}
