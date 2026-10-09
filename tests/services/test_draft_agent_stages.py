@@ -176,7 +176,7 @@ def test_a_repair_that_still_fails_is_not_accepted(monkeypatch):
     _broken_writer(agent, monkeypatch)
     monkeypatch.setattr(agent, "_repair_assured_body", lambda b, f: b.replace("61.25", "62.50"))
     a = _prompt(agent)["assurance"]
-    assert a["repaired"] is False and "did not reduce" in a["repair_rejected"]
+    assert a["repaired"] is False and "adds a new problem" in a["repair_rejected"] and "62.50" in a["repair_rejected"]
 
 
 def test_a_repair_that_removes_the_failure_and_keeps_the_email_is_accepted(monkeypatch):
