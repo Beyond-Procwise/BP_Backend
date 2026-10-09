@@ -67,6 +67,8 @@ GOVERNED_LIMIT_SEED = {
         "materiality_pct_of_total": 0.5, "materiality_floor": 25,
         "materiality_ceiling": 5000, "band_s1": 70, "band_s2": 40,
         "uplift_min_lines": 3, "uplift_same_pct_within": 0.1, "batch_size": 200},
+    # 2026-10-13: how many same-way decisions by people make a precedent (design §3.3, ruling R4)
+    "agent_policy_conflicts": {"precedent_count": 5},
 }
 
 
