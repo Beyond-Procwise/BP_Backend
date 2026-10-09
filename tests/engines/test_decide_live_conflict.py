@@ -210,3 +210,134 @@ def test_no_requester_bars_nobody_and_looks_up_no_member(monkeypatch):
 def test_the_requester_is_required():
     with pytest.raises(TypeError):
         DE.decide_live_conflict(_Cur(), _lc(), ctx={}, now=NOW)   # noqa - the bar needs to know who asked
+
+
+# ---------------------------------------------------------------- the governed value range (Task 12)
+from tests.agent_policy.fixtures import precedent_range  # noqa: E402
+
+AMOUNT = "args.amount"
+
+
+def _ranged(key, version, *, fields=(AMOUNT, "args.urgent"), sensitive=()):
+    cond = {"all": [{"field": "tool.name", "op": "in", "value": ["tst_refund"]}]
+            + [{"field": f, "op": "exists"} for f in fields]}
+    policy = {"id": key, "version": version, "trigger": {"condition": cond},
+              "inputs": [{"field": f, "sensitive": True} for f in sensitive]}
+    return {"id": key, "version": version, "outcome": "approve", "policy": policy}
+
+
+def _rlc(**kw):
+    return _lc(involved=(_ranged("TST-0001", 3, **kw), _ranged("TST-0002", 1)))
+
+
+def _cases(*examples):
+    """Cited cases, newest first, each with the overlap example its live record stored."""
+    return [(20 - i, "approve", f"sub-{i}", AT, ex) for i, ex in enumerate(examples)]
+
+
+def _decide(monkeypatch, cur, amount, *, pct=20, missing=False, lc=None, **ctx):
+    _n(monkeypatch, len(cur.rows))
+    precedent_range(monkeypatch, pct, missing=missing)
+    ctx = {"tool.name": "tst_refund", "args": {"amount": amount, **ctx}}
+    return DE.decide_live_conflict(cur, lc or _rlc(), ctx=ctx, now=NOW, requester=OTHER)
+
+
+def test_within_the_range_is_decided_on_precedent(monkeypatch):
+    cur = _Cur(_cases({AMOUNT: 900}, {AMOUNT: 1000}))
+    d = _decide(monkeypatch, cur, 1200)
+    assert (d.resolution, d.decision) == (DE.RESOLVED, "approve")
+    assert d.facts["valueRange"] == {"pct": 20.0, "fields": {AMOUNT: {"value": 1200, "max": 1000, "limit": 1200.0}}}
+
+
+def test_a_hundredth_of_a_percent_above_the_range_goes_to_people(monkeypatch):
+    cur = _Cur(_cases({AMOUNT: 900}, {AMOUNT: 1000}))
+    d = _decide(monkeypatch, cur, 1200.1)
+    assert (d.resolution, d.decision) == (DE.ESCALATED, "escalate")
+    assert d.rationale == "args.amount 1200.1 is more than 20% above the largest approved (1000)"
+
+
+def test_the_lookup_returns_each_cited_cases_stored_example():
+    sql = " ".join(DE.PRECEDENT_SQL.split())
+    assert "e->>'kind' = 'overlap'" in sql and "e->'example'" in sql
+    assert "JOIN proc.bp_decision d ON d.decision_id = c.decision_id" in sql
+
+
+@pytest.mark.parametrize("amount,resolution", [(1000, DE.RESOLVED), (1000.01, DE.ESCALATED)])
+def test_zero_percent_is_never_above_the_largest_approved(monkeypatch, amount, resolution):
+    d = _decide(monkeypatch, _Cur(_cases({AMOUNT: 1000}, {AMOUNT: 400})), amount, pct=0)
+    assert d.resolution == resolution
+    if resolution == DE.ESCALATED:
+        assert d.rationale == "args.amount 1000.01 is more than 0% above the largest approved (1000)"
+
+
+def test_null_means_no_range_check(monkeypatch):
+    d = _decide(monkeypatch, _Cur(_cases({AMOUNT: 10}, {AMOUNT: 10})), 1_000_000, pct=None)
+    assert (d.resolution, d.facts["valueRange"]) == (DE.RESOLVED, {"pct": None, "fields": {}})
+
+
+@pytest.mark.parametrize("pct,exc", [(None, "LimitUnavailable"), ("twenty", "ValueError"), (-5, "ValueError")])
+def test_a_missing_or_unreadable_range_goes_to_people(monkeypatch, caplog, pct, exc):
+    with caplog.at_level("WARNING", logger=DE.__name__):
+        d = _decide(monkeypatch, _Cur(_cases({AMOUNT: 900}, {AMOUNT: 900})), 900, pct=pct, missing=pct is None)
+    assert (d.resolution, d.rationale) == (DE.ESCALATED, "precedent value range unavailable")
+    assert f"precedent value range unavailable, the clash TST-0001|TST-0002 goes to people: {exc}" in caplog.text
+
+
+def test_a_cited_case_without_the_field_goes_to_people(monkeypatch):
+    d = _decide(monkeypatch, _Cur(_cases({AMOUNT: 900}, {"args.other": 1})), 900)
+    assert (d.resolution, d.rationale) == (DE.ESCALATED, "args.amount has no number in an earlier case")
+
+
+@pytest.mark.parametrize("bad", ["900", True, None])
+def test_a_cited_value_that_is_not_a_number_goes_to_people(monkeypatch, bad):
+    d = _decide(monkeypatch, _Cur(_cases({AMOUNT: 900}, {AMOUNT: bad})), 900)
+    assert (d.resolution, d.rationale) == (DE.ESCALATED, "args.amount has no number in an earlier case")
+
+
+def test_a_cited_case_with_no_stored_example_goes_to_people(monkeypatch):
+    d = _decide(monkeypatch, _Cur(_cases({AMOUNT: 900}, None)), 900)
+    assert (d.resolution, d.rationale) == (DE.ESCALATED, "args.amount has no number in an earlier case")
+
+
+def test_a_clash_with_no_numeric_condition_value_passes(monkeypatch):
+    cur = _Cur(_cases({"tool.name": "tst_refund"}, {"tool.name": "tst_refund"}))
+    d = _decide(monkeypatch, cur, "nine hundred")
+    assert (d.resolution, d.facts["valueRange"]) == (DE.RESOLVED, {"pct": 20.0, "fields": {}})
+
+
+def test_a_boolean_is_not_a_number(monkeypatch):
+    """args.urgent True is 1 to Python, but never compared: only args.amount is."""
+    cur = _Cur(_cases({AMOUNT: 900, "args.urgent": False}, {AMOUNT: 900, "args.urgent": False}))
+    d = _decide(monkeypatch, cur, 900, urgent=True)
+    assert d.resolution == DE.RESOLVED and list(d.facts["valueRange"]["fields"]) == [AMOUNT]
+
+
+def test_the_first_failing_field_in_sorted_order_is_named(monkeypatch):
+    lc = _lc(involved=(_ranged("TST-0001", 3, fields=("args.zeta", AMOUNT)), _ranged("TST-0002", 1)))
+    cur = _Cur(_cases({AMOUNT: 1, "args.zeta": 1}))
+    d = _decide(monkeypatch, cur, 5, lc=lc, zeta=5)
+    assert d.rationale == "args.amount 5 is more than 20% above the largest approved (1)"
+
+
+def test_a_sensitive_value_is_masked_in_the_rationale_and_the_facts(monkeypatch):
+    lc = _rlc(sensitive=(AMOUNT,))
+    d = _decide(monkeypatch, _Cur(_cases({AMOUNT: 900})), 5000, lc=lc)
+    assert d.rationale == "args.amount ••• is more than 20% above the largest approved (•••)"
+    assert "5000" not in d.rationale and "900" not in d.rationale
+    ok = _decide(monkeypatch, _Cur(_cases({AMOUNT: 900})), 1000, lc=lc)
+    assert ok.facts["valueRange"]["fields"] == {AMOUNT: {"value": "•••", "max": "•••", "limit": "•••"}}
+
+
+def test_the_range_is_checked_only_after_n_of_n_agree(monkeypatch):
+    cur = _Cur([(11, "approve", "sub-b", AT, {AMOUNT: 1}), (10, "reject", "sub-a", AT, {AMOUNT: 1})])
+    assert _decide(monkeypatch, cur, 5000).rationale == "decisions disagree"
+
+
+def test_the_real_range_is_the_governed_fresh_value(monkeypatch):
+    precedent_range(monkeypatch, 12.5)
+    assert DE._precedent_value_range_pct() == 12.5
+    precedent_range(monkeypatch, None)
+    assert DE._precedent_value_range_pct() is None
+    precedent_range(monkeypatch, None, missing=True)
+    with pytest.raises(GL.LimitUnavailable):
+        DE._precedent_value_range_pct()

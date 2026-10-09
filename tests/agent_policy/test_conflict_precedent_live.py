@@ -15,7 +15,7 @@ from services.agent_policy import conflict_live as CL
 from services.agent_policy import gate as G
 from services.agent_policy import replay as R
 from tests.agent_policy import test_conflict_live_gate as LG
-from tests.agent_policy.fixtures import precedent_n
+from tests.agent_policy.fixtures import precedent_n, precedent_range
 from tests.agent_policy.test_conflict_live_gate import conn, ran, world  # noqa: F401 - fixtures
 
 pytestmark = pytest.mark.skipif(os.getenv("PROCWISE_TEST_LIVE_DB") != "1", reason="live DB required")
@@ -467,3 +467,39 @@ def test_a_failed_history_read_never_refuses_the_call(conn, world, monkeypatch, 
     assert lv["facts"]["precedent"] == {"why": "only 0 of 3 decisions by people on this exact clash"}
     assert len(members_of(conn, wf)) == 2
     assert "UndefinedColumn" in caplog.text and "no_such_column_tst" not in caplog.text
+
+
+# ---------------------------------------------------------------- the governed value range (Task 12)
+def call_for(monkeypatch, w, docs, ran, amount):
+    """One scripted agent call for `amount`, in its own workflow."""
+    wf = f"{w.wf}-{len(w.wfs)}"
+    w.wfs.append(wf)
+    LG.use(monkeypatch, docs, w, ran)
+    res, _ = LG.run(monkeypatch, LG.stub_tools(w, ran),
+                    [LG._round(w.tool, {**LG.ARGS, "amount": amount}), LG.FINAL], workflow_id=wf)
+    return wf, res.calls[0].result
+
+
+def test_precedent_applies_only_within_the_governed_value_range(conn, world, monkeypatch, ran):
+    """Five clashes people approved at 900: 1000 (11% above) runs on precedent, 1200 (33% above)
+    goes to people. The tool runs only for 1000."""
+    precedent_n(monkeypatch, 5)
+    precedent_range(monkeypatch, 20)
+    docs = _pair(world)
+    for _ in range(5):
+        decided(conn, monkeypatch, world, docs, ran)
+    assert ran == []
+
+    wf, out = call_for(monkeypatch, world, docs, ran, 1000)
+    assert out == {"refunded": 1000} and [r["amount"] for r in ran] == [1000]
+    [lv] = live_of(conn, wf)
+    assert (lv["decision"], lv["actioned_by"]) == ("approve", "system:precedent")
+    assert lv["facts"]["valueRange"] == {"pct": 20.0, "fields": {
+        "args.amount": {"value": 1000, "max": 900, "limit": 1080.0}}}
+
+    wf, out = call_for(monkeypatch, world, docs, ran, 1200)
+    assert out["result"] == "paused_for_approval" and [r["amount"] for r in ran] == [1000]
+    [lv] = live_of(conn, wf)
+    assert (lv["status"], lv["is_open"]) == ("open", True)
+    assert lv["facts"]["precedent"] == {"why": "args.amount 1200 is more than 20% above the largest approved (900)"}
+    assert len(members_of(conn, wf)) == 2, "both approvals go to people"

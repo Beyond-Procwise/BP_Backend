@@ -1961,9 +1961,16 @@ PRECEDENT_SOURCE = "proc.bp_agent_policy_conflict"
 #: The last N settled live cases of this exact clash: the same pair key, the same version of every
 #: involved policy, decided by a person. Precedent and every other automatic decision has
 #: by_person false, so the engine can never reinforce itself.
+#: Each row also carries the cited case's stored overlap example (the condition values of the
+#: action people decided, written by conflict_live.insert_live), for the value range check.
 PRECEDENT_SQL = """
-    SELECT c.decision_id, c.outcome, c.decided_by, c.decided_at
+    SELECT c.decision_id, c.outcome, c.decided_by, c.decided_at,
+           (SELECT e->'example'
+              FROM jsonb_array_elements(CASE WHEN jsonb_typeof(d.evidence) = 'array' THEN d.evidence
+                                             ELSE '[]'::jsonb END) AS e
+             WHERE e->>'kind' = 'overlap' LIMIT 1) AS example
       FROM proc.bp_agent_policy_conflict c
+      LEFT JOIN proc.bp_decision d ON d.decision_id = c.decision_id
      WHERE c.kind = 'live' AND c.pair_key = %s AND NOT c.is_open AND c.by_person
        AND c.policy_versions = %s::jsonb
      ORDER BY c.decided_at DESC, c.decision_id DESC
@@ -1996,6 +2003,59 @@ def _precedent_count() -> Optional[int]:
     return agent_policy_settings.precedent_count()
 
 
+def _precedent_value_range_pct() -> Optional[float]:
+    """The governed precedent value range in percent, read fresh. A seam; raises when it cannot
+    be read; None is a stated null (no range check)."""
+    from services.agent_policy import settings as agent_policy_settings
+
+    return agent_policy_settings.precedent_value_range_pct()
+
+
+RANGE_UNAVAILABLE = "precedent value range unavailable"
+
+
+def _is_number(value: Any) -> bool:
+    """An int or float, never a bool (True is 1 to Python, but not a number a person approved)."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _render(value: Any) -> str:
+    return str(int(value)) if isinstance(value, float) and value.is_integer() else str(value)
+
+
+def _value_range(lc: Any, ctx: Dict[str, Any], rows: List[Any], pct: Optional[float]) -> tuple:
+    """(why, facts): why is None when every numeric condition value of this action is within
+    `pct` percent above the largest value people approved for that field in the cited cases;
+    otherwise the reason it goes to people. No lower bound. A cited case that lacks a number for
+    the field is doubt. A sensitive field's values are masked in both why and facts."""
+    from services.agent_policy import conflict_live, conflict_payload, enforcement
+
+    if pct is None:
+        return None, {"pct": None, "fields": {}}
+    docs = [h["policy"] for h in lc.involved]
+    current = conflict_payload.condition_values(docs, conflict_live._flat(ctx))
+    sensitive = set().union(*[enforcement._sensitive(d) for d in docs])
+    factor = 1 + Decimal(str(pct)) / 100
+    fields: Dict[str, Any] = {}
+    for name in sorted(k for k, v in current.items() if _is_number(v)):
+        value = current[name]
+        cited = [(r[4] if isinstance(r[4], dict) else {}).get(name) for r in rows]
+        if not all(_is_number(v) and Decimal(str(v)).is_finite() for v in cited):
+            return f"{name} has no number in an earlier case", None
+        top = max(cited, key=lambda v: Decimal(str(v)))
+        limit = Decimal(str(top)) * factor
+        shown = (lambda v: enforcement.MASK) if name in sensitive else _render
+        try:
+            within = Decimal(str(value)) <= limit
+        except InvalidOperation:      # NaN: never shown to be within
+            within = False
+        if not within:
+            return f"{name} {shown(value)} is more than {_render(pct)}% above the largest approved ({shown(top)})", None
+        fields[name] = ({"value": enforcement.MASK, "max": enforcement.MASK, "limit": enforcement.MASK}
+                        if name in sensitive else {"value": value, "max": top, "limit": float(limit)})
+    return None, {"pct": pct, "fields": fields}
+
+
 def _as_iso(value: Any) -> Any:
     return value.isoformat() if hasattr(value, "isoformat") else value
 
@@ -2013,8 +2073,10 @@ def decide_live_conflict(cur, lc: Any, *, ctx: Dict[str, Any], now: Any, request
     Facts first (rule 1): the governed precedent count and this clash's settled cases, looked up
     here. Escalate rather than guess (rule 2): resolved only when the last N cases of this exact
     clash (same policies, same versions) were all decided the same way by people, and every
-    approval the action needs is part of the clash. The action's values (ctx) play no part:
-    precedent is about the clash, not the amount.
+    approval the action needs is part of the clash. The action's values (ctx) count only in the
+    governed value range (Task 12): each numeric condition value must be at most
+    precedent_value_range_pct percent above the largest value people approved for it in the
+    cited cases, or the clash goes to people.
 
     The self-approval bar binds here too (stage 3): when `requester` (who asked for this action)
     is the same person (approvals._same_person) as the credited decider of any cited case, or as
@@ -2083,10 +2145,19 @@ def decide_live_conflict(cur, lc: Any, *, ctx: Dict[str, Any], now: Any, request
         asker = SimpleNamespace(subject=str(requester), email=None)
         if any(approvals._same_person(asker, who) for who in [r[2] for r in rows] + members):
             return escalate(SAME_PERSON, precedentCount=n, citedCases=cited)
+    try:
+        pct = _precedent_value_range_pct()
+    except (LimitUnavailable, TypeError, ValueError) as exc:
+        logger.warning("%s, the clash %s goes to people: %s", RANGE_UNAVAILABLE, key, type(exc).__name__)
+        return escalate(RANGE_UNAVAILABLE, precedentCount=n, citedCases=cited)
+    out_of_range, value_range = _value_range(lc, ctx, rows, pct)
+    if out_of_range:
+        return escalate(out_of_range, precedentCount=n, citedCases=cited)
     evidence = [Evidence(fact="precedent",
                          value={"decision_id": int(r[0]), "outcome": r[1], "actioned_by": r[2],
                                 "actioned_at": _as_iso(r[3])},
                          source=PRECEDENT_SOURCE, reference=case_id(int(r[0]))) for r in rows]
     return Decision(subject_type=LIVE_CONFLICT_SUBJECT, subject_id=key, decision=outcome, resolution=RESOLVED,
                     rationale=f"Decided the same way ({outcome}) {n} times before by people: {', '.join(cited)}.",
-                    facts={**base, "precedentCount": n, "citedCases": cited}, evidence=evidence)
+                    facts={**base, "precedentCount": n, "citedCases": cited, "valueRange": value_range},
+                    evidence=evidence)

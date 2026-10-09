@@ -58,7 +58,8 @@ def test_the_row_exists_with_the_copied_value(db):
             assert (name, ptype, created_by) == ("AgentPolicyConflictPolicy", "limit", "agent_policy_conflicts")
             assert details["policy_identifier"] == SLUG
             assert "applies_to" not in details, "configuration read by name, never an authority statement"
-            assert details["rules"] == {"precedent_count": _setting(cur)}
+            # 2026-10-14 adds precedent_value_range_pct to the same row
+            assert details["rules"]["precedent_count"] == _setting(cur)
     finally:
         conn.close()
 

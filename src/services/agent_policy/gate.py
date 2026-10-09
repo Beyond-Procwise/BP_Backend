@@ -389,7 +389,8 @@ def _record_precedent(conn, lc, verdict, matched, decision, *, action, ctx, tool
         live_id = conflict_live.insert_live(cur, lc, ctx=ctx, action=action, now=now,
                                             default_response_time=_default_response_time(), status="actioned",
                                             decision=decision.decision, actor=conflict_live.PRECEDENT,
-                                            reason=decision.rationale, extra_evidence=cited)
+                                            reason=decision.rationale, extra_evidence=cited,
+                                            extra_facts=_range_facts(decision))
         case = conflict_payload.case_id(live_id)
         firing_of = record_matches(cur, matched, verdict.notifies, result="allowed" if approve else "blocked",
                                    tool_name=tool_name, agent=agent, workflow_id=workflow_id, user_id=user_id,
@@ -399,6 +400,12 @@ def _record_precedent(conn, lc, verdict, matched, decision, *, action, ctx, tool
         fids = [firing_of[id(h)] for h in matched]
         _notify_precedent(cur, lc, firing_of, decision, case, tool_name)
     return live_id, fids
+
+
+def _range_facts(decision) -> Dict[str, Any]:
+    """The value range the engine checked (sensitive values already masked), kept on the record."""
+    value_range = (decision.facts or {}).get("valueRange")
+    return {"valueRange": value_range} if value_range is not None else {}
 
 
 def _precedent_answer(decision, live_id: int, firing_ids: List[int]) -> GateResult:
