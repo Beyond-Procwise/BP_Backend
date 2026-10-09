@@ -37,26 +37,29 @@ def to_engine(cond: Any) -> Dict[str, Any]:
     return out
 
 
-def _leaves(cond: Any) -> List[Dict[str, Any]]:
+def leaves(cond: Any) -> List[Dict[str, Any]]:
     if not isinstance(cond, dict):
         return []
     for key in ("all", "any"):
         if key in cond:
             if not isinstance(cond[key], list):
                 return []
-            return [leaf for c in cond[key] for leaf in _leaves(c)]
+            return [leaf for c in cond[key] for leaf in leaves(c)]
     if "not" in cond:
-        return _leaves(cond["not"])
+        return leaves(cond["not"])
     return [cond]
 
 
+_leaves = leaves  # kept so existing callers do not break
+
+
 def condition_fields(cond: Any) -> Set[str]:
-    return {leaf["field"] for leaf in _leaves(cond) if leaf.get("field")}
+    return {leaf["field"] for leaf in leaves(cond) if leaf.get("field")}
 
 
 def tool_names(cond: Any) -> Set[str]:
     out: Set[str] = set()
-    for leaf in _leaves(cond):
+    for leaf in leaves(cond):
         if leaf.get("field") != "tool.name":
             continue
         value = leaf.get("value")
