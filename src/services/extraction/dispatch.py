@@ -1065,6 +1065,11 @@ def dispatch_document(
         if doc_type == "contract":
             from src.services.extraction.contract_terms import classify_contract_lines
             line_items = classify_contract_lines(line_items)
+        elif doc_type in ("quote", "purchase_order", "invoice"):
+            # The volume a line is for ("2,400 users"), read from its description into
+            # volume / volume_unit; quantity and unit stay as printed (line_volume.py).
+            from src.services.extraction.line_volume import add_line_volumes
+            line_items = add_line_volumes(line_items)
         try:
             persistence.write_line_items_raw(
                 doc_type=doc_type, raw_id=raw_id, line_items=line_items,
