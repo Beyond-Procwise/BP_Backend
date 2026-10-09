@@ -77,10 +77,17 @@ def test_a_name_stored_with_its_bidder_count_is_shown_without_it():
 
 # ---- every number in the text is a fact -------------------------------------------
 
+_MONEY = re.compile(r"£[\d,]+\.\d{2}")
+
+
 def _numbers_in(text, facts):
     for p in facts["proposals"]:
         text = text.replace(p["name"], "")
-    return [int(n) for n in re.findall(r"\d+", text)]
+    return [int(n) for n in re.findall(r"\d+", _MONEY.sub("", text))]
+
+
+def _money_in(text):
+    return [float(m[1:].replace(",", "")) for m in _MONEY.findall(text)]
 
 
 def _fact_numbers(facts):
@@ -94,6 +101,7 @@ def _fact_numbers(facts):
     allowed.add(sum(x["count"] for x in f if x["severity"] == "critical"))
     allowed.add(sum(x["count"] for x in f if x["severity"] == "warning"))
     allowed |= {sum(x["count"] for x in f[3:]), len(f[3:])}
+    allowed |= set((facts.get("value_at_risk") or {}).get("unvalued", {}).values())
     return allowed
 
 
@@ -202,3 +210,60 @@ def test_no_proposals_prompts_nothing_confusing():
     lead, _, conclusion = _sections(compose_session_summary(_facts(proposals=[])))
     assert lead.startswith("No deal could be proposed")
     assert "confirm" not in conclusion.lower()
+
+
+# ---- value at risk ------------------------------------------------------------------------
+
+def _money_facts():
+    return _facts(
+        proposals=[],
+        # critical first, then by count: the order _session_facts returns
+        findings=[_finding("invoices_exceed_po_total", "critical", 1, 1),
+                  _finding("line_amount_over_po", "critical", 1, 1),
+                  _finding("line_missing_numbers", "warning", 4, 1),
+                  _finding("uplift_above_stated", "warning", 3, 3),
+                  _finding("duplicate_invoice", "warning", 2, 2)],
+        value_at_risk={"billed_gbp": {"invoices_exceed_po_total": 20000.0,
+                                      "duplicate_invoice": 1003.81},
+                       "uplift_up_to_gbp": 52938.6,
+                       "unvalued": {"duplicate_invoice": 1}})
+
+
+def test_value_at_risk_is_stated_once_per_type_and_totals_to_the_facts():
+    facts = _money_facts()
+    lead, outcomes, _ = _sections(compose_session_summary(facts))
+    assert "Value at risk: £21,003.81." in lead
+    assert "adds up to £52,938.60 over the term" in lead
+    assert ("• Invoices above the purchase order total: 1 critical finding across 1 document; "
+            "£20,000.00 at risk") in outcomes
+    # the line superseded under its PO carries no money of its own
+    assert "• Lines billed above the purchase order: 1 critical finding across 1 document\n" in outcomes
+    # uplift and duplicate_invoice fall outside the top 3: the duplicate's money goes on the
+    # Other row (the uplift figure is a bid's, stated in the lead, never added to it)
+    assert "• Other findings: 5 more findings of 2 other types; £1,003.81 at risk" in outcomes
+
+
+def test_every_money_figure_in_the_text_is_a_fact():
+    facts = _money_facts()
+    text = compose_session_summary(facts)
+    v = facts["value_at_risk"]
+    allowed = set(v["billed_gbp"].values()) | {v["uplift_up_to_gbp"],
+                                                round(sum(v["billed_gbp"].values()), 2)}
+    assert _money_in(text) and all(m in allowed for m in _money_in(text)), _money_in(text)
+    assert [n for n in _numbers_in(text, facts) if n not in _fact_numbers(facts)] == []
+
+
+def test_the_uplift_figure_names_its_bullet_when_shown():
+    facts = _facts(proposals=[_proposal()],
+                   findings=[_finding("uplift_above_stated", "warning", 3, 3)],
+                   value_at_risk={"billed_gbp": {}, "uplift_up_to_gbp": 48327.8,
+                                  "unvalued": {"uplift_above_stated": 1}})
+    lead, outcomes, conclusion = _sections(compose_session_summary(facts))
+    assert "Value at risk" not in lead            # nothing billed: no billed total
+    assert ("• Price rises above the stated uplift: 3 warnings across 3 documents; "
+            "up to £48,327.80 over the term, 1 not valued") in outcomes
+    assert conclusion.startswith("Conclusion:\nConfirm the deal")
+
+
+def test_no_money_findings_say_nothing_about_money():
+    assert "£" not in compose_session_summary(_facts())

@@ -253,6 +253,26 @@ def test_line_findings_under_an_overbilled_po_are_superseded():
     assert len(out) == 3                      # the drawer explains, never omits
 
 
+def test_an_extraction_over_po_finding_under_an_overbilled_po_is_the_same_money():
+    # Live 2026-10-09: PO-2024-0145 £20,000 over its total, because invoice ORB-INV-9920
+    # billed one line £20,000 above the PO. Summed, they read £40,000.
+    po = _disc_finding(7302, 20000, status="open", issue_type="invoices_exceed_po_total",
+                       doc="PO-2024-0145")
+    po["po_id"] = "PO-2024-0145"
+    line = _disc_finding(80, 20000, status="open", issue_type="line_amount_over_po",
+                         doc="ORB-INV-9920")
+    line["po_id"] = "PO-2024-0145"
+    inv = _disc_finding(81, 500, status="open", issue_type="amount_over_po", doc="ORB-INV-9921")
+    inv["po_id"] = "PO-2024-0145"
+    elsewhere = _disc_finding(82, 900, status="open", issue_type="line_amount_over_po", doc="X-1")
+    elsewhere["po_id"] = "PO-OTHER"
+    vss.supersede_lines_under_overbilled_po([po, line, inv, elsewhere])
+    assert line["superseded_by"] == "disc:7302"
+    assert inv["superseded_by"] == "disc:7302"
+    assert elsewhere["superseded_by"] is None and po["superseded_by"] is None
+    assert vss.summarise([po, line, inv, elsewhere])["verified_found_gbp"] == 20900.0
+
+
 # --------------------------------------------------------------------------
 # R6: a PO-level finding is superseded by a live duplicate-invoice finding on an
 # invoice against that PO -- the duplicate is the stronger, whole-invoice explanation

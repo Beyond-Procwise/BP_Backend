@@ -374,14 +374,24 @@ def supersede_po_level_by_duplicate(findings: list[dict]) -> list[dict]:
     return findings
 
 
+# Findings on an invoice that bill above its purchase order: the triage line types and
+# the extraction-time over-PO checks. Under a live PO-level finding they are its money.
+_UNDER_PO_TYPES = tuple(t for t in TRIAGE_VALUE_TYPES if t not in _PO_LEVEL_TYPES) + (
+    "line_amount_over_po", "amount_over_po")
+
+
 def supersede_lines_under_overbilled_po(findings: list[dict]) -> list[dict]:
     """A PO whose invoices exceed its total already counts the overbilled money once; the
-    line findings on invoices against that PO are the same money, seen line by line."""
+    line findings on invoices against that PO are the same money, seen line by line.
+
+    That includes the extraction-time over-PO findings, not only the triage line types:
+    live (2026-10-09) PO-2024-0145 was £20,000 over its total because one invoice line
+    was billed £20,000 above the PO, and the two findings were summed to £40,000."""
     po_level = {f["po_id"]: f["id"] for f in findings
                 if f.get("issue_type") in _PO_LEVEL_TYPES and f.get("po_id")
                 and f.get("superseded_by") is None}
     for f in findings:
-        if (f.get("issue_type") in TRIAGE_VALUE_TYPES and f.get("issue_type") not in _PO_LEVEL_TYPES
+        if (f.get("issue_type") in _UNDER_PO_TYPES
                 and f.get("po_id") in po_level and f.get("superseded_by") is None):
             f["superseded_by"] = po_level[f["po_id"]]
     return findings
