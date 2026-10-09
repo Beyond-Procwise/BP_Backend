@@ -681,55 +681,15 @@ def open_cases_by_policy(cur) -> Dict[str, List[str]]:
     return out
 
 
-def _action_dict(row) -> Dict[str, Any]:
-    decision_id, decision, scope, by, at, reason = row
-    return {"decision_id": decision_id, "decision": decision, "decision_scope": scope, "actioned_by": by,
-            "actioned_at": _iso(at), "override_reason": reason}
+def history_for(cur, policy_key: str, latest_version: int, status: str, *, viewer=None) -> Dict[str, Any]:
+    """A policy's conflicts through the one history reader, newest first, each also naming the
+    other policies, and the change, limit or retire decision still waiting for the owner, if any.
+    `viewer` (conflict_history.Viewer) decides what is masked; none reads as a stranger."""
+    from services.agent_policy import conflict_history   # lazily: it reads approval_views
 
-
-def history_for(cur, policy_key: str, latest_version: int, status: str) -> Dict[str, Any]:
-    """A policy's conflicts (newest first, each with its returned decision) and the change, limit or
-    retire decision still waiting for the owner, if any.
-
-    The returned decision is the latest action row a person or the system wrote (actioned_by set):
-    a settled live case's own row is 'actioned' too but has no actor or time, and is never it.
-    A live entry's reason is always None (no caller context here to unmask it for a decider)."""
-    cur.execute(
-        "SELECT decision_id, kind, is_open, policy_keys, created_at, outcome, decided_by, decided_at "
-        "FROM proc.bp_agent_policy_conflict WHERE policy_keys @> ARRAY[%s]::text[] "
-        "ORDER BY created_at DESC, decision_id DESC",
-        (policy_key,),
-    )
-    rows = cur.fetchall()
-    ids = [conflict_payload.case_id(r[0]) for r in rows]
-    actions: Dict[str, Dict[str, Any]] = {}
-    if ids:
-        cur.execute(
-            "SELECT facts->>'caseId', decision, decision_scope, actioned_by, actioned_at, override_reason "
-            "FROM proc.bp_decision WHERE subject_type IN (%s, %s) AND status = 'actioned' "
-            "AND actioned_by IS NOT NULL AND facts->>'caseId' = ANY(%s) ORDER BY actioned_at, decision_id",
-            (SUBJECT_POLICY, SUBJECT_LIVE, ids),
-        )
-        for cid, *rest in cur.fetchall():
-            actions[cid] = _action_dict((conflict_payload.parse_case_id(cid), *rest))   # the latest wins
-    conflicts = []
-    for (did, kind, is_open, keys, created, outcome, by, at), cid in zip(rows, ids):
-        decision = None
-        if cid in actions:
-            decision = conflict_payload.returned_decision(actions[cid])
-        elif not is_open and outcome is not None:
-            # closed without an action row of ours (a live case settled elsewhere): what the index says
-            decision = conflict_payload.returned_decision(
-                {"decision_id": did, "decision": outcome, "decision_scope": None, "actioned_by": by,
-                 "actioned_at": _iso(at), "override_reason": None})
-        if decision is not None and kind == "live":
-            # A live decider's free text can quote the action's (sensitive) values, and this read
-            # has no caller to tell a decider from anyone else: the reason is not shown here (the
-            # member approval cases, which mask per caller, are where it is read).
-            decision["reason"] = None
-        conflicts.append({"caseId": cid, "kind": kind, "isOpen": bool(is_open),
-                          "otherPolicies": [k for k in keys or [] if k != policy_key],
-                          "raisedAt": _iso(created), "decision": decision})
+    entries = conflict_history.read(cur, policy_key=policy_key, viewer=viewer or conflict_history.ANONYMOUS)
+    conflicts = [{**e, "otherPolicies": [p["id"] for p in e["policies"] if p["id"] != policy_key]}
+                 for e in entries]
     return {"conflicts": conflicts, "pendingAction": _pending(cur, policy_key, latest_version, status)}
 
 

@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from services.agent_policy import approval_views as AV
 from services.agent_policy import conflict_cases as CC
+from services.agent_policy import conflict_history as CH
 from services.agent_policy import conflict_payload as CP
 from services.agent_policy import deciders
 
@@ -101,6 +102,7 @@ def view(case: Dict[str, Any], *, unmasked: bool, decidable: bool, sensitive, he
     return {
         "caseId": CP.case_id(case["decision_id"]),
         "decisionId": int(case["decision_id"]),
+        "pairKey": case.get("subject_id"),
         "status": case["status"],
         "raisedAt": AV._iso(case.get("created_at")),
         "raisedBy": case.get("raised_by"),
@@ -140,9 +142,9 @@ def list_conflicts(conn, principal, *, status: str = "open", limit: int = CASE_L
         return _views(cur, cases, principal, mapping)
 
 
-def get_conflict(conn, decision_id: int, principal) -> Optional[Dict[str, Any]]:
-    """One policy case with its history (every action row, oldest first); None for a live case,
-    an action row or an unknown id."""
+def get_conflict(conn, decision_id: int, principal, *, is_admin: bool = False) -> Optional[Dict[str, Any]]:
+    """One policy case with its history (every action row, oldest first) and the whole history of
+    its pair through the one reader; None for a live case, an action row or an unknown id."""
     mapping = deciders.load_map(conn)
     with conn.cursor() as cur:
         cases = _select(cur, "AND d.decision_id = %s", (decision_id,), 1)
@@ -150,4 +152,6 @@ def get_conflict(conn, decision_id: int, principal) -> Optional[Dict[str, Any]]:
             return None
         [out] = _views(cur, cases, principal, mapping)
         out["history"] = _actions(cur, cases).get(int(decision_id), [])
+        out["conflictHistory"] = CH.read(cur, pair_key=str(cases[0]["subject_id"]),
+                                         viewer=CH.Viewer(principal, bool(is_admin), mapping))
     return out

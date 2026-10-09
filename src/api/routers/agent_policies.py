@@ -25,8 +25,9 @@ from pydantic import BaseModel, Field
 from api.auth import Principal
 from repositories import agent_policy_repo as repo
 from services import agent_actions, rbac
-from services.agent_policy import (approval_views, approvals, conditions, conflict_cases, conflict_views, contract,
-                                   documents, live_policies, readiness, run_runner, run_store, sections)
+from services.agent_policy import (approval_views, approvals, conditions, conflict_cases, conflict_history,
+                                   conflict_views, contract, documents, live_policies, readiness, run_runner,
+                                   run_store, sections)
 from services.agent_policy.compiler import compile_policy
 from services.agent_policy.registry import load_registry
 from services.agent_policy.settings import load_settings
@@ -484,9 +485,9 @@ def list_conflicts(status: str = Query(default="open", pattern="^(open|closed|al
 
 @router.get("/conflicts/{decision_id}")
 def get_conflict(decision_id: int, p: Principal = Depends(gateway_principal)):
-    _require(p, "Viewer", "agent_policy.read", {"conflict": decision_id})
+    role = _require(p, "Viewer", "agent_policy.read", {"conflict": decision_id})
     with _conn() as conn:
-        got = conflict_views.get_conflict(conn, decision_id, p)
+        got = conflict_views.get_conflict(conn, decision_id, p, is_admin=role == "Admin")
     if got is None:
         raise HTTPException(status_code=404, detail="No such conflict case.")
     return got
@@ -542,7 +543,7 @@ def get_one(key: str, p: Principal = Depends(gateway_principal)):
     role = _require(p, "Viewer", "agent_policy.read", {"policy": key})
     with _conn() as conn:
         try:
-            got = repo.get_policy(conn, key)
+            got = repo.get_policy(conn, key, viewer=conflict_history.viewer(conn, p, is_admin=role == "Admin"))
         except repo.NotFound:
             raise HTTPException(status_code=404, detail="no such policy")
     if role != "Admin":

@@ -171,7 +171,10 @@ def test_conflict_view_masks_sensitive_witness(client, conn, world):
         assert theirs["example"] == {"tool.name": world.tool, "args.amount": MASK}
         assert "10001" not in json.dumps(theirs)
         one = client.get(f"/agent-policies/conflicts/{did}", headers=hdr).json()
-        assert one["example"]["args.amount"] == MASK and "10001" not in json.dumps(one) and one["history"] == []
+        case_only = {k: v for k, v in one.items() if k != "conflictHistory"}
+        assert one["example"]["args.amount"] == MASK and "10001" not in json.dumps(case_only) and one["history"] == []
+        # the pair's history: masked for a stranger, full for the Admin role (design §3.1)
+        assert ("10001" in json.dumps(one["conflictHistory"])) is (hdr is ADMIN)
 
     one = client.get(f"/agent-policies/conflicts/{did}", headers=_as(world, world.ob)).json()
     assert one["canDecide"] is True and one["example"]["args.amount"] == 10001
@@ -297,7 +300,9 @@ def test_policy_case_from_a_live_block_masks_its_witness(client, conn, world, mo
     for hdr in (STRANGER, ADMIN):
         one = client.get(f"/agent-policies/conflicts/{did}", headers=hdr).json()
         assert one["example"] == {"tool.name": world.tool, "args.amount": MASK}
-        assert "12000" not in json.dumps(one)
+        assert "12000" not in json.dumps({k: v for k, v in one.items() if k != "conflictHistory"})
+        # the pair's history: masked for a stranger, full for the Admin role (design §3.1)
+        assert ("12000" in json.dumps(one["conflictHistory"])) is (hdr is ADMIN)
         [v] = [v for v in client.get("/agent-policies/conflicts", headers=hdr).json()["conflicts"]
                if v["decisionId"] == did]
         assert v["example"]["args.amount"] == MASK
@@ -345,11 +350,11 @@ def test_history_shows_a_settled_live_conflict_as_the_approvers_decision(client,
     entry, text = _live_entry(client, world, a, lv["decision_id"])
     assert entry["kind"] == "live" and entry["isOpen"] is False
     d = entry["decision"]
-    assert (d["decision"], d["decidedBy"]) == ("approve", f"sub-{world.people[world.lb]}")
+    assert (d["option"], d["decidedBy"]) == ("approve", {"kind": "person", "name": f"sub-{world.people[world.lb]}"})
     assert d["decidedAt"]
-    # the decider's free text quotes the sensitive amount: never shown on the policy page
-    assert d.get("reason") is None
-    assert "Paying the" not in text
+    # the decider's free text quotes the sensitive amount: masked for a stranger, never dropped (design §3.1)
+    assert d["reason"] == f"Paying the {MASK} refund is fine."
+    assert "Paying the 900" not in text
 
 
 def test_history_shows_a_timed_out_live_conflict_as_a_system_reject(client, conn, world, monkeypatch):
@@ -360,4 +365,5 @@ def test_history_shows_a_timed_out_live_conflict_as_a_system_reject(client, conn
     ms = LG.members(conn, world)
     A.sweep(conn, lv["respond_by"] + LG.timedelta(seconds=1), decision_ids=[m["decision_id"] for m in ms])
     entry, _ = _live_entry(client, world, b, lv["decision_id"])
-    assert (entry["decision"]["decision"], entry["decision"]["decidedBy"]) == ("reject", "system:timeout")
+    assert (entry["decision"]["option"], entry["decision"]["decidedBy"]) == \
+        ("reject", {"kind": "timeout", "name": "system:timeout"})

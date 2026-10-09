@@ -198,8 +198,9 @@ def test_decision_stored_on_both_histories(conn, world):
         assert c["kind"] == "policy" and c["isOpen"] is False and c["otherPolicies"] == [other]
         assert c["raisedAt"]
         d = c["decision"]
-        assert d["caseId"] == f"pc_{did}" and d["decision"] == f"keep_both:{b}" and d["scope"] == "standing_rule"
-        assert d["decidedBy"] == f"sub-{world.email_b}" and d["reason"] == "Customer terms win"
+        assert d["option"] == f"keep_both:{b}" and d["scope"] == "standing_rule"
+        assert d["decidedBy"] == {"kind": "person", "name": f"sub-{world.email_b}"}
+        assert d["reason"] == "Customer terms win"
         assert d["decidedAt"] == LATER.isoformat()
         assert got["pendingConflictAction"] is None
     rows = repo.list_policies(conn)
@@ -378,7 +379,7 @@ def test_retire_closes_open_case_as_moot(conn, world, monkeypatch):
     # B's history shows the moot close, and nothing is pending
     got = repo.get_policy(conn, b)
     [c] = got["conflicts"]
-    assert c["isOpen"] is False and c["decision"]["decision"] == "moot" and got["pendingConflictAction"] is None
+    assert c["isOpen"] is False and c["decision"]["option"] == "moot" and got["pendingConflictAction"] is None
     with conn.cursor() as cur:
         assert CC.open_cases_by_policy(cur).get(b) is None
 

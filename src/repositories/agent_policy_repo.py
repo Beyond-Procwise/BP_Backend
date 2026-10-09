@@ -313,7 +313,7 @@ def _j(v):
     return json.loads(v) if isinstance(v, str) else v
 
 
-def get_policy(conn, policy_key: str) -> Dict[str, Any]:
+def get_policy(conn, policy_key: str, *, viewer=None) -> Dict[str, Any]:
     cur = conn.cursor()
     cur.execute("SELECT status, live_version, latest_version, area_name FROM proc.bp_agent_policy WHERE policy_key=%s", (policy_key,))
     head = cur.fetchone()
@@ -327,7 +327,7 @@ def get_policy(conn, policy_key: str) -> Dict[str, Any]:
     for v in versions:
         if head[1] is not None and v["version"] == head[1] and isinstance(v["compiled"], dict):
             v["compiled"] = conflict_cases.overlay(cur, [v["compiled"]])[0]   # what the orchestrator is fed
-    history = conflict_cases.history_for(cur, policy_key, head[2], head[0])
+    history = conflict_cases.history_for(cur, policy_key, head[2], head[0], viewer=viewer)
     return {"policyKey": policy_key, "status": head[0], "liveVersion": head[1], "latestVersion": head[2],
             "areaName": head[3], "versions": versions, "conflicts": history["conflicts"],
             "pendingConflictAction": history["pendingAction"]}
