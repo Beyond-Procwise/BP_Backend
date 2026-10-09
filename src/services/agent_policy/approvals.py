@@ -33,6 +33,10 @@ TIMEOUT_ACTOR = "system:timeout"
 TIMEOUT_REASON = "No decision in time; a timeout never approves"
 VERBS = ("approve", "reject")
 _ACTION_AGENT = "agent_policy_approvals"
+#: The fixed recipient of "cannot be routed" notices; every caller with the Admin role reads it.
+ADMIN_RECIPIENT = "Administrators"
+GROUP_ACTOR = "system:group"
+GROUP_REFUSED_REASON = "Another required approval was refused"
 
 
 class ApprovalRefused(Exception):
@@ -200,6 +204,10 @@ def _insert_case(cur, *, policy_doc: Dict[str, Any], firing_id: int, action: Dic
         "WHERE firing_id = %s AND result = 'paused_for_approval'",
         (decision_id, firing_id),
     )
+    if missing:
+        # Nobody can release it until an administrator links the names: tell the administrators.
+        _notify(cur, firing_id, [ADMIN_RECIPIENT],
+                f"{_action_text(facts)} cannot be routed: link {', '.join(missing)}", decision_id)
     return decision_id
 
 
@@ -241,8 +249,11 @@ def _record(cur, case: Dict[str, Any], *, verb: str, actor: str, reason: Optiona
 
 def _update_firing(cur, firing_id: Optional[int], *, result: str, level: int, actor: str,
                    now: datetime, reason: Optional[str], decision_id: Optional[int] = None) -> None:
-    """Settle the case's own firing row AND every row the gate linked to it (decision_id):
-    repeat calls made while the case was open, and the notify rows of the same call."""
+    """Settle the case's own firing row AND the repeat calls the gate linked to it (decision_id).
+
+    Only approve rows: a notify row records the outcome of the WHOLE group (every approval the
+    call needed), so it is settled by _close_group once the group is decided, never by one case.
+    """
     if firing_id is None and decision_id is None:
         return
     cur.execute(
@@ -250,9 +261,106 @@ def _update_firing(cur, firing_id: Optional[int], *, result: str, level: int, ac
         UPDATE proc.bp_policy_firing
            SET result = %s, decided_level = %s, decided_by = %s, decided_at = %s, reason = %s
          WHERE (firing_id = %s OR decision_id = %s) AND result = 'paused_for_approval'
+           AND outcome = 'approve'
         """,
         (result, level, actor, now, reason, firing_id, decision_id),
     )
+
+
+# ---------------------------------------------------------------------------- groups
+# One tool call that needs several approvals opens one case per approve policy, all sharing
+# facts.firing_group (the action runs only when every one approves). A lone case that a replay
+# re-check later joined with a new case is the group 'case:<its id>' (replay._effective_group).
+_MEMBERS_SQL = """
+    SELECT decision_id FROM proc.bp_decision
+     WHERE subject_type = %s AND decision = 'approve_or_reject'
+       AND (facts->>'firing_group' = %s OR facts->>'firingGroup' = %s OR decision_id = ANY(%s))
+     ORDER BY decision_id
+"""
+
+
+def _group_key(decision_id: int, facts: Dict[str, Any]) -> str:
+    g = facts.get("firing_group") or facts.get("firingGroup")
+    return str(g) if g else f"case:{decision_id}"
+
+
+def _member_ids(cur, decision_id: int, facts: Dict[str, Any], *, lock: bool = False) -> List[int]:
+    """Every case of the group, in id order. `lock` takes FOR UPDATE on all of them in that
+    order, so decisions within one group are serialised and never deadlock each other."""
+    group = _group_key(decision_id, facts)
+    ids = [int(decision_id)]
+    if group.startswith("case:") and group[5:].isdigit():
+        ids.append(int(group[5:]))
+    cur.execute(_MEMBERS_SQL + (" FOR UPDATE" if lock else ""), (SUBJECT_TYPE, group, group, ids))
+    return [int(r[0]) for r in cur.fetchall()]
+
+
+def group_state(cur, decision_id: int, facts: Dict[str, Any]) -> Dict[str, int]:
+    """{open, approved, rejected, total} over the case's group. A closed case counts as approved
+    only when its latest recorded action is an approval (as the replay counts it)."""
+    ids = _member_ids(cur, decision_id, facts)
+    cur.execute(
+        """
+        SELECT c.status,
+               (SELECT a.decision FROM proc.bp_decision a
+                 WHERE a.subject_type = c.subject_type AND a.subject_id = c.subject_id
+                   AND a.decision IN ('approve','reject') AND a.actioned_by IS NOT NULL
+                 ORDER BY a.decision_id DESC LIMIT 1)
+          FROM proc.bp_decision c WHERE c.subject_type = %s AND c.decision_id = ANY(%s)
+        """,
+        (SUBJECT_TYPE, ids),
+    )
+    out = {"open": 0, "approved": 0, "rejected": 0, "total": 0}
+    for status, verb in cur.fetchall():
+        out["total"] += 1
+        if status == "open":
+            out["open"] += 1
+        elif verb == "approve":
+            out["approved"] += 1
+        else:
+            out["rejected"] += 1
+    return out
+
+
+def _close_group(cur, case: Dict[str, Any], *, refused: Optional[str], actor: str, now: datetime,
+                 reason: Optional[str], level: int) -> Dict[str, int]:
+    """After `case` was decided: when it was refused (`refused` = 'rejected' | 'timed_out'), close
+    every still-open sibling (the action can no longer run) and tell its level; then settle the
+    group's notify rows once nothing in the group is open. Returns the group's state.
+
+    Siblings are taken FOR UPDATE SKIP LOCKED: rows this transaction already holds are taken, and
+    a sibling another transaction is deciding right now is left to it (never a wait, so the
+    sweep cannot deadlock with a decision)."""
+    did = int(case["decision_id"])
+    if refused:
+        for sid in _member_ids(cur, did, case["facts"]):
+            if sid == did:
+                continue
+            sib = _load_locked(cur, sid, skip_locked=True)
+            if sib is None or sib["status"] != "open":
+                continue
+            lv = sib["current_level"]
+            lv_name = sib["levels"][lv]["name"] if 0 <= lv < len(sib["levels"]) else None
+            _record(cur, sib, verb="reject", actor=GROUP_ACTOR, reason=GROUP_REFUSED_REASON, now=now,
+                    level=lv, level_name=lv_name)
+            _update_firing(cur, sib["facts"].get("firingId"), result="rejected", level=lv,
+                           actor=GROUP_ACTOR, now=now, reason=GROUP_REFUSED_REASON, decision_id=sid)
+            if lv_name:
+                _notify(cur, sib["facts"].get("firingId"), [lv_name],
+                        f"{_action_text(sib['facts'])} no longer needs your decision: "
+                        f"{GROUP_REFUSED_REASON[:1].lower()}{GROUP_REFUSED_REASON[1:]}.", sid)
+    state = group_state(cur, did, case["facts"])
+    if state["open"] == 0:
+        result = refused or ("rejected" if state["rejected"] else "approved")
+        cur.execute(
+            """
+            UPDATE proc.bp_policy_firing
+               SET result = %s, decided_level = %s, decided_by = %s, decided_at = %s, reason = %s
+             WHERE decision_id = ANY(%s) AND outcome <> 'approve' AND result = 'paused_for_approval'
+            """,
+            (result, level, actor, now, reason, _member_ids(cur, did, case["facts"])),
+        )
+    return state
 
 
 def _load_locked(cur, decision_id: int, *, skip_locked: bool = False) -> Optional[Dict[str, Any]]:
@@ -292,6 +400,13 @@ def act(conn, decision_id: int, *, principal, verb: str, reason: Optional[str], 
 
     with _tx(conn):
         with conn.cursor() as cur:
+            cur.execute(_CASE_SQL, (decision_id, SUBJECT_TYPE))
+            peek = cur.fetchone()
+            if peek is None:
+                raise ApprovalRefused("not_found", "No such approval request.", 404)
+            # every case of the group, locked in id order, before this one is read for real
+            _member_ids(cur, decision_id, _facts(peek[[d[0] for d in cur.description].index("facts")]),
+                        lock=True)
             case = _load_locked(cur, decision_id)
             if case is None:
                 raise ApprovalRefused("not_found", "No such approval request.", 404)
@@ -315,11 +430,13 @@ def act(conn, decision_id: int, *, principal, verb: str, reason: Optional[str], 
                            result="approved" if verb == "approve" else "rejected",
                            level=level, actor=actor, now=now, reason=reason,
                            decision_id=decision_id)
+            group = _close_group(cur, case, refused=None if verb == "approve" else "rejected",
+                                 actor=actor, now=now, reason=reason, level=level)
 
     out = {"decisionId": decision_id, "actionId": action_id, "verb": verb,
            "result": "approved" if verb == "approve" else "rejected",
            "decidedBy": actor, "decidedAt": now.isoformat(), "level": level, "levelName": level_name,
-           "reason": reason}
+           "reason": reason, "group": group}
     if verb == "approve":
         # After commit, never inside the lock. A replay failure never undoes the decision.
         try:
@@ -340,11 +457,23 @@ def _replay_after_commit(decision_id: int, replay: Optional[Callable[[int], Any]
         return
     try:
         from services.agent_policy import replay as _replay
-    except ImportError:
-        logger.error("approved action has nowhere to run: services.agent_policy.replay is missing "
-                     "(decision %s)", decision_id)
+    except ModuleNotFoundError as exc:
+        if exc.name == _REPLAY_MODULE:
+            logger.error("approved action has nowhere to run: %s is missing (decision %s)",
+                         _REPLAY_MODULE, decision_id)
+            return
+        # replay.py exists but something IT imports does not: a broken module, not a missing one
+        logger.exception("approved action could not load %s (decision %s): %s",
+                         _REPLAY_MODULE, decision_id, type(exc).__name__)
+        return
+    except ImportError as exc:
+        logger.exception("approved action could not load %s (decision %s): %s",
+                         _REPLAY_MODULE, decision_id, type(exc).__name__)
         return
     _replay.run(decision_id)
+
+
+_REPLAY_MODULE = "services.agent_policy.replay"
 
 
 # ---------------------------------------------------------------------------- sweep
@@ -412,6 +541,10 @@ def _sweep_one(conn, decision_id: int, now: datetime) -> str:
                     level=level, level_name=level_name)
             _update_firing(cur, firing_id, result="timed_out", level=level, actor=TIMEOUT_ACTOR,
                            now=now, reason=TIMEOUT_REASON, decision_id=decision_id)
+            case["levels"] = levels
+            case["current_level"] = level
+            _close_group(cur, case, refused="timed_out", actor=TIMEOUT_ACTOR, now=now,
+                         reason=TIMEOUT_REASON, level=level)
             first = levels[0]["name"] if levels else None
             _notify(cur, firing_id, [x for x in (first, facts.get("requestedBy")) if x],
                     f"{what} was rejected: nobody decided in time, and a timeout never approves.",

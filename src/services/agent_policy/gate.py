@@ -85,15 +85,6 @@ def _ctx(tool_name: str, args: Dict[str, Any], agent: Optional[str], reason: Opt
     return ctx
 
 
-def _row_result(hit: Dict[str, Any], verdict: enforcement.Verdict) -> str:
-    """Every matched policy's row records the action's fate: the verdict's overall result.
-
-    A notify row of a paused call is therefore 'paused_for_approval' too; the gate links it to
-    the call's first case so that case's decision settles it (approvals._update_firing).
-    """
-    return verdict.result
-
-
 _OUTCOME_TEXT = {"blocked": "was blocked", "paused_for_approval": "is waiting for approval",
                  "allowed": "was allowed to run"}
 
@@ -126,6 +117,50 @@ def _notify(cur, firing_id: int, recipients, message: str, link: str) -> None:
                         "VALUES (%s,%s,%s,%s)", (firing_id, r, message, link))
 
 
+def record_matches(cur, hits: List[Dict[str, Any]], notifies: List[Dict[str, Any]], *, result: str,
+                   tool_name: str, agent, workflow_id, user_id, duration_ms: int,
+                   reason: Optional[str] = None) -> Dict[int, int]:
+    """One firing row per matched policy (all recording `result`, the action's fate) and the
+    notifications every notify recipient gets. Returns {id(hit): firing_id}. Used by the gate and
+    by the replay's re-check, on the caller's cursor inside the caller's transaction."""
+    firing_of: Dict[int, int] = {}
+    for hit in hits:
+        if id(hit) in firing_of:
+            continue
+        firing_of[id(hit)] = _insert_firing(
+            cur, key=str(hit["id"]), version=int(hit.get("version") or 0), tool_name=tool_name,
+            agent=agent, workflow_id=workflow_id, user_id=user_id, outcome=hit["outcome"], result=result,
+            matched_values=hit.get("matched_values"), missing=hit.get("missing"),
+            duration_ms=duration_ms, reason=reason)
+    # notify recipients hear about it whatever the result (a block carrying a notify list too)
+    for hit in notifies:
+        key = str(hit["id"])
+        msg = f"{_what(hit['policy'], tool_name)} (policy {key}) {_OUTCOME_TEXT.get(result, 'was checked')}."
+        _notify(cur, firing_of[id(hit)], hit.get("notify"), msg, f"agent-policy:{key}")
+    return firing_of
+
+
+def link_paused_notifies(cur, firing_ids: List[int], case_id: int) -> None:
+    """A notify row of a paused call is itself paused and linked to one case of the call's group;
+    approvals._close_group settles it once the whole group is decided."""
+    if firing_ids:
+        cur.execute("UPDATE proc.bp_policy_firing SET decision_id = %s "
+                    "WHERE firing_id = ANY(%s) AND result = 'paused_for_approval'",
+                    (case_id, list(firing_ids)))
+
+
+def notify_first_level(cur, policy: Dict[str, Any], firing_id: int, decision_id: int, tool_name: str) -> None:
+    """The first level of a newly opened case hears that a decision is waiting (escalations
+    notify the next level from the sweep)."""
+    levels = [str(e.get("name")).strip() for e in
+              ((policy.get("enforcement") or {}).get("intervention") or {}).get("escalateTo") or []
+              if isinstance(e, dict) and str(e.get("name") or "").strip()]
+    if levels:
+        _notify(cur, firing_id, [levels[0]],
+                f"{_what(policy, tool_name)} (policy {policy.get('id')}) needs your decision.",
+                f"decision:{decision_id}")
+
+
 def _open_case_for(cur, *, key: str, tool_name: str, digest: str, workflow_id,
                    requested_by) -> Optional[Dict[str, Any]]:
     """The open case this exact call (same policy, tool, args, workflow AND requester) made."""
@@ -145,7 +180,8 @@ def _open_case_for(cur, *, key: str, tool_name: str, digest: str, workflow_id,
 
 
 def _refuse(exc: BaseException, *, tool_name, agent, workflow_id, user_id, started: float) -> GateResult:
-    logger.exception("agent policy check unavailable for tool %s", tool_name, exc_info=exc)
+    # the type only: a driver's message can quote row values (the call's arguments)
+    logger.error("agent policy check unavailable for tool %s: %s", tool_name, type(exc).__name__)
     firing_ids: List[int] = []
     try:
         with _connect() as conn:
@@ -202,38 +238,21 @@ def _before_tool(*, tool_name, args, agent, reason, workflow_id, user_id, starte
     # failure nothing is left behind -- never an open case for a call the agent was refused.
     with _connect() as conn:
         with approvals._tx(conn):
-            firing_of: Dict[int, int] = {}
             with conn.cursor() as cur:
-                for hit in matched:
-                    fid = _insert_firing(
-                        cur, key=str(hit["id"]), version=int(hit.get("version") or 0),
-                        tool_name=tool_name, agent=agent, workflow_id=workflow_id, user_id=user_id,
-                        outcome=hit["outcome"], result=_row_result(hit, verdict),
-                        matched_values=hit.get("matched_values"), missing=hit.get("missing"),
-                        duration_ms=duration_ms)
-                    firing_of[id(hit)] = fid
-                    firing_ids.append(fid)
-
-                # notify recipients hear about it whatever the result (block carrying a notify list too)
-                for hit in verdict.notifies:
-                    key = str(hit["id"])
-                    msg = (f"{_what(hit['policy'], tool_name)} (policy {key}) "
-                           f"{_OUTCOME_TEXT.get(verdict.result, 'was checked')}.")
-                    _notify(cur, firing_of[id(hit)], hit.get("notify"), msg, f"agent-policy:{key}")
+                firing_of = record_matches(cur, matched, verdict.notifies, result=verdict.result,
+                                           tool_name=tool_name, agent=agent, workflow_id=workflow_id,
+                                           user_id=user_id, duration_ms=duration_ms)
+            firing_ids.extend(firing_of[id(h)] for h in matched)
 
             if verdict.result == "paused_for_approval":
                 case_ids = _open_cases(conn, verdict, firing_of, action=action, ctx=ctx, digest=digest,
                                        tool_name=tool_name, workflow_id=workflow_id, user_id=user_id,
                                        now=now)
-                # A notify row of a paused call is itself paused (_row_result) and linked to the
-                # group's first case, so the decision that settles the call settles it too
-                # (approvals._update_firing settles every row linked by decision_id).
-                notify_rows = [firing_of[id(h)] for h in verdict.notifies if h["outcome"] != "approve"]
-                if notify_rows and case_ids:
+                # A notify row of a paused call is itself paused and linked to the group's first
+                # case; approvals._close_group settles it once the whole group is decided.
+                if case_ids:
                     with conn.cursor() as cur:
-                        cur.execute("UPDATE proc.bp_policy_firing SET decision_id = %s "
-                                    "WHERE firing_id = ANY(%s) AND result = 'paused_for_approval'",
-                                    (case_ids[0], notify_rows))
+                        link_paused_notifies(cur, [firing_of[id(h)] for h in verdict.notifies], case_ids[0])
 
     if verdict.result == "allowed":
         return GateResult(allow=True, firing_ids=firing_ids)
@@ -289,13 +308,6 @@ def _open_cases(conn, verdict, firing_of, *, action, ctx, digest, tool_name, wor
                 requested_by=user_id, now=now, mapping=mapping, default_response_time=default_rt,
                 extra_facts={"firing_group": group, "ctx": ctx, "argsDigest": digest})
         out.append(did)
-        # the first level hears that a decision is waiting (escalations notify the next)
-        levels = [str(e.get("name")).strip() for e in
-                  ((hit["policy"].get("enforcement") or {}).get("intervention") or {}).get("escalateTo") or []
-                  if isinstance(e, dict) and str(e.get("name") or "").strip()]
-        if levels:
-            with conn.cursor() as cur:
-                _notify(cur, firing_of[id(hit)], [levels[0]],
-                        f"{_what(hit['policy'], tool_name)} (policy {key}) needs your decision.",
-                        f"decision:{did}")
+        with conn.cursor() as cur:
+            notify_first_level(cur, hit["policy"], firing_of[id(hit)], did, tool_name)
     return out

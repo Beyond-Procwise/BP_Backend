@@ -135,6 +135,13 @@ def activation_problems(form: Dict[str, Any], registry: RegistrySnapshot,
 
     cp = h.get("checkpoint")
     if _blank(cp): add("checkpoint", "checkpoint_required", "The policy has no checkpoint.")
+    # Enforcement applies a policy only to the tools it lists; with none listed it would apply
+    # to every tool. The converter flags this as a misfit, but a hand-edited form must not pass.
+    if cp == "tool.call.before" and not [t for t in (h.get("actions") or {}).get("tools") or []
+                                         if str(t or "").strip()]:
+        add("checkpoint", "actions_required",
+            "The policy is checked before a tool runs but names no tool. Name the action it applies to.",
+            routeTo="administrator")
     cond = h.get("condition")
     unknown = [t for t in sorted(conditions.tool_names(cond)) if not registry.knows_action(cp, t)]
     unknown += [t for t in (h.get("actions") or {}).get("tools") or [] if not registry.knows_action(cp, t)]

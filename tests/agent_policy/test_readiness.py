@@ -221,3 +221,12 @@ def test_codes_for_the_remaining_problems(mutate, field, code):
     mutate(form)
     got = [p["code"] for p in R.activation_problems(form, REGISTRY, SETTINGS) if p["field"] == field]
     assert got == [code]
+
+
+@pytest.mark.parametrize("tools", [[], None, ["  "]])
+def test_a_tool_checkpoint_policy_naming_no_tool_cannot_go_active(tools):
+    form = _ready_form()
+    form["hidden"]["actions"]["tools"] = tools
+    got = [(p["field"], p["code"]) for p in R.activation_problems(form, REGISTRY, SETTINGS)
+           if p["code"] == "actions_required"]
+    assert got == [("checkpoint", "actions_required")]

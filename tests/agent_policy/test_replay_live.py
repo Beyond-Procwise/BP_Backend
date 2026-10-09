@@ -83,17 +83,19 @@ def world(conn):
         cur.execute("SELECT decision_id FROM proc.bp_decision WHERE subject_type IN (%s, %s) "
                     "AND (subject_id LIKE %s OR subject_id LIKE %s)", (A.SUBJECT_TYPE, R.SUBJECT_TYPE, *pats))
         ids = [r[0] for r in cur.fetchall()]
-        cur.execute("DELETE FROM proc.bp_policy_notification WHERE link = ANY(%s)",
-                    ([f"decision:{i}" for i in ids],))
+        cur.execute("DELETE FROM proc.bp_policy_notification WHERE link = ANY(%s) OR firing_id IN "
+                    "(SELECT firing_id FROM proc.bp_policy_firing WHERE policy_key LIKE %s OR policy_key LIKE %s)",
+                    ([f"decision:{i}" for i in ids], *pats))
         cur.execute("DELETE FROM proc.bp_decision WHERE decision_id = ANY(%s)", (ids,))
         cur.execute("DELETE FROM proc.bp_policy_decider_map WHERE decider_name = %s", (w.decider,))
 
 
-def _doc(w, key, outcome="approve", sensitive=True):
+def _doc(w, key, outcome="approve", sensitive=True, notify=None):
     form = copy.deepcopy(FORM_EXAMPLE)
     form["checked"] = {"by": "user_8841", "at": "2026-10-08T09:14:00Z"}
     form["outcome"] = outcome
     form["deciders"] = [w.decider] if outcome == "approve" else []
+    form["notify"] = list(notify or [])
     form["hidden"]["inputs"].append({"name": "IBAN", "field": "args.iban", "type": "string",
                                      "from": "action", "showApprover": False, "sensitive": sensitive})
     return compile_policy(form, policy_key=key, version=1, status="live",
@@ -243,7 +245,10 @@ def test_group_with_a_rejection_never_runs(conn, world, stub, monkeypatch):
     c2, _ = _open(conn, world, d2, group)
     A.act(conn, c2, principal=_P(f"sub-{world.tag}", world.email), verb="reject", reason="no",
           now=datetime.now(timezone.utc), replay=_NO_REPLAY)
-    _approve(conn, world, c1)
+    # the refusal closed the sibling: it can no longer be approved
+    with pytest.raises(A.ApprovalRefused) as refused:
+        _approve(conn, world, c1)
+    assert refused.value.code == "not_open"
     assert R.run(c1, agent_nick=stub.nick)["status"] == "rejected"
     assert stub.calls == [] and _replays(conn, world) == []
 

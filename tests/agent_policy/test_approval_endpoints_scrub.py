@@ -93,7 +93,7 @@ def client(monkeypatch, state):
         **state["case"], "history": {"decisions": [], "notes": [state["note"]], "firings": [state["firing"]],
                     "replay": state["replay"]}})
     monkeypatch.setattr(V, "policy_firings", lambda conn, key, limit: [state["firing"]])
-    monkeypatch.setattr(V, "my_notifications", lambda conn, p, limit: [state["note"]])
+    monkeypatch.setattr(V, "my_notifications", lambda conn, p, limit, is_admin=False: [state["note"]])
     monkeypatch.setattr(V, "list_deciders", lambda conn: [state["decider"]])
     return TestClient(app)
 

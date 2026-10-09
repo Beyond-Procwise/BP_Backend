@@ -195,8 +195,24 @@ def _pair(case: Dict[str, Any]) -> Tuple[str, Optional[int]]:
     return str(pol.get("id") or case.get("policy_name") or ""), (int(v) if str(v or "").isdigit() else None)
 
 
+def outcomes(cur, cases: Iterable[Dict[str, Any]]) -> Dict[str, str]:
+    """{subject_id: 'approved' | 'rejected' | 'timed_out'} from each closed case's latest
+    recorded action (a timeout is recorded as a reject by approvals.TIMEOUT_ACTOR)."""
+    ids = sorted({c["subject_id"] for c in cases if c.get("status") != "open" and c.get("subject_id")})
+    if not ids:
+        return {}
+    cur.execute("SELECT DISTINCT ON (subject_id) subject_id, decision, actioned_by FROM proc.bp_decision "
+                "WHERE subject_type = %s AND subject_id = ANY(%s) AND decision IN ('approve','reject') "
+                "AND actioned_by IS NOT NULL ORDER BY subject_id, decision_id DESC",
+                (approvals.SUBJECT_TYPE, ids))
+    return {r[0]: ("approved" if r[1] == "approve" else
+                   "timed_out" if r[2] == approvals.TIMEOUT_ACTOR else "rejected")
+            for r in cur.fetchall()}
+
+
 def case_view(case: Dict[str, Any], *, unmasked: bool, sensitive: Set[str],
-              doc: Optional[Dict[str, Any]], decidable: bool) -> Dict[str, Any]:
+              doc: Optional[Dict[str, Any]], decidable: bool,
+              outcome: Optional[str] = None) -> Dict[str, Any]:
     facts = case["facts"]
     pol = facts.get("policy") or {}
     action = facts.get("action") or {}
@@ -228,6 +244,8 @@ def case_view(case: Dict[str, Any], *, unmasked: bool, sensitive: Set[str],
         "policyKey": pol.get("id") or case.get("policy_name"),
         "policyVersion": pol.get("version"),
         "status": case["status"],
+        # what was decided (None while open); status 'actioned' alone does not say
+        "outcome": outcome,
         "actionPlain": facts.get("actionPlain"),
         "inputs": inputs,
         "agentReason": reason,
@@ -259,10 +277,12 @@ def list_cases(conn, principal, *, is_admin: bool, status: str = "open") -> List
         pairs = [p for p in (_pair(c) for c in shown) if p[1] is not None]
         sensitive = sensitive_for(cur, pairs)
         docs = _compiled(cur, pairs)
+        decided = outcomes(cur, shown)
     out = []
     for c in shown:
         ok = can_decide(principal, c, mapping)
-        out.append(case_view(c, unmasked=ok, sensitive=sensitive, doc=docs.get(_pair(c)), decidable=ok))
+        out.append(case_view(c, unmasked=ok, sensitive=sensitive, doc=docs.get(_pair(c)), decidable=ok,
+                             outcome=decided.get(c["subject_id"])))
     return out
 
 
@@ -342,12 +362,17 @@ def get_case(conn, decision_id: int, principal, *, is_admin: bool) -> Optional[D
         pairs += [(r["policy_key"], r["policy_version"]) for r in firing_rows]
         sensitive = sensitive_for(cur, pairs)
         docs = _compiled(cur, pairs[:1])
+        decided = outcomes(cur, [case])
+        group = approvals.group_state(cur, int(case["decision_id"]), facts)
     ok = can_decide(principal, case, mapping)
-    view = case_view(case, unmasked=ok, sensitive=sensitive, doc=docs.get(_pair(case)), decidable=ok)
+    view = case_view(case, unmasked=ok, sensitive=sensitive, doc=docs.get(_pair(case)), decidable=ok,
+                     outcome=decided.get(case["subject_id"]))
     view["history"] = {"decisions": decisions, "notes": notes,
                        "firings": [_firing_view(r, sensitive, reveal=_ctx(case["facts"]) if ok else None)
                                    for r in firing_rows],
-                       "replay": replay}
+                       "replay": replay,
+                       # every approval the action needs: {open, approved, rejected, total}
+                       "group": group}
     return view
 
 
@@ -392,12 +417,15 @@ def _link_ref(link: str) -> Dict[str, Any]:
     return {}
 
 
-def _recipients(conn, principal) -> List[str]:
-    return sorted(set(caller_names(principal, deciders.load_map(conn))) | set(_identities(principal)))
+def _recipients(conn, principal, *, is_admin: bool = False) -> List[str]:
+    names = set(caller_names(principal, deciders.load_map(conn))) | set(_identities(principal))
+    if is_admin:
+        names.add(approvals.ADMIN_RECIPIENT)   # "cannot be routed" notices go to every Admin
+    return sorted(names)
 
 
-def my_notifications(conn, principal, limit: int) -> List[Dict[str, Any]]:
-    names = _recipients(conn, principal)
+def my_notifications(conn, principal, limit: int, *, is_admin: bool = False) -> List[Dict[str, Any]]:
+    names = _recipients(conn, principal, is_admin=is_admin)
     if not names:
         return []
     with conn.cursor() as cur:
@@ -417,9 +445,9 @@ def my_notifications(conn, principal, limit: int) -> List[Dict[str, Any]]:
     return out
 
 
-def mark_read(conn, notification_id: int, principal) -> Optional[Dict[str, Any]]:
+def mark_read(conn, notification_id: int, principal, *, is_admin: bool = False) -> Optional[Dict[str, Any]]:
     """Mark read for the caller; None when it is not one of theirs. Idempotent."""
-    names = _recipients(conn, principal)
+    names = _recipients(conn, principal, is_admin=is_admin)
     me = str(getattr(principal, "subject", "") or "")
     with conn.cursor() as cur:
         cur.execute("SELECT notification_id FROM proc.bp_policy_notification "

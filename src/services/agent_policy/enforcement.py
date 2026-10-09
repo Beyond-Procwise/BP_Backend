@@ -99,8 +99,14 @@ def check(ctx: Dict[str, Any], policies: List[Dict[str, Any]], *,
     context = conditions.nest({k: v for k, v in (ctx or {}).items() if k != "checkpoint"})
     v = Verdict()
     sensitive: Set[str] = set()
+    tool_name = (ctx or {}).get("tool.name")
     for policy in policies or []:
         if not isinstance(policy, dict) or (policy.get("context") or {}).get("checkpoint") != checkpoint:
+            continue
+        # A policy that lists its actions applies to those actions only: never to another tool,
+        # not even through a missing field that fails closed.
+        listed = ((policy.get("context") or {}).get("actions") or {}).get("tools") or []
+        if listed and tool_name not in listed:
             continue
         sensitive |= _sensitive(policy)
         hit = _evaluate(policy, context)

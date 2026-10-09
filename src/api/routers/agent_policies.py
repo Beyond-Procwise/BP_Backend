@@ -416,16 +416,16 @@ def decide(decision_id: int, body: DecideBody, p: Principal = Depends(gateway_pr
 @router.get("/notifications")
 def my_notifications(mine: int = Query(default=1, ge=1, le=1), limit: int = Query(default=50, ge=1, le=200),
                      p: Principal = Depends(gateway_principal)):
-    _require(p, "Viewer", "agent_policy.read", {})
+    role = _require(p, "Viewer", "agent_policy.read", {})
     with _conn() as conn:
-        return {"notifications": approval_views.my_notifications(conn, p, limit)}
+        return {"notifications": approval_views.my_notifications(conn, p, limit, is_admin=role == "Admin")}
 
 
 @router.post("/notifications/{notification_id}/read")
 def read_notification(notification_id: int, p: Principal = Depends(gateway_principal)):
-    _require(p, "Viewer", "agent_policy.notification_read", {"notification": notification_id})
+    role = _require(p, "Viewer", "agent_policy.notification_read", {"notification": notification_id})
     with _conn() as conn:
-        got = approval_views.mark_read(conn, notification_id, p)
+        got = approval_views.mark_read(conn, notification_id, p, is_admin=role == "Admin")
     if got is None:
         raise HTTPException(status_code=404, detail="No such notification.")
     return got
@@ -456,7 +456,9 @@ def put_decider(name: str, body: DeciderBody, p: Principal = Depends(gateway_pri
         phase="decider", action_type="agent_policy.admin", agent="agent_policy_api", status="saved",
         summary=f"{p.subject} saved decider {name}",
         details={"decider": name, "principal": p.subject, "groups": groups, "emails": len(emails)})
-    return saved
+    # Only the name and the time: group and email values in a 2xx body are withheld by
+    # OutputSafety (no exemption for this write), and the screen re-reads GET /deciders.
+    return {"name": saved["name"], "savedAt": saved["lastModifiedAt"]}
 
 
 @router.get("/{key}/firings")

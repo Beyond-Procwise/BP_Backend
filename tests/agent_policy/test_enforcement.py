@@ -224,3 +224,41 @@ def test_mutating_a_loaded_doc_does_not_change_the_next_load(monkeypatch):
     again = live_policies.load(conn=object())
     assert [d["id"] for d in again] == ["FIN-0001"]
     assert again[0]["enforcement"]["outcome"] == "approve"
+
+
+# ------------------------------------------------------------------ I1: listed actions bound a policy
+def _tool_a_only(form):
+    """A policy on refund.issue whose condition does NOT name the tool, failing closed on a gap."""
+    form["hidden"]["actions"]["tools"] = ["refund.issue"]
+    form["hidden"]["condition"] = {"field": "args.amount", "op": "gt", "value": 500}
+    form["hidden"]["onMissingData"] = "fail_closed"
+
+
+@pytest.mark.parametrize("outcome", ["approve", "block", "notify"])
+def test_a_policy_on_tool_a_never_matches_tool_b(outcome):
+    doc = _doc("FIN-0021", outcome, _tool_a_only)
+    assert doc["context"]["actions"]["tools"] == ["refund.issue"]
+    assert doc["trigger"]["onMissingData"] == "fail_closed"
+    # tool B with the field missing: fail_closed would count it as met, but B is not A's action
+    b = {"checkpoint": "tool.call.before", "tool.name": "supplier_ranking", "args": {}}
+    v = enforcement.check(b, [doc])
+    assert v.result == "allowed" and v.evaluated == [] and not (v.blocks or v.approvals or v.notifies)
+    # tool B over the threshold: still not A's action
+    v = enforcement.check(dict(b, args={"amount": 900}), [doc])
+    assert v.result == "allowed" and v.evaluated == []
+
+
+def test_a_policy_on_tool_a_still_fails_closed_for_tool_a():
+    doc = _doc("FIN-0022", "approve", _tool_a_only)
+    v = enforcement.check({"checkpoint": "tool.call.before", "tool.name": "refund.issue", "args": {}}, [doc])
+    assert v.result == "paused_for_approval" and v.approvals[0]["missing"] == ["args.amount"]
+
+
+def test_a_policy_listing_no_actions_is_not_narrowed():
+    def no_tools(form):
+        _tool_a_only(form)
+        form["hidden"]["actions"]["tools"] = []
+    doc = _doc("FIN-0023", "block", no_tools)
+    v = enforcement.check({"checkpoint": "tool.call.before", "tool.name": "supplier_ranking",
+                           "args": {"amount": 900}}, [doc])
+    assert v.result == "blocked"

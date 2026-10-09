@@ -15,15 +15,18 @@ Order of work for one call:
    group (exactly-once: two approvals finishing together run the tool once).
 3. Re-check against the CURRENT live policies with the stored context:
    a block now matches -> do not run; a new approve policy the group did not cover -> open a
-   case for it in the same group, in this same transaction, and stop (its approval calls run()
-   again).
+   case for it in the same group, in this same transaction, notify its first level, and stop
+   (its approval calls run() again). Matched blocks and notifies get firing rows and
+   notifications as at the gate (gate.record_matches), in the same transaction. If the policies
+   cannot be loaded or checked, nothing is written and the retry sweeper tries again; only its
+   last attempt records the action as not run and tells the approvers and the requester.
 4. Claim the run by inserting the replay row (subject_type 'agent_policy_replay'), commit,
    then run the tool outside any lock and write the outcome onto that row. A crash mid-run
    leaves the claim behind: the action is run AT MOST once, never twice.
 
 Where the outcome lives (controller ruling): the firing row records the HUMAN decision
 ('approved', set by act()); the replay outcome lives only on the agent_policy_replay row. Replay
-never updates firing rows.
+never updates the decided firing rows (the re-check only inserts its own).
 
 ``run`` never raises. Logs carry exception TYPES and masked summaries only, never input values.
 """
@@ -32,10 +35,11 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Set
 
-from services.agent_policy import approvals, deciders, enforcement, live_policies
+from services.agent_policy import approvals, deciders, enforcement, gate, live_policies, replay_retry
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +51,7 @@ SUMMARY_LIMIT = 2000
 ERROR_LIMIT = 500
 BLOCKED_REASON = "A policy now forbids this action"
 NO_RUNTIME = "no agent runtime available"
+RECHECK_REASON = "Matched when the approved action was re-checked"
 
 
 # ---------------------------------------------------------------------------- seams
@@ -271,11 +276,63 @@ def _open_new_case(conn, cur, hit: Dict[str, Any], case: Dict[str, Any], members
          "Approval newly required when the approved action was re-checked"),
     )
     firing_id = int(cur.fetchone()[0])
-    return approvals._insert_case(
+    # argsDigest (with requestedBy, which _insert_case stores) lets the gate's repeat-call reuse
+    # find this case, as it finds a case the gate opened itself
+    digest = case["facts"].get("argsDigest") or gate.args_digest(action.get("args") or {})
+    did = approvals._insert_case(
         cur, policy_doc=hit["policy"], firing_id=firing_id, action=action, requested_by=requested_by,
         now=datetime.now(timezone.utc), mapping=mapping,
         extra_facts={"firing_group": group, "replayOf": [m["decision_id"] for m in members],
-                     "ctx": _ctx(case["facts"])})
+                     "ctx": _ctx(case["facts"]), "argsDigest": digest})
+    gate.notify_first_level(cur, hit["policy"], firing_id, did, str(action.get("tool") or ""))
+    return did
+
+
+def _approvers(cur, members: List[Dict[str, Any]]) -> List[str]:
+    """Who approved the group's cases (their sign-in names), in decision order."""
+    cur.execute("SELECT DISTINCT ON (actioned_by) actioned_by FROM proc.bp_decision "
+                "WHERE subject_type = %s AND subject_id = ANY(%s) AND decision = 'approve' "
+                "AND actioned_by IS NOT NULL ORDER BY actioned_by, decision_id",
+                (APPROVAL, [m["subject_id"] for m in members]))
+    return [r[0] for r in cur.fetchall()]
+
+
+def _check_unavailable(cur, decision_id: int, case: Dict[str, Any], members: List[Dict[str, Any]],
+                       key: str, exc: BaseException) -> Dict[str, Any]:
+    """The re-check could not load or evaluate the live policies. Never run unchecked; but an
+    outage must not consume the claim either: nothing is written, so the retry sweeper
+    (replay_retry, which counts its attempts in facts.replayAttempts) tries again. Only on its
+    LAST attempt is the action recorded as not run and the approvers and requester told."""
+    facts = case["facts"]
+    attempts = int(facts.get("replayAttempts") or 0)
+    if attempts < replay_retry.MAX_ATTEMPTS:
+        logger.warning("replay re-check unavailable for decision %s (attempt %s of %s, will retry): %s",
+                       decision_id, attempts, replay_retry.MAX_ATTEMPTS, type(exc).__name__)
+        return {"status": "check_unavailable", "retry": True}
+    logger.error("replay re-check unavailable for decision %s on the last attempt: %s",
+                 decision_id, type(exc).__name__)
+    rid = _insert_replay(cur, key=key, case=case, members=members,
+                         facts={"ok": False, "outcome": "not_run", "resultSummary": None,
+                                "error": f"policy_check_unavailable: {type(exc).__name__}"})
+    who = _approvers(cur, members) + [facts.get("requestedBy")]
+    approvals._notify(cur, facts.get("firingId"), list(dict.fromkeys(w for w in who if w)),
+                      f"{approvals._action_text(facts)} was approved but could not be run: policy checks "
+                      "were unavailable.", case["decision_id"])
+    return {"status": "check_unavailable", "replayId": rid}
+
+
+def _record_recheck(cur, verdict, *, result: str, action: Dict[str, Any], requested_by: Optional[str],
+                    duration_ms: int) -> Dict[int, int]:
+    """Firing rows and notifications for the blocks and notifies matched at the re-check, the
+    way the gate writes them (gate.record_matches), inside _claim's transaction. Approve
+    policies the group already covers were decided by people and get no new row."""
+    hits = list(verdict.blocks) + [h for h in verdict.notifies if not any(h is b for b in verdict.blocks)]
+    if not hits:
+        return {}
+    return gate.record_matches(cur, hits, verdict.notifies, result=result,
+                               tool_name=str(action.get("tool") or ""), agent=action.get("agent"),
+                               workflow_id=action.get("workflowId"), user_id=requested_by,
+                               duration_ms=duration_ms, reason=RECHECK_REASON)
 
 
 # ---------------------------------------------------------------------------- run
@@ -337,15 +394,19 @@ def _claim(conn, decision_id: int) -> Dict[str, Any]:
 
         facts = case["facts"]
         action = facts.get("action") or {}
+        started = time.monotonic()
         try:
             policies = _load_policies()
             verdict = enforcement.check(_ctx(facts), policies)
         except Exception as exc:  # noqa: BLE001 - fail closed: never run unchecked
-            logger.error("replay re-check failed for decision %s: %s", decision_id, type(exc).__name__)
-            rid = _insert_replay(cur, key=key, case=case, members=members,
-                                 facts={"ok": False, "outcome": "not_run", "resultSummary": None,
-                                        "error": f"policy_check_unavailable: {type(exc).__name__}"})
-            return {"status": "check_unavailable", "replayId": rid}
+            return _check_unavailable(cur, decision_id, case, members, key, exc)
+        duration_ms = int((time.monotonic() - started) * 1000)
+
+        covered = {str((m["facts"].get("policy") or {}).get("id") or "") for m in members}
+        new = [h for h in verdict.approvals if str(h["id"]) not in covered]
+        result = "blocked" if verdict.blocks else "paused_for_approval" if new else "allowed"
+        firing_of = _record_recheck(cur, verdict, result=result, action=action,
+                                    requested_by=facts.get("requestedBy"), duration_ms=duration_ms)
 
         if verdict.blocks:
             rid = _insert_replay(cur, key=key, case=case, members=members,
@@ -354,13 +415,13 @@ def _claim(conn, decision_id: int) -> Dict[str, Any]:
                                         "blockedBy": [h["id"] for h in verdict.blocks]})
             return {"status": "blocked", "replayId": rid}
 
-        covered = {str((m["facts"].get("policy") or {}).get("id") or "") for m in members}
-        new = [h for h in verdict.approvals if str(h["id"]) not in covered]
         if new:
             mapping = deciders.load_map(conn)
             group = _effective_group(case)
             opened = [_open_new_case(conn, cur, h, case, members, group, facts.get("requestedBy"), mapping)
                       for h in new]
+            # the re-check's notify rows wait with the group, as the gate's do
+            gate.link_paused_notifies(cur, [firing_of[id(h)] for h in verdict.notifies], opened[0])
             return {"status": "new_approval_required", "caseIds": opened}
 
         sensitive = _sensitive_args(policies) | _sensitive_args(_stored_policy_docs(cur, members))

@@ -239,9 +239,11 @@ def test_deciders_put_is_admin_only_and_validated(client, conn, world):
                    json={"groups": ["PROCWISE_FINANCE"], "emails": ["Ops@Example.TEST"], "notes": "Ops on call"},
                    headers=admin)
     assert r.status_code == 200, r.text
-    assert r.json()["emails"] == ["ops@example.test"] and r.json()["lastModifiedBy"] == "u-admin"
+    # D1: the answer is the name and the time only; the saved values are read back from GET
+    assert set(r.json()) == {"name", "savedAt"} and r.json()["name"] == name and r.json()["savedAt"]
     listed = {d["name"]: d for d in client.get("/agent-policies/deciders", headers=viewer).json()["deciders"]}
     assert listed[name]["groups"] == ["PROCWISE_FINANCE"]
+    assert listed[name]["emails"] == ["ops@example.test"] and listed[name]["lastModifiedBy"] == "u-admin"
     assert any(a["action_type"] == "agent_policy.admin" and a["status"] == "allowed" for a in world.audits)
 
 

@@ -36,6 +36,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/decisions", tags=["Decisions"])
 
+#: Never served by the generic decision reads: their facts carry an agent tool call's raw
+#: arguments, context and reason. /agent-policies/approvals reads them with per-caller masking.
+HIDDEN_SUBJECT_TYPES = ("agent_policy_approval", "agent_policy_replay")
+_HIDDEN_CLAUSE = "d.subject_type NOT IN (" + ", ".join(f"'{t}'" for t in HIDDEN_SUBJECT_TYPES) + ")"
+
 
 def get_agent_nick(request: Request):
     nick = getattr(request.app.state, "agent_nick", None)
@@ -437,7 +442,11 @@ def list_decisions(
     """
     _reader(principal)  # no capability check, and no actor: a read records nothing
 
-    where = ["d.resolution = 'escalated'"]
+    # Agent-policy approval and replay rows carry the tool's raw arguments in `facts`; they are
+    # read only through /agent-policies/approvals, which masks them per caller.
+    # The names are this module's constants, inlined so the bound parameters stay exactly as
+    # before (subject_type, status, limit).
+    where = ["d.resolution = 'escalated'", _HIDDEN_CLAUSE]
     params: List[Any] = []
     if subject_type:
         where.append("d.subject_type = %s")
@@ -518,6 +527,7 @@ def get_decision(
     from engines.decision_engine import DecisionEngine
 
     row = DecisionEngine(agent_nick).trace(decision_id)
-    if not row:
+    # an agent-policy approval/replay row is answered as absent (its facts hold raw arguments)
+    if not row or row.get("subject_type") in HIDDEN_SUBJECT_TYPES:
         raise HTTPException(status_code=404, detail=f"decision {decision_id} not found")
     return row
