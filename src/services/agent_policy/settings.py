@@ -73,15 +73,23 @@ def precedent_count() -> Optional[int]:
 PRECEDENT_RANGE_RULE = "precedent_value_range_pct"
 
 
+def _percent(value) -> float:
+    """float(), except that a JSON true/false is unreadable: never read as 1% or 0%."""
+    if isinstance(value, bool):
+        raise TypeError("the precedent value range is a boolean, not a number")
+    return float(value)
+
+
 def precedent_value_range_pct() -> Optional[float]:
     """The governed precedent value range, in percent, read fresh like precedent_count. None is a
     stated null (no range check). Raises governed_limits.LimitUnavailable when the row or rule is
-    missing, and ValueError/TypeError when the value is not a number or is negative."""
+    missing, and ValueError/TypeError when the value is not a number (a boolean included) or is
+    negative."""
     import math
 
     from src.services import governed_limits
 
-    pct = governed_limits.limit(PRECEDENT_POLICY, PRECEDENT_RANGE_RULE, cast=float, fresh=True)
+    pct = governed_limits.limit(PRECEDENT_POLICY, PRECEDENT_RANGE_RULE, cast=_percent, fresh=True)
     if pct is not None and not (math.isfinite(pct) and pct >= 0):
         raise ValueError("the precedent value range must be a number of percent, 0 or more")
     return pct

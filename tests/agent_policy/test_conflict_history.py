@@ -113,3 +113,69 @@ def test_a_case_closed_by_the_system_says_so_in_the_csv():
                                        "decidedAt": "2026-10-09T12:00:00+00:00", "reason": None}}
     assert CH.DECIDED_BY_WORDS["system"] == "By the system"
     assert '"By the system","system:group","Reject"' in CH.to_csv([system]).split("\r\n")[1]
+
+
+# ---------------------------------------------------------------------------- the value range (Task 12)
+import json  # noqa: E402
+from datetime import datetime, timezone  # noqa: E402
+
+AT = datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc)
+RANGE = {"pct": 20.0, "fields": {"args.amount": {"value": 1000, "max": 900, "limit": 1080.0}}}
+
+
+def _precedent_row(value_range=..., cited=5):
+    facts = {"policies": [{"id": "TST-0001", "owner": "Owner A"}], "action": {"args": {"amount": 1000}}}
+    if value_range is not ...:
+        facts["valueRange"] = value_range
+    evidence = [{"kind": "overlap", "example": {"args.amount": 1000}}]
+    row = (12, "live", False, {"TST-0001": 1, "TST-0002": 1}, AT, "approve", "system:precedent", AT,
+           json.dumps(facts), json.dumps(evidence))
+    act = ("approve", "this_action", "system:precedent", AT,
+           "Decided the same way (approve) 5 times before by people: pc_1, pc_2.",
+           {"kind": "precedent", "name": "system:precedent"},
+           [{"kind": "precedent", "caseId": f"pc_{i}"} for i in range(1, cited + 1)])
+    return CH._entry(row, "pc_12", act)
+
+
+def test_a_precedent_entry_carries_its_value_range_and_says_so_in_its_reason():
+    e = _precedent_row(RANGE)
+    assert e["valueRange"] == RANGE
+    assert e["decision"]["reason"] == ("On precedent: decided the same way 5 times; "
+                                       "within 20% of the largest approved value")
+
+
+def test_a_precedent_entry_with_no_range_check_says_so():
+    e = _precedent_row({"pct": None, "fields": {}}, cited=3)
+    assert e["decision"]["reason"] == "On precedent: decided the same way 3 times; no value range applied"
+
+
+def test_a_precedent_entry_from_before_the_range_has_none():
+    e = _precedent_row()
+    assert e["valueRange"] is None
+    assert e["decision"]["reason"] == "On precedent: decided the same way 5 times"
+
+
+def test_a_person_entry_has_no_value_range_and_keeps_its_reason():
+    row = (13, "live", False, {"TST-0001": 1}, AT, "approve", "sub-b", AT, "{}", "[]")
+    act = ("approve", "this_action", "sub-b", AT, "Fine.", {"kind": "person"}, [])
+    e = CH._entry(row, "pc_13", act)
+    assert "valueRange" not in e and e["decision"]["reason"] == "Fine."
+
+
+def test_the_value_range_is_masked_for_a_reader_who_may_not_see_it():
+    entry = _precedent_row(RANGE)
+    [hidden] = CH.shown([entry], sensitive={"args.amount"}, unmasked_for=lambda _e: False)
+    assert hidden["valueRange"] == {"pct": 20.0, "fields": {"args.amount": {"value": MASK, "max": MASK, "limit": MASK}}}
+    [full] = CH.shown([entry], sensitive={"args.amount"}, unmasked_for=lambda _e: True)
+    assert full["valueRange"] == RANGE
+    assert entry["valueRange"] == RANGE, "shown() never edits its input"
+    [other] = CH.shown([entry], sensitive={"args.other"}, unmasked_for=lambda _e: False)
+    assert other["valueRange"] == RANGE, "only sensitive fields are masked"
+
+
+def test_the_csv_reason_of_a_precedent_row_names_the_range():
+    [e] = CH.shown([_precedent_row(RANGE)], sensitive={"args.amount"}, unmasked_for=lambda _e: False)
+    row = CH.to_csv([e]).split("\r\n")[1]
+    assert ('"Precedent","system:precedent","Approve","this_action","2026-10-09T12:00:00+00:00",'
+            '"On precedent: decided the same way 5 times; within 20% of the largest approved value",'
+            '"pc_1 pc_2 pc_3 pc_4 pc_5"') in row

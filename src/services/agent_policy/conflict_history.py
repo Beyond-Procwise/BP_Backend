@@ -6,7 +6,7 @@ An entry is one conflict case, newest first:
 
     {caseId, kind (policy|live), isOpen, raisedAt, policies [{id, version}], example,
      decision {option, scope, decidedBy {kind, name}, decidedAt, reason} | None,
-     citedCases [caseId], proposal}
+     citedCases [caseId], proposal, valueRange (a precedent entry only)}
 
 Who sees what (design §3.1): full reasons and example values go to anyone linked (decider map)
 to an owner or a decider of any of the case's policies, and to the Admin role. Everyone else
@@ -121,6 +121,9 @@ def _entry(row, cid: str, act: Optional[tuple]) -> Dict[str, Any]:
         # closed with no closing row the reader knows (written before it existed): the index says
         decision = {"option": outcome, "scope": None, "decidedBy": {"kind": None, "name": by},
                     "decidedAt": _iso(at), "reason": None}
+    precedent = decision is not None and (decision.get("decidedBy") or {}).get("kind") == "precedent"
+    if precedent:
+        decision["reason"] = precedent_reason(len(cited), facts.get("valueRange"))
     if kind == "live":
         args = dict(((facts.get("action") or {}).get("args")) or {})
     else:
@@ -129,9 +132,34 @@ def _entry(row, cid: str, act: Optional[tuple]) -> Dict[str, Any]:
         "caseId": cid, "kind": kind, "isOpen": bool(is_open), "raisedAt": _iso(created),
         "policies": [{"id": k, "version": int(v)} for k, v in sorted((_j(versions, {}) or {}).items())],
         "example": example, "decision": decision, "citedCases": cited, "proposal": facts.get("proposal"),
+        **({"valueRange": facts.get("valueRange")} if precedent else {}),
         **parties(pols),
         "_args": args,
     }
+
+
+def precedent_reason(n: int, value_range: Any) -> str:
+    """The reason every screen and the CSV give for a case decided on precedent (Task 12). No
+    values: only the count and the governed percentage the action was checked against."""
+    out = f"On precedent: decided the same way {n} times"
+    if not isinstance(value_range, dict):
+        return out                       # recorded before the value range existed
+    pct = value_range.get("pct")
+    if pct is None:
+        return out + "; no value range applied"
+    shown = int(pct) if isinstance(pct, float) and pct.is_integer() else pct
+    return out + f"; within {shown}% of the largest approved value"
+
+
+def mask_value_range(value_range: Any, sensitive: Set[str]) -> Any:
+    """A stored value range with every sensitive field's numbers masked, like the example."""
+    from services.agent_policy.enforcement import MASK
+
+    if not isinstance(value_range, dict):
+        return value_range
+    fields = value_range.get("fields") if isinstance(value_range.get("fields"), dict) else {}
+    return {**value_range, "fields": {
+        k: ({m: MASK for m in v} if k in sensitive and isinstance(v, dict) else v) for k, v in fields.items()}}
 
 
 def parties(policies: List[Dict[str, Any]]) -> Dict[str, List[str]]:
@@ -177,6 +205,8 @@ def shown(entries: List[Dict[str, Any]], *, sensitive: Set[str],
         view["decision"] = dict(e["decision"]) if isinstance(e.get("decision"), dict) else None
         if not unmasked_for(e):
             view["example"] = av.mask_witness(view["example"], sensitive)
+            if "valueRange" in view:
+                view["valueRange"] = mask_value_range(view["valueRange"], sensitive)
             d = view["decision"]
             if d:
                 d["reason"] = mask_reason(d.get("reason"), dict(e.get("_args") or {}), sensitive)
