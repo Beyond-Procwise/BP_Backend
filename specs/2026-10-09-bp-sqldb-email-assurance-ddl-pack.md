@@ -5,9 +5,9 @@ shared.** Nothing here is applied until live verification has passed (your rulin
 
 ## What it is
 
-Eighteen files in four groups, per your rulings:
+Nineteen files in four groups, per your rulings:
 
-* **Pack (a), schema, capture, validators in shadow:** thirteen files. Creates the `email_agent` schema and its tables, and inserts the family
+* **Pack (a), schema, capture, validators in shadow:** fourteen files. Creates the `email_agent` schema and its tables, and inserts the family
   rows (all `shadow`: they record and never block) and the retention, learning and sweep settings. Nothing in (a) changes what the model is
   asked to write. **One exception to "records and never blocks":** once `bp_inbound_flag` exists, a reply flagged as a suspected request to change
   payment details DOES stop an agent drafting, and the send guard sending, on that supplier's thread until an approver clears it. That is its purpose;
@@ -36,6 +36,7 @@ file's sha256, so you can check that the file applied is the file rehearsed.
 | 12 | a | `2026-10-08_email_family_human_written.sql` | `115d90b1afc77537` | `2026-10-08_email_family_human_written_rollback.sql` | INSERT `EmailFamily_human_written` (mode `shadow`, not classifiable). |
 | 13 | a | `2026-10-08_email_family_v2.sql` | `5a039ce0b4bf1d48` | `2026-10-08_email_family_v2_rollback.sql` | UPDATE only the two original family rows (created_by = `email_assurance_migration`): fact labels, rubric, authority agent. |
 | 14 | a | `2026-10-08_email_draft_sweep.sql` | `61fc89e9772e4027` | `2026-10-08_email_draft_sweep_rollback.sql` | INSERT `EmailDraftSweepRules` (`abandon_after_days: 14`, `batch_size: 500`). |
+| 14b | a | `2026-10-09_email_award_commitment.sql` | `76ce3ef6096b655b` | `2026-10-09_email_award_commitment_rollback.sql` | UPDATE the four family rows' `award_commitment` pattern, only where it is still the original (found live 2026-10-09: "the contract is yours" passed). |
 | 15 | b | `2026-10-08_email_agent_steering.sql` | `7f21b66f8a5f762b` | `2026-10-08_email_agent_steering_rollback.sql` | INSERT `EmailSteeringRules`. **Held back with the tone rules and prompts.** |
 | 16 | b | `2026-10-08_email_tone_rules.sql` | `436d01b122b0807b` | `2026-10-08_email_tone_rules_rollback.sql` | INSERT `EmailToneRules` (with tone `directives`). **Awaiting your review; held back.** |
 | 17 | b | `2026-10-08_email_assurance_prompts.sql` | `960b1850f3b57341` | `2026-10-08_email_assurance_prompts_rollback.sql` | INSERT three rows into `proc.bp_prompt`: classify, plan, judge. **Awaiting your review; held back.** |
@@ -166,12 +167,12 @@ The `*_rollback.sql` files in reverse order. Rollback removes the rows by `creat
 
 ## Rehearsal results (2026-10-08; a restored COPY of bp_sqldb's structure in a disposable Postgres 16 container)
 
-Run with `python -m evals.email.rehearsal` (re-runnable before the real apply). **File 17 (the prompts) changed on 2026-10-09** (the planner prompt, after a live A/B: 5/8 good briefs vs 3/8, none malformed); its hash above is the new one and the last rehearsal predates it, so re-run the rehearsal before applying. Full log: `evals/email/rehearsal-log.md`.
+Run with `python -m evals.email.rehearsal` (re-runnable before the real apply). **File 17 (the prompts) changed on 2026-10-09** (the planner prompt, after a live A/B: 5/8 good briefs vs 3/8, none malformed); its hash above is the new one. **Rehearsal re-run 2026-10-09 18:38 UTC with files 17 and 14b: PASS** (rollback fingerprint equal, re-apply identical). Full log: `evals/email/rehearsal-log.md`.
 
 - **The copy:** schema-only `pg_dump` of nine real tables (`supplier_response` with its sequence, `bp_supplier`, `workflow_email_tracking`,
   `bp_policy`, `bp_prompt`, `bp_approval`, `bp_mailbox_binding`, `bp_agent_actions`, `draft_rfq_emails`) with their real constraints and
   indexes, plus the rows of `bp_policy` (51) and `bp_prompt` (16). The only bp_sqldb access was that read-only dump.
-- **Apply:** eighteen of eighteen files ok, each in about a tenth of a second, in the order the test harness uses (not the (a)/(b) split below).
+- **Apply:** nineteen of nineteen files ok (re-run 2026-10-09 18:38 UTC), each in about a tenth of a second, in the order the test harness uses (not the (a)/(b) split below).
 - **Evals against the copy:** all golden cases pass (30 negotiation_counter, 26 free_prompt); the whole eval test suite passes against the copy, 424 of 424.
 - **Rollback:** every rollback ok. Left behind: 0 roles, 0 `email_agent` schema, 0 policy rows, 0 prompt rows.
 - **Schema fingerprint:** before the pack `74e91df8f5922063`, after rollback `74e91df8f5922063` (**identical**); the first apply gives
@@ -179,7 +180,7 @@ Run with `python -m evals.email.rehearsal` (re-runnable before the real apply). 
 
 ## What this rehearsal does NOT prove
 
-- **The (a)/(b) split on the real structure.** The rehearsal applies all eighteen in one order. The split IS proven on a generated schema
+- **The (a)/(b) split on the real structure.** The rehearsal applies all nineteen in one order. The split IS proven on a generated schema
   (pack (a) alone, then (b) on top, then (b) rolled back leaving (a) intact: `tests/email_evals/test_pack_split.py`) but was not run as two separate
   sessions against the restored bp_sqldb copy.
 - **Data volume and live contents.** The copy holds the policy and prompt rows, not the business rows. Lock times on large tables are not
