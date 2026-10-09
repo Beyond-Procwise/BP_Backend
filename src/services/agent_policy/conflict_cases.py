@@ -1,0 +1,294 @@
+"""Policy conflict cases: raise one when two policies contradict, at most one open per pair.
+
+A case is a proc.bp_decision row (subject_type 'policy_conflict', subject_id = the pair key)
+plus its index row in proc.bp_agent_policy_conflict. Detection runs when a policy is saved,
+when one is extracted from a document, and in an hourly scan (detect_all). Nothing here ever
+changes a policy: the owners decide, and their own save applies the decision (Task 5).
+
+A pair is raised only when code finds an input both policies match (conflict_detect.witness).
+Dedup, under a per-pair advisory lock taken before any check:
+- the pair already has an open policy case;
+- an in-force standing rule covers the pair;
+- a decided case already covered these versions (nothing changed since it was decided).
+The partial unique index on open policy pairs is the backstop: tripping it is a bug, and it
+raises and rolls the whole transaction back.
+
+get_conn() is AUTOCOMMIT: every write runs in approvals._tx.
+"""
+from __future__ import annotations
+
+import json
+import logging
+from datetime import datetime, timezone
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+
+from services.agent_policy import approvals, conflict_detect, conflict_payload, deciders
+from services.policy_condition import ConditionError
+
+logger = logging.getLogger(__name__)
+
+SUBJECT_POLICY = "policy_conflict"
+SUBJECT_LIVE = "live_conflict"
+DETECTOR = "system:conflict_detector"
+_AGENT = "agent_policy_conflicts"
+_NO_OWNER = "(no owner named)"
+
+#: Test seam: called inside raise_policy_case right after the pair's advisory lock is taken.
+_after_lock: Optional[Callable[[str], None]] = None
+
+
+def _j(v: Any, default=None):
+    if v is None:
+        return default
+    if isinstance(v, (str, bytes)):
+        return json.loads(v)
+    return v
+
+
+def _version(doc: Dict[str, Any]) -> int:
+    try:
+        return int(doc.get("version") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _owners(a: Dict[str, Any], b: Dict[str, Any]) -> List[str]:
+    out: List[str] = []
+    for d in (a, b):
+        name = str(d.get("owner") or "").strip()
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+def _unroutable(a: Dict[str, Any], b: Dict[str, Any], mapping) -> List[str]:
+    missing = deciders.unmapped(_owners(a, b), mapping)
+    if any(not str(d.get("owner") or "").strip() for d in (a, b)):
+        missing.append(_NO_OWNER)
+    return missing
+
+
+def _notify(cur, recipients: Iterable[str], message: str, decision_id: int) -> None:
+    for r in recipients:
+        r = str(r or "").strip()
+        if r:
+            cur.execute(
+                "INSERT INTO proc.bp_policy_notification (firing_id, recipient, message, link) "
+                "VALUES (NULL, %s, %s, %s)",
+                (r, message, f"conflict:{decision_id}"),
+            )
+
+
+def _covered(cur, key: str, versions: Dict[str, int]) -> bool:
+    """The three dedup checks, run after the pair's lock."""
+    cur.execute("SELECT 1 FROM proc.bp_agent_policy_conflict WHERE kind = 'policy' AND pair_key = %s AND is_open",
+                (key,))
+    if cur.fetchone():
+        return True
+    cur.execute("SELECT 1 FROM proc.bp_agent_policy_conflict_rule WHERE pair_key = %s AND superseded_at IS NULL",
+                (key,))
+    if cur.fetchone():
+        return True
+    (ka, va), (kb, vb) = sorted(versions.items())
+    cur.execute(
+        """
+        SELECT 1 FROM proc.bp_agent_policy_conflict
+         WHERE kind = 'policy' AND pair_key = %s AND NOT is_open
+           AND (policy_versions->>%s)::int >= %s AND (policy_versions->>%s)::int >= %s
+         LIMIT 1
+        """,
+        (key, ka, va, kb, vb),
+    )
+    return cur.fetchone() is not None
+
+
+def _prior(cur, key: str) -> Dict[str, Any]:
+    cur.execute(
+        "SELECT count(*), (array_agg(outcome ORDER BY decided_at DESC))[1] FROM proc.bp_agent_policy_conflict "
+        "WHERE kind = 'policy' AND pair_key = %s AND NOT is_open",
+        (key,),
+    )
+    row = cur.fetchone() or (0, None)
+    return {"sameConflict": int(row[0] or 0), "lastOutcome": row[1]}
+
+
+def _standing_rules(cur, keys: List[str]) -> List[Dict[str, Any]]:
+    """In-force rules touching either policy (never this pair: a rule for the pair stops the raise)."""
+    cur.execute(
+        "SELECT pair_key, prevails, yields, rule_text, decision_id, decided_at "
+        "FROM proc.bp_agent_policy_conflict_rule WHERE superseded_at IS NULL "
+        "AND (prevails = ANY(%s) OR yields = ANY(%s)) ORDER BY rule_id",
+        (keys, keys),
+    )
+    return [{"pairKey": r[0], "prevails": r[1], "yields": r[2], "rule": r[3],
+             "caseId": conflict_payload.case_id(r[4]),
+             "decidedAt": r[5].isoformat() if hasattr(r[5], "isoformat") else r[5]}
+            for r in cur.fetchall()]
+
+
+def raise_policy_case(cur, a: Dict[str, Any], b: Dict[str, Any], example: Dict[str, Any], *, raised_by: str,
+                      now: datetime, mapping, proposal: Optional[Dict[str, Any]] = None) -> Optional[int]:
+    """Raise one policy case for the pair inside the CALLER's transaction. None when deduplicated."""
+    ka, kb = str(a.get("id")), str(b.get("id"))
+    key = conflict_detect.pair_key(ka, kb)
+    keys = key.split("|")
+    versions = {ka: _version(a), kb: _version(b)}
+    cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"agent_policy_conflict:{key}",))
+    if _after_lock:
+        _after_lock(key)
+    if _covered(cur, key, versions):
+        return None
+
+    first, second = (a, b) if ka == keys[0] else (b, a)
+    payload = conflict_payload.build(
+        "policy", raised_at=now.isoformat(),
+        policies=[conflict_payload.policy_entry(first), conflict_payload.policy_entry(second)],
+        overlap_example=dict(example), standing_rules=_standing_rules(cur, keys), prior=_prior(cur, key),
+        options=conflict_payload.policy_options(first, second), respond_within=None, on_timeout="none")
+    cols = conflict_payload.to_columns(payload)
+    facts = dict(cols["facts"])
+    missing = _unroutable(first, second, mapping)
+    if missing:
+        facts["unroutable"] = missing
+    if proposal is not None:
+        facts["proposal"] = dict(proposal)
+
+    cur.execute(
+        """
+        INSERT INTO proc.bp_decision (
+            subject_type, subject_id, decision, resolution, rationale, status,
+            policy_id, policy_name, facts, evidence, workflow_id, agent, created_by,
+            options, respond_by, on_timeout, decision_scope
+        ) VALUES (%s,%s,'resolve_conflict','escalated',%s,'open',
+                  NULL,%s,%s,%s,NULL,%s,%s,%s,NULL,%s,NULL)
+        RETURNING decision_id
+        """,
+        (cols["subject_type"], key, conflict_payload.why_line([first, second]), key,
+         json.dumps(facts, default=str), json.dumps(cols["evidence"], default=str), _AGENT, DETECTOR,
+         json.dumps(cols["options"]), cols["on_timeout"]),
+    )
+    decision_id = int(cur.fetchone()[0])
+    cur.execute(
+        "INSERT INTO proc.bp_agent_policy_conflict (decision_id, kind, pair_key, policy_keys, policy_versions, "
+        "raised_by) VALUES (%s, 'policy', %s, %s, %s, %s)",
+        (decision_id, key, keys, json.dumps(versions), raised_by),
+    )
+    message = f"Policies {keys[0]} and {keys[1]} conflict; a decision is needed."
+    _notify(cur, _owners(first, second), message, decision_id)
+    if missing:
+        _notify(cur, [approvals.ADMIN_RECIPIENT],
+                f"Policies {keys[0]} and {keys[1]} conflict and the case cannot be routed: link {', '.join(missing)}",
+                decision_id)
+    return decision_id
+
+
+# ---------------------------------------------------------------------------- detection
+def _examples(form: Any) -> List[Dict[str, Any]]:
+    form = _j(form, {}) or {}
+    out = []
+    for ex in form.get("examples") or []:
+        inp = ex.get("input") if isinstance(ex, dict) else None
+        if isinstance(inp, dict):
+            out.append(inp)
+    return out
+
+
+def _load(cur, policy_key: str, among: Optional[List[str]]):
+    """(saved latest doc, its example inputs, [other docs]) or None when there is nothing to check."""
+    cur.execute(
+        "SELECT p.status, v.compiled, v.form_state FROM proc.bp_agent_policy p "
+        "JOIN proc.bp_agent_policy_version v ON v.policy_key = p.policy_key AND v.version = p.latest_version "
+        "WHERE p.policy_key = %s",
+        (policy_key,),
+    )
+    row = cur.fetchone()
+    if not row or row[0] == "retired":
+        return None
+    saved = _j(row[1], {}) or {}
+    sql = ("SELECT v.compiled FROM proc.bp_agent_policy p JOIN proc.bp_agent_policy_version v "
+           "ON v.policy_key = p.policy_key AND v.version IN (p.live_version, p.latest_version) "
+           "WHERE p.status <> 'retired' AND p.policy_key <> %s")
+    params: List[Any] = [policy_key]
+    if among is not None:
+        sql += " AND p.policy_key = ANY(%s)"
+        params.append(list(among))
+    cur.execute(sql + " ORDER BY p.policy_key, v.version DESC", params)
+    others = [d for d in (_j(r[0], {}) for r in cur.fetchall()) if isinstance(d, dict)]
+    return saved, _examples(row[2]), others
+
+
+def _pairs(saved, examples, others, stats) -> List[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
+    """Every (pair_key, other, witness) whose policies contradict, latest version first per pair."""
+    found = []
+    for other in others:
+        if not conflict_detect.design_time_pair(saved, other):
+            continue
+        stats["pairs"] += 1
+        try:
+            w = conflict_detect.witness(saved, other, examples)
+        except ConditionError as exc:
+            stats["errors"] += 1
+            logger.warning("conflict check skipped %s vs %s: %s", saved.get("id"), other.get("id"),
+                           type(exc).__name__)
+            continue
+        if w is not None:
+            found.append((conflict_detect.pair_key(str(saved.get("id")), str(other.get("id"))), other, w))
+    # one global lock order (pair key) so concurrent detections never deadlock; within a pair the
+    # latest version goes first, so its versions are the ones recorded
+    found.sort(key=lambda t: (t[0], -_version(t[1])))
+    return found
+
+
+def _detect(conn, policy_key: str, *, now: datetime, among, raised_by: str, stats) -> List[int]:
+    mapping = deciders.load_map(conn)
+    raised: List[int] = []
+    with approvals._tx(conn):
+        with conn.cursor() as cur:
+            loaded = _load(cur, policy_key, among)
+            if loaded is None:
+                return []
+            saved, examples, others = loaded
+            for _key, other, w in _pairs(saved, examples, others, stats):
+                did = raise_policy_case(cur, saved, other, w, raised_by=raised_by, now=now, mapping=mapping)
+                if did is not None:
+                    raised.append(did)
+    stats["raised"] += len(raised)
+    return raised
+
+
+def detect_for(conn, policy_key: str, *, now: Optional[datetime] = None, among: Optional[List[str]] = None,
+               raised_by: str = "save") -> List[int]:
+    """Raise a case for every policy the saved one contradicts. One transaction. Returns new case ids."""
+    stats = {"pairs": 0, "raised": 0, "errors": 0}
+    return _detect(conn, policy_key, now=now or datetime.now(timezone.utc), among=among,
+                   raised_by=raised_by, stats=stats)
+
+
+def detect_all(conn, *, now: Optional[datetime] = None) -> Dict[str, int]:
+    """The hourly safety net: every non-retired policy against all others. Never raises."""
+    now = now or datetime.now(timezone.utc)
+    stats = {"pairs": 0, "raised": 0, "errors": 0}
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT policy_key FROM proc.bp_agent_policy WHERE status <> 'retired' ORDER BY policy_key")
+            keys = [r[0] for r in cur.fetchall()]
+    except Exception as exc:  # noqa: BLE001
+        logger.error("conflict scan could not list policies: %s", type(exc).__name__)
+        stats["errors"] += 1
+        return stats
+    for key in keys:
+        try:
+            _detect(conn, key, now=now, among=None, raised_by="scan", stats=stats)
+        except Exception as exc:  # noqa: BLE001 - one policy must not stop the scan
+            stats["errors"] += 1
+            logger.error("conflict scan failed for %s: %s", key, type(exc).__name__)
+    return stats
+
+
+def after_save(conn, policy_key: str) -> None:
+    """Best effort after a save: the save is never undone, and the hourly scan catches what this missed."""
+    key = policy_key
+    try:
+        detect_for(conn, key)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("conflict detection failed for %s: %s", key, type(exc).__name__)

@@ -58,3 +58,54 @@ def test_run_also_retries_lost_replays_and_never_raises(monkeypatch):
     monkeypatch.setattr(replay_retry, "retry_lost_replays", lambda conn, now: calls.append(now) or 1 / 0)
     _Stub()._run_agent_policy_approvals_sweep()
     assert len(calls) == 2
+
+
+# ---------------------------------------------------------------- conflict scan (stage 4)
+class _ScanStub:
+    AGENT_POLICY_CONFLICT_SCAN_JOB_NAME = BackendScheduler.AGENT_POLICY_CONFLICT_SCAN_JOB_NAME
+    _register_agent_policy_conflict_scan_job = BackendScheduler._register_agent_policy_conflict_scan_job
+    _run_agent_policy_conflict_scan = BackendScheduler._run_agent_policy_conflict_scan
+
+    def __init__(self):
+        self._jobs = {}
+
+    def register_job(self, name, runner, interval, initial_delay=None, **_):
+        self._jobs[name] = (runner, interval, initial_delay)
+
+
+@pytest.mark.parametrize("value,registered", [(None, True), ("on", True), ("OFF", False), ("off", False),
+                                              ("anything", True)])
+def test_conflict_scan_toggle(monkeypatch, value, registered):
+    if value is None:
+        monkeypatch.delenv("AGENT_POLICY_CONFLICT_SCAN", raising=False)
+    else:
+        monkeypatch.setenv("AGENT_POLICY_CONFLICT_SCAN", value)
+    s = _ScanStub()
+    s._register_agent_policy_conflict_scan_job()
+    assert (s.AGENT_POLICY_CONFLICT_SCAN_JOB_NAME in s._jobs) is registered
+    if registered:
+        _runner, interval, delay = s._jobs[s.AGENT_POLICY_CONFLICT_SCAN_JOB_NAME]
+        assert interval.total_seconds() == 3600 and delay.total_seconds() == 300
+
+
+def test_conflict_scan_is_registered_at_startup():
+    import inspect
+    src = inspect.getsource(BackendScheduler)
+    assert "self._register_agent_policy_conflict_scan_job()" in src
+
+
+def test_conflict_scan_calls_detect_all_and_never_raises(monkeypatch):
+    from services.agent_policy import conflict_cases
+    import services.db as db
+
+    class _Ctx:
+        def __enter__(self): return object()
+        def __exit__(self, *a): return False
+    monkeypatch.setattr(db, "get_conn", lambda: _Ctx())
+    calls = []
+    monkeypatch.setattr(conflict_cases, "detect_all",
+                        lambda conn, now=None: calls.append(now) or {"pairs": 1, "raised": 1, "errors": 0})
+    _ScanStub()._run_agent_policy_conflict_scan()
+    assert len(calls) == 1 and calls[0].tzinfo is not None
+    monkeypatch.setattr(conflict_cases, "detect_all", lambda conn, now=None: 1 / 0)
+    _ScanStub()._run_agent_policy_conflict_scan()

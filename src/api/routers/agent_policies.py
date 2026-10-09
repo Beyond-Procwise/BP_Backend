@@ -25,8 +25,8 @@ from pydantic import BaseModel, Field
 from api.auth import Principal
 from repositories import agent_policy_repo as repo
 from services import agent_actions, rbac
-from services.agent_policy import (approval_views, approvals, conditions, contract, documents, live_policies,
-                                   readiness, run_runner, run_store, sections)
+from services.agent_policy import (approval_views, approvals, conditions, conflict_cases, contract, documents,
+                                   live_policies, readiness, run_runner, run_store, sections)
 from services.agent_policy.compiler import compile_policy
 from services.agent_policy.registry import load_registry
 from services.agent_policy.settings import load_settings
@@ -490,9 +490,11 @@ def create(body: CreateBody, p: Principal = Depends(gateway_principal)):
     _require(p, "Buyer", "agent_policy.write", {"intent": "create"})
     with _conn() as conn:
         try:
-            return repo.create_draft(conn, body.form, actor=p.subject)
+            out = repo.create_draft(conn, body.form, actor=p.subject)
         except repo.NotReady as exc:
             return JSONResponse(status_code=422, content={"problems": exc.problems})
+    _detect_conflicts(out["policyKey"])
+    return out
 
 
 @router.post("/{key}/versions")
@@ -502,8 +504,8 @@ def save(key: str, body: VersionBody, p: Principal = Depends(gateway_principal))
     try:
         with _conn() as conn:
             try:
-                return repo.save_version(conn, key, body.form, base_version=body.baseVersion, intent=body.intent,
-                                         actor=p.subject, change_note=body.changeNote)
+                out = repo.save_version(conn, key, body.form, base_version=body.baseVersion, intent=body.intent,
+                                        actor=p.subject, change_note=body.changeNote)
             except repo.StaleVersion as exc:
                 raise HTTPException(status_code=409, detail=f"Someone saved a newer version ({exc}). Reload and try again.")
             except repo.NotReady as exc:
@@ -512,6 +514,18 @@ def save(key: str, body: VersionBody, p: Principal = Depends(gateway_principal))
                 raise HTTPException(status_code=404, detail="no such policy")
     finally:
         live_policies.invalidate()   # after the connection closes, so the next check sees this save
+    _detect_conflicts(out["policyKey"])
+    return out
+
+
+def _detect_conflicts(key: str) -> None:
+    """Conflict detection after a successful save, on a fresh connection. Best effort: the save is
+    never undone, and the hourly scan catches what this missed."""
+    try:
+        with _conn() as conn:
+            conflict_cases.after_save(conn, key)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("conflict detection failed for %s: %s", key, type(exc).__name__)
 
 
 @router.post("/{key}/agent-fix")

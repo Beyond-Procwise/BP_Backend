@@ -19,7 +19,7 @@ import json
 from typing import Any, Callable, Dict, List, Optional
 
 from repositories import agent_policy_repo as repo
-from services.agent_policy import converter, documents, extractor, matching, readiness
+from services.agent_policy import conflict_cases, converter, documents, extractor, matching, readiness
 from services.agent_policy.registry import load_registry
 from services.agent_policy.sections import chunk_sections, split_sections
 from services.agent_policy.settings import load_settings
@@ -281,6 +281,8 @@ def _decide(conn, emit: Emit, form: Dict[str, Any], d: Dict[str, Any], by_key, c
         emit("error", {"message": f"The policy from section {ref} could not be saved: {_one_line(exc)}",
                        "name": form.get("name")}, reference=ref, policy_key=d.get("policyKey"), **at)
         return
+    if saved_version is not None:
+        conflict_cases.after_save(conn, key)   # best effort; never raises, the hourly scan backs it up
     counts[decision] += 1
     emit("policy", payload, reference=ref, policy_key=key, decision=decision, saved_version=saved_version,
          **at)

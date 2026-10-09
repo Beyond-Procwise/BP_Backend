@@ -447,6 +447,7 @@ class BackendScheduler:
         self._register_email_text_retention_job()
         self._register_email_draft_sweep_job()
         self._register_agent_policy_approvals_job()
+        self._register_agent_policy_conflict_scan_job()
 
     AGENT_POLICY_APPROVALS_JOB_NAME = "agent-policy-approval-sweep"
 
@@ -497,6 +498,42 @@ class BackendScheduler:
                 logger.info("agent policy replay retry: %s", retried)
         except Exception:
             logger.exception("agent policy replay retry failed")
+
+    AGENT_POLICY_CONFLICT_SCAN_JOB_NAME = "agent-policy-conflict-scan"
+
+    def _register_agent_policy_conflict_scan_job(self) -> None:
+        """Look for contradicting agent policies every hour (first run 5 min after start).
+
+        ON unless AGENT_POLICY_CONFLICT_SCAN=off. The safety net behind detection on save and on
+        extraction: it raises the policy conflict cases those missed. Duplicates are impossible
+        (one open case per pair, under a per-pair lock).
+        """
+        import os
+        if os.environ.get("AGENT_POLICY_CONFLICT_SCAN", "on").strip().lower() == "off":
+            logger.info("agent policy conflict scan not registered (AGENT_POLICY_CONFLICT_SCAN=off)")
+            return
+        if self.AGENT_POLICY_CONFLICT_SCAN_JOB_NAME in self._jobs:
+            return
+        self.register_job(
+            self.AGENT_POLICY_CONFLICT_SCAN_JOB_NAME,
+            self._run_agent_policy_conflict_scan,
+            interval=timedelta(hours=1),
+            initial_delay=timedelta(minutes=5),
+        )
+
+    def _run_agent_policy_conflict_scan(self) -> None:
+        try:
+            from datetime import datetime, timezone
+
+            from services.agent_policy import conflict_cases
+            from services.db import get_conn
+
+            with get_conn() as conn:
+                counts = conflict_cases.detect_all(conn, now=datetime.now(timezone.utc))
+            if counts.get("raised") or counts.get("errors"):
+                logger.info("agent policy conflict scan: %s", counts)
+        except Exception:
+            logger.exception("agent policy conflict scan failed")
 
     EMAIL_LEARNING_JOB_NAME = "email-learning"
 
