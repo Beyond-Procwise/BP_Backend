@@ -366,7 +366,8 @@ def status(cur, policy_key: str, head: Dict[str, Any], versions: List[Dict[str, 
     or was live, needs a second review, and who gave it (`reviewedBy` the sign-in id,
     `reviewedByName` the email recorded with the review, else the one remembered for the id, else that id). The same rule as
     activation (`needed`), so the page and the activation never disagree. While a required review
-    is not yet recorded the answer also carries `whoMayReview`, the one sentence that says who may. `head` holds `liveVersion` and
+    is not yet recorded the answer also carries `whoMayReview`, the one sentence that says who may
+    (left out when the saved form cannot be read: nobody can review it then). `head` holds `liveVersion` and
     `latestVersion`; `versions` are the policy's versions as the page shows them. Never raises:
     when it cannot tell, the review is shown as required (and it is said in the log)."""
     live, latest = head.get("liveVersion"), head.get("latestVersion")
@@ -388,8 +389,10 @@ def status(cur, policy_key: str, head: Dict[str, Any], versions: List[Dict[str, 
                 "reviewedByName": approval_views.shown_name(by, email) if row else None,
                 "reviewedAt": _iso(row[2]) if row else None,
                 **({} if by else {"whoMayReview": WHO_MAY_REVIEW})}
-    except Exception:  # noqa: BLE001 - the page must not fail, and must not say "no review needed" on a guess
+    except Exception as exc:  # noqa: BLE001 - the page must not fail, and must not say "no review needed" on a guess
         logger.exception("second review: whether %s version %s needs one could not be worked out; "
                          "it is shown as required", policy_key, latest)
+        # a saved form that cannot be read: `record` would refuse anyone, so nobody is invited to review
+        nobody_can = _fault(exc) == "second_review_unreadable"
         return {"required": True, "version": latest, "reviewedBy": None, "reviewedByName": None,
-                "reviewedAt": None, "whoMayReview": WHO_MAY_REVIEW}
+                "reviewedAt": None, **({} if nobody_can else {"whoMayReview": WHO_MAY_REVIEW})}

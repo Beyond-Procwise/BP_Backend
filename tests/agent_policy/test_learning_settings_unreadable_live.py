@@ -59,3 +59,45 @@ def test_a_number_that_cannot_be_read_is_422_through_the_real_audit_write(monkey
         (p1, s1, d1), (p2, s2, d2) = _audits(conn, sub)
         assert (p1, s1) == ("authorize", "allowed") and d1["requested"] == {**GOOD, field: shown}
         assert (p2, s2, d2["fields"]) == ("act", "refused", [field])
+
+
+def _put(monkeypatch, body):
+    from api.main import app
+    assert os.getenv("DB_NAME") == "bp_testdb"
+    sub = f"tst-admin-{uuid.uuid4().hex[:10]}"
+    monkeypatch.setenv("AGENT_POLICY_GATEWAY_KEY", "k1")
+    monkeypatch.setattr(R, "_role_of", lambda p: "Admin")
+    r = TestClient(app).put(URL, content=json.dumps(body), headers={        # ascii: the escape goes on the wire
+        "X-Gateway-Key": "k1", "X-User-Sub": sub, "X-User-Email": "", "X-User-Groups": "[]",
+        "Content-Type": "application/json"})
+    return sub, r
+
+
+@pytest.mark.parametrize("value,shown", [("\u0000", "'\\x00'"), ("\ud800", "'\\ud800'"), ("a\u0000b", "'a\\x00b'")])
+def test_text_jsonb_refuses_is_422_through_the_real_audit_write(monkeypatch, value, shown):
+    with get_conn() as conn:
+        before = _row(conn)
+        sub, r = _put(monkeypatch, {**GOOD, "min_days": value})
+        assert r.status_code == 422, r.text
+        assert r.json() == {"problems": [{"field": "min_days", "message": "Enter a whole number from 1 to 365."}]}
+        assert _row(conn) == before, "the settings row was not touched"
+        (p1, s1, d1), (p2, s2, d2) = _audits(conn, sub)
+        assert (p1, s1) == ("authorize", "allowed") and d1["requested"] == {**GOOD, "min_days": shown}
+        assert (p2, s2, d2["fields"]) == ("act", "refused", ["min_days"])
+
+
+def test_unknown_keys_are_422_through_the_real_audit_write_twenty_names_kept(monkeypatch):
+    with get_conn() as conn:
+        before = _row(conn)
+        sub, r = _put(monkeypatch, {**GOOD, "a\u0000": 1})
+        assert r.status_code == 422, r.text
+        assert [x["message"] for x in r.json()["problems"]] == ["This is not a learning threshold."]
+        (_p1, s1, _d1), (p2, s2, d2) = _audits(conn, sub)
+        assert s1 == "allowed" and (p2, s2, d2["fields"]) == ("act", "refused", ["'a\\x00'"])
+
+        sub, r = _put(monkeypatch, {**GOOD, **{f"k{i:02d}": i for i in range(50)}})
+        assert r.status_code == 422 and len(r.json()["problems"]) == 50
+        (_p1, s1, _d1), (p2, s2, d2) = _audits(conn, sub)
+        assert s1 == "allowed" and (p2, s2) == ("act", "refused")
+        assert d2["fields"] == [f"k{i:02d}" for i in range(20)]
+        assert _row(conn) == before, "the settings row was not touched"

@@ -201,15 +201,18 @@ def learning_settings(p: Principal = Depends(gateway_principal)):
 
 
 _AUDIT_TEXT = 100
+_AUDIT_FIELDS = 20
 
 
 def _audit_scalar(value: Any) -> Any:
     """What an audit record keeps of a value somebody SENT, before it has been judged: a finite
-    number or a short string as it is; anything else (NaN, Infinity, a whole number no float can
-    hold, null, a list, an object, long text) as its repr, cut to 100 characters. The audit column
-    is jsonb, which refuses NaN and Infinity: recording the raw value would fail the audit write,
-    and the request with it, before the body could be answered as the 422 it is."""
-    if isinstance(value, str) and len(value) <= _AUDIT_TEXT:
+    number, or a short string of printable ASCII, as it is; anything else (NaN, Infinity, a whole
+    number no float can hold, null, a list, an object, long text, text holding any other
+    character) as its repr, cut to 100 characters. The audit column is jsonb, which refuses NaN,
+    Infinity, the NUL character and half of a surrogate pair: recording the raw value would fail
+    the audit write, and the request with it, before the body could be answered as the 422 it is.
+    The repr of a string escapes every character that is not printable, those two among them."""
+    if isinstance(value, str) and len(value) <= _AUDIT_TEXT and all(" " <= c <= "~" for c in value):
         return value
     if isinstance(value, (int, float)):
         try:
@@ -234,7 +237,8 @@ def update_learning_settings(body: Dict[str, Any] = Body(...), p: Principal = De
     problems = policy_settings.learning_problems(body)
     if problems:
         _audit("refused", f"{p.subject} could not change the learning thresholds",
-               fields=[x["field"] for x in problems])
+               # the names of unknown keys are the sender's text: the first twenty, each made safe
+               fields=[_audit_scalar(x["field"]) for x in problems[:_AUDIT_FIELDS]])
         return JSONResponse(status_code=422, content={"problems": problems})
     try:
         with _conn() as conn:
