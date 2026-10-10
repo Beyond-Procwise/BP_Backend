@@ -149,6 +149,7 @@ _INSERT_SQL = """
            (policy_key, change_key, policy_version, kind, proposal, stats, confident, status, created_at, updated_at)
     VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, TRUE, 'open', %s, %s)
     ON CONFLICT (policy_key, change_key) DO NOTHING
+    RETURNING suggestion_id
 """
 # The same statement refreshes an open card and brings a hidden or no-longer-saved one back.
 _OPEN_SQL = """
@@ -298,6 +299,34 @@ def _checked_settings(conn) -> Dict[str, Any]:
     return cfg
 
 
+def _tell_owner(cur, target: Target, suggestion_id: int, proposal: Dict[str, Any], decided: List[Decided]) -> None:
+    """One in-product notification to the policy's owner (the name its LIVE form gives) that a card
+    was raised or has come back; never for a plain refresh (the caller decides that). Written on the
+    policy's own cursor, so it is committed with the card or not at all, and inside a savepoint: a
+    notification that cannot be written is logged and undone on its own, and the card stays.
+
+    The notification table needs a firing to hang on (its check constraint allows no firing only
+    for a conflict link), so the row names the newest decision of the change's evidence: a firing
+    of this policy, which is also how the reader learns the policy key. Nobody is told when the
+    form names no owner."""
+    owner = str(target.form.get("owner") or "").strip()
+    if not owner:
+        return
+    cur.execute("SAVEPOINT learning_notify")
+    try:
+        from services.agent_policy import gate   # lazily: the gate pulls in the decision engine
+
+        evidence = learning_patterns.group_for(proposal, decided) or decided
+        newest = max(evidence, key=lambda d: (d.decided_at, d.firing_id))
+        gate._notify(cur, newest.firing_id, [owner],
+                     f"Learning suggests a change to {target.key}: {proposal['plain']}", f"suggestion:{suggestion_id}")
+    except Exception as exc:  # noqa: BLE001 - type only: a driver message can quote stored values
+        cur.execute("ROLLBACK TO SAVEPOINT learning_notify")
+        logger.warning("learning: the owner of %s could not be told about suggestion %s (%s); the card is kept",
+                       target.key, suggestion_id, type(exc).__name__)
+    cur.execute("RELEASE SAVEPOINT learning_notify")
+
+
 def _store(cur, target: Target, locked: List[tuple], proposals: List[Dict[str, Any]], decided: List[Decided],
            cfg: Dict[str, Any], now: datetime) -> Dict[str, int]:
     """Bring the policy's suggestion rows (`locked`: what _LOCK_SQL returned) in line with this
@@ -312,6 +341,9 @@ def _store(cur, target: Target, locked: List[tuple], proposals: List[Dict[str, A
     marks sensitive is not stored, and a card already shown or hidden on that field is superseded
     (older firings, recorded before the input was marked, hold the value unmasked and could
     otherwise put it in the "to" figure everyone who can read the queue sees).
+
+    The owner is told (`_tell_owner`) each time a card is raised or comes back to `open`, once;
+    a refresh of a card that is already open tells nobody.
     """
     counts = {k: 0 for k in COUNTERS}
     condition = target.form["hidden"]["condition"]
@@ -329,7 +361,10 @@ def _store(cur, target: Target, locked: List[tuple], proposals: List[Dict[str, A
         if row is None:
             cur.execute(_INSERT_SQL, (target.key, change_key, target.live_version, p["kind"],
                                       json.dumps(p), json.dumps(p["stats"]), now, now))
-            counts["raised"] += cur.rowcount
+            raised = cur.fetchone()                    # None: someone else's row got there first
+            if raised is not None:
+                counts["raised"] += 1
+                _tell_owner(cur, target, raised[0], p, decided)
             continue
         suggestion_id, _key, status, n_at_action = row[0], row[1], row[2], row[3]
         if status == "saved" and _in_force(p, target, told):
@@ -350,6 +385,8 @@ def _store(cur, target: Target, locked: List[tuple], proposals: List[Dict[str, A
             counter = "reopened"
         cur.execute(_OPEN_SQL, args + (suggestion_id,))
         counts[counter] += 1
+        if counter != "updated":                       # raised again or reopened, not a refresh
+            _tell_owner(cur, target, suggestion_id, p, decided)
     for change_key, (suggestion_id, _key, status, _n, proposal, confident) in existing.items():
         if change_key in proposed or status not in ("open", "not_yet", "dismissed"):
             continue

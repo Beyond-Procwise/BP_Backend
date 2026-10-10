@@ -543,6 +543,8 @@ def _link_ref(link: str) -> Dict[str, Any]:
         return {"policyKey": ref}
     if kind == "conflict" and ref.isascii() and ref.isdigit():
         return {"conflictId": int(ref)}
+    if kind == "suggestion" and ref.isascii() and ref.isdigit():
+        return {"suggestionId": int(ref)}
     return {}
 
 
@@ -572,6 +574,10 @@ def my_notifications(conn, principal, limit: int, *, is_admin: bool = False) -> 
                     "policyKey": ref.get("policyKey") or r["policy_key"], "decisionId": ref.get("decisionId"),
                     "conflictId": ref.get("conflictId"),
                     "read": me in (r["read_by"] or []), "createdAt": _iso(r["created_at"])})
+        if "suggestionId" in ref:
+            # a learning suggestion (stage 5b): the card to open, and the policy it is about (the
+            # policy of the decision the notification hangs on). Every other kind is as it was.
+            out[-1]["target"] = {"kind": "suggestion", "id": ref["suggestionId"], "policyKey": r["policy_key"]}
     return out
 
 
