@@ -71,7 +71,7 @@ def make(conn, monkeypatch):
     monkeypatch.setattr(repo, "_contract_problems", lambda d, r: [])
     made = []
 
-    def _make(area="Finance", countries=False):
+    def _make(area="Finance", countries=False, vendor=False):
         tag = uuid.uuid4().hex[:8]
         w = SimpleNamespace(tag=tag, key=None, live=2, owner=f"TST Owner {tag}", tool=f"tst_{tag}",
                             owner_person=person(f"tst-owner-{tag}"))
@@ -83,6 +83,11 @@ def make(conn, monkeypatch):
             form["hidden"]["condition"]["all"].append({"field": "customer.country", "op": "in", "value": ["FR", "DE"]})
             form["hidden"]["inputs"].append({"name": "Customer country", "field": "customer.country", "type": "string"})
             extra = [{"customer.country": "FR" if i < 30 else "DE"} for i in range(33)]
+        if vendor:      # a second leaf on a SENSITIVE input: every decision has it stored as the mask
+            form["hidden"]["condition"]["all"].append({"field": "args.vendor", "op": "eq", "value": "X"})
+            form["hidden"]["inputs"].append({"name": "Vendor", "field": "args.vendor", "type": "string",
+                                             "from": "action", "showApprover": False, "sensitive": True})
+            extra = [{"args.vendor": MASK}] * 33
         w.key = repo.create_draft(conn, form, actor="test")["policyKey"]
         repo.save_version(conn, w.key, form, base_version=1, intent="activate", actor="test", change_note="go")
         conn.cursor().execute(
@@ -410,23 +415,96 @@ def test_a_condition_that_reads_a_field_no_decision_recorded_needs_the_review(co
     assert _refused(conn, fin, widened, base=fin.live) == REQUIRED, "cannot tell is not a pass, even for a widening"
 
 
+EXISTS = {"field": "args.amount", "op": "exists"}
+
+
+def test_a_guard_that_lets_an_action_without_the_value_through_needs_the_review(conn, fin):
+    """Fix round 2, finding 1. "The amount must be there": every decision so far carried one, so
+    no real decision shows what is let go. The rule asks it of the newest decision with the value
+    taken away: under the live form that action paused (missing data fails closed), under these
+    it would be allowed."""
+    guards = {
+        "an exists guard": _cond(conn, fin, EXISTS, amount("gt", 500)),
+        "the guard written last": _cond(conn, fin, amount("gt", 500), EXISTS),
+        "not(not exists)": _cond(conn, fin, {"not": {"not": EXISTS}}, amount("gt", 500)),
+    }
+    assert not any(w["missing_inputs"] for w in L.witnesses(conn.cursor(), fin.key)), "no decision lacked its amount"
+    for name, form in guards.items():
+        assert _refused(conn, fin, form, base=fin.live) == REQUIRED, name
+    v = _draft(conn, fin, guards["an exists guard"], base=fin.live)
+    assert repo.get_policy(conn, fin.key)["secondReview"] == {"required": True, "version": v, "reviewedBy": None,
+                                                              "reviewedAt": None}, "the page says the same"
+    assert _refused(conn, fin, guards["an exists guard"], base=v) == REQUIRED
+    _review(conn, fin, v)
+    assert _activate(conn, fin, guards["an exists guard"], base=v) == v + 1
+
+
 def test_a_field_the_action_really_lacked_is_judged_by_the_missing_data_rule(conn, fin):
-    # "the amount must be there": every decision so far carried one, so nothing is let go
-    must_exist = _cond(conn, fin, amount("gt", 500), {"field": "args.amount", "op": "exists"})
-    assert SR.needed(conn.cursor(), fin.key, fin.live, must_exist) is None
     # one decision on an action that carried NO amount (it paused because missing data fails closed)
     fire(conn, fin.key, [None], version=fin.live, action=fin.tool, missing=["args.amount"], first=40)
     [w] = [w for w in L.witnesses(conn.cursor(), fin.key) if w["missing_inputs"]]
     assert (w["action_name"], w["matched_values"], w["missing_inputs"]) == (fin.tool, {"tool.name": fin.tool},
                                                                             ["args.amount"])
+    must_exist = _cond(conn, fin, amount("gt", 500), EXISTS)
     assert _refused(conn, fin, must_exist, base=fin.live) == REQUIRED, "that action would no longer be asked about"
     assert _activate(conn, fin, _at(conn, fin, 400), base=fin.live) == 3, "a tightening still asks about it"
 
 
-def test_a_decision_whose_value_is_hidden_blocks_nothing(conn, fin):
+def test_a_change_that_leaves_missing_data_alone_needs_no_review(conn, fin):
+    # the same question, asked of a wording edit and of a real tightening: nothing is let go
+    assert _activate(conn, fin, _at(conn, fin, messageForAgent="TST reworded"), base=fin.live) == 3
+    assert _activate(conn, fin, _at(conn, fin, 400), base=3) == 4
+    assert _reviews(conn, fin) == []
+
+
+def test_the_live_missing_data_rule_is_read_from_what_was_compiled(conn, fin, monkeypatch):
+    """The live version was compiled fail-closed from a form that names no rule. If the company
+    default has since become fail-open, saving the same form again would compile it fail-open:
+    the rule must compare with what is enforced, not with what today's settings make of the form."""
+    cur = conn.cursor()
+    cur.execute("SELECT form_state->'hidden'->>'onMissingData', compiled->'trigger'->>'onMissingData' "
+                "FROM proc.bp_agent_policy_version WHERE policy_key = %s AND version = %s", (fin.key, fin.live))
+    assert cur.fetchone() == (None, "fail_closed")
+    real = SR.load_settings
+    monkeypatch.setattr(SR, "load_settings", lambda c: {**real(c), "on_missing_data": {"approve": "fail_open"}})
+    reworded = _at(conn, fin, messageForAgent="TST reworded")
+    assert SR.needed(cur, fin.key, fin.live, reworded) == fin.sid
+    assert SR.needed(cur, fin.key, fin.live, _cond(conn, fin, onMissingData="fail_closed")) is None
+
+
+# ------------------------------------------------------------------ a policy that reads a hidden value (finding 2)
+def test_a_policy_that_reads_a_hidden_value_is_covered(conn, make, monkeypatch):
+    """Every decision of this policy has the vendor stored as the mask, so the live form cannot be
+    shown to gate any of them. The suggested loosening needs the review all the same; so does a
+    tightening (it cannot be told apart: an accepted cost); an edit that changes nothing enforced
+    does not, and the decisions are not even read for it."""
+    w = make("Finance", vendor=True)
+    seen = L.witnesses(conn.cursor(), w.key)
+    assert len(seen) == 33 and {x["matched_values"]["args.vendor"] for x in seen} == {MASK}
+    live = _at(conn, w)
+    settings = SR.load_settings(conn)
+    assert {SR.gates(live, x, settings) for x in seen} == {None}
+    vendor = live["hidden"]["condition"]["all"][2]
+    assert _refused(conn, w, _at(conn, w, 800), base=w.live) == REQUIRED, "the suggested loosening itself"
+    assert _refused(conn, w, _cond(conn, w, amount("gt", 800)), base=w.live) == REQUIRED, "and with the hidden leaf dropped"
+    assert _refused(conn, w, _cond(conn, w, amount("gt", 400), vendor), base=w.live) == REQUIRED, "a tightening: cannot tell"
+    _no_witness_read(monkeypatch)
+    assert _activate(conn, w, _at(conn, w, owner=f"TST Other Owner {w.tag}", messageForAgent="TST reworded"),
+                     base=w.live) == 3
+    assert _reviews(conn, w) == []
+
+
+def test_a_decision_whose_value_is_hidden_asks_for_the_review_of_any_real_change(conn, fin):
+    # "cannot tell" about one decision: a wording edit is untouched, anything enforced needs the review
     fire(conn, fin.key, [MASK], version=fin.live, action=fin.tool, first=41)
     assert _refused(conn, fin, _at(conn, fin, 800), base=fin.live) == REQUIRED
-    assert _activate(conn, fin, _at(conn, fin, 400), base=fin.live) == 3
+    assert _activate(conn, fin, _at(conn, fin, messageForAgent="TST reworded"), base=fin.live) == 3
+    fin.live = 3
+    tighter = _at(conn, fin, 400)
+    assert _refused(conn, fin, tighter, base=3) == REQUIRED, "even a tightening"
+    v = _draft(conn, fin, tighter, base=3)
+    _review(conn, fin, v)
+    assert _activate(conn, fin, tighter, base=v) == v + 1, "with a review it goes Active: nothing is blocked for ever"
 
 
 def test_a_stored_suggestion_that_cannot_be_read_changes_nothing(conn, fin):

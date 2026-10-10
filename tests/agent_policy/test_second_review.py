@@ -200,11 +200,116 @@ def test_fail_open_is_looser_whatever_the_decisions_show():
     assert SR.loosening(already, form(), WITNESSES, SETTINGS) is False, "and closing it is a tightening"
 
 
-def test_a_decision_that_cannot_be_read_neither_demands_nor_excuses_a_review():
+def test_a_decision_that_cannot_be_read_demands_the_review_of_any_change_but_an_identical_one():
+    # the row exists because some version of the policy paused that action: "cannot tell" does not excuse
     hidden = [wit(enforcement.MASK), {**wit(510), "matched_values": None}]
-    assert looser(form(at(400)), witnesses=hidden + WITNESSES) is False, "a tightening is not held up by it"
-    assert looser(form(at(800)), witnesses=hidden) is False, "the live form cannot be shown to gate it"
+    for unreadable in hidden:
+        assert looser(form(at(800)), witnesses=[unreadable]) is True
+        assert looser(form(at(400)), witnesses=[unreadable] + WITNESSES) is True, "even a tightening: cannot tell"
+        assert looser(form(), witnesses=[unreadable] + WITNESSES) is False, "nothing enforced is changed"
     assert looser(form(at(800)), witnesses=hidden + WITNESSES) is True
+    # a decision the live form provably does not gate (another tool) says nothing
+    assert looser(form(at(400)), witnesses=[wit(enforcement.MASK, tool="credit.issue")] + WITNESSES) is False
+
+
+# ------------------------------------------------------------------ missing data, asked directly (fix round 2, finding 1)
+EXISTS = {"field": "args.amount", "op": "exists"}
+GUARDS = {
+    "an exists guard": {"all": [TOOL, EXISTS, amount("gt", 500)]},
+    "the guard written last": {"all": [TOOL, amount("gt", 500), EXISTS]},
+    "not(not exists)": {"all": [TOOL, {"not": {"not": EXISTS}}, amount("gt", 500)]},
+}
+
+
+def _result(f, ctx):
+    """What enforcement answers for one action under the form, compiled the way a save compiles it."""
+    policy = {"id": "P", "version": 1, "context": {"checkpoint": f["hidden"]["checkpoint"],
+                                                   "actions": f["hidden"]["actions"]},
+              "trigger": {"condition": f["hidden"]["condition"], "onMissingData": SR.on_missing_for(f, SETTINGS)},
+              "enforcement": {"outcome": f["outcome"]}}
+    return enforcement.check({"checkpoint": "tool.call.before", **ctx}, [policy]).result
+
+
+@pytest.mark.parametrize("name", sorted(GUARDS))
+def test_a_guard_that_lets_an_action_without_the_value_through_needs_the_review(name):
+    """The reviewer's example. Every decision carried its amount, so no real one shows it; the
+    question is asked of the newest decision with the value taken away."""
+    new = form(GUARDS[name])
+    assert conditions.to_engine(GUARDS[name])
+    no_amount = {"tool.name": "refund.issue"}
+    assert (_result(form(), no_amount), _result(new, no_amount)) == ("paused_for_approval", "allowed")
+    assert all(SR.gates(new, w, SETTINGS) is True for w in WITNESSES), "the real decisions are silent"
+    assert looser(new) is True
+    assert looser(new, witnesses=[wit(900)]) is True, "one decision is enough to ask it of"
+    assert looser(new, witnesses=[]) is False, "nobody ever decided anything: a known limit"
+
+
+def test_a_change_that_leaves_missing_data_alone_needs_no_review():
+    reworded = {**form(), "messageForAgent": "reworded", "owner": "Someone else"}
+    for name, new in {"an unrelated wording edit": reworded, "a tightening": form(at(400)),
+                      "resubmitted unchanged": form(),
+                      "a guard that changes nothing": form({"all": [TOOL, amount("gt", 500), {"not": amount("lte", 500)}]}),
+                      }.items():
+        assert looser(new) is False, name
+        assert _result(new, {"tool.name": "refund.issue"}) == "paused_for_approval", name
+
+
+def test_the_missing_data_question_is_asked_of_every_field_the_live_condition_reads():
+    country = {"field": "customer.country", "op": "in", "value": ["FR", "DE"]}
+    live = form({"all": [TOOL, amount("gt", 500), country]})
+    seen = [wit(a, **{"customer.country": "FR"}) for a in (510, 520)]
+    assert looser(live, witnesses=seen, live=live) is False
+    assert looser(form({"all": [TOOL, amount("gt", 400), country]}), witnesses=seen, live=live) is False
+    # either field guarded: an action without it stops being asked about
+    for guard in ({"field": "customer.country", "op": "exists"}, EXISTS):
+        assert looser(form({"all": [TOOL, amount("gt", 500), country, guard]}), witnesses=seen, live=live) is True
+    # only an action with NEITHER is let go: the witness with every field taken away shows it
+    neither = {"any": [EXISTS, {"field": "customer.country", "op": "exists"}]}
+    assert looser(form({"all": [TOOL, amount("gt", 500), country, neither]}), witnesses=seen, live=live) is True
+    # a live form that already lets missing data through has nothing to lose
+    open_live = form({"all": [TOOL, amount("gt", 500)]}, on_missing="fail_open")
+    assert SR.loosening(open_live, form(GUARDS["an exists guard"], on_missing="fail_open"), WITNESSES, SETTINGS) is False
+
+
+# ------------------------------------------------------------------ a policy that reads a hidden value (finding 2)
+VENDOR = {"field": "args.vendor", "op": "eq", "value": "X"}
+MASKED_LIVE = {"all": [TOOL, amount("gt", 500), VENDOR]}
+MASKED = [wit(a, **{"args.vendor": enforcement.MASK}) for a in range(510, 801, 10)]
+
+
+def test_a_policy_that_reads_a_hidden_value_is_covered():
+    """The reviewer's example: every decision has the vendor stored as the mask, so the live form
+    cannot be SHOWN to gate any of them. They still count: each row is there because the policy
+    paused that action."""
+    live = form(MASKED_LIVE)
+    assert {SR.gates(live, w, SETTINGS) for w in MASKED} == {None}
+    assert looser(form({"all": [TOOL, amount("gt", 800), VENDOR]}), witnesses=MASKED, live=live) is True
+    assert looser(form(at(800)), witnesses=MASKED, live=live) is True, "the hidden leaf dropped as well"
+    # whichever decision is the newest: here it is one the new limit still asks about, so the
+    # missing-data question finds nothing and only the real decisions can show the loosening
+    newest_above = [wit(900, **{"args.vendor": enforcement.MASK})] + MASKED
+    assert looser(form({"all": [TOOL, amount("gt", 800), VENDOR]}), witnesses=newest_above, live=live) is True
+
+
+def test_an_edit_that_changes_nothing_enforced_needs_no_review_even_when_nothing_can_be_told():
+    live = form(MASKED_LIVE)
+    reworded = {**form(MASKED_LIVE), "owner": "Another owner", "messageForAgent": "reworded", "deciders": ["X"]}
+    assert looser(reworded, witnesses=MASKED, live=live) is False
+    assert looser(form(MASKED_LIVE), witnesses=MASKED, live=live) is False, "resubmitted unchanged"
+    # each part of what is enforced, changed alone, is no longer "the same"
+    for name, new in {"outcome": form(MASKED_LIVE, outcome="block"),
+                      "checkpoint": form(MASKED_LIVE, checkpoint="agent.reply.before"),
+                      "tools": form(MASKED_LIVE, tools=["refund.issue", "credit.issue"]),
+                      "condition": form({"all": [TOOL, amount("gt", 500.0001), VENDOR]}),
+                      "missing data": form(MASKED_LIVE, on_missing="fail_open")}.items():
+        assert looser(new, witnesses=MASKED, live=live) is True, name
+    # the missing-data rule is compared as enforced, not as typed: the company's rule said out loud is the same
+    assert looser(form(MASKED_LIVE, on_missing="fail_closed"), witnesses=MASKED, live=live) is False
+
+
+def test_a_tightening_of_a_policy_that_reads_a_hidden_value_needs_the_review():
+    # an accepted cost: it cannot be told apart from a loosening
+    assert looser(form({"all": [TOOL, amount("gt", 400), VENDOR]}), witnesses=MASKED, live=form(MASKED_LIVE)) is True
 
 
 def test_the_two_step_route_is_measured_against_decisions_made_under_any_version():
@@ -283,6 +388,51 @@ def test_a_policy_outside_a_protected_area_never_has_its_decisions_read(no_histo
     cur = _Scripted([[(7,)], [(ops,)], [("Operations", False)], [(False,)]])
     assert SR.activation_problems(cur, "OPS-0001", 2, 2, form(at(800), area="Operations")) == []
     assert len(cur.asked) == 4 and not any("bp_policy_firing" in q for q in cur.asked)
+
+
+FINANCE = [("Finance", False)], [(True,)]          # the area as a save resolves it, then its setting
+
+
+def _compiled(on_missing):
+    return {"trigger": {"onMissingData": on_missing}}
+
+
+def test_an_edit_that_changes_nothing_enforced_never_has_the_decisions_read(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("the decision history must not be read for this change")
+    monkeypatch.setattr(SR.learning, "witnesses", boom)
+    monkeypatch.setattr(SR, "load_settings", lambda conn: SETTINGS)
+    reworded = {**form(MASKED_LIVE), "messageForAgent": "reworded"}
+    cur = _Scripted([[(7,)], [(form(MASKED_LIVE), _compiled("fail_closed"))], *FINANCE, *FINANCE])
+    cur.connection = None
+    assert SR.activation_problems(cur, "FIN-0001", 2, 2, reworded) == []
+    assert len(cur.asked) == 6 and not any("bp_policy_firing" in q for q in cur.asked)
+    # but it is still asked where the policy is going: out of the protected area needs the review
+    cur = _Scripted([[(7,)], [(form(MASKED_LIVE), _compiled("fail_closed"))], *FINANCE,
+                     [("Operations", False)], [(False,)], []])
+    cur.connection = None
+    assert SR.activation_problems(cur, "FIN-0001", 2, 2, {**reworded, "businessArea": "Operations"}) == [SR.REQUIRED]
+
+
+def test_the_live_missing_data_rule_is_the_one_compiled_into_the_live_version(monkeypatch):
+    """The live form names no rule and was compiled fail-closed; an Admin has since made the
+    company default fail-open. Saving the same form again would compile it fail-open."""
+    company = S.merge({"on_missing_data": {"approve": "fail_open"}})
+    monkeypatch.setattr(SR, "load_settings", lambda conn: company)
+    monkeypatch.setattr(SR.learning, "witnesses", lambda cur, key: list(WITNESSES))
+
+    def problems(compiled, new=None):
+        cur = _Scripted([[(7,)], [(form(), compiled)], *FINANCE, *FINANCE, []])
+        cur.connection = None
+        return SR.activation_problems(cur, "FIN-0001", 2, 2, new or {**form(), "messageForAgent": "reworded"})
+
+    assert problems(_compiled("fail_closed")) == [SR.REQUIRED], "missing data would newly be let through"
+    assert problems(_compiled("fail_closed"), form(on_missing="fail_closed")) == [], "kept closed, said out loud"
+    assert problems(_compiled("fail_open")) == [], "it already was open"
+    # no compiled document to read: the form and today's settings are all there is
+    for unreadable in (None, {}, {"trigger": {}}, {"trigger": {"onMissingData": None}}, "not a document"):
+        assert problems(unreadable) == [], repr(unreadable)
+    assert problems(json.dumps(_compiled("fail_closed"))) == [SR.REQUIRED], "the document as stored text"
 
 
 def test_a_policy_that_was_never_live_is_not_covered(no_history):
@@ -407,8 +557,7 @@ def test_a_refusal_is_a_409_whose_code_and_message_arrive_readable(client, state
 
 
 def test_the_messages_the_module_raises_are_the_ones_checked_above():
-    assert SR.MESSAGE == ("A second reviewer must review this change before it goes Active. "
-                          "It loosens the policy as learning suggested.")
+    assert SR.MESSAGE == "A second reviewer must review this change before it goes Active."
     assert SR.REFUSALS == {
         "own_change": "You saved this change, so someone else must review it.",
         "owner": "The policy's owner cannot be its second reviewer.",
