@@ -553,8 +553,9 @@ class BackendScheduler:
         each database before switching it on. It only ever writes suggestion rows for an owner
         to review; it never changes a policy. Idempotent: one row per policy and change.
         """
-        import os
-        if os.environ.get("AGENT_POLICY_LEARNING_SCAN", "").strip().lower() not in ("on", "1", "true"):
+        from services.agent_policy import settings as agent_policy_settings
+
+        if not agent_policy_settings.learning_scan_enabled():   # the rule the settings screen shows
             logger.info("agent policy learning scan is off, not registered "
                         "(set AGENT_POLICY_LEARNING_SCAN=on to turn it on)")
             return
