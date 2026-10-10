@@ -86,3 +86,71 @@ def test_a_good_body_is_recorded_as_it_was_sent(client, state):
     assert r.status_code == 200, r.text
     assert state["audits"][0]["details"]["requested"] == GOOD
     assert all(not isinstance(v, str) and math.isfinite(v) for v in state["audits"][0]["details"]["requested"].values())
+
+
+# ------------------------------------------------------------------ text a jsonb column refuses (fix round 1)
+NUL, LONE = "\u0000", "\ud800"                      # jsonb refuses both, however json.dumps escapes them
+
+
+def _as_jsonb(details):
+    """As the real audit column: no NaN, no NUL, no half of a surrogate pair."""
+    text = json.dumps(details, allow_nan=False, ensure_ascii=False)
+    text.encode("utf-8")
+    assert "\x00" not in text, "jsonb refuses \\u0000"
+
+
+@pytest.mark.parametrize("value,kept", [
+    (NUL, "'\\x00'"), (LONE, "'\\ud800'"), ("a" + NUL + "b", "'a\\x00b'"), ("caf\u00e9", "'caf\u00e9'"),
+    ("line\nbreak", "'line\\nbreak'"), ("\x7f", "'\\x7f'"), (NUL * 100, repr(NUL * 100)[:100]),
+    (" ~", " ~"), ("forty", "forty"),
+])
+def test_a_string_is_recorded_as_it_is_only_when_it_is_printable_ascii(value, kept):
+    got = R._audit_scalar(value)
+    assert got == kept and len(got) <= 100
+    assert got.isprintable(), "nothing a database refuses: no control character, no half surrogate"
+    _as_jsonb(got)
+
+
+@pytest.mark.parametrize("value,shown", [(NUL, "'\\x00'"), (LONE, "'\\ud800'")])
+def test_a_value_holding_text_jsonb_refuses_is_judged_and_audited_not_crashed(client, state, monkeypatch, value, shown):
+    def strict(**kw):
+        _as_jsonb(kw["details"])
+        state["audits"].append(kw)
+    monkeypatch.setattr(R.agent_actions, "record_action_or_fail", strict)
+    r = client.put(URL, content=json.dumps({**GOOD, "min_days": value}),      # ascii: the escape goes on the wire
+                   headers={**_hdr(), "Content-Type": "application/json"})
+    assert r.status_code == 422, r.text
+    assert r.json() == {"problems": [{"field": "min_days", "message": "Enter a whole number from 1 to 365."}]}
+    first, second = state["audits"]
+    assert (first["phase"], first["status"]) == ("authorize", "allowed")
+    assert first["details"]["requested"] == {**GOOD, "min_days": shown}
+    assert (second["phase"], second["status"], second["details"]["fields"]) == ("act", "refused", ["min_days"])
+    assert state["saves"] == []
+
+
+def test_the_refused_audit_keeps_at_most_twenty_field_names_each_one_safe(client, state, monkeypatch):
+    def strict(**kw):
+        _as_jsonb(kw["details"])
+        state["audits"].append(kw)
+    monkeypatch.setattr(R.agent_actions, "record_action_or_fail", strict)
+    # a key holding NUL
+    r = client.put(URL, content=json.dumps({**GOOD, "a" + NUL: 1}), headers={**_hdr(), "Content-Type": "application/json"})
+    assert r.status_code == 422, r.text
+    assert [x["message"] for x in r.json()["problems"]] == ["This is not a learning threshold."]
+    assert state["audits"][-1]["status"] == "refused" and state["audits"][-1]["details"]["fields"] == ["'a\\x00'"]
+    # fifty unknown keys, one of them long
+    state["audits"].clear()
+    extra = {f"k{i:02d}": i for i in range(49)}
+    extra["k00" + "x" * 300] = 0
+    r = client.put(URL, json={**GOOD, **extra}, headers=_hdr())
+    assert r.status_code == 422, r.text
+    assert len(r.json()["problems"]) == 50, "the answer still names every one"
+    fields = state["audits"][-1]["details"]["fields"]
+    assert len(fields) == 20 and all(len(f) <= 100 for f in fields)
+    assert fields[0] == "k00" and fields[1] == repr("k00" + "x" * 300)[:100] and fields[2:] == [f"k{i:02d}" for i in range(1, 19)]
+    # a wrong threshold is still named first
+    state["audits"].clear()
+    r = client.put(URL, json={**GOOD, **extra, "min_days": 0}, headers=_hdr())
+    assert r.status_code == 422 and state["audits"][-1]["details"]["fields"][0] == "min_days"
+    assert len(state["audits"][-1]["details"]["fields"]) == 20
+    assert state["saves"] == []

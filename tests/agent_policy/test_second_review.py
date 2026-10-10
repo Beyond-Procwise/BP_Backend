@@ -307,6 +307,21 @@ def test_the_policy_page_says_required_when_it_cannot_tell(caplog):
     assert SR.status(_Broken(), "FIN-0001", {"liveVersion": None, "latestVersion": 4}, retired)["required"] is True
 
 
+def test_the_policy_page_invites_no_review_when_the_saved_form_cannot_be_read(caplog):
+    """The state in which activation answers `second_review_unreadable` and `record` refuses."""
+    versions = [{"version": 2, "savedAs": "live", "form": form()},
+                {"version": 3, "savedAs": "draft", "form": form(at(800))}]
+    head = {"liveVersion": 2, "latestVersion": 3}
+    for stored in (("{not json", None), ("[1, 2]", None), None):          # bad JSON, not an object, no row
+        script = [[(7,)], [stored] if stored else []]
+        assert SR.activation_problems(_Scripted(script), "FIN-0001", 2, 3, form(at(800))) == [SR.UNREADABLE]
+        with caplog.at_level(logging.ERROR, logger=SR.__name__):
+            got = SR.status(_Scripted(script), "FIN-0001", head, versions)
+        assert got == {"required": True, "version": 3, "reviewedBy": None, "reviewedByName": None,
+                       "reviewedAt": None}, stored
+    assert any("FIN-0001" in r.getMessage() for r in caplog.records)
+
+
 def test_the_policy_page_asks_nothing_when_there_is_no_draft_on_a_live_version():
     none = {"required": False, "version": None, "reviewedBy": None, "reviewedByName": None, "reviewedAt": None}
     live = {"version": 2, "savedAs": "live", "form": form()}
