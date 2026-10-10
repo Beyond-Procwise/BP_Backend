@@ -9,6 +9,7 @@ approvals at 510, 520, ... 830 under "args.amount gt 500". Band 1 = 510..800 pas
 it are not a band -> the suggestion is 500 -> 800 on 30 decisions by 3 people over 40 days.
 """
 import copy
+import json
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -23,20 +24,27 @@ LATER = NOW + timedelta(hours=2)
 EVIDENCE_30 = "30 of 30 requests between 500 USD and 800 USD were approved, by 3 different people over 40 days."
 
 
+def _proposal():
+    return {"kind": "threshold", "field": "args.amount", "op": "gt", "from": 500, "to": 800,
+            "changeKey": "threshold:args.amount:gt:500", "stats": _stats(), "bands": 1,
+            "plain": "STORED plain", "evidence": "STORED evidence", "inputName": "Refund amount"}
+
+
 def _stats(decisions=30, approved=30, **over):
     return {"decisions": decisions, "approved": approved, "wilsonLower": 0.8865, "approvers": 3, "days": 40,
             "edited": 0, "reversed": 0, "medianSeconds": 60.0, **over}
 
 
 def _row(**over):
-    proposal = {"kind": "threshold", "field": "args.amount", "op": "gt", "from": 500, "to": 800,
-                "changeKey": "threshold:args.amount:gt:500", "stats": _stats(), "bands": 1,
-                "plain": "STORED plain", "evidence": "STORED evidence", "inputName": "Refund amount"}
+    proposal = _proposal()
     base = {"suggestion_id": 12, "policy_key": "FIN-0012", "status": "open", "kind": "threshold",
             "proposal": proposal, "stats": _stats(), "confident": True,
             "updated_at": datetime(2026, 10, 10, 9, 0, tzinfo=timezone.utc), "form": copy.deepcopy(FORM_EXAMPLE)}
     base.update(over)
     return base
+
+
+GOOD = _proposal()
 
 
 # ------------------------------------------------------------------ card (pure)
@@ -80,9 +88,11 @@ def test_a_list_card_reads_as_a_list_change():
                              "by 3 different people over 40 days.")
 
 
-def test_a_card_never_fails_on_a_proposal_it_cannot_read():
+def test_a_card_never_fails_on_a_proposal_it_cannot_read(caplog):
     c = L.card(_row(proposal={"kind": "threshold"}, stats={}))
     assert (c["change"], c["evidence"], c["stats"]["decisions"]) == ("", "", None)
+    [said] = [r.getMessage() for r in caplog.records]
+    assert "suggestion 12" in said and "KeyError" in said, "enough to find the row and the reason"
     assert L.card(_row(proposal=None, form=None))["change"] == ""
 
 
@@ -255,3 +265,26 @@ def test_a_save_of_another_policy_or_an_unreadable_form_marks_nothing(world):
     for form in ({}, {"hidden": None}, {"hidden": {"condition": "nonsense"}}):
         assert L.note_save(conn.cursor(), t.key, 2, form) == 0
     assert _full(conn, t.key)[0][0] == "open"
+
+
+@live
+def test_one_unreadable_proposal_does_not_block_the_policys_other_suggestions(world, caplog):
+    conn, t = world
+    cur = conn.cursor()
+    # two rows of the same policy whose proposal cannot be read (no field, no op), one older and
+    # one newer than the real suggestion, so the real one is reached whatever the order
+    ids = []
+    for change in ("broken-before", "broken-after"):
+        cur.execute("INSERT INTO proc.bp_agent_policy_suggestion (policy_key, change_key, policy_version, kind, "
+                    "proposal, stats, confident, status) VALUES (%s, %s, 1, 'threshold', %s, '{}', true, 'open') "
+                    "RETURNING suggestion_id", (t.key, change, '{"kind": "threshold"}'))
+        ids.append(cur.fetchone()[0])
+        if change == "broken-before":
+            cur.execute("INSERT INTO proc.bp_agent_policy_suggestion (policy_key, change_key, policy_version, kind, "
+                        "proposal, stats, confident, status) VALUES (%s, %s, 1, 'threshold', %s, %s, true, 'open')",
+                        (t.key, "threshold:args.amount:gt:500", json.dumps(GOOD), json.dumps(GOOD["stats"])))
+    assert L.note_save(conn.cursor(), t.key, 7, _limit_form(800)) == 1
+    assert [(r[0], r[4]) for r in _full(conn, t.key)] == [("open", None), ("saved", 7), ("open", None)]
+    said = [r.getMessage() for r in caplog.records]
+    for broken in ids:
+        assert [m for m in said if f"suggestion {broken} " in m and "KeyError" in m], "logged by suggestion id"

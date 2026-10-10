@@ -5,9 +5,26 @@ proc.bp_agent_policy_suggestion, nothing else. This module never writes a policy
 suggestion is a row for an owner to review, and only a person's save changes a policy.
 
 The hourly scan raises and refreshes the rows; a person hides one (Not yet, Dismiss) or asks for
-it as an unsaved form (Draft this change, which writes nothing); a person's save that holds the
-change marks it saved. All three writers take a policy's suggestion rows in the same order
-(_LOCK_SQL), so a person's action and the scan never interleave.
+it as an unsaved form (Draft this change, which writes nothing); a save that holds the change
+marks it saved.
+
+What a row's status means, and what moves it:
+  open        shown. Raised by the scan; `confident` false = "Not enough yet" (kept, not drafted).
+  not_yet,    hidden by a person. The scan brings it back only after that many more decisions
+  dismissed   (company settings), and only while the evidence still supports the change.
+  saved       the change is in a version IN FORCE: the policy's live version or its latest one.
+              Set by any save whose form holds the change (a person's or a machine draft's). While
+              either version still holds it, the scan never touches the row. Once neither does (the
+              draft was saved back, or replaced) and the evidence still supports the change, the
+              scan reopens it: nobody dismissed it, so it must not be silenced for good.
+  superseded  the policy's condition no longer has the state the change starts from.
+
+Locking. Every writer that works on ONE policy (the scan's per-policy step, act, note_save) first
+takes all of that policy's suggestion rows `ORDER BY suggestion_id FOR UPDATE` (_LOCK_SQL), so for
+one policy a person's action and the scan run one after the other, never interleaved. The scan's
+closing statement (_GONE_SQL) works across policies; it takes its rows in the same suggestion_id
+order before changing them, so it cannot deadlock with the per-policy writers. `draft` takes no
+lock: it is one read statement and writes nothing.
 
 get_conn() is AUTOCOMMIT: each policy's rows are written in one explicit transaction (_tx).
 """
@@ -36,11 +53,14 @@ SETTINGS = ("min_decisions", "min_days", "min_approvers", "wilson_lower", "media
 @dataclass
 class Target:
     """A live approve policy to look at: its live form, and every live version of it that had the
-    identical condition (their firings are evidence for the same condition)."""
+    identical condition (their firings are evidence for the same condition). `latest_condition`
+    is the condition of the policy's latest version (a draft beside the live one, when there is
+    one); None means there is nothing newer to read and the live condition stands for it."""
     key: str
     live_version: int
     form: Dict[str, Any]
     versions: List[int]
+    latest_condition: Any = None
 
 
 # One row per approval case. A repeated agent call is linked to the same case and one decision
@@ -70,9 +90,11 @@ _DECIDED_SQL = """
 """
 
 _TARGETS_SQL = """
-    SELECT p.policy_key, p.live_version, v.form_state, v.compiled
+    SELECT p.policy_key, p.live_version, v.form_state, v.compiled,
+           lv.form_state -> 'hidden' -> 'condition' AS latest_condition
       FROM proc.bp_agent_policy p
       JOIN proc.bp_agent_policy_version v ON v.policy_key = p.policy_key AND v.version = p.live_version
+      LEFT JOIN proc.bp_agent_policy_version lv ON lv.policy_key = p.policy_key AND lv.version = p.latest_version
       LEFT JOIN proc.bp_business_area a ON a.area_name = p.area_name
      WHERE p.status = 'live' AND v.form_state ->> 'outcome' = 'approve'
        AND COALESCE(a.never_suggest, FALSE) = FALSE
@@ -95,12 +117,12 @@ _INSERT_SQL = """
     VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, TRUE, 'open', %s, %s)
     ON CONFLICT (policy_key, change_key) DO NOTHING
 """
-# The same statement refreshes an open card and brings a hidden one back.
+# The same statement refreshes an open card and brings a hidden or no-longer-saved one back.
 _OPEN_SQL = """
     UPDATE proc.bp_agent_policy_suggestion
        SET status = 'open', confident = TRUE, proposal = %s::jsonb, stats = %s::jsonb,
            policy_version = %s, kind = %s, n_at_action = CASE WHEN status = 'open' THEN n_at_action END,
-           updated_at = %s
+           saved_version = NULL, updated_at = %s
      WHERE suggestion_id = %s
 """
 _SUPERSEDE_SQL = """
@@ -112,10 +134,14 @@ _WEAKEN_SQL = """
 """
 # Cards of policies the scan no longer looks at (retired, no longer approve, area now "never
 # suggest"). Real keys only, so the rows of a test running beside the scan are never touched.
+# The rows are locked in suggestion_id order before any is changed, the order _LOCK_SQL uses.
 _GONE_SQL = """
     UPDATE proc.bp_agent_policy_suggestion s SET status = 'superseded', updated_at = %s
-     WHERE s.status IN ('open','not_yet','dismissed') AND s.policy_key ~ '^[A-Z]{3}-[0-9]{4,}$'
-       AND NOT (s.policy_key = ANY(%s))
+      FROM (SELECT g.suggestion_id FROM proc.bp_agent_policy_suggestion g
+             WHERE g.status IN ('open','not_yet','dismissed') AND g.policy_key ~ '^[A-Z]{3}-[0-9]{4,}$'
+               AND NOT (g.policy_key = ANY(%s))
+             ORDER BY g.suggestion_id FOR UPDATE) gone
+     WHERE s.suggestion_id = gone.suggestion_id
 """
 
 
@@ -150,7 +176,7 @@ def _targets(cur) -> Tuple[List[Target], List[str]]:
     cur.execute(_TARGETS_SQL)
     out: List[Target] = []
     unread: List[str] = []
-    for key, live_version, form, _compiled in cur.fetchall():
+    for key, live_version, form, _compiled, latest_condition in cur.fetchall():
         try:
             form = _json(form)
             condition = form["hidden"]["condition"]
@@ -160,7 +186,8 @@ def _targets(cur) -> Tuple[List[Target], List[str]]:
             logger.exception("learning: %s could not be read; it is skipped this time", key)
             unread.append(key)
             continue
-        out.append(Target(key=key, live_version=live_version, form=form, versions=versions))
+        out.append(Target(key=key, live_version=live_version, form=form, versions=versions,
+                          latest_condition=_json(latest_condition)))
     return out, unread
 
 
@@ -172,6 +199,17 @@ def targets(cur) -> List[Target]:
 
 
 _HIDDEN = ("not_yet", "dismissed")
+
+
+def _latest_condition(target: Target) -> Any:
+    """The condition of the policy's latest version; the live one when nothing newer was read."""
+    return target.form["hidden"]["condition"] if target.latest_condition is None else target.latest_condition
+
+
+def _in_force(proposal: Dict[str, Any], target: Target) -> bool:
+    """Whether a version in force, the live one or the latest, holds the proposal's change."""
+    return any(learning_patterns.applied(proposal, c)
+               for c in (target.form["hidden"]["condition"], _latest_condition(target)))
 
 
 def _wait(cfg: Dict[str, Any], status: str) -> float:
@@ -211,8 +249,10 @@ def _store(cur, target: Target, proposals: List[Dict[str, Any]], decided: List[D
             counts["raised"] += cur.rowcount
             continue
         suggestion_id, _key, status, n_at_action = row[0], row[1], row[2], row[3]
-        if status == "saved":
-            continue                                   # once saved, never suggested again
+        if status == "saved" and _in_force(p, target):
+            continue                                   # saved, and a version in force still holds it
+        # A saved row whose change is in neither the live nor the latest version any more (the
+        # draft was saved back, or replaced) returns: nobody dismissed it.
         counter = {"superseded": "raised", "open": "updated"}.get(status, "reopened")
         # A card a person hid comes back only on that many more decisions. Superseding keeps the
         # count, so a hidden card whose condition went away and came back is still hidden; which
@@ -323,10 +363,11 @@ _POLICY_CHANGED = ("policy_changed", "This policy has changed since the suggesti
 # policy stands. One statement, so a read is one consistent picture without a lock.
 _CARD_SQL = """
     SELECT s.suggestion_id, s.policy_key, s.status, s.kind, s.proposal, s.stats, s.confident, s.updated_at,
-           v.form_state, p.status, p.latest_version
+           v.form_state, p.status, p.latest_version, lv.form_state -> 'hidden' -> 'condition'
       FROM proc.bp_agent_policy_suggestion s
       LEFT JOIN proc.bp_agent_policy p ON p.policy_key = s.policy_key
       LEFT JOIN proc.bp_agent_policy_version v ON v.policy_key = p.policy_key AND v.version = p.latest_version
+      LEFT JOIN proc.bp_agent_policy_version lv ON lv.policy_key = p.policy_key AND lv.version = p.live_version
 """
 _CARD_ORDER = " ORDER BY s.updated_at DESC, s.suggestion_id DESC"
 _KEY_OF_SQL = "SELECT policy_key FROM proc.bp_agent_policy_suggestion WHERE suggestion_id = %s"
@@ -345,7 +386,8 @@ def _card_row(r) -> Dict[str, Any]:
     form = _json(r[8])
     return {"suggestion_id": r[0], "policy_key": r[1], "status": r[2], "kind": r[3], "proposal": _json(r[4]),
             "stats": _json(r[5]), "confident": r[6], "updated_at": r[7],
-            "form": form if isinstance(form, dict) else None, "policy_status": r[9], "latest_version": r[10]}
+            "form": form if isinstance(form, dict) else None, "policy_status": r[9], "latest_version": r[10],
+            "live_condition": _json(r[11])}
 
 
 def card(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -361,8 +403,9 @@ def card(row: Dict[str, Any]) -> Dict[str, Any]:
         try:
             change, evidence = (learning_draft.plain(proposal, form),
                                 learning_draft.evidence({**proposal, "stats": stats}, form))
-        except Exception:  # noqa: BLE001 - one unreadable row must not empty the queue
-            logger.warning("learning: the wording of suggestion %s could not be built", row.get("suggestion_id"))
+        except Exception as exc:  # noqa: BLE001 - one unreadable row must not empty the queue
+            logger.warning("learning: the wording of suggestion %s could not be built (%s: %s); "
+                           "the wording stored with it is shown", row.get("suggestion_id"), type(exc).__name__, exc)
     when = row.get("updated_at")
     confident = bool(row.get("confident"))
     return {"id": row["suggestion_id"], "policyKey": row["policy_key"],
@@ -442,7 +485,13 @@ def draft(conn, suggestion_id: int) -> Dict[str, Any]:
     if row["policy_status"] != "live" or form is None or not isinstance(proposal, dict):
         raise Refused(*_POLICY_CHANGED)
     try:
+        # The evidence is about the policy IN FORCE: its live condition must still have the state
+        # the change starts from, whatever a newer draft says. And only an approve policy is loosened.
+        if form.get("outcome") != "approve" or not learning_patterns.targets(proposal, row["live_condition"]):
+            raise Refused(*_POLICY_CHANGED)
         built = learning_draft.build(form, proposal, on_missing_for(form, settings.load_settings(conn)))
+    except Refused:
+        raise
     except Exception:  # noqa: BLE001 - a form that can no longer be read is a policy that has changed
         logger.exception("learning: suggestion %s could not be drafted", suggestion_id)
         built = None
@@ -466,7 +515,13 @@ def note_save(cur, key: str, version: int, form: Dict[str, Any]) -> int:
         proposal = _json(proposal)
         if status not in ("open", "not_yet") or not isinstance(proposal, dict):
             continue
-        if learning_patterns.applied(proposal, condition):
+        try:
+            holds = learning_patterns.applied(proposal, condition)
+        except Exception as exc:  # noqa: BLE001 - one unreadable proposal must not block the others
+            logger.warning("learning: suggestion %s could not be compared with version %s of %s (%s: %s); "
+                           "it is left as it is", suggestion_id, version, key, type(exc).__name__, exc)
+            continue
+        if holds:
             cur.execute(_SAVED_SQL, (version, suggestion_id))
             marked += 1
     return marked

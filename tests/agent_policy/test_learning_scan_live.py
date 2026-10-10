@@ -241,18 +241,68 @@ def test_dismissed_returns_only_on_materially_stronger_evidence(world):
     _hidden_until_thirty_more(world, "dismissed")
 
 
-def test_a_saved_suggestion_is_never_raised_again(world):
+def _latest(target, value):
+    """The same live policy with a newer version beside it whose limit is `value`."""
+    condition = copy.deepcopy(target.form["hidden"]["condition"])
+    condition["all"][1]["value"] = value
+    return L.Target(key=target.key, live_version=target.live_version, form=target.form, versions=target.versions,
+                    latest_condition=condition)
+
+
+def _saved(conn, key):
+    cur = conn.cursor()
+    cur.execute("SELECT status, saved_version, n_at_action FROM proc.bp_agent_policy_suggestion "
+                "WHERE policy_key = %s ORDER BY suggestion_id", (key,))
+    return cur.fetchall()
+
+
+def test_a_saved_suggestion_stays_saved_while_a_version_in_force_holds_it_and_returns_when_none_does(world):
     conn, t = world
     fire(conn, t.key, BASE)
     L.scan(conn, NOW, only=[t])
-    _set_status(conn, t.key, "saved", None)
-    # 40 more, i = 33..72, 840..1230: bands 510..800 and 810..1100 pass (to 1100 on 60), which
-    # would reopen anything but a saved card.
+    conn.cursor().execute("UPDATE proc.bp_agent_policy_suggestion SET status = 'saved', saved_version = 3 "
+                          "WHERE policy_key = %s", (t.key,))
+    # 40 more, i = 33..72, 840..1230: 73 decisions. Bands 510..800 and 810..1100 pass, the 13 above
+    # are a tail -> to 1100 on 60, which would reopen anything but a saved card.
     fire(conn, t.key, [510 + 10 * i for i in range(33, 73)], first=33)
+    # The latest version (a draft beside the live one) holds the change: 800, or 600 typed by hand,
+    # are both looser than 500 in the suggested direction. Saved means saved.
+    for held in (800, 600):
+        counts = L.scan(conn, NOW, only=[_latest(t, held)])
+        assert (counts["raised"], counts["updated"], counts["reopened"], counts["errors"]) == (0, 0, 0, 0), held
+        [(status, _c, proposal, stats, _n)] = row(conn, t.key)
+        assert (status, proposal["to"], stats["decisions"]) == ("saved", 800, 30)
+        assert _saved(conn, t.key) == [("saved", 3, None)]
+    # The draft was saved back at 500 (or replaced): no version in force holds the change, live or
+    # latest. Nobody dismissed the card, so it returns, with the evidence as it now stands.
+    counts = L.scan(conn, NOW, only=[_latest(t, 500)])
+    assert (counts["reopened"], counts["raised"], counts["updated"], counts["errors"]) == (1, 0, 0, 0)
+    [(status, confident, proposal, stats, _n)] = row(conn, t.key)
+    assert (status, confident, proposal["to"], proposal["bands"], stats["decisions"]) == ("open", True, 1100, 2, 60)
+    assert _saved(conn, t.key) == [("open", None, None)], "the version it was saved in is no longer the story"
+
+
+def test_a_target_with_no_newer_version_is_judged_on_its_live_condition(world):
+    conn, t = world                       # an injected target: latest_condition not given
+    fire(conn, t.key, BASE)
+    L.scan(conn, NOW, only=[t])
+    conn.cursor().execute("UPDATE proc.bp_agent_policy_suggestion SET status = 'saved', saved_version = 2 "
+                          "WHERE policy_key = %s", (t.key,))
+    assert L.scan(conn, NOW, only=[t])["reopened"] == 1      # live is 500 and nothing newer holds 800
+    assert _saved(conn, t.key) == [("open", None, None)]
+
+
+def test_a_saved_suggestion_with_no_passing_proposal_is_left_alone(world):
+    conn, t = world
+    fire(conn, t.key, BASE)
+    L.scan(conn, NOW, only=[t])
+    conn.cursor().execute("UPDATE proc.bp_agent_policy_suggestion SET status = 'saved', saved_version = 2 "
+                          "WHERE policy_key = %s", (t.key,))
+    # a rejection at 605: band 1 is 29 of 30 (Wilson 0.8333 < 0.85), so nothing is proposed this scan
+    fire(conn, t.key, [605], result="rejected", first=33)
     counts = L.scan(conn, NOW, only=[t])
-    assert (counts["raised"], counts["updated"], counts["reopened"], counts["errors"]) == (0, 0, 0, 0)
-    [(status, _c, proposal, stats, _n)] = row(conn, t.key)
-    assert (status, proposal["to"], stats["decisions"]) == ("saved", 800, 30)
+    assert (counts["reopened"], counts["weakened"], counts["superseded"]) == (0, 0, 0)
+    assert _saved(conn, t.key) == [("saved", 2, None)]
 
 
 def test_a_changed_condition_supersedes_the_card(world):
