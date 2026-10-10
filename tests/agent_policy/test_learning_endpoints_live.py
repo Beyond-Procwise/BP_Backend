@@ -299,6 +299,62 @@ def test_nothing_in_this_stage_activates_a_policy(client, conn, world):
     assert _policy(conn, world) == before, "no version row, live_version unmoved"
 
 
+def test_a_live_policy_that_moved_off_the_suggested_limit_refuses_the_draft_even_if_a_draft_went_back(client, conn, world):
+    # activated at 400 (tighter: not the suggested change, so the card is not "saved"), then a draft
+    # back at 500. The latest form says 500 again, but the policy in force does not: nothing is drafted.
+    r = _save(client, world, _live_form(conn, world, limit=400), base=world.live, headers=APPROVER, intent="activate")
+    assert r.status_code in (200, 201), r.text
+    assert _save(client, world, _live_form(conn, world), base=world.live + 1).status_code in (200, 201)
+    assert _policy(conn, world)[1:] == ("live", world.live + 1, world.live + 2) and _row(conn, world)[0] == "open"
+    r = _draft(client, world)
+    assert r.status_code == 409 and r.json()["code"] == "policy_changed"
+
+
+def test_a_latest_version_that_no_longer_asks_for_approval_refuses_the_draft(client, conn, world):
+    form = _live_form(conn, world, outcome="block", deciders=[])        # the limit is still 500
+    assert _save(client, world, form, base=world.live).status_code in (200, 201)
+    assert _row(conn, world)[0] == "open"
+    r = _draft(client, world)
+    assert r.status_code == 409 and r.json()["code"] == "policy_changed"
+
+
+# ------------------------------------------------------------------ saved means in a version in force
+def test_a_draft_saved_and_then_saved_back_brings_the_card_back(client, conn, world):
+    d = _draft(client, world).json()
+    assert _save(client, world, d["form"], base=d["baseVersion"]).status_code in (200, 201)      # v3 at 800
+    assert _row(conn, world) == ("saved", None, None, world.live + 1)
+    counts = _scan(conn, world)
+    assert counts["reopened"] == 0 and _row(conn, world)[0] == "saved", "the latest draft holds the change"
+    # the person saves it back at 500 and activates that: no version in force holds the change
+    r = _save(client, world, _live_form(conn, world), base=world.live + 1, headers=APPROVER, intent="activate")
+    assert r.status_code in (200, 201), r.text
+    assert _policy(conn, world)[1:] == ("live", world.live + 2, world.live + 2)
+    assert _row(conn, world) == ("saved", None, None, world.live + 1), "a save alone reopens nothing"
+    # v2 and v4 are live versions with the identical condition, so v2's 33 decisions are the evidence
+    counts = _scan(conn, world)
+    assert (counts["reopened"], counts["raised"]) == (1, 0)
+    assert _row(conn, world) == ("open", None, None, None)
+    [card] = _mine(client, world)
+    assert (card["id"], card["canDraft"], card["evidence"]) == (world.sid, True, EVIDENCE_30)
+    assert _draft(client, world).json()["baseVersion"] == world.live + 2
+
+
+def test_a_machine_draft_that_is_replaced_does_not_silence_the_card(conn, world):
+    # the path a re-extraction takes: repo.save_version, intent draft, twice. The first holds a
+    # looser limit; the second "replaces the edits" back to 500. Nobody dismissed anything.
+    looser, back = _live_form(conn, world, limit=800), _live_form(conn, world)
+    repo.save_version(conn, world.key, looser, base_version=world.live, intent="draft", actor="tst-extraction",
+                      change_note="Re-extracted")
+    assert _row(conn, world) == ("saved", None, None, world.live + 1)
+    assert _scan(conn, world)["reopened"] == 0
+    repo.save_version(conn, world.key, back, base_version=world.live + 1, intent="draft", actor="tst-extraction",
+                      change_note="Re-extracted. Replaces the edits in v3.")
+    assert _row(conn, world)[0] == "saved"
+    assert _scan(conn, world)["reopened"] == 1
+    assert _row(conn, world) == ("open", None, None, None)
+    assert [c["id"] for c in L.for_policy(conn.cursor(), world.key)] == [world.sid]
+
+
 # ------------------------------------------------------------------ the save hook
 def test_a_save_never_fails_because_of_learning_bookkeeping(client, conn, world, monkeypatch, caplog):
     def _boom(cur, key, version, form):

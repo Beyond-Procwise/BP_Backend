@@ -43,8 +43,23 @@ class _Conn:
 def _policies():
     unreadable = copy.deepcopy(FORM_EXAMPLE)
     unreadable["hidden"]["condition"] = {"field": "args.amount", "op": "gt", "value": {1, 2}}   # will not serialise
-    return [("FIN-0001", 2, copy.deepcopy(FORM_EXAMPLE), {}), ("FIN-0002", 1, unreadable, {}),
-            ("FIN-0003", 3, copy.deepcopy(FORM_EXAMPLE), {})]
+    # the last column is the latest version's condition: FIN-0001 has a draft at 800 beside its live 500
+    return [("FIN-0001", 2, copy.deepcopy(FORM_EXAMPLE), {}, _at(800)), ("FIN-0002", 1, unreadable, {}, None),
+            ("FIN-0003", 3, copy.deepcopy(FORM_EXAMPLE), {}, None)]
+
+
+def _at(value):
+    condition = copy.deepcopy(FORM_EXAMPLE["hidden"]["condition"])
+    condition["all"][1]["value"] = value
+    return condition
+
+
+def test_a_target_carries_its_latest_versions_condition_or_falls_back_to_the_live_one():
+    first, third = L.targets(_Conn(_policies()).cursor())
+    assert L._latest_condition(first) == _at(800) and first.form["hidden"]["condition"] == _at(500)
+    assert third.latest_condition is None and L._latest_condition(third) == _at(500)
+    injected = L.Target(key="TST-1a", live_version=1, form=copy.deepcopy(FORM_EXAMPLE), versions=[1])
+    assert L._latest_condition(injected) == _at(500), "an injected target keeps working"
 
 
 def test_one_unreadable_policy_is_skipped_and_the_others_are_returned(caplog):
