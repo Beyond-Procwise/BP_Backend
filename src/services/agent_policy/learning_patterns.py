@@ -8,10 +8,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
+from math import ceil
 from typing import Any, Dict, List, Optional, Sequence
 
 from services import policy_condition as pc
-from services.agent_policy.learning_stats import Decided, failed_guardrails, stats
+from services.agent_policy.learning_stats import Decided, _num, failed_guardrails, stats
 
 UP = ("gt", "gte")       # the policy matches above the number: loosening raises it
 DOWN = ("lt", "lte")     # the policy matches below the number: loosening lowers it
@@ -26,16 +27,28 @@ class Leaf:
 
 
 def _number(value: Any) -> Optional[Decimal]:
+    """The value as the evaluator reads a number, or None. NaN and Infinity are not amounts."""
     if value is None or isinstance(value, bool):
         return None
     try:
-        return pc._number(value, "learning")
+        number = pc._number(value, "learning")
     except pc.ConditionError:
         return None
+    return number if number.is_finite() else None
 
 
 def _plain(d: Decimal):
     return int(d) if d == d.to_integral_value() else float(d)
+
+
+def _same(a: Any, b: Any) -> bool:
+    """Whether a decided value and a listed value are the same, as the evaluator's `actual in expected`
+    sees it (1.0 is 1; "1" is not). Stricter in one place on purpose: a boolean is never a number."""
+    if a is None or b is None or isinstance(a, (list, dict)) or isinstance(b, (list, dict)):
+        return False
+    if isinstance(a, bool) != isinstance(b, bool):
+        return False
+    return a == b
 
 
 def _must(cond: Any) -> List[Dict[str, Any]]:
@@ -43,21 +56,36 @@ def _must(cond: Any) -> List[Dict[str, Any]]:
     if not isinstance(cond, dict):
         return []
     if "all" in cond:
-        return [leaf for c in cond["all"] if isinstance(cond["all"], list) for leaf in _must(c)]
+        if not isinstance(cond["all"], list):
+            return []
+        return [leaf for c in cond["all"] for leaf in _must(c)]
     if "any" in cond or "not" in cond:
         return []
     return [cond]
 
 
+def _distinct(values: List[Any]) -> int:
+    seen: List[Any] = []
+    for v in values:
+        if not isinstance(v, (list, dict)) and v is not None and not any(_same(v, s) for s in seen):
+            seen.append(v)
+    return len(seen)
+
+
 def eligible_leaves(condition: Any) -> List[Leaf]:
+    must = _must(condition)
     out: List[Leaf] = []
-    for leaf in _must(condition):
+    for leaf in must:
         fld, op, value = leaf.get("field"), leaf.get("op"), leaf.get("value")
         if not fld or fld == "tool.name":
             continue
-        if op in UP + DOWN and isinstance(value, (int, float)) and not isinstance(value, bool):
+        # The same field and operator twice ("over 500" and "over 1000"): which one a suggestion is
+        # about would depend on their order in the condition. Neither is touched.
+        if sum(1 for other in must if other.get("field") == fld and other.get("op") == op) > 1:
+            continue
+        if op in UP + DOWN and isinstance(value, (int, float)) and _number(value) is not None:
             out.append(Leaf("threshold", fld, op, value))
-        elif op == "in" and isinstance(value, list) and len(value) >= 2:
+        elif op == "in" and isinstance(value, list) and _distinct(value) >= 2:
             out.append(Leaf("list", fld, op, value))
     return out
 
@@ -70,38 +98,76 @@ def _nice(c: Decimal, up: bool) -> Decimal:
     return c.quantize(step, rounding=ROUND_FLOOR if up else ROUND_CEILING)
 
 
-def _band(points, frm: Decimal, to: Decimal, up: bool) -> List[Decided]:
-    return [d for v, d in points if (frm <= v <= to if up else to <= v <= frm)]
+def _evidence(v: Decimal, frm: Decimal, op: str) -> bool:
+    """A decision the policy gated, on the loosening side of the current limit."""
+    return {"gt": v > frm, "gte": v >= frm, "lt": v < frm, "lte": v <= frm}[op]
+
+
+def _released(points, frm: Decimal, to: Decimal, op: str) -> List[Decided]:
+    """Exactly the decisions that moving the limit from `frm` to `to` stops asking about.
+
+    `gt T` -> `gt T'` releases T < v <= T'; `gte` releases T <= v < T' (a request for exactly T' is still
+    gated). Mirrored for `lt` (T' <= v < T) and `lte` (T' < v <= T). The one place the edges are written.
+    """
+    inside = {"gt": lambda v: frm < v <= to, "gte": lambda v: frm <= v < to,
+              "lt": lambda v: to <= v < frm, "lte": lambda v: to < v <= frm}[op]
+    return [d for v, d in points if inside(v)]
+
+
+def _bands(points, size: int) -> List[list]:
+    """`points` (nearest the limit first) cut every `size` decisions. Equal values are never split: a
+    band takes every decision with the same value as its last. A shorter tail is not a band."""
+    bands, i = [], 0
+    while len(points) - i >= size:
+        j = i + size
+        while j < len(points) and points[j][0] == points[j - 1][0]:
+            j += 1
+        bands.append(points[i:j])
+        i = j
+    return bands
 
 
 def _threshold(leaf: Leaf, decided: Sequence[Decided], cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    frm, up = _number(leaf.value), leaf.op in UP
-    points = [(v, d) for d in decided if (v := _number(d.values.get(leaf.field))) is not None
-              and (v >= frm if up else v <= frm)]
-    best = None
-    for cut in sorted({v for v, _ in points}, reverse=not up):
-        if not failed_guardrails(stats(_band(points, frm, cut, up)), cfg):
-            best = cut                       # the furthest band that holds
-    if best is None:
-        return None
-    nice = _nice(best, up)
-    if nice != best and (nice > frm if up else nice < frm) \
-            and not failed_guardrails(stats(_band(points, frm, nice, up)), cfg):
-        best = nice
-    if best == frm:
-        return None
-    return {"kind": "threshold", "field": leaf.field, "op": leaf.op, "from": _plain(frm), "to": _plain(best),
-            "changeKey": f"threshold:{leaf.field}:{leaf.op}:{_plain(frm)}",
-            "stats": stats(_band(points, frm, best, up))}
+    """The furthest limit the evidence supports band by band (brief §6.2: "use bands of the amount").
 
-
-def _same(a: Any, b: Any) -> bool:
-    return not isinstance(a, (list, dict, bool)) and a is not None and str(a) == str(b)
+    A total can look fine while its far end is one decision, or a cluster of rejections, carried by
+    the approvals near the limit. So each band of `min_decisions` must pass every guardrail on its own,
+    and the first band that fails ends the run however good the bands beyond it look.
+    """
+    frm, op, up = _number(leaf.value), leaf.op, leaf.op in UP
+    points = sorted(((v, d) for d in decided
+                     if (v := _number(d.values.get(leaf.field))) is not None and _evidence(v, frm, op)),
+                    key=lambda p: p[0], reverse=not up)
+    bands = _bands(points, max(1, ceil(_num(cfg, "min_decisions"))))
+    supported = 0
+    for band in bands:
+        if failed_guardrails(stats([d for _, d in band]), cfg):
+            break
+        supported += 1
+    # The released set for a band's far edge lies inside the supported bands by construction: the
+    # bands are an unbroken run from the limit and a value is never split across two of them. It
+    # can be smaller than the bands (`gte`/`lte` do not release the edge value itself), so it is
+    # judged as a whole again; if that fails, step back a band.
+    for used in range(supported, 0, -1):
+        to = bands[used - 1][-1][0]
+        if failed_guardrails(stats(_released(points, frm, to, op)), cfg):
+            continue
+        nice = _nice(to, up)
+        if nice != to and (nice > frm if up else nice < frm) \
+                and not failed_guardrails(stats(_released(points, frm, nice, op)), cfg):
+            to = nice
+        return {"kind": "threshold", "field": leaf.field, "op": op, "from": _plain(frm), "to": _plain(to),
+                "changeKey": f"threshold:{leaf.field}:{op}:{_plain(frm)}",
+                "stats": stats(_released(points, frm, to, op)), "bands": used}
+    return None
 
 
 def _list(leaf: Leaf, decided: Sequence[Decided], cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
-    out = []
+    out, seen = [], []
     for value in leaf.value:
+        if any(_same(value, s) for s in seen):       # [1, 1.0] is one value, not two suggestions
+            continue
+        seen.append(value)
         group = [d for d in decided if _same(d.values.get(leaf.field), value)]
         s = stats(group)
         if not failed_guardrails(s, cfg):
@@ -125,9 +191,9 @@ def group_for(proposal: Dict[str, Any], decided: Sequence[Decided]) -> List[Deci
     fld = proposal["field"]
     if proposal["kind"] == "list":
         return [d for d in decided if _same(d.values.get(fld), proposal["remove"])]
-    frm, to, up = _number(proposal["from"]), _number(proposal["to"]), proposal["op"] in UP
+    frm, to = _number(proposal["from"]), _number(proposal["to"])
     points = [(v, d) for d in decided if (v := _number(d.values.get(fld))) is not None]
-    return _band(points, frm, to, up)
+    return _released(points, frm, to, proposal["op"])
 
 
 def _leaf_of(proposal: Dict[str, Any], condition: Any) -> Optional[Leaf]:
@@ -149,9 +215,10 @@ def targets(proposal: Dict[str, Any], condition: Any) -> bool:
 def applied(proposal: Dict[str, Any], condition: Any) -> bool:
     """The condition is looser than the proposal's starting state, in the proposal's direction."""
     if proposal["kind"] == "list":
-        leaf = next((l for l in _must(condition) if l.get("field") == proposal["field"] and l.get("op") == "in"
-                     and isinstance(l.get("value"), list)), None)
-        return leaf is not None and not any(_same(v, proposal["remove"]) for v in leaf["value"])
+        # not eligible_leaves: once the value is gone the list may hold a single value
+        found = [l for l in _must(condition) if l.get("field") == proposal["field"] and l.get("op") == "in"]
+        return len(found) == 1 and isinstance(found[0].get("value"), list) \
+            and not any(_same(v, proposal["remove"]) for v in found[0]["value"])
     leaf = _leaf_of(proposal, condition)
     if leaf is None:
         return False

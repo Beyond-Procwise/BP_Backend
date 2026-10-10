@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from math import sqrt
+from math import isfinite, sqrt
 from statistics import median
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -57,6 +57,9 @@ def _num(cfg: Dict[str, Any], key: str) -> float:
     value = cfg[key]
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TypeError(f"learning setting {key!r} is not a number")
+    if not isfinite(value) or value < 0:
+        # NaN compares False with everything, so every guardrail below would pass on it
+        raise ValueError(f"learning setting {key!r} is not a usable number")
     return value
 
 
@@ -69,7 +72,9 @@ def failed_guardrails(s: Dict[str, Any], cfg: Dict[str, Any]) -> List[str]:
         failed.append("min_days")
     if s["approvers"] < _num(cfg, "min_approvers"):
         failed.append("min_approvers")
-    if s["wilsonLower"] < _num(cfg, "wilson_lower"):
+    # The true bound decides, not the four-place figure shown on the card: 122 of 134 is 0.849988,
+    # which is displayed as 0.85 and must still fail a floor of 0.85.
+    if wilson_lower(s["approved"], s["decisions"]) < _num(cfg, "wilson_lower"):
         failed.append("wilson_lower")
     if s["edited"] or s["reversed"]:
         failed.append("edited_or_reversed")
