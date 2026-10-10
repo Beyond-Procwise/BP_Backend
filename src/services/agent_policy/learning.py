@@ -4,6 +4,11 @@ The only learning module that touches the database. It reads the firing log and 
 proc.bp_agent_policy_suggestion, nothing else. This module never writes a policy version: a
 suggestion is a row for an owner to review, and only a person's save changes a policy.
 
+The hourly scan raises and refreshes the rows; a person hides one (Not yet, Dismiss) or asks for
+it as an unsaved form (Draft this change, which writes nothing); a person's save that holds the
+change marks it saved. All three writers take a policy's suggestion rows in the same order
+(_LOCK_SQL), so a person's action and the scan never interleave.
+
 get_conn() is AUTOCOMMIT: each policy's rows are written in one explicit transaction (_tx).
 """
 from __future__ import annotations
@@ -11,10 +16,11 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from services.agent_policy import approvals, learning_draft, learning_patterns, learning_stats, settings
+from services.agent_policy.compiler import on_missing_for
 from services.agent_policy.learning_stats import Decided
 
 logger = logging.getLogger(__name__)
@@ -291,3 +297,176 @@ def scan(conn, now: datetime, *, only: Optional[List[Target]] = None) -> Dict[st
             counts["errors"] += 1
             logger.exception("learning scan could not close the cards of policies no longer scanned")
     return counts
+
+
+# ---------------------------------------------------------------- the card, the queue, a person's actions
+
+class Refused(Exception):
+    """A person's request on a suggestion that cannot be done; `message` is for that person."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code, self.message = code, message
+
+
+#: What a person may do to an open card, and the status it then has.
+VERBS = {"not_yet": "not_yet", "dismiss": "dismissed"}
+#: The most cards one read of the queue returns (newest first).
+MAX_CARDS = 500
+_CARD_STATS = ("decisions", "approved", "approvers", "days", "medianSeconds", "wilsonLower")
+_NOT_FOUND = ("not_found", "No such suggestion.")
+_NOT_OPEN = ("not_open", "This suggestion is no longer open.")
+_NOT_CONFIDENT = ("not_confident", "There is not enough evidence yet.")
+_POLICY_CHANGED = ("policy_changed", "This policy has changed since the suggestion was made.")
+
+# A suggestion with its policy's latest form (NULL when the policy row is gone) and where the
+# policy stands. One statement, so a read is one consistent picture without a lock.
+_CARD_SQL = """
+    SELECT s.suggestion_id, s.policy_key, s.status, s.kind, s.proposal, s.stats, s.confident, s.updated_at,
+           v.form_state, p.status, p.latest_version
+      FROM proc.bp_agent_policy_suggestion s
+      LEFT JOIN proc.bp_agent_policy p ON p.policy_key = s.policy_key
+      LEFT JOIN proc.bp_agent_policy_version v ON v.policy_key = p.policy_key AND v.version = p.latest_version
+"""
+_CARD_ORDER = " ORDER BY s.updated_at DESC, s.suggestion_id DESC"
+_KEY_OF_SQL = "SELECT policy_key FROM proc.bp_agent_policy_suggestion WHERE suggestion_id = %s"
+_ACT_SQL = """
+    UPDATE proc.bp_agent_policy_suggestion
+       SET status = %s, n_at_action = %s, acted_by = %s, acted_at = %s, updated_at = %s
+     WHERE suggestion_id = %s
+"""
+_SAVED_SQL = """
+    UPDATE proc.bp_agent_policy_suggestion SET status = 'saved', saved_version = %s, updated_at = now()
+     WHERE suggestion_id = %s
+"""
+
+
+def _card_row(r) -> Dict[str, Any]:
+    form = _json(r[8])
+    return {"suggestion_id": r[0], "policy_key": r[1], "status": r[2], "kind": r[3], "proposal": _json(r[4]),
+            "stats": _json(r[5]), "confident": r[6], "updated_at": r[7],
+            "form": form if isinstance(form, dict) else None, "policy_status": r[9], "latest_version": r[10]}
+
+
+def card(row: Dict[str, Any]) -> Dict[str, Any]:
+    """What a person is shown. The change and its evidence are worded now, from the policy's form
+    and the `stats` column (the evidence as of the latest scan): the sentence stored inside the
+    proposal is from when the change was last supported, which on a weak card is out of date.
+    Without the policy's form, or when the wording cannot be built, the stored wording is used."""
+    proposal = row.get("proposal") if isinstance(row.get("proposal"), dict) else {}
+    stats = row.get("stats") if isinstance(row.get("stats"), dict) else {}
+    form = row.get("form")
+    change, evidence = proposal.get("plain"), proposal.get("evidence")
+    if isinstance(form, dict):
+        try:
+            change, evidence = (learning_draft.plain(proposal, form),
+                                learning_draft.evidence({**proposal, "stats": stats}, form))
+        except Exception:  # noqa: BLE001 - one unreadable row must not empty the queue
+            logger.warning("learning: the wording of suggestion %s could not be built", row.get("suggestion_id"))
+    when = row.get("updated_at")
+    confident = bool(row.get("confident"))
+    return {"id": row["suggestion_id"], "policyKey": row["policy_key"],
+            "policyName": (form.get("name") or "") if isinstance(form, dict) else "",
+            "status": row["status"], "kind": row["kind"], "change": change or "", "evidence": evidence or "",
+            "stats": {k: stats.get(k) for k in _CARD_STATS},
+            # "suggestion confidence": never the same name as stage 1's extraction confidence
+            "suggestionConfidence": "High" if confident else "Not enough yet",
+            "canDraft": confident and row["status"] == "open",
+            "updatedAt": when.astimezone(timezone.utc).isoformat() if isinstance(when, datetime) else None}
+
+
+def list_cards(conn, *, status: str = "open") -> List[Dict[str, Any]]:
+    """The queue, newest first: the open cards, or (`all`) every suggestion whatever became of it."""
+    if status not in ("open", "all"):
+        raise ValueError(status)
+    where = " WHERE s.status = 'open'" if status == "open" else ""
+    with conn.cursor() as cur:
+        cur.execute(_CARD_SQL + where + _CARD_ORDER + " LIMIT %s", (MAX_CARDS,))
+        return [card(_card_row(r)) for r in cur.fetchall()]
+
+
+def for_policy(cur, key: str) -> List[Dict[str, Any]]:
+    """The open cards of one policy, for its page."""
+    cur.execute(_CARD_SQL + " WHERE s.policy_key = %s AND s.status = 'open'" + _CARD_ORDER, (key,))
+    return [card(_card_row(r)) for r in cur.fetchall()]
+
+
+def _read(cur, suggestion_id: int) -> Dict[str, Any]:
+    cur.execute(_CARD_SQL + " WHERE s.suggestion_id = %s", (suggestion_id,))
+    r = cur.fetchone()
+    if r is None:
+        raise Refused(*_NOT_FOUND)
+    return _card_row(r)
+
+
+def act(conn, suggestion_id: int, verb: str, *, actor: str, now: datetime) -> Dict[str, Any]:
+    """Not yet / Dismiss: hide an open card, recording who, when and on how many decisions. The
+    scan brings it back only after that many more, so the count is always written: the decisions
+    in the `stats` column, the evidence as of the latest scan."""
+    if verb not in VERBS:
+        raise ValueError(verb)
+    with approvals._tx(conn):
+        with conn.cursor() as cur:
+            cur.execute(_KEY_OF_SQL, (suggestion_id,))
+            found = cur.fetchone()
+            if found is None:
+                raise Refused(*_NOT_FOUND)
+            cur.execute(_LOCK_SQL, (found[0],))          # the policy's rows, in the scan's order
+            cur.fetchall()
+            row = _read(cur, suggestion_id)              # read again, now that it cannot change
+            if row["status"] != "open":
+                raise Refused(*_NOT_OPEN)
+            decided = (row["stats"] or {}).get("decisions") if isinstance(row["stats"], dict) else None
+            if isinstance(decided, bool) or not isinstance(decided, int):
+                # a hidden card with no count would stay hidden for ever
+                raise ValueError(f"suggestion {suggestion_id} has no decision count")
+            cur.execute(_ACT_SQL, (VERBS[verb], decided, actor, now, now, suggestion_id))
+            return card(_read(cur, suggestion_id))
+
+
+def draft(conn, suggestion_id: int) -> Dict[str, Any]:
+    """'Draft this change': the policy's next version as an UNSAVED form. Writes nothing; only the
+    owner's save, and then the normal activate step, changes the policy. Built on the policy's
+    latest version, so a newer draft is carried forward rather than overwritten."""
+    with conn.cursor() as cur:
+        row = _read(cur, suggestion_id)
+    # saved: a version already holds the change. superseded: the condition is no longer the one
+    # the suggestion was about. Either way the policy has moved on from the card.
+    if row["status"] in ("saved", "superseded"):
+        raise Refused(*_POLICY_CHANGED)
+    if row["status"] != "open":
+        raise Refused(*_NOT_OPEN)
+    if not row["confident"]:
+        raise Refused(*_NOT_CONFIDENT)
+    form, proposal = row["form"], row["proposal"]
+    if row["policy_status"] != "live" or form is None or not isinstance(proposal, dict):
+        raise Refused(*_POLICY_CHANGED)
+    try:
+        built = learning_draft.build(form, proposal, on_missing_for(form, settings.load_settings(conn)))
+    except Exception:  # noqa: BLE001 - a form that can no longer be read is a policy that has changed
+        logger.exception("learning: suggestion %s could not be drafted", suggestion_id)
+        built = None
+    if built is None:
+        raise Refused(*_POLICY_CHANGED)
+    return {"policyKey": row["policy_key"], "baseVersion": row["latest_version"], "form": built["form"],
+            "changeNote": built["changeNote"], "checkWording": built["checkWording"],
+            "changedWording": built["changedWording"], "suggestionId": row["suggestion_id"]}
+
+
+def note_save(cur, key: str, version: int, form: Dict[str, Any]) -> int:
+    """A person saved `version` of the policy. Every open or snoozed suggestion whose change that
+    form actually holds is marked saved (and is never suggested again). Returns how many.
+
+    Runs inside the save's transaction, on its cursor: the mark and the version are one write."""
+    hidden = form.get("hidden") if isinstance(form, dict) else None
+    condition = hidden.get("condition") if isinstance(hidden, dict) else None
+    cur.execute(_LOCK_SQL, (key,))
+    marked = 0
+    for suggestion_id, _change, status, _n, proposal, _confident in cur.fetchall():
+        proposal = _json(proposal)
+        if status not in ("open", "not_yet") or not isinstance(proposal, dict):
+            continue
+        if learning_patterns.applied(proposal, condition):
+            cur.execute(_SAVED_SQL, (version, suggestion_id))
+            marked += 1
+    return marked
