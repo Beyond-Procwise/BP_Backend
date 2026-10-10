@@ -6,7 +6,9 @@ action and issuing one is communicate, so both need a stated permit
 (deploy/sql/2026-09-11_reseller_governance.sql). The customer endpoints go
 through quote_render, which is the control on cost and margin.
 
-Every read that returns cost or margin -- the internal quote view and both
+A quote is two reads behind two permissions. GET /quotes/{id} is the customer
+record and has no cost or margin in it; GET /quotes/{id}/internal is what the quote
+costs us. Every read that returns cost or margin -- that internal read and both
 opportunity reads -- asks margin.read and must be permitted by a stated policy
 (deploy/sql/2026-09-14_sales_margin_read_authority.sql). require_user alone is
 not a control here: with ASK_AUTH_MODE=off it yields no principal rather than
@@ -157,7 +159,8 @@ def create_account(body: AccountBody, principal=Depends(require_user)):
 
 
 @router.get("/accounts/{account_id}")
-def get_account(account_id: str):
+def get_account(account_id: str, principal=Depends(require_user)):
+    gate("account.read", principal, agent=_AGENT, context={"account_id": account_id})
     with http_errors(), get_conn() as c:
         return money_json(accounts.get_account(c, account_id))
 
@@ -228,10 +231,19 @@ def create_quote(body: QuoteBody, principal=Depends(require_user)):
 
 @router.get("/quotes/{quote_id}")
 def get_quote(quote_id: int, principal=Depends(require_user)):
-    """INTERNAL view: carries cost and margin. Never hand this to a customer."""
+    """The quote without what it costs us. Cost and margin are /internal."""
+    gate("quote.read", principal, agent=_AGENT, context={"sales_quote_id": quote_id})
+    with http_errors(), get_conn() as c:
+        return money_json(quotes.get_quote(c, quote_id))
+
+
+@router.get("/quotes/{quote_id}/internal")
+def get_quote_internal(quote_id: int, principal=Depends(require_user)):
+    """INTERNAL: cost and margin per quote and per line id. Never hand this to a customer."""
     _require_margin_permit(principal, {"sales_quote_id": quote_id})
     with http_errors(), get_conn() as c:
-        return money_json({**quotes.get_quote(c, quote_id), "margin_note": MARGIN_NOTE})
+        return money_json({**quotes.get_quote_internal(c, quote_id),
+                           "margin_note": MARGIN_NOTE})
 
 
 @router.post("/quotes/{quote_id}/submit")
@@ -259,15 +271,17 @@ def issue(quote_id: int, principal=Depends(require_user)):
 def customer_view(quote_id: int, principal=Depends(require_user)):
     gate("quote.read", principal, agent=_AGENT, context={"sales_quote_id": quote_id})
     with http_errors(), get_conn() as c:
-        return money_json(quote_render.customer_view(quotes.get_quote(c, quote_id)))
+        return money_json(quote_render.customer_view(
+            quotes.get_quote(c, quote_id), quotes.get_quote_internal(c, quote_id)))
 
 
 @router.get("/quotes/{quote_id}/customer.html", response_class=HTMLResponse)
 def customer_html(quote_id: int, principal=Depends(require_user)):
     gate("quote.read", principal, agent=_AGENT, context={"sales_quote_id": quote_id})
     with http_errors(), get_conn() as c:
+        quote, internal = quotes.get_quote(c, quote_id), quotes.get_quote_internal(c, quote_id)
         return HTMLResponse(quote_render.render_html(
-            quote_render.customer_view(quotes.get_quote(c, quote_id))))
+            quote_render.customer_view(quote, internal), quote=quote, internal=internal))
 
 
 @router.post("/quotes/{quote_id}/outcome")

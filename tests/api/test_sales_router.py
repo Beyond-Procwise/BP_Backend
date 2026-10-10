@@ -47,11 +47,24 @@ def _quote(status="approved"):
     return {"sales_quote_id": 9, "quote_ref": "SQ-1", "status": status, "account_name": "A",
             "contact_name": None, "currency": "GBP", "quote_date": dt.date(2026, 9, 11),
             "valid_until": dt.date(2026, 10, 11), "total_ex_tax": D("56.00"),
-            "total_cost": D("40.00"), "total_margin": D("16.00"), "margin_pct": D("0.2857"),
-            "lines": [{"line_no": 1, "item_description": "W", "quantity": D("4"),
-                       "unit_price": D("14"), "line_total": D("56.00"),
-                       "unit_cost": D("10"), "line_margin": D("16.00")}],
+            "lines": [{"sales_quote_line_id": 91, "line_no": 1, "item_description": "W",
+                       "quantity": D("4"), "unit_price": D("14"), "line_total": D("56.00")}],
             "justifications": []}
+
+
+def _internal():
+    return {"sales_quote_id": 9, "total_cost": D("40.00"), "total_margin": D("16.00"),
+            "margin_pct": D("0.2857"),
+            "lines": [{"sales_quote_line_id": 91, "line_no": 1, "unit_cost": D("10.37"),
+                       "cost_tier_applied": None, "line_margin": D("16.00"),
+                       "line_margin_pct": D("0.2857")}],
+            "justifications": []}
+
+
+@pytest.fixture
+def both_records(monkeypatch):
+    monkeypatch.setattr(sr.quotes, "get_quote", lambda conn, qid: _quote())
+    monkeypatch.setattr(sr.quotes, "get_quote_internal", lambda conn, qid: _internal())
 
 
 def _walk_keys(obj):
@@ -93,37 +106,68 @@ def test_issuing_asks_the_communicate_gate(client, monkeypatch):
     assert client.gates == ["sales_quote.issue"]
 
 
-def test_the_customer_endpoint_carries_no_internal_field(client, monkeypatch):
-    monkeypatch.setattr(sr.quotes, "get_quote", lambda conn, qid: _quote())
+def test_the_customer_endpoint_carries_no_internal_field(client, both_records):
     r = client.get("/sales/quotes/9/customer")
     assert r.status_code == 200
     assert not set(_walk_keys(r.json())) & qr.INTERNAL_FIELDS
 
 
-def test_the_customer_html_carries_no_cost(client, monkeypatch):
-    monkeypatch.setattr(sr.quotes, "get_quote", lambda conn, qid: _quote())
+def test_the_customer_html_carries_no_cost(client, both_records):
     r = client.get("/sales/quotes/9/customer.html")
     assert r.status_code == 200 and "text/html" in r.headers["content-type"]
     assert "16.00" not in r.text          # line and total margin
-    assert ">10<" not in r.text           # unit cost would only ever appear as a cell
+    assert "10.37" not in r.text          # unit cost
+
+
+def test_a_cost_figure_in_the_customer_record_stops_the_page(client, both_records, monkeypatch):
+    """The value check runs on the route, not only in the renderer's own tests."""
+    leaky = _quote()
+    leaky["lines"][0]["item_description"] = "W, costs us 10.37"
+    monkeypatch.setattr(sr.quotes, "get_quote", lambda conn, qid: leaky)
+    for path in ("/sales/quotes/9/customer", "/sales/quotes/9/customer.html"):
+        with pytest.raises(qr.InternalFieldLeak, match="unit_cost"):
+            client.get(path)
 
 
 def test_a_draft_has_no_customer_view(client, monkeypatch):
     monkeypatch.setattr(sr.quotes, "get_quote", lambda conn, qid: _quote("draft"))
+    monkeypatch.setattr(sr.quotes, "get_quote_internal", lambda conn, qid: _internal())
     assert client.get("/sales/quotes/9/customer").status_code == 409
 
 
-def test_the_internal_view_says_margin_is_front_end_only(client, monkeypatch):
-    monkeypatch.setattr(sr.quotes, "get_quote", lambda conn, qid: _quote())
-    body = client.get("/sales/quotes/9").json()
+def test_the_internal_view_says_margin_is_front_end_only(client, both_records):
+    body = client.get("/sales/quotes/9/internal").json()
     assert body["total_margin"] == "16.00"
+    assert body["lines"][0]["sales_quote_line_id"] == 91
     assert "front-end" in body["margin_note"]
 
 
-def test_the_internal_view_asks_the_margin_gate(client, monkeypatch):
-    monkeypatch.setattr(sr.quotes, "get_quote", lambda conn, qid: _quote())
-    assert client.get("/sales/quotes/9").status_code == 200
+def test_the_internal_view_asks_the_margin_gate(client, both_records):
+    assert client.get("/sales/quotes/9/internal").status_code == 200
     assert client.gates == ["margin.read"]
+
+
+def test_the_quote_read_is_the_customer_record_and_never_reads_the_internal_one(client, monkeypatch):
+    """Two reads behind two permissions (QDA B1): the quote read asks quote.read, does not
+    touch the internal reader at all, and returns no cost or margin."""
+    monkeypatch.setattr(sr.quotes, "get_quote", lambda conn, qid: _quote())
+    monkeypatch.setattr(sr.quotes, "get_quote_internal",
+                        lambda conn, qid: pytest.fail("the quote read reached the internal record"))
+    r = client.get("/sales/quotes/9")
+    assert r.status_code == 200, r.text
+    assert client.gates == ["quote.read"]
+    assert not set(_walk_keys(r.json())) & qr.INTERNAL_FIELDS
+    assert "margin_note" not in r.json()
+
+
+def test_reading_an_account_asks_the_gate_as_the_token_holder(client, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(sr, "gate", lambda action, principal, **k: seen.update(
+        action=action, subject=principal.subject, context=k.get("context")))
+    monkeypatch.setattr(sr.accounts, "get_account", lambda conn, aid: {"account_id": aid})
+    assert client.get("/sales/accounts/ACC-1").status_code == 200
+    assert seen == {"action": "account.read", "subject": CALLER,
+                    "context": {"account_id": "ACC-1"}}
 
 
 @pytest.mark.parametrize("path, service, fn", [
@@ -138,19 +182,18 @@ def test_opportunity_reads_carry_margin_so_they_ask_the_margin_gate(client, monk
 
 
 @pytest.mark.parametrize("path", ["/sales/quotes/9/customer", "/sales/quotes/9/customer.html"])
-def test_the_customer_views_ask_the_quote_read_gate(client, monkeypatch, path):
-    monkeypatch.setattr(sr.quotes, "get_quote", lambda conn, qid: _quote())
+def test_the_customer_views_ask_the_quote_read_gate(client, both_records, path):
     assert client.get(path).status_code == 200
     assert client.gates == ["quote.read"]
 
 
-@pytest.mark.parametrize("path", ["/sales/quotes/9", "/sales/opportunities", "/sales/opportunities/7"])
+@pytest.mark.parametrize("path", ["/sales/quotes/9/internal", "/sales/opportunities", "/sales/opportunities/7"])
 def test_margin_is_withheld_when_only_the_reversible_default_allowed_it(client, monkeypatch, path):
     """A read nobody's policy spoke to is allowed for every role, anonymous included.
     Margin must not ride that default: no stated permit, no margin -- and no query."""
     fetched, audit = [], []
     monkeypatch.setattr(sr, "gate", lambda action, *a, **k: _DEFAULTED)
-    monkeypatch.setattr(sr.quotes, "get_quote", lambda *a, **k: fetched.append(a))
+    monkeypatch.setattr(sr.quotes, "get_quote_internal", lambda *a, **k: fetched.append(a))
     monkeypatch.setattr(sr.opportunities, "get_opportunity", lambda *a, **k: fetched.append(a))
     monkeypatch.setattr(sr.opportunities, "list_opportunities", lambda *a, **k: fetched.append(a))
     monkeypatch.setattr(sr.agent_actions, "record_action_or_fail", lambda **k: audit.append(k))
@@ -174,8 +217,7 @@ def test_calibration_asks_the_compute_gate(client, monkeypatch):
     assert client.gates == ["sales.calibrate"]
 
 
-def test_money_leaves_as_a_string_not_a_float(client, monkeypatch):
-    monkeypatch.setattr(sr.quotes, "get_quote", lambda conn, qid: _quote())
+def test_money_leaves_as_a_string_not_a_float(client, both_records):
     body = client.get("/sales/quotes/9/customer").json()
     assert body["total_ex_tax"] == "56.00"
     assert body["lines"][0]["unit_price"] == "14"

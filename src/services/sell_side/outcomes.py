@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 
 import psycopg2.errors
 
+from src.services.sell_side import quotes
 from src.services.sell_side._db import NotFound, StateConflict, dict_cursor
 
 QUOTE_OUTCOMES = frozenset({"won", "lost", "expired", "withdrawn"})
@@ -24,8 +25,9 @@ def record_outcome(conn: Any, *, sales_quote_id: int, outcome: str, outcome_date
             raise ValueError(f"lost_reason must be one of {sorted(LOST_REASONS)}")
     cur = dict_cursor(conn)
     try:
-        cur.execute("SELECT status, total_ex_tax, total_margin FROM proc.bp_sales_quote "
-                    "WHERE sales_quote_id = %s FOR UPDATE", (sales_quote_id,))
+        cur.execute("SELECT sales_quote_id, quote_ref, status, total_ex_tax "
+                    "FROM proc.bp_sales_quote WHERE sales_quote_id = %s FOR UPDATE",
+                    (sales_quote_id,))
         q = cur.fetchone()
         if q is None:
             raise NotFound(f"quote {sales_quote_id} does not exist")
@@ -33,13 +35,15 @@ def record_outcome(conn: Any, *, sales_quote_id: int, outcome: str, outcome_date
             raise StateConflict(f"quote {sales_quote_id} is {q['status']}; only an issued "
                                 "quote has an outcome")
         won = outcome == "won"
+        won_margin = (quotes.internal_totals(cur, sales_quote_id)["total_margin"]
+                      if won else None)
         try:
             cur.execute(
                 "INSERT INTO proc.bp_sales_quote_outcome (sales_quote_id, outcome, outcome_date, "
                 "lost_reason, competitor_name, won_value, won_margin, recorded_by) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING *",
                 (sales_quote_id, outcome, outcome_date, lost_reason, competitor_name,
-                 q["total_ex_tax"] if won else None, q["total_margin"] if won else None,
+                 q["total_ex_tax"] if won else None, won_margin,
                  recorded_by))
         except psycopg2.errors.UniqueViolation:
             raise StateConflict(f"quote {sales_quote_id} already has an outcome") from None
@@ -54,6 +58,9 @@ def record_outcome(conn: Any, *, sales_quote_id: int, outcome: str, outcome_date
                 "FROM proc.bp_sales_quote_line WHERE sales_quote_id = %s "
                 "AND sales_opportunity_id IS NOT NULL)",
                 (_OPPORTUNITY_OUTCOME[outcome], sales_quote_id))
+        quotes.record_event(conn, "sales_quote.outcome", q, actor=recorded_by,
+                            outcome=outcome, outcome_date=outcome_date,
+                            lost_reason=lost_reason)
     except Exception:
         conn.rollback()
         raise
