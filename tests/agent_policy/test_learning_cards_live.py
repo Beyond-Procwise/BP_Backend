@@ -21,6 +21,8 @@ from tests.agent_policy.test_learning_scan_live import BASE, NOW, fire, row, wor
 
 live = pytest.mark.skipif(os.getenv("PROCWISE_TEST_LIVE_DB") != "1", reason="live DB required")
 LATER = NOW + timedelta(hours=2)
+#: an Approver: may hide any card (who may is test_learning_owner's and test_learning_owner_live's)
+ANYONE = L.Caller(editor=True, approver=True)
 EVIDENCE_30 = "30 of 30 requests between 500 USD and 800 USD were approved, by 3 different people over 40 days."
 
 
@@ -55,7 +57,9 @@ def test_a_card_is_built_from_the_policy_form_and_the_stats_column():
                  "evidence": EVIDENCE_30,
                  "stats": {"decisions": 30, "approved": 30, "approvers": 3, "days": 40, "medianSeconds": 60.0,
                            "wilsonLower": 0.8865, "reversed": 0},
-                 "suggestionConfidence": "High", "canDraft": True, "updatedAt": "2026-10-10T09:00:00+00:00"}
+                 "suggestionConfidence": "High", "canDraft": True, "updatedAt": "2026-10-10T09:00:00+00:00",
+                 # stage 5b: whose card, and may the caller hide it (nobody said who is asking)
+                 "ownerName": "", "mine": False, "canAct": False}
     assert "confidence" not in c, "extraction confidence and suggestion confidence never share a name"
 
 
@@ -153,14 +157,14 @@ def test_not_yet_and_dismiss_record_who_when_and_how_many(world):
     fire(conn, t.key, BASE)
     L.scan(conn, NOW, only=[t])
     sid = _sid(conn, t.key)
-    out = L.act(conn, sid, "not_yet", actor="u1", now=LATER)
+    out = L.act(conn, sid, "not_yet", actor="u1", now=LATER, caller=ANYONE)
     assert (out["id"], out["status"], out["canDraft"]) == (sid, "not_yet", False)
     assert L.for_policy(conn.cursor(), t.key) == [], "hidden from the form"
     assert row(conn, t.key)[0][4] == 30, "the 30 decisions of band 1 (510..800), from the stats column"
     assert _full(conn, t.key) == [("not_yet", 30, "u1", LATER, None)]
     assert conn.autocommit is True, "the connection is handed back as it came"
     with pytest.raises(L.Refused) as exc:
-        L.act(conn, sid, "dismiss", actor="u2", now=LATER)
+        L.act(conn, sid, "dismiss", actor="u2", now=LATER, caller=ANYONE)
     assert (exc.value.code, exc.value.message) == ("not_open", "This suggestion is no longer open.")
     assert _full(conn, t.key) == [("not_yet", 30, "u1", LATER, None)], "a refused action writes nothing"
     # the scan keeps it hidden: 33 decisions, 30 released, and 30 < 30 + not_yet_more (30)
@@ -174,7 +178,7 @@ def test_dismiss_closes_the_card_and_the_queue_shows_it_only_under_all(world):
     fire(conn, t.key, BASE)
     L.scan(conn, NOW, only=[t])
     sid = _sid(conn, t.key)
-    assert L.act(conn, sid, "dismiss", actor="u1", now=LATER)["status"] == "dismissed"
+    assert L.act(conn, sid, "dismiss", actor="u1", now=LATER, caller=ANYONE)["status"] == "dismissed"
     assert _full(conn, t.key) == [("dismissed", 30, "u1", LATER, None)]
     assert [c for c in L.list_cards(conn) if c["policyKey"] == t.key] == []
     [c] = [c for c in L.list_cards(conn, status="all") if c["policyKey"] == t.key]
@@ -194,7 +198,7 @@ def test_the_count_recorded_on_a_weak_card_is_the_evidence_as_it_now_stands(worl
     [c] = L.for_policy(conn.cursor(), t.key)
     assert (c["suggestionConfidence"], c["canDraft"]) == ("Not enough yet", False)
     assert (c["stats"]["decisions"], c["stats"]["approved"]) == (31, 30)
-    L.act(conn, c["id"], "not_yet", actor="u1", now=LATER)
+    L.act(conn, c["id"], "not_yet", actor="u1", now=LATER, caller=ANYONE)
     assert _full(conn, t.key)[0][:2] == ("not_yet", 31), "31 from the stats column, not the proposal's stale 30"
 
 
@@ -228,7 +232,7 @@ def test_a_hidden_card_cannot_be_drafted(world):
     fire(conn, t.key, BASE)
     L.scan(conn, NOW, only=[t])
     sid = _sid(conn, t.key)
-    L.act(conn, sid, "not_yet", actor="u1", now=LATER)
+    L.act(conn, sid, "not_yet", actor="u1", now=LATER, caller=ANYONE)
     with pytest.raises(L.Refused) as exc:
         L.draft(conn, sid)
     assert exc.value.code == "not_open"
@@ -239,12 +243,13 @@ def test_an_unknown_suggestion_and_an_unknown_verb(world):
     conn, t = world
     fire(conn, t.key, BASE)
     L.scan(conn, NOW, only=[t])
-    for call in (lambda: L.act(conn, -1, "dismiss", actor="u1", now=LATER), lambda: L.draft(conn, -1)):
+    for call in (lambda: L.act(conn, -1, "dismiss", actor="u1", now=LATER, caller=ANYONE),
+                 lambda: L.draft(conn, -1)):
         with pytest.raises(L.Refused) as exc:
             call()
         assert exc.value.code == "not_found"
     with pytest.raises(ValueError):
-        L.act(conn, _sid(conn, t.key), "apply", actor="u1", now=LATER)
+        L.act(conn, _sid(conn, t.key), "apply", actor="u1", now=LATER, caller=ANYONE)
     assert _full(conn, t.key) == [("open", None, None, None, None)]
 
 
@@ -270,7 +275,7 @@ def test_a_snoozed_card_is_marked_saved_and_a_dismissed_one_is_left(world, verb,
     conn, t = world
     fire(conn, t.key, BASE)
     L.scan(conn, NOW, only=[t])
-    L.act(conn, _sid(conn, t.key), verb, actor="u1", now=LATER)
+    L.act(conn, _sid(conn, t.key), verb, actor="u1", now=LATER, caller=ANYONE)
     assert L.note_save(conn.cursor(), t.key, 3, _limit_form(800)) == saved
     assert _full(conn, t.key)[0][0] == ("saved" if saved else status)
 

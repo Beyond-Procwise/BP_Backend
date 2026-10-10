@@ -296,7 +296,8 @@ def test_typing_the_loosening_by_hand_still_needs_the_review(conn, fin, state, l
     """Ruling Q3. The owner never used the card: they hid it (or left it) and typed the number.
     (The suggestion still `open` at the moment of activation is the first test above.)"""
     if state in ("dismissed", "not_yet"):
-        L.act(conn, fin.sid, {"dismissed": "dismiss", "not_yet": "not_yet"}[state], actor="tst-buyer", now=NOW)
+        L.act(conn, fin.sid, {"dismissed": "dismiss", "not_yet": "not_yet"}[state], actor="tst-buyer", now=NOW,
+              caller=L.Caller(editor=True, approver=True))
     form = _at(conn, fin, limit)
     v = _draft(conn, fin, form, base=fin.live)
     assert _refused(conn, fin, form, base=v) == REQUIRED

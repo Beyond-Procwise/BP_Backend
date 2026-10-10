@@ -62,7 +62,10 @@ def client(monkeypatch, state):
     monkeypatch.setattr(R, "_conn", _FakeConnCtx)
     monkeypatch.setattr(R, "_role_of", lambda principal: state["role"])
     monkeypatch.setattr(R.agent_actions, "record_action_or_fail", lambda **kw: state["audits"].append(kw))
-    monkeypatch.setattr(L, "list_cards", lambda conn, status="open": state["cards"])
+    monkeypatch.setattr(L, "list_cards", lambda conn, status="open", caller=None: state["cards"])
+    # stage 5b: the queue asks who the caller is linked to; nobody is, and the map reads
+    monkeypatch.setattr(L, "caller_of", lambda conn, principal, *, editor, approver, mapping=None: L.Caller(
+        editor=editor, approver=approver))
     monkeypatch.setattr(L, "draft", lambda conn, sid: state["draft"])
     monkeypatch.setattr(L, "act", lambda conn, sid, verb, **kw: {**state["cards"][0], "status": "dismissed"})
     return TestClient(app)

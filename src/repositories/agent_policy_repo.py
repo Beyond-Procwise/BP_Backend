@@ -341,7 +341,7 @@ def _j(v):
     return json.loads(v) if isinstance(v, str) else v
 
 
-def get_policy(conn, policy_key: str, *, viewer=None) -> Dict[str, Any]:
+def get_policy(conn, policy_key: str, *, viewer=None, caller=None) -> Dict[str, Any]:
     cur = conn.cursor()
     cur.execute("SELECT status, live_version, latest_version, area_name FROM proc.bp_agent_policy WHERE policy_key=%s", (policy_key,))
     head = cur.fetchone()
@@ -357,7 +357,7 @@ def get_policy(conn, policy_key: str, *, viewer=None) -> Dict[str, Any]:
             v["compiled"] = conflict_cases.overlay(cur, [v["compiled"]])[0]   # what the orchestrator is fed
     history = conflict_cases.history_for(cur, policy_key, head[2], head[0], viewer=viewer)
     try:
-        suggestions = learning.for_policy(cur, policy_key)
+        suggestions = learning.for_policy(cur, policy_key, caller)   # `caller`: whose cards, who may hide them
     except Exception as exc:  # noqa: BLE001 - the policy page never fails because of learning
         logger.warning("learning: the suggestions of %s could not be read (%s: %s); its page is shown without them",
                        policy_key, type(exc).__name__, exc)

@@ -27,7 +27,10 @@ from tests.agent_policy.test_learning_scan_live import BASE, NOW, fire
 
 pytestmark = pytest.mark.skipif(os.getenv("PROCWISE_TEST_LIVE_DB") != "1", reason="live DB required")
 
-ROLES = {"tst-viewer": "Viewer", "tst-buyer": "Buyer", "tst-approver": "Approver"}
+# tst-buyer is linked to the test policy's owner in the decider map (the `world` fixture); tst-buyer-2
+# is a Buyer linked to nobody. Stage 5b: only the owner or an Approver may hide a card.
+ROLES = {"tst-viewer": "Viewer", "tst-buyer": "Buyer", "tst-buyer-2": "Buyer", "tst-approver": "Approver",
+         "tst-admin": "Admin"}
 EVIDENCE_30 = "30 of 30 requests between 500 USD and 800 USD were approved, by 3 different people over 40 days."
 
 
@@ -63,7 +66,8 @@ def _form(tag):
 
 @pytest.fixture
 def world(conn, monkeypatch):
-    """A live approve policy "amount over 500" with the base evidence and its one open suggestion."""
+    """A live approve policy "amount over 500" with the base evidence and its one open suggestion.
+    Its owner name is linked to tst-buyer in the decider map, so BUYER acts as the policy's owner."""
     tag = uuid.uuid4().hex[:8]
     w = SimpleNamespace(tag=tag, audits=[], key=None)
     # tst_ tools are unknown to the real registry: readiness and the final check are bypassed
@@ -77,11 +81,16 @@ def world(conn, monkeypatch):
         assert w.key.startswith("OPS-")
         repo.save_version(conn, w.key, form, base_version=1, intent="activate", actor="test", change_note="go")
         w.live = 2
+        conn.cursor().execute(
+            "INSERT INTO proc.bp_policy_decider_map (decider_name, emails, last_modified_by) VALUES (%s, %s, 'test')",
+            (form["owner"], ["tst-buyer@example.test"]))
         fire(conn, w.key, BASE, version=w.live)
         assert _scan(conn, w)["raised"] == 1
         [w.sid] = [c["id"] for c in L.for_policy(conn.cursor(), w.key)]
         yield w
     finally:
+        # this test's decider-map rows: every name it links is "TST <word> <tag>"
+        conn.cursor().execute("DELETE FROM proc.bp_policy_decider_map WHERE decider_name LIKE %s", (f"TST % {tag}",))
         if w.key:
             conn.cursor().execute("DELETE FROM proc.bp_agent_policy_suggestion WHERE policy_key = %s", (w.key,))
             got = repo.get_policy(conn, w.key)
@@ -154,7 +163,9 @@ def test_viewer_reads_the_queue_buyer_acts_viewer_cannot(client, conn, world):
                     "change": "Raise the limit on Refund amount from 500 USD to 800 USD?", "evidence": EVIDENCE_30,
                     "stats": {"decisions": 30, "approved": 30, "approvers": 3, "days": 40, "medianSeconds": 60.0,
                               "wilsonLower": 0.8865, "reversed": 0},
-                    "suggestionConfidence": "High", "canDraft": True, "updatedAt": NOW.isoformat()}
+                    "suggestionConfidence": "High", "canDraft": True, "updatedAt": NOW.isoformat(),
+                    # stage 5b, as the Viewer reading it: not theirs, and not theirs to hide
+                    "ownerName": f"TST Owner {world.tag}", "mine": False, "canAct": False}
     assert client.get("/agent-policies/suggestions", headers=_hdr("tst-nobody")).status_code == 403
     assert _act(client, world, "not_yet", VIEWER).status_code == 403
     assert _draft(client, world, VIEWER).status_code == 403
