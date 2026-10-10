@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
@@ -31,6 +31,7 @@ from services.agent_policy import (approval_views, approvals, conditions, confli
                                    run_runner,
                                    run_store, second_review, sections)
 from services.agent_policy.compiler import compile_policy
+from services.agent_policy import settings as policy_settings
 from services.agent_policy.registry import load_registry
 from services.agent_policy.settings import load_settings
 from services.db import get_conn
@@ -162,6 +163,58 @@ def update_area(area: str, body: AreaBody, p: Principal = Depends(gateway_princi
                 summary=f"{p.subject} changed the settings of business area {area}",
                 details={"area": area, "principal": p.subject, "before": before, "after": after})
     return {"areaName": area, "subAreas": subs, "neverSuggest": body.neverSuggest, "secondReviewer": body.secondReviewer}
+
+
+# ---------------------------------------------------------------- the learning thresholds (stage 5b)
+# Company settings an administrator reads and changes. Two fixed segments, declared before every
+# "/{key}" route. The body is closed (exactly the seven thresholds) and judged here in plain words,
+# so a wrong value arrives as 422 {problems} beside its field rather than as a schema error. The
+# answers carry numbers and one boolean only: nothing the output filter would withhold.
+
+def _learning_settings_view(learning: Dict[str, Any]) -> Dict[str, Any]:
+    return {"learning": learning, "defaults": dict(policy_settings.DEFAULTS["learning"]),
+            "scan": {"enabled": policy_settings.learning_scan_enabled()}}
+
+
+@router.get("/settings/learning")
+def learning_settings(p: Principal = Depends(gateway_principal)):
+    _require(p, "Admin", "agent_policy.read", {})
+    with _conn() as conn:
+        return _learning_settings_view(policy_settings.learning_of(policy_settings.load_settings(conn)))
+
+
+@router.put("/settings/learning")
+def update_learning_settings(body: Dict[str, Any] = Body(...), p: Principal = Depends(gateway_principal)):
+    requested = {k: body.get(k) for k in policy_settings.LEARNING_KEYS}
+    _require(p, "Admin", "agent_policy.admin", {"settings": "learning", "requested": requested})
+
+    def _audit(status: str, summary: str, **details):
+        agent_actions.record_action_or_fail(
+            phase="act", action_type="agent_policy.admin", agent="agent_policy_api", status=status,
+            summary=summary, details={"settings": "learning", "principal": p.subject, **details})
+
+    problems = policy_settings.learning_problems(body)
+    if problems:
+        _audit("refused", f"{p.subject} could not change the learning thresholds",
+               fields=[x["field"] for x in problems])
+        return JSONResponse(status_code=422, content={"problems": problems})
+    try:
+        with _conn() as conn:
+            # The change and the record of what it changed are one write (as the business-area
+            # settings are): these numbers decide when learning suggests loosening a policy.
+            _before, after = policy_settings.save_learning(
+                conn, body, actor=p.subject,
+                record=lambda before, after: _audit("done", f"{p.subject} changed the learning thresholds",
+                                                    before=before, after=after))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("changing the learning thresholds failed")
+        try:
+            _audit("error", f"{p.subject} could not change the learning thresholds: {type(exc).__name__}",
+                   code="error")
+        except Exception:  # noqa: BLE001 - nothing was changed; the failure is in the log
+            logger.exception("the failed change to the learning thresholds could not be audited")
+        raise HTTPException(status_code=500, detail="The settings could not be saved. Please try again.")
+    return _learning_settings_view(after)
 
 
 @router.post("/preview")
