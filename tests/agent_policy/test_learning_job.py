@@ -61,3 +61,23 @@ def test_learning_scan_calls_scan_and_never_raises(monkeypatch):
     assert len(calls) == 1 and calls[0].tzinfo is not None
     monkeypatch.setattr(learning, "scan", lambda conn, now: 1 / 0)
     _ScanStub()._run_agent_policy_learning_scan()
+
+
+def test_learning_scan_says_so_when_a_suggestion_row_could_not_be_read(monkeypatch, caplog):
+    import logging
+
+    from services.agent_policy import learning
+    import services.db as db
+
+    class _Ctx:
+        def __enter__(self): return object()
+        def __exit__(self, *a): return False
+    monkeypatch.setattr(db, "get_conn", lambda: _Ctx())
+    quiet = {k: 0 for k in learning.COUNTERS}
+    assert "unreadable" in quiet
+    for counts, logged in (({**quiet, "policies": 4, "updated": 2}, False), ({**quiet, "policies": 4, "unreadable": 1}, True)):
+        caplog.clear()
+        monkeypatch.setattr(learning, "scan", lambda conn, now, counts=counts: counts)
+        with caplog.at_level(logging.INFO, logger="services.backend_scheduler"):
+            _ScanStub()._run_agent_policy_learning_scan()
+        assert bool([r for r in caplog.records if "agent policy learning scan" in r.getMessage()]) is logged

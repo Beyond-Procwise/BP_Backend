@@ -542,3 +542,72 @@ def test_cards_of_policies_no_longer_scanned_are_closed_and_no_others():
         cur.execute("SELECT count(*) FROM proc.bp_agent_policy_suggestion WHERE policy_key = ANY(%s)",
                     ([gone, kept, test_key],))
         assert cur.fetchone()[0] == 0, "rolled back"
+
+
+# ------------------------------------------------------------------ one unreadable row, one unreadable version
+def _plant(conn, key, change_key, proposal, status="open"):
+    cur = conn.cursor()
+    cur.execute("INSERT INTO proc.bp_agent_policy_suggestion (policy_key, change_key, policy_version, kind, "
+                "proposal, stats, confident, status) VALUES (%s, %s, 1, 'threshold', %s::jsonb, '{}'::jsonb, TRUE, %s) "
+                "RETURNING suggestion_id", (key, change_key, json.dumps(proposal), status))
+    return cur.fetchone()[0]
+
+
+def test_one_unreadable_suggestion_row_is_skipped_and_the_policys_other_rows_are_still_processed(world, caplog):
+    conn, t = world
+    # Planted BEFORE the real card, so they come first under the lock's order. Neither is proposed
+    # by the scan, so both are read in the "no longer proposed" pass:
+    no_field = _plant(conn, t.key, "tst:no-field", {"kind": "threshold", "op": "gt", "from": 500})     # targets() fails
+    no_to = _plant(conn, t.key, "tst:no-to", {"kind": "threshold", "field": "args.amount", "op": "gt",
+                                              "from": 500})                                           # group_for() fails
+    _plant(conn, t.key, "threshold:args.amount:gt:400",
+           {"kind": "threshold", "field": "args.amount", "op": "gt", "from": 400, "to": 450})      # readable: 400 is gone
+    fire(conn, t.key, BASE)
+    with caplog.at_level(logging.WARNING, logger=L.logger.name):
+        counts = L.scan(conn, NOW, only=[t])
+    # the policy's step did not fail: the real card is raised and the stale one closed
+    assert (counts["errors"], counts["unreadable"], counts["raised"], counts["superseded"]) == (0, 2, 1, 1)
+    got = by_change(conn, t.key)
+    assert (got[CHANGE_500]["status"], got[CHANGE_500]["proposal"]["to"]) == ("open", 800)
+    assert got["threshold:args.amount:gt:400"]["status"] == "superseded"
+    assert (got["tst:no-field"]["status"], got["tst:no-to"]["status"]) == ("open", "open"), "left exactly as they were"
+    said = [r.getMessage() for r in caplog.records if "could not be read" in r.getMessage()]
+    assert len(said) == 2 and all("KeyError" in m for m in said)
+    assert f"suggestion {no_field} " in said[0] and f"suggestion {no_to} " in said[1]
+
+
+def test_a_latest_version_whose_condition_is_not_a_condition_leaves_a_saved_row_alone(world, caplog):
+    conn, t = world
+    fire(conn, t.key, BASE)
+    L.scan(conn, NOW, only=[t])
+    conn.cursor().execute("UPDATE proc.bp_agent_policy_suggestion SET status = 'saved', saved_version = 2 "
+                          "WHERE policy_key = %s", (t.key,))
+    unreadable = L.Target(key=t.key, live_version=1, form=t.form, versions=[1], latest_condition="nonsense")
+    with caplog.at_level(logging.WARNING, logger=L.logger.name):
+        counts = L.scan(conn, NOW, only=[unreadable])
+    # whether the newer version holds the change cannot be told: that is not "it does not"
+    assert (counts["reopened"], counts["errors"], counts["unreadable"]) == (0, 0, 0)
+    assert _saved(conn, t.key) == [("saved", 2, None)]
+    assert len([r for r in caplog.records if t.key in r.getMessage() and "in force" in r.getMessage()]) == 1
+
+
+def test_a_latest_condition_that_cannot_be_compared_does_not_fail_the_policys_step(world, monkeypatch, caplog):
+    conn, t = world
+    fire(conn, t.key, BASE)
+    L.scan(conn, NOW, only=[t])
+    conn.cursor().execute("UPDATE proc.bp_agent_policy_suggestion SET status = 'saved', saved_version = 2 "
+                          "WHERE policy_key = %s", (t.key,))
+    held = _latest(t, 800)
+    real = LP.applied
+
+    def applied(proposal, condition):
+        if condition == held.latest_condition:
+            raise ValueError("TST cannot compare")
+        return real(proposal, condition)
+    monkeypatch.setattr(LP, "applied", applied)
+    with caplog.at_level(logging.WARNING, logger=L.logger.name):
+        counts = L.scan(conn, NOW, only=[held])
+    assert (counts["errors"], counts["reopened"], counts["policies"]) == (0, 0, 1)
+    assert _saved(conn, t.key) == [("saved", 2, None)]
+    told = [r.getMessage() for r in caplog.records if t.key in r.getMessage() and "in force" in r.getMessage()]
+    assert len(told) == 1 and "ValueError" in told[0], "once per policy, with the kind of failure"

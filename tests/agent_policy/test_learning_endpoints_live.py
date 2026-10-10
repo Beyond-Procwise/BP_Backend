@@ -388,3 +388,39 @@ def test_unknown_suggestion_is_404_and_a_bad_verb_is_422(client, world):
     assert client.get("/agent-policies/suggestions?status=closed", headers=VIEWER).status_code == 422
     assert client.get("/agent-policies/suggestions/abc/draft", headers=BUYER).status_code == 422
     assert client.get(f"/agent-policies/suggestions/{10 ** 30}/draft", headers=BUYER).status_code == 422
+
+
+# ------------------------------------------------------------------ the scan judges under its lock
+def _stale_target(conn, w):
+    """The policy as a scan read it a moment ago, before whatever the test does next."""
+    [target] = [t for t in L.targets(conn.cursor()) if t.key == w.key]
+    return target
+
+
+def test_a_save_landing_after_the_scan_read_its_policies_does_not_reopen_the_saved_card(client, conn, world):
+    stale = _stale_target(conn, world)                       # live 500, nothing newer
+    d = _draft(client, world).json()
+    assert _save(client, world, d["form"], base=d["baseVersion"]).status_code in (200, 201)      # v3 at 800
+    assert _row(conn, world) == ("saved", None, None, world.live + 1)
+    # The scan still holds the policy as it read it. The same 33 decisions still support 500 -> 800,
+    # so judged on the stale picture (latest = 500) the saved card would be reopened.
+    counts = L.scan(conn, NOW, only=[stale])
+    assert (counts["reopened"], counts["updated"], counts["errors"]) == (0, 0, 0)
+    assert _row(conn, world) == ("saved", None, None, world.live + 1), "the latest version, read under the lock, holds it"
+
+
+def test_a_policy_whose_live_condition_changed_since_the_scan_read_it_is_left_for_the_next_scan(client, conn, world,
+                                                                                               caplog):
+    stale = _stale_target(conn, world)                       # live 500
+    r = _save(client, world, _live_form(conn, world, limit=700), base=world.live, headers=APPROVER, intent="activate")
+    assert r.status_code in (200, 201), r.text
+    before = _row(conn, world)
+    assert before[0] == "saved", "700 is looser than 500: the save holds the change"
+    with caplog.at_level(logging.INFO, logger=L.logger.name):
+        counts = L.scan(conn, NOW, only=[stale])
+    # evidence read for "over 500" says nothing about a policy that now says "over 700"
+    assert counts == {**{k: 0 for k in L.COUNTERS}, "policies": 1}
+    assert _row(conn, world) == before
+    assert [r for r in caplog.records if world.key in r.getMessage() and "next scan" in r.getMessage()]
+    # the next scan reads the policy afresh: the 500 card is closed for good or kept saved, never reopened at 500
+    assert _scan(conn, world)["reopened"] == 0 and _row(conn, world)[0] == "saved"
