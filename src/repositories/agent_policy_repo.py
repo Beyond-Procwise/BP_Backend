@@ -294,8 +294,9 @@ def save_version(conn, policy_key: str, form: Dict[str, Any], *, base_version: i
 
 def _note_learning(cur, policy_key: str, version: int, form: Dict[str, Any]) -> None:
     """Mark the learning suggestions this save holds as saved, in the save's own transaction.
+    Every save passes through here: a person's, and a machine draft's (an extraction run).
 
-    A person's save never fails because of learning's bookkeeping: it runs inside a savepoint, so
+    A save never fails because of learning's bookkeeping: it runs inside a savepoint, so
     a failure undoes only its own statements (never leaving some suggestions marked and others
     not), is logged with the policy, and the save commits. The suggestion then stays open until
     the next save or scan, which is the safe side: nothing is lost, a card is shown a while longer.
@@ -355,10 +356,16 @@ def get_policy(conn, policy_key: str, *, viewer=None) -> Dict[str, Any]:
         if head[1] is not None and v["version"] == head[1] and isinstance(v["compiled"], dict):
             v["compiled"] = conflict_cases.overlay(cur, [v["compiled"]])[0]   # what the orchestrator is fed
     history = conflict_cases.history_for(cur, policy_key, head[2], head[0], viewer=viewer)
+    try:
+        suggestions = learning.for_policy(cur, policy_key)
+    except Exception as exc:  # noqa: BLE001 - the policy page never fails because of learning
+        logger.warning("learning: the suggestions of %s could not be read (%s: %s); its page is shown without them",
+                       policy_key, type(exc).__name__, exc)
+        suggestions = []
     return {"policyKey": policy_key, "status": head[0], "liveVersion": head[1], "latestVersion": head[2],
             "areaName": head[3], "versions": versions, "conflicts": history["conflicts"],
             "pendingConflictAction": history["pendingAction"],
-            "suggestions": learning.for_policy(cur, policy_key),
+            "suggestions": suggestions,
             "secondReview": second_review.status(cur, policy_key, {"liveVersion": head[1], "latestVersion": head[2]},
                                                  versions)}
 

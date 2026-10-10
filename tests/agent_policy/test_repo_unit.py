@@ -65,3 +65,35 @@ def test_save_version_is_not_found_when_the_base_row_is_missing():
         repo.save_version(conn, "GEN-0001", {"name": "x"}, base_version=1, intent="draft", actor="t", change_note="")
     assert conn.rolled_back and not conn.committed and conn.autocommit is True
     assert "form_state" in conn.cur.sql[-1]
+
+
+# ------------------------------------------------------------------ the policy page and learning
+class _PageCur(_Cur):
+    def fetchall(self):
+        return []                # no versions: the page's own parts are not what is tested here
+
+
+def _page(monkeypatch, for_policy):
+    conn = _Conn()
+    conn.cur = _PageCur([("live", 2, 2, "Operations")])
+    monkeypatch.setattr(repo.conflict_cases, "history_for",
+                        lambda cur, key, latest, status, viewer=None: {"conflicts": [], "pendingAction": None})
+    monkeypatch.setattr(repo.second_review, "status", lambda cur, key, head, versions: {"required": False})
+    monkeypatch.setattr(repo.learning, "for_policy", for_policy)
+    return repo.get_policy(conn, "OPS-0042")
+
+
+def test_the_policy_page_carries_what_learning_returns(monkeypatch):
+    assert _page(monkeypatch, lambda cur, key: [{"id": 7, "policyKey": key}])["suggestions"] == [
+        {"id": 7, "policyKey": "OPS-0042"}]
+
+
+def test_the_policy_page_opens_without_suggestions_when_learning_cannot_be_read(monkeypatch, caplog):
+    def boom(cur, key):
+        raise RuntimeError("relation proc.bp_agent_policy_suggestion does not exist")
+    got = _page(monkeypatch, boom)
+    assert got["suggestions"] == [] and got["policyKey"] == "OPS-0042" and got["status"] == "live"
+    assert got["secondReview"] == {"required": False}, "the rest of the page is still built"
+    [line] = caplog.records
+    assert line.levelname == "WARNING" and line.exc_info is None and "\n" not in line.getMessage()
+    assert "OPS-0042" in line.getMessage() and "RuntimeError" in line.getMessage()

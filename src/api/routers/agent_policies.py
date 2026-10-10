@@ -691,9 +691,12 @@ def record_reversal(body: ReversalBody, firing_id: int = Path(ge=1, le=2 ** 63 -
 
 
 # ---------------------------------------------------------------- the second reviewer
-# Decision 11 and ruling Q3 (2026-10-10). The role is checked here; who may NOT review (the person
-# who saved the draft, the policy's owner) is decided in second_review.record. Two path segments
-# ending in a word no other route uses, and declared before the one-segment "/{key}" routes.
+# The rule is second_review's (its module docstring is the one statement of it): once learning has
+# raised a suggestion on a policy in a protected business area, ANY change to what the policy
+# enforces needs a second person before it goes Active. The role is checked here; who may NOT
+# review (anyone who saved a version since the live one, the policy's owner) is decided in
+# second_review.record. Two path segments ending in a word no other route uses, and declared
+# before the one-segment "/{key}" routes.
 
 class SecondReviewBody(BaseModel):
     version: int = Field(ge=1, le=2 ** 31 - 1)
