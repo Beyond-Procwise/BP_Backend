@@ -44,8 +44,8 @@ def _policies():
     unreadable = copy.deepcopy(FORM_EXAMPLE)
     unreadable["hidden"]["condition"] = {"field": "args.amount", "op": "gt", "value": {1, 2}}   # will not serialise
     # the last column is the latest version's condition: FIN-0001 has a draft at 800 beside its live 500
-    return [("FIN-0001", 2, copy.deepcopy(FORM_EXAMPLE), {}, _at(800)), ("FIN-0002", 1, unreadable, {}, None),
-            ("FIN-0003", 3, copy.deepcopy(FORM_EXAMPLE), {}, None)]
+    return [("FIN-0001", 2, copy.deepcopy(FORM_EXAMPLE), _at(800)), ("FIN-0002", 1, unreadable, None),
+            ("FIN-0003", 3, copy.deepcopy(FORM_EXAMPLE), None)]
 
 
 def _at(value):
@@ -66,7 +66,24 @@ def test_one_unreadable_policy_is_skipped_and_the_others_are_returned(caplog):
     conn = _Conn(_policies())
     found = L.targets(conn.cursor())
     assert [(t.key, t.live_version, t.versions) for t in found] == [("FIN-0001", 2, [1, 2]), ("FIN-0003", 3, [1, 2])]
-    assert [r.getMessage() for r in caplog.records if "FIN-0002" in r.getMessage()], "logged by key"
+    # one WARNING line with the key, the exception's type and its message; no stack trace every hour
+    [line] = [r for r in caplog.records if "FIN-0002" in r.getMessage()]
+    assert line.levelname == "WARNING" and line.exc_info is None and "\n" not in line.getMessage()
+    assert "TypeError" in line.getMessage() and "not JSON serializable" in line.getMessage()
+    assert [r for r in caplog.records if r is not line] == [], "and nothing else is logged"
+
+
+def test_the_policies_are_selected_without_a_cast_that_one_bad_row_can_fail():
+    """`(... ->> 'eligible')::boolean` raises on a stored value that is not a boolean ('yes', 7), and
+    one such row would fail the statement, so no policy at all would be scanned. Compared as text, a
+    value that is not `true` simply does not match. (The exclusions themselves are proved on the
+    real database in test_learning_scan_live.)"""
+    sql = " ".join(L._TARGETS_SQL.split())
+    assert "::" not in sql, "no cast of a stored value in the statement that picks the policies"
+    assert "AND v.compiled -> 'learning' ->> 'eligible' = 'true'" in sql
+    assert "v.form_state ->> 'outcome' = 'approve'" in sql and "COALESCE(a.never_suggest, FALSE) = FALSE" in sql
+    columns = sql[len("SELECT "):sql.index(" FROM ")]
+    assert "compiled" not in columns, "the compiled document is read by the WHERE clause only"
 
 
 def test_the_scan_counts_the_unreadable_policy_and_does_not_close_its_cards(monkeypatch):

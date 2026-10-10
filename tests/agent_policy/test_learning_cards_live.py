@@ -54,7 +54,7 @@ def test_a_card_is_built_from_the_policy_form_and_the_stats_column():
                  "kind": "threshold", "change": "Raise the limit on Refund amount from 500 USD to 800 USD?",
                  "evidence": EVIDENCE_30,
                  "stats": {"decisions": 30, "approved": 30, "approvers": 3, "days": 40, "medianSeconds": 60.0,
-                           "wilsonLower": 0.8865},
+                           "wilsonLower": 0.8865, "reversed": 0},
                  "suggestionConfidence": "High", "canDraft": True, "updatedAt": "2026-10-10T09:00:00+00:00"}
     assert "confidence" not in c, "extraction confidence and suggestion confidence never share a name"
 
@@ -66,6 +66,25 @@ def test_a_weak_card_shows_the_evidence_as_it_now_stands_not_as_it_was_when_last
                              "by 3 different people over 40 days.")
     assert c["stats"]["decisions"] == 31 and c["stats"]["wilsonLower"] == 0.8381
     assert c["suggestionConfidence"] == "Not enough yet" and c["canDraft"] is False
+
+
+@pytest.mark.parametrize("reversed_,said", [(1, " 1 of them was later marked as reversed."),
+                                            (2, " 2 of them were later marked as reversed."),
+                                            (12, " 12 of them were later marked as reversed.")])
+def test_a_card_weakened_by_a_reversal_says_so(reversed_, said):
+    # 30 of 30 approved reads as full support: without the sentence nothing says why it is "Not enough yet"
+    c = L.card(_row(confident=False, stats=_stats(reversed=reversed_)))
+    assert c["evidence"] == EVIDENCE_30 + said
+    assert c["stats"]["reversed"] == reversed_ and c["suggestionConfidence"] == "Not enough yet"
+    gone = L.card(_row(confident=False, stats=_stats(reversed=reversed_), form=None))
+    assert gone["evidence"] == "STORED evidence" + said, "also on the wording stored with the card"
+
+
+@pytest.mark.parametrize("stats", [_stats(), _stats(reversed=None), _stats(reversed=True), _stats(reversed="2"),
+                                   {k: v for k, v in _stats().items() if k != "reversed"}])
+def test_a_card_with_no_reversal_says_nothing_about_one(stats):
+    c = L.card(_row(stats=stats))
+    assert c["evidence"] == EVIDENCE_30 and "reversed" in c["stats"]
 
 
 def test_a_card_whose_policy_is_gone_uses_the_wording_stored_with_it():

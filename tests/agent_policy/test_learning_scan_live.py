@@ -508,6 +508,64 @@ def test_a_value_people_always_approve_is_suggested_for_removal_from_a_list(worl
     assert (weak["confident"], weak["stats"]["decisions"], weak["stats"]["approved"]) == (False, 31, 30)
 
 
+# ------------------------------------------------------------------ an input marked sensitive
+def _marked_sensitive(target, field="args.amount", extra_inputs=(), extra_conditions=()):
+    """The target with that input marked sensitive in its LIVE form (and nothing else changed:
+    the condition is the same, so the versions and their firings are the same evidence)."""
+    form = copy.deepcopy(target.form)
+    form["hidden"]["inputs"] += list(extra_inputs)
+    form["hidden"]["condition"]["all"] += list(extra_conditions)
+    [spec] = [i for i in form["hidden"]["inputs"] if i["field"] == field]
+    spec["sensitive"] = True
+    return L.Target(key=target.key, live_version=target.live_version, form=form, versions=target.versions)
+
+
+def test_a_value_now_marked_sensitive_sets_no_figure_though_older_firings_recorded_it_unmasked(world):
+    conn, t = world
+    # the base 33 were recorded BEFORE the input was marked: the log holds 510..830 in the clear.
+    # They pass every guardrail (see the first test: 500 -> 800 on 30), so only the mark stops it.
+    fire(conn, t.key, BASE)
+    assert [d.values["args.amount"] for d in L.decisions(conn.cursor(), t.key, [1])].count(MASK) == 0
+    counts = L.scan(conn, NOW, only=[_marked_sensitive(t)])
+    assert (counts["raised"], counts["errors"], counts["policies"]) == (0, 0, 1)
+    assert row(conn, t.key) == [], "no row: nothing a Viewer could read the 800 from"
+    # the control: the same evidence, the input not marked -> the card is raised
+    assert L.scan(conn, NOW, only=[t])["raised"] == 1 and row(conn, t.key)[0][2]["to"] == 800
+
+
+@pytest.mark.parametrize("status", ["open", "not_yet", "dismissed"])
+def test_a_card_on_a_field_now_marked_sensitive_is_superseded_and_does_not_come_back(world, status):
+    conn, t = world
+    fire(conn, t.key, BASE)
+    assert L.scan(conn, NOW, only=[t])["raised"] == 1
+    if status != "open":
+        _set_status(conn, t.key, status, 30)
+    counts = L.scan(conn, NOW, only=[_marked_sensitive(t)])
+    assert (counts["superseded"], counts["raised"], counts["updated"], counts["weakened"], counts["errors"]) == \
+        (1, 0, 0, 0, 0)
+    assert [r[0] for r in row(conn, t.key)] == ["superseded"]
+    # 60 more approvals (840..1430), past either wait: still nothing while the input is marked
+    fire(conn, t.key, [510 + 10 * i for i in range(33, 93)], first=33)
+    counts = L.scan(conn, NOW, only=[_marked_sensitive(t)])
+    assert (counts["superseded"], counts["raised"], counts["reopened"], counts["errors"]) == (0, 0, 0, 0)
+    assert [r[0] for r in row(conn, t.key)] == ["superseded"]
+
+
+def test_a_sensitive_input_silences_only_its_own_field(world):
+    conn, t = world
+    country = {"extra_inputs": [{"name": "Customer country", "field": "customer.country", "type": "string"}],
+               "extra_conditions": [{"field": "customer.country", "op": "in", "value": ["FR", "DE"]}]}
+    # as the list test above: i 0..29 are FR -> the list card (FR, 30 of 30) and the threshold card (800)
+    fire(conn, t.key, BASE, extra=[{"customer.country": "FR" if i < 30 else "DE"} for i in range(33)])
+    counts = L.scan(conn, NOW, only=[_marked_sensitive(t, **country)])
+    assert (counts["raised"], counts["errors"]) == (1, 0)
+    assert set(by_change(conn, t.key)) == {"list:customer.country:FR"}, "the amount is hidden; the country is not"
+    counts = L.scan(conn, NOW, only=[_marked_sensitive(t, "customer.country", **country)])
+    assert (counts["raised"], counts["superseded"], counts["errors"]) == (1, 1, 0)
+    assert {k: v["status"] for k, v in by_change(conn, t.key).items()} == {
+        "list:customer.country:FR": "superseded", CHANGE_500: "open"}
+
+
 def test_cards_of_policies_no_longer_scanned_are_closed_and_no_others():
     """The one statement the unscoped scan ends with, run by hand in a transaction that is ROLLED BACK.
     Its key list is every key in the table plus nothing of ours, so the only rows it can match are the
