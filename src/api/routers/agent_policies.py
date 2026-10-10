@@ -636,6 +636,45 @@ def act_on_suggestion(body: SuggestionActBody, suggestion_id: int = _SUGGESTION_
     return out
 
 
+# ---------------------------------------------------------------- an approved request, later reversed
+# Ruling Q2 (2026-10-10): an Approver marks an approved request as reversed, by hand, with a reason.
+# It cannot be undone. The gateway checks the role and trims the reason; both are checked again here.
+
+class ReversalBody(BaseModel):
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+@router.post("/firings/{firing_id}/reversal", status_code=201)
+def record_reversal(body: ReversalBody, firing_id: int = Path(ge=1, le=2 ** 63 - 1),
+                    p: Principal = Depends(gateway_principal)):
+    # audited before (the authorize record) and after (done / refused / error), as decide is
+    _require(p, "Approver", "agent_policy.reversal", {"firing": firing_id})
+
+    def _audit(status: str, summary: str, **details):
+        agent_actions.record_action_or_fail(
+            phase="act", action_type="agent_policy.reversal", agent="agent_policy_api", status=status,
+            summary=summary, details={"firing": firing_id, "principal": p.subject, **details})
+
+    try:
+        with _conn() as conn:
+            out = learning.record_reversal(conn, firing_id, actor=p.subject, reason=body.reason,
+                                           now=datetime.now(timezone.utc))
+    except learning.Refused as exc:
+        _audit("refused", f"{p.subject} could not mark request {firing_id} as reversed: {exc.code}", code=exc.code)
+        return _refused_learning(exc)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("recording the reversal of firing %s failed", firing_id)
+        _audit("error", f"{p.subject} could not mark request {firing_id} as reversed: {type(exc).__name__}",
+               code="error")
+        raise HTTPException(status_code=500, detail="That could not be recorded. Please try again.")
+    # The reversal is committed: a failed audit record must not turn it into an error answer.
+    try:
+        _audit("done", f"{p.subject} marked request {firing_id} as reversed", storedOn=out["firingId"])
+    except Exception:  # noqa: BLE001
+        logger.exception("the reversal of firing %s was recorded but its audit record failed", firing_id)
+    return out
+
+
 @router.get("/{key}/firings")
 def policy_firings(key: str, limit: int = Query(default=50, ge=1, le=200),
                    p: Principal = Depends(gateway_principal)):

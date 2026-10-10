@@ -1,12 +1,13 @@
 """Learning (brief §6): read what people decided, and store what that supports as suggestions.
 
 The only learning module that touches the database. It reads the firing log and writes rows in
-proc.bp_agent_policy_suggestion, nothing else. This module never writes a policy version: a
+proc.bp_agent_policy_suggestion (and a person's reversal records). It never writes a policy version: a
 suggestion is a row for an owner to review, and only a person's save changes a policy.
 
 The hourly scan raises and refreshes the rows; a person hides one (Not yet, Dismiss) or asks for
 it as an unsaved form (Draft this change, which writes nothing); a save that holds the change
-marks it saved.
+marks it saved. An Approver's record that an approved request was later reversed is the one other
+row this module writes (record_reversal, proc.bp_policy_firing_reversal, append-only).
 
 What a row's status means, and what moves it:
   open        shown. Raised by the scan; `confident` false = "Not enough yet" (kept, not drafted).
@@ -525,3 +526,58 @@ def note_save(cur, key: str, version: int, form: Dict[str, Any]) -> int:
             cur.execute(_SAVED_SQL, (version, suggestion_id))
             marked += 1
     return marked
+
+
+# ---------------------------------------------------------------- an approved request, later reversed
+
+_NO_FIRING = ("not_found", "No such request.")
+_NOT_APPROVED = ("not_approved", "Only an approved request can be marked as reversed.")
+_ALREADY_REVERSED = ("already_reversed", "This request is already marked as reversed.")
+_REASON_REQUIRED = ("reason_required", "Say why it was reversed.")
+
+# The clicked row, the earliest row of its approval case (itself when it is not linked to one),
+# and whether any row of that case already carries a reversal. One decision settles every linked
+# row, so the case is what is reversed.
+_CASE_OF_SQL = """
+    SELECT f.outcome, f.result, o.firing_id, o.outcome, o.result,
+           EXISTS (SELECT 1 FROM proc.bp_policy_firing_reversal r
+                     JOIN proc.bp_policy_firing s ON s.firing_id = r.firing_id
+                    WHERE s.firing_id = f.firing_id
+                       OR (f.decision_id IS NOT NULL AND s.decision_id = f.decision_id))
+      FROM proc.bp_policy_firing f
+      JOIN proc.bp_policy_firing o
+        ON o.firing_id = f.firing_id OR (f.decision_id IS NOT NULL AND o.decision_id = f.decision_id)
+     WHERE f.firing_id = %s
+     ORDER BY o.firing_id LIMIT 1
+"""
+_REVERSE_SQL = """
+    INSERT INTO proc.bp_policy_firing_reversal (firing_id, reversed_by, reversed_at, reason)
+    VALUES (%s, %s, %s, %s) ON CONFLICT (firing_id) DO NOTHING RETURNING firing_id
+"""
+
+
+def record_reversal(conn, firing_id: int, *, actor: str, reason: str, now: datetime) -> Dict[str, Any]:
+    """An Approver's record that an approved request was later undone (a refund clawed back).
+
+    Stored on the EARLIEST firing row of the approval case, so one decision has at most one
+    reversal whichever linked row was clicked. Append-only: it cannot be undone, and the scan
+    counts it against every band that holds the decision."""
+    reason = reason.strip() if isinstance(reason, str) else ""
+    if not reason:
+        raise Refused(*_REASON_REQUIRED)
+    approved = ("approve", "approved")
+    with approvals._tx(conn):
+        with conn.cursor() as cur:
+            cur.execute(_CASE_OF_SQL, (firing_id,))
+            found = cur.fetchone()
+            if found is None:
+                raise Refused(*_NO_FIRING)
+            if (found[0], found[1]) != approved or (found[3], found[4]) != approved:
+                raise Refused(*_NOT_APPROVED)
+            if found[5]:
+                raise Refused(*_ALREADY_REVERSED)
+            cur.execute(_REVERSE_SQL, (found[2], actor, now, reason))
+            if cur.fetchone() is None:               # someone else recorded it a moment ago
+                raise Refused(*_ALREADY_REVERSED)
+    return {"firingId": int(found[2]), "reversedBy": actor, "reversedAt": now.astimezone(timezone.utc).isoformat(),
+            "reason": reason}

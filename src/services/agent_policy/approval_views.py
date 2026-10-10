@@ -398,7 +398,16 @@ def _firing_view(row: Dict[str, Any], sensitive: Set[str],
         "durationMs": row["duration_ms"],
         "reversalOf": row["reversal_of"],
         "createdAt": _iso(row["created_at"]),
+        # only where the read joined the reversal record (the policy's activity list)
+        **({"reversed": _reversal(row)} if "rv_by" in row else {}),
     }
+
+
+def _reversal(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """A person's record that this approved request was later reversed, or None."""
+    if row.get("rv_by") is None:
+        return None
+    return {"by": row["rv_by"], "at": _iso(row["rv_at"]), "reason": row["rv_reason"]}
 
 
 _FIRING_COLS = ("firing_id, policy_key, policy_version, checkpoint, action_name, agent, workflow_id, "
@@ -480,10 +489,25 @@ def latest_replay(cur, case: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------- firings
+# The reversal of a firing's approval case: recorded on one row of the case (the earliest), shown on
+# every linked row. At most one per firing (LIMIT 1), so the join never adds or drops a firing row.
+_REVERSAL_JOIN = """
+    LEFT JOIN LATERAL (
+        SELECT r.reversed_by AS rv_by, r.reversed_at AS rv_at, r.reason AS rv_reason
+          FROM proc.bp_policy_firing_reversal r
+          JOIN proc.bp_policy_firing o ON o.firing_id = r.firing_id
+         WHERE o.firing_id = f.firing_id OR (f.decision_id IS NOT NULL AND o.decision_id = f.decision_id)
+         ORDER BY r.firing_id LIMIT 1) rv ON TRUE
+"""
+
+
 def policy_firings(conn, policy_key: str, limit: int) -> List[Dict[str, Any]]:
+    """The policy's latest firings, newest first; `reversed` is {by, at, reason} or None."""
     with conn.cursor() as cur:
-        cur.execute(f"SELECT {_FIRING_COLS} FROM proc.bp_policy_firing WHERE policy_key = %s "
-                    "ORDER BY created_at DESC, firing_id DESC LIMIT %s", (policy_key, limit))
+        cols = ", ".join(f"f.{c.strip()}" for c in _FIRING_COLS.split(","))
+        cur.execute(f"SELECT {cols}, rv.rv_by, rv.rv_at, rv.rv_reason FROM proc.bp_policy_firing f "
+                    f"{_REVERSAL_JOIN} WHERE f.policy_key = %s "
+                    "ORDER BY f.created_at DESC, f.firing_id DESC LIMIT %s", (policy_key, limit))
         rows = _rows(cur)
         sensitive = sensitive_for(cur, [(r["policy_key"], r["policy_version"]) for r in rows])
     return [_firing_view(r, sensitive) for r in rows]
