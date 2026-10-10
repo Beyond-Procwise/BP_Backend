@@ -153,7 +153,7 @@ def test_viewer_reads_the_queue_buyer_acts_viewer_cannot(client, conn, world):
                     "status": "open", "kind": "threshold",
                     "change": "Raise the limit on Refund amount from 500 USD to 800 USD?", "evidence": EVIDENCE_30,
                     "stats": {"decisions": 30, "approved": 30, "approvers": 3, "days": 40, "medianSeconds": 60.0,
-                              "wilsonLower": 0.8865},
+                              "wilsonLower": 0.8865, "reversed": 0},
                     "suggestionConfidence": "High", "canDraft": True, "updatedAt": NOW.isoformat()}
     assert client.get("/agent-policies/suggestions", headers=_hdr("tst-nobody")).status_code == 403
     assert _act(client, world, "not_yet", VIEWER).status_code == 403
