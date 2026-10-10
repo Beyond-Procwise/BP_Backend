@@ -57,8 +57,13 @@ Who may review
 
 Fail closed
   If the suggestion table, the versions or the business area cannot be read, activation is
-  refused with `second_review_unavailable` and the policy page shows the review as required.
-  If the decider map cannot be read, no review is recorded.
+  refused with `second_review_unavailable` ("try again shortly") and the policy page shows the
+  review as required. If the decider map cannot be read, no review is recorded.
+  A stored form that was read but cannot be understood (the live or the draft version's form is
+  not JSON, not an object, or its row is not there) is a different, permanent fault: trying
+  again cannot help, so activation and the review are refused with `second_review_unreadable`
+  ("an administrator needs to look at it"). Which of the two it is, is told from the kind of
+  failure (`_fault`), after the rule has run: the rule itself is the same.
   The company settings are different: `settings.load_settings` never raises, it logs a warning
   and hands back the ruled defaults. So this module cannot refuse on unreadable settings by
   itself. What is guaranteed is narrower: inside the save's transaction a settings read the
@@ -116,10 +121,21 @@ REFUSALS = {
                             "policy's owner."),
     "already_reviewed": "This draft has already been reviewed.",
     "second_review_unavailable": "Can't check whether a second review is needed right now. Try again shortly.",
+    "second_review_unreadable": ("This policy's saved form could not be read, so a second review cannot be checked. "
+                                 "An administrator needs to look at it."),
 }
 REQUIRED = {"field": "secondReview", "code": "second_review_required", "message": MESSAGE}
 UNAVAILABLE = {"field": "secondReview", "code": "second_review_unavailable",
                "message": REFUSALS["second_review_unavailable"]}
+#: A stored form that cannot be understood. No `routeTo`: the message already names who must act.
+UNREADABLE = {"field": "secondReview", "code": "second_review_unreadable",
+              "message": REFUSALS["second_review_unreadable"]}
+#: Who may record a second review, for the policy page (the rule itself is `record`'s).
+WHO_MAY_REVIEW = "An approver who is not this policy's owner and has not saved this draft."
+#: What reading a stored value that is not what it should be raises: bad JSON (ValueError), a form
+#: that is not an object or a row that is not there (TypeError, AttributeError), a key or column
+#: that is missing (LookupError). A failed statement raises none of these.
+_NOT_READABLE = (ValueError, TypeError, AttributeError, LookupError)
 #: The two keys of a form that may differ between the reviewed version and the activating request.
 NOT_REVIEWED = ("checked", "changeNote")
 #: The keys of a form that say what the policy enforces. A difference in any of them (in
@@ -158,6 +174,13 @@ _INSERT_SQL = """
 
 def _json(raw: Any) -> Any:
     return json.loads(raw) if isinstance(raw, (str, bytes)) else raw
+
+
+def _fault(exc: BaseException) -> str:
+    """Which refusal a failed check ends in: `second_review_unreadable` when what was read cannot
+    be understood (permanent), `second_review_unavailable` for anything else (a failed database
+    read, or a failure nobody foresaw: "try again shortly" is the answer that never passes)."""
+    return "second_review_unreadable" if isinstance(exc, _NOT_READABLE) else "second_review_unavailable"
 
 
 def _canon(value: Any) -> str:
@@ -248,7 +271,9 @@ def _same_form(stored: Any, sent: Any) -> bool:
 def activation_problems(cur, policy_key: str, live_version: Optional[int], base_version: int,
                         new_form: Dict[str, Any]) -> List[Dict[str, Any]]:
     """What stops `new_form` (saved on top of `base_version`) going Active for want of a second
-    review: nothing, "a review is required", or "it cannot be checked right now". Never raises.
+    review: nothing, "a review is required", "it cannot be checked right now" (a failed read), or
+    "this policy's saved form could not be read" (a stored form that cannot be understood, which
+    trying again does not mend). Never raises.
     `new_form` is the form as the save will store it (after `attribute_confirmation`).
 
     On a failed read the caller's transaction may be unusable; the caller refuses the activation
@@ -263,10 +288,10 @@ def activation_problems(cur, policy_key: str, live_version: Optional[int], base_
         if reviewed and _same_form(_json(row[0]), new_form):
             return []
         return [dict(REQUIRED)]
-    except Exception:  # noqa: BLE001 - not knowing is never a pass
+    except Exception as exc:  # noqa: BLE001 - not knowing is never a pass
         logger.exception("second review: whether %s needs one before going Active could not be checked; "
                          "the activation is refused", policy_key)
-        return [dict(UNAVAILABLE)]
+        return [dict(UNREADABLE if _fault(exc) == "second_review_unreadable" else UNAVAILABLE)]
 
 
 def _refuse(code: str) -> Refused:
@@ -296,19 +321,19 @@ def record(conn, policy_key: str, version: int, *, principal, note: Optional[str
                 raise _refuse("not_latest")
             cur.execute(_VERSION_SQL, (policy_key, version))
             saved_as, _saved_by, form = cur.fetchone()
-            form = _json(form)
             if saved_as != "draft":
                 raise _refuse("not_latest")
             try:
+                form = _json(form)
                 found = _judge(cur, policy_key, live_version, form)
                 if found is not None:
                     cur.execute(_SAVERS_SQL, (policy_key, found["live_version"], version))
                     savers = [r[0] for r in cur.fetchall()]
                     mapping = deciders.load_map(conn)
-            except Exception:  # noqa: BLE001 - not knowing is never a pass
+            except Exception as exc:  # noqa: BLE001 - not knowing is never a pass
                 logger.exception("second review: %s version %s could not be checked; no review is recorded",
                                  policy_key, version)
-                raise _refuse("second_review_unavailable") from None
+                raise _refuse(_fault(exc)) from None
             if found is None:
                 raise _refuse("not_needed")
             # anyone who saved a version since the live one had a hand in this change
@@ -340,7 +365,8 @@ def status(cur, policy_key: str, head: Dict[str, Any], versions: List[Dict[str, 
     """For the policy page: whether the latest version, when it is a draft of a policy that is
     or was live, needs a second review, and who gave it (`reviewedBy` the sign-in id,
     `reviewedByName` the email recorded with the review, else that id). The same rule as
-    activation (`needed`), so the page and the activation never disagree. `head` holds `liveVersion` and
+    activation (`needed`), so the page and the activation never disagree. While a required review
+    is not yet recorded the answer also carries `whoMayReview`, the one sentence that says who may. `head` holds `liveVersion` and
     `latestVersion`; `versions` are the policy's versions as the page shows them. Never raises:
     when it cannot tell, the review is shown as required (and it is said in the log)."""
     live, latest = head.get("liveVersion"), head.get("latestVersion")
@@ -358,9 +384,10 @@ def status(cur, policy_key: str, head: Dict[str, Any], versions: List[Dict[str, 
         # the reviewer by name: the email recorded with the review, else the id (never without the id)
         return {"required": True, "version": latest, "reviewedBy": by,
                 "reviewedByName": approval_views.shown_name(by, row[3]) if row else None,
-                "reviewedAt": _iso(row[2]) if row else None}
+                "reviewedAt": _iso(row[2]) if row else None,
+                **({} if by else {"whoMayReview": WHO_MAY_REVIEW})}
     except Exception:  # noqa: BLE001 - the page must not fail, and must not say "no review needed" on a guess
         logger.exception("second review: whether %s version %s needs one could not be worked out; "
                          "it is shown as required", policy_key, latest)
         return {"required": True, "version": latest, "reviewedBy": None, "reviewedByName": None,
-                "reviewedAt": None}
+                "reviewedAt": None, "whoMayReview": WHO_MAY_REVIEW}

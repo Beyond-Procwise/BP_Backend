@@ -31,6 +31,8 @@ from services.agent_policy import second_review as SR
 from tests.agent_policy.test_learning_endpoints_live import _form
 from tests.agent_policy.test_learning_scan_live import BASE, NOW, fire
 
+# stage 5b: a required review not yet recorded also says who may record it
+WHO_MAY_REVIEW = "An approver who is not this policy's owner and has not saved this draft."
 pytestmark = pytest.mark.skipif(os.getenv("PROCWISE_TEST_LIVE_DB") != "1", reason="live DB required")
 
 REQUIRED = [{"field": "secondReview", "code": "second_review_required", "message": SR.MESSAGE}]
@@ -222,7 +224,8 @@ def _cycle(conn, w, form, name=""):
     v = _draft(conn, w, form, base=w.live)
     assert _refused(conn, w, form, base=v) == REQUIRED, name
     assert repo.get_policy(conn, w.key)["secondReview"] == {"required": True, "version": v, "reviewedBy": None,
-                                                            "reviewedByName": None, "reviewedAt": None}, name
+                                                            "reviewedByName": None, "reviewedAt": None,
+                                                            "whoMayReview": WHO_MAY_REVIEW}, name
     _review(conn, w, v)
     assert _activate(conn, w, form, base=v) == v + 1, name
     w.live = v + 1
@@ -302,7 +305,8 @@ def test_typing_the_loosening_by_hand_still_needs_the_review(conn, fin, state, l
     v = _draft(conn, fin, form, base=fin.live)
     assert _refused(conn, fin, form, base=v) == REQUIRED
     assert repo.get_policy(conn, fin.key)["secondReview"] == {"required": True, "version": v, "reviewedBy": None,
-                                                              "reviewedByName": None, "reviewedAt": None}
+                                                              "reviewedByName": None, "reviewedAt": None,
+                                                              "whoMayReview": WHO_MAY_REVIEW}
     _review(conn, fin, v)
     assert _activate(conn, fin, form, base=v) == v + 1
 
@@ -427,7 +431,8 @@ def test_route_7_a_retired_policy_cannot_come_back_changed_without_the_review(co
     assert _refused(conn, fin, form, base=retired) == REQUIRED, "measured against the last live version"
     v = _draft(conn, fin, form, base=retired, actor="tst-b")
     assert repo.get_policy(conn, fin.key)["secondReview"] == {"required": True, "version": v, "reviewedBy": None,
-                                                              "reviewedByName": None, "reviewedAt": None}
+                                                              "reviewedByName": None, "reviewedAt": None,
+                                                              "whoMayReview": WHO_MAY_REVIEW}
     assert _code(conn, fin, v, SAVER) == "own_change", "the person who retired it saved a version since it was live"
     _review(conn, fin, v)
     assert _activate(conn, fin, form, base=v) == v + 1
@@ -653,7 +658,8 @@ def test_activation_is_refused_when_the_business_area_cannot_be_read(conn, fin, 
     monkeypatch.setattr(SR, "_SETTING_SQL", "SELECT second_reviewer FROM proc.bp_tst_no_such_table WHERE area_name = %s")
     assert _refused(conn, fin, form, base=v) == UNAVAILABLE
     assert repo.get_policy(conn, fin.key)["secondReview"] == {"required": True, "version": v, "reviewedBy": None,
-                                                              "reviewedByName": None, "reviewedAt": None}, "the page fails closed too"
+                                                              "reviewedByName": None, "reviewedAt": None,
+                                                              "whoMayReview": WHO_MAY_REVIEW}, "the page fails closed too"
 
 
 def test_no_review_is_recorded_when_the_decider_map_cannot_be_read(conn, fin, monkeypatch):
@@ -672,7 +678,8 @@ def test_the_policy_page_says_a_review_is_required_and_then_who_did_it(conn, fin
     form = _at(conn, fin, 800)
     v = _draft(conn, fin, form, base=fin.live)
     assert repo.get_policy(conn, fin.key)["secondReview"] == {"required": True, "version": v, "reviewedBy": None,
-                                                              "reviewedByName": None, "reviewedAt": None}
+                                                              "reviewedByName": None, "reviewedAt": None,
+                                                              "whoMayReview": WHO_MAY_REVIEW}
     _review(conn, fin, v)
     assert repo.get_policy(conn, fin.key)["secondReview"] == {"required": True, "version": v,
                                                               "reviewedBy": "tst-reviewer",
@@ -687,7 +694,8 @@ def test_the_policy_page_asks_for_nothing_on_a_draft_that_changes_only_wording(c
     assert repo.get_policy(conn, fin.key)["secondReview"] == NONE
     v = _draft(conn, fin, _at(conn, fin, 400), base=v)
     assert repo.get_policy(conn, fin.key)["secondReview"] == {"required": True, "version": v, "reviewedBy": None,
-                                                              "reviewedByName": None, "reviewedAt": None}, "a tightening is a change"
+                                                              "reviewedByName": None, "reviewedAt": None,
+                                                              "whoMayReview": WHO_MAY_REVIEW}, "a tightening is a change"
 
 
 # ------------------------------------------------------------------ through the whole app
@@ -720,7 +728,8 @@ def test_the_whole_flow_through_the_app(client, conn, fin):
     r = client.post(versions, headers=_hdr("tst-saver"), json=activate)
     assert r.status_code == 422 and r.json() == {"problems": REQUIRED}, "refused, and the message arrives readable"
     page = client.get(f"/agent-policies/{fin.key}", headers=_hdr("tst-saver")).json()
-    assert page["secondReview"] == {"required": True, "version": 3, "reviewedBy": None, "reviewedByName": None, "reviewedAt": None}
+    assert page["secondReview"] == {"required": True, "version": 3, "reviewedBy": None, "reviewedByName": None, "reviewedAt": None,
+                                    "whoMayReview": WHO_MAY_REVIEW}
     r = client.post(review, json={"version": 3}, headers=_hdr("tst-saver"))
     assert r.status_code == 409 and r.json() == {"code": "own_change", "message": SR.REFUSALS["own_change"]}
     r = client.post(review, json={"version": 2}, headers=_hdr("tst-reviewer"))

@@ -298,7 +298,8 @@ def test_the_policy_page_says_required_when_it_cannot_tell(caplog):
     head = {"liveVersion": 2, "latestVersion": 3}
     with caplog.at_level(logging.ERROR, logger=SR.__name__):
         got = SR.status(_Broken(), "FIN-0001", head, versions)
-    assert got == {"required": True, "version": 3, "reviewedBy": None, "reviewedByName": None, "reviewedAt": None}
+    assert got == {"required": True, "version": 3, "reviewedBy": None, "reviewedByName": None, "reviewedAt": None,
+                   "whoMayReview": SR.WHO_MAY_REVIEW}       # stage 5b: who may record it
     assert any("FIN-0001" in r.getMessage() for r in caplog.records)
     # a draft on a retired policy is judged too (against what was last live)
     retired = versions[:1] + [{"version": 3, "savedAs": "retired", "form": form()},
@@ -396,6 +397,8 @@ def test_the_gateway_key_is_required(client, state):
     ("identity_incomplete", "Your sign-in carries no email address, so we cannot tell whether you are this "
                             "policy's owner."),
     ("second_review_unavailable", "Can't check whether a second review is needed right now. Try again shortly."),
+    ("second_review_unreadable", "This policy's saved form could not be read, so a second review cannot be checked. "
+                                 "An administrator needs to look at it."),
 ])
 def test_a_refusal_is_a_409_whose_code_and_message_arrive_readable(client, state, monkeypatch, code, message):
     # the real messages, raised by the real module's constants where it has them
@@ -420,6 +423,8 @@ def test_the_messages_the_module_raises_are_the_ones_checked_above():
         "identity_incomplete": "Your sign-in carries no email address, so we cannot tell whether you are this "
                                "policy's owner.",
         "second_review_unavailable": "Can't check whether a second review is needed right now. Try again shortly.",
+        "second_review_unreadable": "This policy's saved form could not be read, so a second review cannot be "
+                                    "checked. An administrator needs to look at it.",
         "not_found": "No such policy."}
 
 

@@ -274,6 +274,9 @@ def test_saving_an_unrelated_edit_does_not_mark_it_saved(client, conn, world):
     d = _draft(client, world)
     assert d.status_code == 200 and d.json()["baseVersion"] == world.live + 1
     assert d.json()["form"]["owner"] == f"TST Other Owner {world.tag}"
+    # stage 5b: a draft that still starts where the change starts is not in the way
+    [card] = _mine(client, world)
+    assert card["canDraft"] is True and "blocked" not in card
 
 
 def test_a_policy_that_moved_on_refuses_the_draft(client, conn, world):
@@ -292,12 +295,22 @@ def test_a_policy_tightened_by_hand_refuses_the_draft_and_the_card_stays_until_t
     assert _row(conn, world)[0] == "open"
     r = _draft(client, world)
     assert r.status_code == 409 and r.json()["code"] == "policy_changed"
+    # stage 5b: the card says so before anyone clicks, in the queue and on the policy's page
+    [card] = _mine(client, world)
+    [paged] = client.get(f"/agent-policies/{world.key}", headers=VIEWER).json()["suggestions"]
+    for c in (card, paged):
+        assert (c["canDraft"], c["blocked"]) == (False, "The latest draft of this policy already changes this. "
+                                                        "Activate or discard that draft first.")
 
 
 def test_a_retired_policy_refuses_the_draft(client, conn, world):
+    [before] = _mine(client, world)
+    assert before["canDraft"] is True and "blocked" not in before
     repo.retire(conn, world.key, base_version=world.live, actor="test", change_note="test")
     r = _draft(client, world)
     assert r.status_code == 409 and r.json()["code"] == "policy_changed"
+    [card] = _mine(client, world)                                       # stage 5b
+    assert (card["canDraft"], card["blocked"]) == (False, "This policy is no longer Active.")
 
 
 def test_nothing_in_this_stage_activates_a_policy(client, conn, world):

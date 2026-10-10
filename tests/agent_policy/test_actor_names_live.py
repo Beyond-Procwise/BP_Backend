@@ -25,6 +25,8 @@ from tests.agent_policy.test_learning_reversal_live import api, policy  # noqa: 
 from tests.agent_policy.test_learning_scan_live import BASE, NOW, _reverse, fire, world  # noqa: F401
 from tests.agent_policy.test_second_review_live import conn, fin, make  # noqa: F401
 
+# stage 5b: a required review not yet recorded also says who may record it
+WHO_MAY_REVIEW = "An approver who is not this policy's owner and has not saved this draft."
 pytestmark = pytest.mark.skipif(os.getenv("PROCWISE_TEST_LIVE_DB") != "1", reason="live DB required")
 
 WHY = "TST the refund was clawed back"
@@ -112,7 +114,8 @@ def test_recent_decisions_name_the_decider_and_word_the_system(world):
 def test_a_second_review_keeps_the_email_and_the_page_shows_it(conn, fin):
     v = S._draft(conn, fin, S._at(conn, fin, 800), base=fin.live)
     assert repo.get_policy(conn, fin.key)["secondReview"] == {
-        "required": True, "version": v, "reviewedBy": None, "reviewedByName": None, "reviewedAt": None}
+        "required": True, "version": v, "reviewedBy": None, "reviewedByName": None, "reviewedAt": None,
+        "whoMayReview": WHO_MAY_REVIEW}
     who = Principal(subject="tst-reviewer", email="  tst-reviewer@example.test ", claims={"cognito:groups": []})
     out = SR.record(conn, fin.key, v, principal=who, note=None, now=NOW)
     assert set(out) == {"policyKey", "version", "reviewedBy", "reviewedAt"}, "the answer names nobody new"
