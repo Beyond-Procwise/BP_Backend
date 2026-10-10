@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
@@ -27,7 +27,8 @@ from api.auth import Principal
 from repositories import agent_policy_repo as repo
 from services import agent_actions, rbac
 from services.agent_policy import (approval_views, approvals, conditions, conflict_cases, conflict_detect,
-                                   conflict_history, conflict_views, contract, documents, live_policies, readiness, run_runner,
+                                   conflict_history, conflict_views, contract, documents, learning, live_policies, readiness,
+                                   run_runner,
                                    run_store, sections)
 from services.agent_policy.compiler import compile_policy
 from services.agent_policy.registry import load_registry
@@ -565,6 +566,73 @@ def decide_conflict(decision_id: int, body: ConflictDecideBody, p: Principal = D
                applied=out["applied"])
     except Exception:  # noqa: BLE001
         logger.exception("conflict decision %s was saved but its audit record failed", decision_id)
+    return out
+
+
+# ---------------------------------------------------------------- learning suggestions (stage 5)
+# Declared before every /{key} route: "suggestions" is never read as a policy key. Reading the
+# queue is for anyone who may read policies; asking for the draft and hiding a card are for the
+# role that edits drafts (Buyer). Nothing here writes a policy: the draft is an unsaved form.
+
+class SuggestionActBody(BaseModel):
+    verb: str = Field(pattern="^(not_yet|dismiss)$")
+
+
+_SUGGESTION_ID = Path(ge=1, le=2 ** 63 - 1)
+
+
+def _refused_learning(exc: learning.Refused) -> JSONResponse:
+    if exc.code == "not_found":
+        raise HTTPException(status_code=404, detail=exc.message)
+    return JSONResponse(status_code=409, content={"code": exc.code, "message": exc.message})
+
+
+@router.get("/suggestions")
+def list_suggestions(status: str = Query(default="open", pattern="^(open|all)$"),
+                     p: Principal = Depends(gateway_principal)):
+    _require(p, "Viewer", "agent_policy.read", {})
+    with _conn() as conn:
+        return {"suggestions": learning.list_cards(conn, status=status)}
+
+
+@router.get("/suggestions/{suggestion_id}/draft")
+def draft_suggestion(suggestion_id: int = _SUGGESTION_ID, p: Principal = Depends(gateway_principal)):
+    _require(p, "Buyer", "agent_policy.read", {"suggestion": suggestion_id})
+    with _conn() as conn:
+        try:
+            return learning.draft(conn, suggestion_id)
+        except learning.Refused as exc:
+            return _refused_learning(exc)
+
+
+@router.post("/suggestions/{suggestion_id}/act", status_code=201)
+def act_on_suggestion(body: SuggestionActBody, suggestion_id: int = _SUGGESTION_ID,
+                      p: Principal = Depends(gateway_principal)):
+    # audited before (the authorize record) and after (done / refused / error), as decide is
+    _require(p, "Buyer", "agent_policy.suggestion_act", {"suggestion": suggestion_id, "verb": body.verb})
+
+    def _audit(status: str, summary: str, **details):
+        agent_actions.record_action_or_fail(
+            phase="act", action_type="agent_policy.suggestion_act", agent="agent_policy_api", status=status,
+            summary=summary, details={"suggestion": suggestion_id, "verb": body.verb, "principal": p.subject,
+                                      **details})
+
+    try:
+        with _conn() as conn:
+            out = learning.act(conn, suggestion_id, body.verb, actor=p.subject, now=datetime.now(timezone.utc))
+    except learning.Refused as exc:
+        _audit("refused", f"{p.subject} could not {body.verb} suggestion {suggestion_id}: {exc.code}", code=exc.code)
+        return _refused_learning(exc)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("acting on suggestion %s failed", suggestion_id)
+        _audit("error", f"{p.subject} could not {body.verb} suggestion {suggestion_id}: {type(exc).__name__}",
+               code="error")
+        raise HTTPException(status_code=500, detail="That could not be recorded. Please try again.")
+    # The action is committed: a failed audit record must not turn it into an error answer.
+    try:
+        _audit("done", f"{p.subject} marked suggestion {suggestion_id} {out['status']}", policy=out["policyKey"])
+    except Exception:  # noqa: BLE001
+        logger.exception("suggestion %s was acted on but its audit record failed", suggestion_id)
     return out
 
 

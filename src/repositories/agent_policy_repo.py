@@ -12,14 +12,17 @@ anything but the latest version is refused, never merged silently.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from services import output_safety as osafe
-from services.agent_policy import conflict_cases, contract, readiness
+from services.agent_policy import conflict_cases, contract, learning, readiness
 from services.agent_policy.compiler import compile_policy
 from services.agent_policy.registry import load_registry
 from services.agent_policy.settings import load_settings
+
+logger = logging.getLogger(__name__)
 
 
 class StaleVersion(Exception):
@@ -273,6 +276,7 @@ def save_version(conn, policy_key: str, form: Dict[str, Any], *, base_version: i
             cur.execute("UPDATE proc.bp_agent_policy SET latest_version=%s, area_name=COALESCE(%s, area_name)"
                         " WHERE policy_key=%s", (version, _real_area(cur, form.get("businessArea")), policy_key))
         _set_source(cur, policy_key, source)
+        _note_learning(cur, policy_key, version, form)
         conn.commit()
         return {"policyKey": policy_key, "version": version}
     except Exception:
@@ -280,6 +284,23 @@ def save_version(conn, policy_key: str, form: Dict[str, Any], *, base_version: i
         raise
     finally:
         conn.autocommit = True
+
+
+def _note_learning(cur, policy_key: str, version: int, form: Dict[str, Any]) -> None:
+    """Mark the learning suggestions this save holds as saved, in the save's own transaction.
+
+    A person's save never fails because of learning's bookkeeping: it runs inside a savepoint, so
+    a failure undoes only its own statements (never leaving some suggestions marked and others
+    not), is logged with the policy, and the save commits. The suggestion then stays open until
+    the next save or scan, which is the safe side: nothing is lost, a card is shown a while longer.
+    """
+    cur.execute("SAVEPOINT bp_learning_note_save")
+    try:
+        learning.note_save(cur, policy_key, version, form)
+    except Exception:  # noqa: BLE001
+        logger.exception("learning: suggestions of %s were not marked saved for version %s", policy_key, version)
+        cur.execute("ROLLBACK TO SAVEPOINT bp_learning_note_save")
+    cur.execute("RELEASE SAVEPOINT bp_learning_note_save")
 
 
 def retire(conn, policy_key: str, *, base_version: int, actor: str, change_note: str) -> Dict[str, Any]:
@@ -330,7 +351,8 @@ def get_policy(conn, policy_key: str, *, viewer=None) -> Dict[str, Any]:
     history = conflict_cases.history_for(cur, policy_key, head[2], head[0], viewer=viewer)
     return {"policyKey": policy_key, "status": head[0], "liveVersion": head[1], "latestVersion": head[2],
             "areaName": head[3], "versions": versions, "conflicts": history["conflicts"],
-            "pendingConflictAction": history["pendingAction"]}
+            "pendingConflictAction": history["pendingAction"],
+            "suggestions": learning.for_policy(cur, policy_key)}
 
 
 def list_policies(conn) -> List[Dict[str, Any]]:
