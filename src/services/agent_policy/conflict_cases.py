@@ -120,6 +120,24 @@ def _prior(cur, key: str) -> Dict[str, Any]:
     return {"sameConflict": int(row[0] or 0), "lastOutcome": row[1]}
 
 
+def _prior_for(prior: Dict[str, Any], proposal: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The previous decisions a new policy case reports. For every case but one that is the pair's
+    own earlier policy cases (`prior`, as _prior counted them), unchanged.
+
+    A case the repeat rule raises (proposal.from == "repeat", conflict_live.maybe_propose) was
+    raised FROM decisions: the last `count` live clashes of these policies that people settled,
+    all `outcome`. Those are counted too, and the newest of them is the last outcome (the proposal
+    is raised as that clash is settled), so such a case never reads as "first time". A count that
+    is not a whole number above zero adds nothing."""
+    if not isinstance(proposal, dict) or proposal.get("from") != "repeat":
+        return prior
+    n = proposal.get("count")
+    if isinstance(n, bool) or not isinstance(n, int) or n <= 0:
+        return prior
+    return {"sameConflict": int(prior.get("sameConflict") or 0) + n,
+            "lastOutcome": proposal.get("outcome") or prior.get("lastOutcome")}
+
+
 def _standing_rules(cur, keys: List[str]) -> List[Dict[str, Any]]:
     """In-force rules touching either policy (never this pair: a rule for the pair stops the raise)."""
     cur.execute(
@@ -151,7 +169,8 @@ def raise_policy_case(cur, a: Dict[str, Any], b: Dict[str, Any], example: Dict[s
     payload = conflict_payload.build(
         "policy", raised_at=now.isoformat(),
         policies=[conflict_payload.policy_entry(first), conflict_payload.policy_entry(second)],
-        overlap_example=dict(example), standing_rules=_standing_rules(cur, keys), prior=_prior(cur, key),
+        overlap_example=dict(example), standing_rules=_standing_rules(cur, keys),
+        prior=_prior_for(_prior(cur, key), proposal),
         options=conflict_payload.policy_options(first, second), respond_within=None, on_timeout="none")
     cols = conflict_payload.to_columns(payload)
     facts = dict(cols["facts"])
