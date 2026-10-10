@@ -1570,6 +1570,28 @@ class EmailDraftingAgent(BaseAgent):
             self.resolve_prompt("negotiation_playbook_system") or NEGOTIATION_PLAYBOOK_SYSTEM
         )
 
+    @staticmethod
+    def _counter_position(data: Dict[str, Any]) -> str:
+        """Who offered what, in words. Left to the JSON keys alone, the model thanked the supplier for "your revised
+        offer" of OUR counter price and made up a reply date (live, 2026-10-10)."""
+
+        currency = str(data.get("currency") or "").strip()
+        money = lambda v: f"{v} {currency}".strip()  # noqa: E731
+        lines = ["The position, in words:"]
+        if data.get("current_offer") is not None:
+            lines.append(f"- The supplier's current offer is {money(data['current_offer'])}.")
+        if data.get("counter_price") is not None:
+            lines.append(f"- We, the buyer, propose {money(data['counter_price'])} instead. The supplier has not agreed "
+                         "to this price: ask for it, never thank them for it or describe it as theirs.")
+        deadline = data.get("response_deadline") or data.get("deadline")
+        if deadline:
+            lines.append(f"- Ask the supplier to reply by {deadline}. Use exactly this date.")
+        else:
+            lines.append("- Do not give a reply date: none has been set.")
+        lines.append("- Do not state any price, date, quantity, lead time or term that is not given above or in the "
+                     "context: no tax, delivery or payment terms of your own.")
+        return "\n".join(lines)
+
     def from_decision(self, decision: Dict[str, Any]) -> Dict[str, Any]:
         decision_data = dict(decision or {})
         self._reset_style(None, decision_data)
@@ -1651,6 +1673,7 @@ class EmailDraftingAgent(BaseAgent):
         if not use_negotiation_content:
             user_prompt = (
                 f"Context (JSON):\n{json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
+                + self._counter_position(decision_data) + "\n\n"
                 "Write a professional negotiation counter email with an explicit Subject line. "
                 "Summarise the commercial position, list the key asks as bullet points, and close "
                 "with a clear call to action. " + _BODY_ONLY

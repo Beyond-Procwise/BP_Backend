@@ -599,3 +599,24 @@ def test_an_iso_date_is_year_month_day_whatever_the_day():
     assert V.check_figures("Deliver by 5 October 2026.", set(), V.dates_in(date(2026, 10, 5)), set()) == []
     assert [v["kind"] for v in V.check_figures("Deliver by 10 May 2026.", set(), V.dates_in("2026-10-05"), set())] == ["ungrounded_date"]
     assert V._date_key("2026-13-45") is None
+
+
+# --- what the counter writer is told ------------------------------------------------------------------------
+# Live, 2026-10-10: given only {"current_offer": 490, "counter_price": 455}, the model thanked the supplier for
+# "your revised offer of 455" and invented a reply date, because the prompt never said whose price was whose
+# and never carried the deadline.
+
+def test_the_counter_writer_is_told_whose_price_is_whose_and_the_deadline(monkeypatch):
+    agent, seen = _wrapped(monkeypatch, "Subject: Re\n" + GOOD)
+    agent.from_decision({**DECISION, "response_deadline": "30 October 2026"})
+    prompt = seen[0]
+    assert "The supplier's current offer is 47.5 GBP" in prompt          # Postgres wins over the payload's 49.0
+    assert "We, the buyer, propose 44.8 GBP" in prompt and "has not agreed" in prompt
+    assert "Ask the supplier to reply by 30 October 2026" in prompt
+    assert "Do not state any price, date, quantity, lead time or term that is not given above" in prompt
+
+
+def test_with_no_deadline_the_counter_writer_is_told_not_to_invent_one(monkeypatch):
+    agent, seen = _wrapped(monkeypatch, "Subject: Re\n" + GOOD)
+    agent.from_decision(dict(DECISION))
+    assert "Ask the supplier to reply by" not in seen[0] and "Do not give a reply date" in seen[0]
