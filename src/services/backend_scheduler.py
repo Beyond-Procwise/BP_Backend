@@ -549,12 +549,14 @@ class BackendScheduler:
     def _register_agent_policy_learning_scan_job(self) -> None:
         """Look for approve policies people keep approving, every hour (first run 10 min after start).
 
-        ON unless AGENT_POLICY_LEARNING_SCAN=off. It only ever writes suggestion rows for an owner
+        OFF unless AGENT_POLICY_LEARNING_SCAN is on, 1 or true; run it once under supervision on
+        each database before switching it on. It only ever writes suggestion rows for an owner
         to review; it never changes a policy. Idempotent: one row per policy and change.
         """
         import os
-        if os.environ.get("AGENT_POLICY_LEARNING_SCAN", "on").strip().lower() == "off":
-            logger.info("agent policy learning scan not registered (AGENT_POLICY_LEARNING_SCAN=off)")
+        if os.environ.get("AGENT_POLICY_LEARNING_SCAN", "").strip().lower() not in ("on", "1", "true"):
+            logger.info("agent policy learning scan is off, not registered "
+                        "(set AGENT_POLICY_LEARNING_SCAN=on to turn it on)")
             return
         if self.AGENT_POLICY_LEARNING_SCAN_JOB_NAME in self._jobs:
             return

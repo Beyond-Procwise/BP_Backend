@@ -17,8 +17,11 @@ class _ScanStub:
         self._jobs[name] = (runner, interval, initial_delay, lane)
 
 
-@pytest.mark.parametrize("value,registered", [(None, True), ("on", True), ("OFF", False), ("off", False),
-                                              ("anything", True)])
+# OFF unless switched on: on / 1 / true (any case, spaces trimmed). Unset, and every other value, is off.
+@pytest.mark.parametrize("value,registered", [
+    (None, False), ("", False), ("off", False), ("OFF", False), ("0", False), ("no", False), ("false", False),
+    ("anything", False), ("yes", False), ("on", True), ("ON", True), (" On ", True), ("1", True), ("true", True),
+    ("True", True), (" TRUE\n", True)])
 def test_learning_scan_toggle(monkeypatch, value, registered):
     if value is None:
         monkeypatch.delenv("AGENT_POLICY_LEARNING_SCAN", raising=False)
@@ -32,8 +35,30 @@ def test_learning_scan_toggle(monkeypatch, value, registered):
         assert interval.total_seconds() == 3600 and delay.total_seconds() == 600
 
 
+@pytest.mark.parametrize("value", [None, "off", "garbage"])
+def test_learning_scan_says_once_that_it_is_off_and_how_to_turn_it_on(monkeypatch, caplog, value):
+    import logging
+    if value is None:
+        monkeypatch.delenv("AGENT_POLICY_LEARNING_SCAN", raising=False)
+    else:
+        monkeypatch.setenv("AGENT_POLICY_LEARNING_SCAN", value)
+    with caplog.at_level(logging.INFO, logger="services.backend_scheduler"):
+        _ScanStub()._register_agent_policy_learning_scan_job()
+    [line] = caplog.records
+    assert line.levelno == logging.INFO
+    assert "is off" in line.getMessage() and "AGENT_POLICY_LEARNING_SCAN=on" in line.getMessage()
+
+
+def test_learning_scan_says_nothing_about_being_off_when_it_is_on(monkeypatch, caplog):
+    import logging
+    monkeypatch.setenv("AGENT_POLICY_LEARNING_SCAN", "on")
+    with caplog.at_level(logging.INFO, logger="services.backend_scheduler"):
+        _ScanStub()._register_agent_policy_learning_scan_job()
+    assert caplog.records == []
+
+
 def test_learning_scan_has_its_own_lane(monkeypatch):
-    monkeypatch.delenv("AGENT_POLICY_LEARNING_SCAN", raising=False)
+    monkeypatch.setenv("AGENT_POLICY_LEARNING_SCAN", "on")
     s = _ScanStub()
     s._register_agent_policy_learning_scan_job()
     lane = s._jobs[s.AGENT_POLICY_LEARNING_SCAN_JOB_NAME][3]
@@ -41,10 +66,33 @@ def test_learning_scan_has_its_own_lane(monkeypatch):
     assert lane not in ("pipeline", BackendScheduler.AGENT_POLICY_CONFLICT_SCAN_LANE)
 
 
-def test_learning_scan_is_registered_at_startup():
-    import inspect
-    src = inspect.getsource(BackendScheduler)
-    assert "self._register_agent_policy_learning_scan_job()" in src
+def _started(monkeypatch):
+    """A real BackendScheduler as its start-up leaves its job table: the real _register_default_jobs
+    and the real register_job run; every OTHER job's registration is a no-op, so nothing here
+    depends on (or starts) any other job, a thread or a database."""
+    import threading
+    s = object.__new__(BackendScheduler)
+    s._jobs, s._lock = {}, threading.Lock()
+    for name in dir(BackendScheduler):
+        if (name.startswith("_register_") or name == "_sync_training_job") and name not in (
+                "_register_default_jobs", "_register_agent_policy_learning_scan_job"):
+            monkeypatch.setattr(s, name, lambda *a, **k: None, raising=False)
+    s._register_default_jobs()
+    return s
+
+
+def test_learning_scan_is_in_a_started_schedulers_job_table_when_switched_on(monkeypatch):
+    monkeypatch.setenv("AGENT_POLICY_LEARNING_SCAN", "on")
+    s = _started(monkeypatch)
+    assert list(s._jobs) == [BackendScheduler.AGENT_POLICY_LEARNING_SCAN_JOB_NAME]
+    job = s._jobs[BackendScheduler.AGENT_POLICY_LEARNING_SCAN_JOB_NAME]
+    assert job.runner == s._run_agent_policy_learning_scan and job.lane == "agent-policy-learning"
+    assert job.interval.total_seconds() == 3600 and job.one_shot is False
+
+
+def test_learning_scan_is_not_in_a_started_schedulers_job_table_by_default(monkeypatch):
+    monkeypatch.delenv("AGENT_POLICY_LEARNING_SCAN", raising=False)
+    assert _started(monkeypatch)._jobs == {}
 
 
 def test_learning_scan_calls_scan_and_never_raises(monkeypatch):
