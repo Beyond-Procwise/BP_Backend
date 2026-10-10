@@ -1,80 +1,44 @@
-"""The second reviewer (design §2; ruling Q3 of 2026-10-10; fix round 1 rulings, incl. A and B;
-fix round 2 rulings).
+"""The second reviewer (design §2; ruling Q3 of 2026-10-10; fix round 3 ruling).
 
-In a business area whose "second reviewer" setting is on, a change that makes a learned-about
-policy stop asking people about something cannot go Active until a second person has recorded a
-review of that exact draft version. Whether a review is needed is worked out HERE, at activation,
-from what the policy's own decision history shows. Never from anything the browser sends, and
-never from the SHAPE of the condition: a condition can be rewritten in endless ways that mean
-the same loosening, so the question asked is "what does this change stop asking people about?".
+Four eyes on any change to what the policy enforces, once learning has raised a suggestion on it.
 
-Witnesses
-  A witness is one decision a person made on an approve firing of this policy, under ANY of its
-  versions (`learning.witnesses`: one per approval case, people only, the newest
-  `learning.MAX_DECISIONS`). It records the checkpoint, the tool (`action_name`), the values the
-  firing version's condition read and found (`matched_values`) and those it read and did not
-  find (`missing_inputs`). Nothing else about the action was stored.
-
-`gates(form, witness, settings)` -> True | False | None
-  True when, under `form`, the witness's action would still pause for a person, worked out as
-  enforcement works it out (`enforcement.check` / `_evaluate`):
-    * the form's outcome is `approve`;
-    * its checkpoint is the witness's;
-    * its `hidden.actions.tools` is empty (a policy that lists no action applies to every tool,
-      exactly as enforcement reads it) or lists the witness's `action_name`;
-    * its condition matches the witness's values, evaluated by the ONE evaluator
-      (`conditions.example_result`). `tool.name` is taken from `action_name` (that is what the
-      gate puts in the context; `matched_values` holds it only when the firing version's
-      condition read it). A field in `missing_inputs` was really absent from the action: it is
-      left absent and the form's missing-data rule decides (`compiler.on_missing_for`; as in
-      enforcement, anything but an explicit `fail_open` fails closed, i.e. matches). For the
-      LIVE form that rule is the one compiled into the live version
-      (`compiled.trigger.onMissingData`, what enforcement actually reads), not what today's
-      company settings would make of the form; only when no compiled rule can be read is the
-      form with the settings used.
-  None ("cannot tell") when the form or the row cannot be read, the condition is not one the
-  evaluator accepts, a value the condition reads is masked (`•••`), or the condition reads a
-  field the witness recorded NEITHER as found NOR as missing: "not recorded" is not "absent".
+In a business area whose "second reviewer" setting is on, a version of such a policy cannot go
+Active until a second person has recorded a review of that exact draft. Whether a review is
+needed is worked out HERE, at activation, never from anything the browser sends. The rule makes
+NO judgement about whether a change is tighter or looser: three attempts to prove "not looser"
+(by the condition's shape, by replaying past decisions, by synthetic decisions) were each got
+round. A tightening needs the second person too.
 
 When a version needs a second review: ALL of
   * protected: the business area of the policy's LIVE version has the setting on. A policy with
     no live version that was live before (retired) is judged against its LAST live version. A
     policy that was never live is not covered.
   * learning has spoken: the policy has at least one row in bp_agent_policy_suggestion, of ANY
-    status (superseded and dismissed included: a tightening that gets a card superseded must not
-    switch the safeguard off). The row's content is not read.
-  * and ANY of
+    status (superseded and dismissed included). The row's content is not read.
+  * and EITHER
+      - what it enforces changes at all: the new form differs from the live form in any of
+        `ENFORCED` (`outcome`, `deciders`, `notify`, `responseTime`, `limit`, and everything
+        under `hidden`: condition, checkpoint, actions, inputs, units, timeWindow,
+        onMissingData and every other key there). The missing-data rule is compared as it is
+        enforced: for the live form, the one compiled into the live version
+        (`compiled.trigger.onMissingData`, what enforcement reads; the form with today's
+        settings only when no compiled rule can be read); for the new form, the one a save
+        would compile (`compiler.on_missing_for`). So a company default an Admin has switched
+        since shows as a change, and saying the rule in force out loud does not;
       - leaving protection: the new form's business area resolves (as a save resolves it,
-        `repo._area`) to an area whose setting is off;
-      - looser. First, BEFORE any decision is read: when what is enforced is the same in both
-        forms (`outcome`, `hidden.condition`, `hidden.checkpoint`, `hidden.actions.tools`,
-        compared as the stored JSON values, and the effective missing-data rule as enforcement
-        reads it) the change cannot be looser, and nothing below is asked. Otherwise ANY of
-          . by evidence: some witness has `gates(live_form, w) is not False` and
-            `gates(new_form, w) is not True`. Both "not"s on purpose. A witness exists because
-            some version of this policy paused that action, so "cannot tell" on the live side
-            (a masked value, a row that cannot be read) does not make it disappear; and on the
-            new side False and cannot-tell both require the review;
-          . weaker on missing data, by rule (ruling A, needs no witness): the new form's
-            effective missing-data rule is `fail_open` and the live form's is not;
-          . weaker on missing data, asked directly: no real decision shows what happens to an
-            action that lacks a value when every decision carried it, so the question is put
-            to SYNTHETIC witnesses made from the newest real one (the first one read). One per
-            field the live condition reads (`tool.name` aside), identical to the real witness
-            but with that field taken out of `matched_values` and listed in `missing_inputs`;
-            and one with all of those fields taken away (the same witness when there is only
-            one field). The review is required when for some synthetic witness `s`,
-            `gates(live_form, s) is not False` and `gates(new_form, s) is not True`. (So an `exists` guard, or `not(not exists)`,
-            that lets an action without the value through needs the review.)
-  Nothing else is consulted: not the suggestion's proposal, not its status.
+        `repo._area`) to an area whose setting is off.
+  "Differs" is decided on canonical JSON text (`_canon`: keys sorted, no whitespace), so `1` and
+  `true` differ, `800` and `800.0` differ, key order is irrelevant, and a missing key differs
+  from an explicit null. A false positive only ever adds a review.
+  Nothing else is consulted: not the suggestion's proposal or status, not the decision history.
 
 What a review covers
   One saved draft version, the policy's latest. Activation writes a NEW version (base + 1) from
   the form it is sent, so it needs a review row for (policy, base version) AND the sent form must
   equal that version's stored form in every key except `checked` and `changeNote` (the two a
   resubmission legitimately changes: who ticked the confirmation, and the note). Both forms are
-  compared as a save stores them: the sent one after `attribute_confirmation`, both passed
-  through JSON. No other normalisation: a key that is absent is not the same as a key that is
+  compared as a save stores them (the sent one after `attribute_confirmation`), as canonical
+  JSON text. No other normalisation: a key that is absent is not the same as a key that is
   null, so the form to resubmit is the one `GET /{key}` returns for that version.
 
 Who may review
@@ -88,41 +52,23 @@ Who may review
   review is refused until an administrator links it. WHO ACTIVATES is not restricted.
 
 Fail closed
-  If the suggestion table, the versions, the business area, the settings or the decision history
-  cannot be read, activation is refused with `second_review_unavailable` and the policy page
-  shows the review as required. One witness that cannot be read never raises: it is "cannot
-  tell". If the decider map cannot be read, no review is recorded.
+  If the suggestion table, the versions, the business area or the settings cannot be read,
+  activation is refused with `second_review_unavailable` and the policy page shows the review
+  as required. If the decider map cannot be read, no review is recorded.
 
 Cost for everyone else
   A policy with no suggestion row costs ONE statement at activation. One with a suggestion row in
-  an area that is not protected costs that, its live form and the area lookup. Neither reads the
-  decision history. Nor does a change to a protected policy that leaves what is enforced as it
-  is (wording, owner, deciders): that costs the two area lookups and the settings.
+  an area that is not protected costs that, its live form and the area lookup. The decision
+  history (bp_policy_firing) is never read.
 
-Known consequences and limits (deliberate)
-  * Any change that makes the condition read a field no witness recorded needs the review,
-    including one that is really a tightening (ruling B: fail closed).
-  * Accepted cost of counting "cannot tell" on the live side: once any decision of the policy
-    cannot be read under the live form (a policy whose condition reads a masked value has only
-    such decisions; one masked or corrupt row is enough; so is a decision made under an older
-    version that recorded fewer fields), EVERY change to what is enforced needs the review,
-    a genuine tightening included. Wording, owner and decider edits do not.
-  * A policy that learning has never raised a suggestion on is not covered, including one whose
-    condition is shaped so that learning cannot analyse it (a top-level `any`, a masked driving
-    field).
-  * Changing who decides (`deciders`) is not a loosening under this rule.
-  * The policy page reads up to `learning.MAX_DECISIONS` firing rows per view of a protected
-    policy that has a draft changing what is enforced.
-  * The missing-data question is asked of the newest decision only: if the live form provably
-    does not gate that one (it was about a tool or checkpoint the live form no longer covers),
-    the question goes unasked; and with no decision at all there is nothing to ask it of.
-  * Retiring a policy outright needs only the Approver role and is not covered.
-  * Creating a brand-new looser policy is not covered (it has no history).
-  * A loosening in a region where nobody ever made a decision has no witness, so it is not
-    covered (only the newest `learning.MAX_DECISIONS` decisions are read).
-  * A policy that is live in an unprotected area is not covered, even as it moves into a
-    protected one.
+Known limits (deliberate)
+  * A policy that learning has never raised a suggestion on is not covered.
+  * Retiring a policy outright, or creating a brand-new one, needs only the Approver role.
   * An Admin can switch the area's setting off (audited with the before and after values).
+  * Wording, owner and dates are not covered (name, situation, messages, owner, effective and
+    review-by dates, examples, source): editing them needs no review.
+  * A policy that is live in an unprotected area is not covered, even as it moves into a
+    protected one; a move between two protected areas needs no review.
 """
 from __future__ import annotations
 
@@ -131,9 +77,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from services.agent_policy import approval_views, approvals, conditions, deciders, learning
+from services.agent_policy import approval_views, approvals, deciders
 from services.agent_policy.compiler import on_missing_for
-from services.agent_policy.enforcement import MASK
 from services.agent_policy.learning import Refused
 from services.agent_policy.settings import load_settings
 
@@ -158,6 +103,9 @@ UNAVAILABLE = {"field": "secondReview", "code": "second_review_unavailable",
                "message": REFUSALS["second_review_unavailable"]}
 #: The two keys of a form that may differ between the reviewed version and the activating request.
 NOT_REVIEWED = ("checked", "changeNote")
+#: The keys of a form that say what the policy enforces. A difference in any of them (in
+#: anything at all under `hidden`) is a change that needs the second person.
+ENFORCED = ("outcome", "deciders", "notify", "responseTime", "limit", "hidden")
 
 # "Learning has spoken": any row, any status. Its id is kept on the review row.
 _SUGGESTION_SQL = """
@@ -190,44 +138,10 @@ def _json(raw: Any) -> Any:
     return json.loads(raw) if isinstance(raw, (str, bytes)) else raw
 
 
-def _fail_open(form: Any, settings: Dict[str, Any]) -> bool:
-    """The form's effective missing-data rule, read as enforcement reads the compiled one:
-    only an explicit `fail_open` lets an action through when a value is missing."""
-    return on_missing_for(form, settings) == "fail_open"
-
-
-def gates(form: Any, witness: Dict[str, Any], settings: Dict[str, Any]) -> Optional[bool]:
-    """Would the witness's action still pause for a person under `form`? True, False, or None for
-    "cannot tell" (see the module docstring). Pure; never raises."""
-    try:
-        hidden = form["hidden"]
-        if form.get("outcome") != "approve":
-            return False
-        if hidden.get("checkpoint") != witness["checkpoint"]:
-            return False
-        tool = witness["action_name"]
-        listed = (hidden.get("actions") or {}).get("tools") or []
-        if not isinstance(listed, list):
-            return None
-        if listed and tool not in listed:
-            return False
-        found, missing = witness["matched_values"], witness["missing_inputs"]
-        if not isinstance(found, dict) or not isinstance(missing, list):
-            return None
-        values = {k: v for k, v in found.items() if k not in missing and v is not None}
-        values["tool.name"] = tool
-        condition = hidden.get("condition")
-        conditions.to_engine(condition)
-        for field in conditions.condition_fields(condition):
-            if field in values:
-                if values[field] == MASK:
-                    return None          # a hidden value proves nothing either way
-            elif field not in missing and field not in found:
-                return None              # not recorded is not the same as absent
-        on_missing = "fail_open" if _fail_open(form, settings) else "fail_closed"
-        return conditions.example_result(condition, "approve", values, on_missing) == "approve"
-    except Exception:  # noqa: BLE001 - ConditionError, an unreadable form or row: cannot tell
-        return None
+def _canon(value: Any) -> str:
+    """Canonical JSON text: what "the same" means here. Keys sorted, no whitespace; `1` is not
+    `true`, `800` is not `800.0`, and an absent key is not a null one."""
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
 def _as_enforced(live_form: Any, compiled: Any) -> Any:
@@ -244,53 +158,20 @@ def _as_enforced(live_form: Any, compiled: Any) -> Any:
     return live_form
 
 
-def _enforced_part(form: Any, settings: Dict[str, Any]) -> tuple:
-    """What enforcement reads of a form to decide whether an action pauses."""
-    hidden = form.get("hidden") or {}
-    return (form.get("outcome"), hidden.get("condition"), hidden.get("checkpoint"),
-            (hidden.get("actions") or {}).get("tools"), _fail_open(form, settings))
+def _enforced(form: Dict[str, Any], settings: Dict[str, Any]) -> str:
+    """What the form enforces, as canonical text: its `ENFORCED` keys (only those it has), with
+    `hidden.onMissingData` replaced by the rule in effect (`on_missing_for`: the form's own, else
+    the company's for its outcome). Pure. Raises when the form cannot be read."""
+    part = {k: form[k] for k in ENFORCED if k in form}
+    if isinstance(part.get("hidden"), dict):
+        part["hidden"] = {**part["hidden"], "onMissingData": on_missing_for(form, settings)}
+    return _canon(part)
 
 
-def _same_enforcement(live_form: Any, new_form: Any, settings: Dict[str, Any]) -> bool:
-    """Is what is enforced identical in both forms? Then the change cannot be looser, whatever
-    the decisions can or cannot show. Plain equality on the stored values; the missing-data rule
-    as enforcement reads it. Pure. Raises when a form cannot be read."""
-    return _enforced_part(live_form, settings) == _enforced_part(new_form, settings)
-
-
-def _without(witness: Dict[str, Any], fields: List[str]) -> Dict[str, Any]:
-    """The witness as it would have been recorded had the action lacked `fields`."""
-    found, missing = witness.get("matched_values"), witness.get("missing_inputs")
-    found = found if isinstance(found, dict) else {}
-    missing = missing if isinstance(missing, list) else []
-    return {**witness, "matched_values": {k: v for k, v in found.items() if k not in fields},
-            "missing_inputs": sorted({*missing, *fields})}
-
-
-def _lacking(live_form: Any, witnesses: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """The synthetic witnesses that put the missing-data question: the newest real decision with
-    each field the live condition reads taken away (never `tool.name`: an action always has its
-    tool), and, when it reads several, with all of them taken away. Empty when nobody ever
-    decided anything."""
-    if not witnesses or not isinstance(witnesses[0], dict):
-        return []
-    fields = sorted(conditions.condition_fields((live_form.get("hidden") or {}).get("condition")) - {"tool.name"})
-    return [_without(witnesses[0], [f]) for f in fields] + ([_without(witnesses[0], fields)] if len(fields) > 1 else [])
-
-
-def loosening(live_form: Any, new_form: Any, witnesses: List[Dict[str, Any]], settings: Dict[str, Any]) -> bool:
-    """Does `new_form` stop asking people about something the live form asks about? Never when
-    what is enforced is the same in both. Otherwise: by evidence (a witness the live form does
-    not provably let go and the new form does not provably gate), because missing data would
-    newly be let through by rule (ruling A), or because it would for the newest decision had it
-    lacked a value the live condition reads (the synthetic witnesses). `live_form` carries the
-    missing-data rule in force (`_as_enforced`). Pure. Raises when a form cannot be read."""
-    if _same_enforcement(live_form, new_form, settings):
-        return False
-    if _fail_open(new_form, settings) and not _fail_open(live_form, settings):
-        return True
-    return any(gates(live_form, w, settings) is not False and gates(new_form, w, settings) is not True
-               for w in [*witnesses, *_lacking(live_form, witnesses)])
+def _changed(live_form: Dict[str, Any], new_form: Dict[str, Any], settings: Dict[str, Any]) -> bool:
+    """Does `new_form` enforce anything other than `live_form` does? `live_form` carries the
+    missing-data rule in force (`_as_enforced`). No judgement of direction. Pure."""
+    return _enforced(live_form, settings) != _enforced(new_form, settings)
 
 
 def _setting_on(cur, area_name: Optional[str]) -> bool:
@@ -324,10 +205,7 @@ def _judge(cur, policy_key: str, live_version: Optional[int], new_form: Any) -> 
     if not isinstance(new_form, dict) or not _setting_on(cur, new_form.get("businessArea") or None):
         return found                         # leaving protection (or a form that cannot be read)
     settings = load_settings(cur.connection)
-    enforced = _as_enforced(live_form, stored[1])
-    if _same_enforcement(enforced, new_form, settings):
-        return None                          # nothing enforced changes: the decisions are not read
-    return found if loosening(enforced, new_form, learning.witnesses(cur, policy_key), settings) else None
+    return found if _changed(_as_enforced(live_form, stored[1]), new_form, settings) else None
 
 
 def needed(cur, policy_key: str, live_version: Optional[int], new_form: Dict[str, Any]) -> Optional[int]:
@@ -341,7 +219,7 @@ def needed(cur, policy_key: str, live_version: Optional[int], new_form: Dict[str
 def _same_form(stored: Any, sent: Any) -> bool:
     """Is the form sent for activation the reviewed version's form, `checked` and `changeNote` aside?"""
     def rest(form):
-        return {k: v for k, v in json.loads(json.dumps(form)).items() if k not in NOT_REVIEWED}
+        return _canon({k: v for k, v in form.items() if k not in NOT_REVIEWED})
     return isinstance(stored, dict) and isinstance(sent, dict) and rest(stored) == rest(sent)
 
 

@@ -4,13 +4,12 @@ Each test has REAL live policies ("TST …", on a tool named tst_<tag>, RETIRED 
 Finance (second reviewer on, by seed) and, where it says so, one in Operations (off). Each gets
 the standard evidence and its one suggestion from the real scan (worked in
 test_learning_scan_live's docstring): 33 approvals at 510..830 under "args.amount gt 500" ->
-the suggestion is 500 -> 800. The firing rows are written as the gate writes them (the policy's
-own tool in `action_name` and in `tool.name`), because they are the WITNESSES the rule reads: a
-change needs the second review when it stops asking a person about an action one of them shows.
-So 800, 600 and 2000 are loosenings (510 is no longer asked about), 400 is a tightening.
+the suggestion is 500 -> 800. The suggestion matters only in that it EXISTS: once learning has
+spoken about a protected policy, any change to what it enforces needs a second person, whether
+it loosens (800), tightens (400, 499) or only rewrites the condition.
 
 readiness and the final check are bypassed (tst_ tools are unknown to the registry); every
-restructured condition is therefore also put through the real conditions.to_engine (`_ok`).
+restructured condition is therefore also put through the real conditions.to_engine (`_cond`).
 
 Review rows, suggestion rows and the decider-map row a test makes are removed by the fixture;
 firing rows are append-only BY DESIGN and stay.
@@ -30,7 +29,6 @@ from services.agent_policy import conditions
 from services.agent_policy import learning as L
 from services.agent_policy import second_review as SR
 from tests.agent_policy.test_learning_endpoints_live import _form
-from services.agent_policy.enforcement import MASK
 from tests.agent_policy.test_learning_scan_live import BASE, NOW, fire
 
 pytestmark = pytest.mark.skipif(os.getenv("PROCWISE_TEST_LIVE_DB") != "1", reason="live DB required")
@@ -71,7 +69,7 @@ def make(conn, monkeypatch):
     monkeypatch.setattr(repo, "_contract_problems", lambda d, r: [])
     made = []
 
-    def _make(area="Finance", countries=False, vendor=False):
+    def _make(area="Finance", countries=False):
         tag = uuid.uuid4().hex[:8]
         w = SimpleNamespace(tag=tag, key=None, live=2, owner=f"TST Owner {tag}", tool=f"tst_{tag}",
                             owner_person=person(f"tst-owner-{tag}"))
@@ -83,17 +81,12 @@ def make(conn, monkeypatch):
             form["hidden"]["condition"]["all"].append({"field": "customer.country", "op": "in", "value": ["FR", "DE"]})
             form["hidden"]["inputs"].append({"name": "Customer country", "field": "customer.country", "type": "string"})
             extra = [{"customer.country": "FR" if i < 30 else "DE"} for i in range(33)]
-        if vendor:      # a second leaf on a SENSITIVE input: every decision has it stored as the mask
-            form["hidden"]["condition"]["all"].append({"field": "args.vendor", "op": "eq", "value": "X"})
-            form["hidden"]["inputs"].append({"name": "Vendor", "field": "args.vendor", "type": "string",
-                                             "from": "action", "showApprover": False, "sensitive": True})
-            extra = [{"args.vendor": MASK}] * 33
         w.key = repo.create_draft(conn, form, actor="test")["policyKey"]
         repo.save_version(conn, w.key, form, base_version=1, intent="activate", actor="test", change_note="go")
         conn.cursor().execute(
             "INSERT INTO proc.bp_policy_decider_map (decider_name, emails, last_modified_by) VALUES (%s, %s, 'test')",
             (w.owner, [w.owner_person.email]))
-        fire(conn, w.key, BASE, version=w.live, action=w.tool, extra=extra)
+        fire(conn, w.key, BASE, version=w.live, extra=extra)
         [target] = [t for t in L.targets(conn.cursor()) if t.key == w.key]
         counts = L.scan(conn, NOW, only=[target])
         assert (counts["raised"], counts["errors"]) == (2 if countries else 1, 0), counts
@@ -196,6 +189,21 @@ def _code(conn, w, version, who):
     return exc.value.code
 
 
+def _cycle(conn, w, form, name=""):
+    """One Approver acting alone is refused (straight from the live version, and from a saved
+    draft); the page says a review is required; after another Approver reviews that exact draft
+    it goes Active. `w.live` moves to the new live version."""
+    assert _refused(conn, w, form, base=w.live) == REQUIRED, name
+    v = _draft(conn, w, form, base=w.live)
+    assert _refused(conn, w, form, base=v) == REQUIRED, name
+    assert repo.get_policy(conn, w.key)["secondReview"] == {"required": True, "version": v, "reviewedBy": None,
+                                                            "reviewedAt": None}, name
+    _review(conn, w, v)
+    assert _activate(conn, w, form, base=v) == v + 1, name
+    w.live = v + 1
+    assert _policy(conn, w)[1:] == ("live", w.live, w.live), name
+
+
 # ------------------------------------------------------------------ activation
 def test_finance_activation_of_the_suggested_loosening_is_refused_without_a_review(conn, fin):
     form = _at(conn, fin, 800)
@@ -273,48 +281,46 @@ def test_typing_the_loosening_by_hand_still_needs_the_review(conn, fin, state, l
     assert _activate(conn, fin, form, base=v) == v + 1
 
 
-# ------------------------------------------------------------------ the bypass routes of the review (fix round 1)
+# ------------------------------------------------------------------ the routes of three review rounds
 def _wrap_any(condition):
     return {"any": [condition]}
 
 
-def test_route_1_a_restructured_condition_is_judged_by_what_it_stops_asking_about(conn, fin):
-    shapes = {
-        "gte 800": _cond(conn, fin, amount("gte", 800)),
-        "gt 500 AND gte 800": _cond(conn, fin, amount("gt", 500), amount("gte", 800)),
-        "gt 800 listed twice": _cond(conn, fin, amount("gt", 800), amount("gt", 800)),
-        "any[gt 800] inside the all": _cond(conn, fin, {"any": [amount("gt", 800)]}),
-        "not lte 800": _cond(conn, fin, {"not": amount("lte", 800)}),
-        "a top-level any wrapper": _cond(conn, fin, amount("gt", 800), top=_wrap_any),
-    }
-    for name, form in shapes.items():
-        assert _refused(conn, fin, form, base=fin.live) == REQUIRED, name
-    v = _draft(conn, fin, shapes["not lte 800"], base=fin.live)
-    assert repo.get_policy(conn, fin.key)["secondReview"]["required"] is True, "the page says the same"
-    assert _refused(conn, fin, shapes["not lte 800"], base=v) == REQUIRED
+EXISTS = {"field": "args.amount", "op": "exists"}
 
 
-def test_route_1_a_restructured_list_is_judged_the_same_way(conn, make):
+def test_route_1_every_restructured_condition_needs_the_review(conn, fin):
+    for name, build in {
+        "gte 800": lambda: _cond(conn, fin, amount("gte", 800)),
+        "gt 500 AND gte 800": lambda: _cond(conn, fin, amount("gt", 500), amount("gte", 800)),
+        "gt 800 listed twice": lambda: _cond(conn, fin, amount("gt", 800), amount("gt", 800)),
+        "any[gt 800] inside the all": lambda: _cond(conn, fin, {"any": [amount("gt", 800)]}),
+        "not lte 800": lambda: _cond(conn, fin, {"not": amount("lte", 800)}),
+        "a top-level any wrapper": lambda: _cond(conn, fin, amount("gt", 800), top=_wrap_any),
+    }.items():
+        _cycle(conn, fin, build(), name)
+
+
+def test_route_1_every_restructured_list_needs_the_review(conn, make):
     w = make("Finance", countries=True)
     de = {"field": "customer.country", "op": "in", "value": ["DE"]}
-    for name, form in {
-        "FR dropped, the leaf listed twice": _cond(conn, w, amount("gt", 500), de, de),
-        "FR dropped, the leaf wrapped in any": _cond(conn, w, amount("gt", 500), {"any": [de]}),
-        "FR dropped": _cond(conn, w, amount("gt", 500), de),
-    }.items():
-        assert _refused(conn, w, form, base=w.live) == REQUIRED, name
-    # DE and FR both still asked about, and one more country added: nothing a person decided is let go
     wider = {"field": "customer.country", "op": "in", "value": ["FR", "DE", "IT"]}
-    assert _activate(conn, w, _cond(conn, w, amount("gt", 500), wider), base=w.live) == 3
+    for name, rest in {
+        "FR dropped, the leaf listed twice": (amount("gt", 500), de, de),
+        "FR dropped, the leaf wrapped in any": (amount("gt", 500), {"any": [de]}),
+        "FR dropped": (amount("gt", 500), de),
+        "a country added (nothing let go: no judgement of direction)": (amount("gt", 500), wider),
+    }.items():
+        _cycle(conn, w, _cond(conn, w, *rest), name)
 
 
-def test_route_2_a_tightening_first_does_not_reset_what_the_loosening_is_measured_against(conn, fin):
-    assert _activate(conn, fin, _at(conn, fin, 499), base=2) == 3, "a tightening needs no review"
-    fin.live = 3
-    assert _refused(conn, fin, _at(conn, fin, 800), base=3) == REQUIRED, "the decisions were made under version 2"
-    assert _activate(conn, fin, _cond(conn, fin, amount("gte", 500.01)), base=3) == 4, "every decision is still asked about"
-    fin.live = 4
-    assert _refused(conn, fin, _cond(conn, fin, amount("gt", 800)), base=4) == REQUIRED
+def test_route_2_a_tightening_needs_the_review_itself_so_the_two_step_is_closed_at_step_one(conn, fin):
+    assert _refused(conn, fin, _at(conn, fin, 499), base=2) == REQUIRED, "step one, alone: refused"
+    assert _refused(conn, fin, _cond(conn, fin, amount("gte", 500.01)), base=2) == REQUIRED
+    assert _refused(conn, fin, _at(conn, fin, 400), base=2) == REQUIRED
+    _cycle(conn, fin, _at(conn, fin, 499), "the tightening, reviewed")
+    assert _refused(conn, fin, _at(conn, fin, 800), base=fin.live) == REQUIRED, "and step two needs its own"
+    _cycle(conn, fin, _at(conn, fin, 800), "the loosening, reviewed")
 
 
 def test_route_2_a_superseded_suggestion_still_counts(conn, fin):
@@ -324,15 +330,11 @@ def test_route_2_a_superseded_suggestion_still_counts(conn, fin):
 
 
 def test_route_3_moving_the_policy_out_of_the_protected_area_needs_the_review_itself(conn, fin):
-    moved = _at(conn, fin, businessArea="Operations")           # the condition untouched
-    assert _refused(conn, fin, moved, base=fin.live) == REQUIRED
-    v = _draft(conn, fin, moved, base=fin.live)
-    assert repo.get_policy(conn, fin.key)["secondReview"] == {"required": True, "version": v, "reviewedBy": None,
-                                                              "reviewedAt": None}
-    assert _refused(conn, fin, moved, base=v) == REQUIRED
-    assert _refused(conn, fin, _at(conn, fin, businessArea="TST no such area"), base=v) == REQUIRED, \
+    moved = _at(conn, fin, businessArea="Operations")           # nothing else changed
+    assert _refused(conn, fin, _at(conn, fin, businessArea="TST no such area"), base=fin.live) == REQUIRED, \
         "an unknown area resolves, as a save resolves it, to the unassigned one"
-    assert _refused(conn, fin, _at(conn, fin, 800, businessArea="Operations"), base=v) == REQUIRED
+    assert _refused(conn, fin, _at(conn, fin, 800, businessArea="Operations"), base=fin.live) == REQUIRED
+    _cycle(conn, fin, moved)
 
 
 def test_route_4_a_review_covers_the_whole_reviewed_form_not_only_its_condition(conn, fin):
@@ -346,50 +348,56 @@ def test_route_4_a_review_covers_the_whole_reviewed_form_not_only_its_condition(
         "tools": _tools(conn, fin, _at(conn, fin, 800), [fin.tool, "tst_other"]),
         "owner": _at(conn, fin, 800, owner=other),
         "message": _at(conn, fin, 800, messageForAgent="TST reworded"),
+        "800 written 800.0": _at(conn, fin, 800.0),
     }
     for name, form in changed.items():
         assert _refused(conn, fin, form, base=v) == REQUIRED, name
     assert _activate(conn, fin, _at(conn, fin, 800), base=v) == v + 1
 
 
-def test_route_5_loosening_without_touching_the_condition(conn, fin):
-    live = _at(conn, fin)
-    assert _refused(conn, fin, _at(conn, fin, outcome="notify", notify=["TST Someone"]), base=2) == REQUIRED, "outcome"
-    assert _refused(conn, fin, _tools(conn, fin, _at(conn, fin), ["tst_other"]), base=2) == REQUIRED, \
-        "the tool replaced in the list of actions"
+def test_route_5_changes_that_do_not_touch_the_condition(conn, fin):
+    _cycle(conn, fin, _cond(conn, fin, onMissingData="fail_open"), "fail-open")
+    _cycle(conn, fin, _tools(conn, fin, _at(conn, fin), [fin.tool, "tst_other"]), "a tool added")
+    _cycle(conn, fin, _tools(conn, fin, _at(conn, fin), ["tst_other"]), "one of several removed")
+    _cycle(conn, fin, _tools(conn, fin, _at(conn, fin), []), "no action listed")
     swapped = _at(conn, fin)
     swapped["hidden"]["condition"]["all"][0] = {"field": "tool.name", "op": "in", "value": ["tst_other"]}
-    assert _refused(conn, fin, swapped, base=2) == REQUIRED, "the tool replaced in the tool.name leaf"
-    assert _refused(conn, fin, _cond(conn, fin, onMissingData="fail_open"), base=2) == REQUIRED, \
-        "fail-open: no decision shows it (every one carried its amount), so this one is not judged by evidence"
-    # one of several: first widen the policy to a second tool (nothing is let go: no review) ...
-    both = _tools(conn, fin, copy.deepcopy(live), [fin.tool, "tst_other"])
-    both["hidden"]["condition"]["all"][0]["value"] = [fin.tool, "tst_other"]
-    assert _activate(conn, fin, both, base=2) == 3
-    fin.live = 3
-    # ... then take away the one people decided on
-    assert _refused(conn, fin, _tools(conn, fin, _at(conn, fin), ["tst_other"]), base=3) == REQUIRED
+    _cycle(conn, fin, swapped, "the tool replaced in the tool.name leaf")
+    _cycle(conn, fin, _at(conn, fin, outcome="notify", notify=["TST Someone"]), "approve -> notify")
 
 
-def test_an_emptied_list_of_actions_covers_every_tool_and_needs_no_review(conn, fin):
-    # exactly as enforcement reads it: a policy that lists no action applies to all of them
-    assert _activate(conn, fin, _tools(conn, fin, _at(conn, fin), []), base=fin.live) == 3
+def test_route_5_the_company_default_switched_to_fail_open_shows_as_a_change(conn, fin, monkeypatch):
+    """The live version was compiled fail-closed from a form that names no rule. With the company
+    default now fail-open, saving even a reworded form would compile it fail-open."""
+    cur = conn.cursor()
+    cur.execute("SELECT form_state->'hidden'->>'onMissingData', compiled->'trigger'->>'onMissingData' "
+                "FROM proc.bp_agent_policy_version WHERE policy_key = %s AND version = %s", (fin.key, fin.live))
+    assert cur.fetchone() == (None, "fail_closed")
+    reworded = _at(conn, fin, messageForAgent="TST reworded")
+    assert SR.needed(cur, fin.key, fin.live, reworded) is None, "before the switch: a wording edit"
+    real = SR.load_settings
+    monkeypatch.setattr(SR, "load_settings", lambda c: {**real(c), "on_missing_data": {"approve": "fail_open"}})
+    assert SR.needed(cur, fin.key, fin.live, _cond(conn, fin, onMissingData="fail_closed")) is None, \
+        "the rule in force, said out loud"
+    _cycle(conn, fin, reworded)
 
 
 def test_route_6_nobody_who_saved_a_version_since_the_live_one_may_review(conn, fin):
     form = _at(conn, fin, 800)
     v3 = _draft(conn, fin, form, base=fin.live, actor="tst-saver")
     v4 = _draft(conn, fin, form, base=v3, actor="tst-b")
-    assert _code(conn, fin, v4, SAVER) == "own_change", "A saved the loosening; B only re-saved it"
+    assert _code(conn, fin, v4, SAVER) == "own_change", "A saved the change; B only re-saved it"
     assert _code(conn, fin, v4, person("tst-b")) == "own_change"
     assert _reviews(conn, fin) == []
     _review(conn, fin, v4)
+    assert _activate(conn, fin, form, base=v4) == v4 + 1
 
 
-def test_route_7_a_retired_policy_cannot_come_back_looser_without_the_review(conn, fin):
+@pytest.mark.parametrize("limit", [800, 400])
+def test_route_7_a_retired_policy_cannot_come_back_changed_without_the_review(conn, fin, limit):
     retired = repo.retire(conn, fin.key, base_version=2, actor="tst-saver", change_note="TST retire")["version"]
     assert _policy(conn, fin) == (3, "retired", None, 3)
-    form = _at(conn, fin, 800)
+    form = _at(conn, fin, limit)
     assert _refused(conn, fin, form, base=retired) == REQUIRED, "measured against the last live version"
     v = _draft(conn, fin, form, base=retired, actor="tst-b")
     assert repo.get_policy(conn, fin.key)["secondReview"] == {"required": True, "version": v, "reviewedBy": None,
@@ -406,105 +414,34 @@ def test_a_retired_policy_comes_back_unchanged_without_a_review(conn, fin):
     assert _policy(conn, fin)[1:] == ("live", 4, 4) and _reviews(conn, fin) == []
 
 
-# ------------------------------------------------------------------ what a decision does not record (rulings A, B)
-def test_a_condition_that_reads_a_field_no_decision_recorded_needs_the_review(conn, fin):
-    # a real USD refund of 510 would stop being asked about; the decisions never recorded a currency
-    narrowed = _cond(conn, fin, amount("gt", 500), {"field": "args.currency", "op": "eq", "value": "ZZZ"})
-    assert _refused(conn, fin, narrowed, base=fin.live) == REQUIRED
-    widened = _cond(conn, fin, {"any": [amount("gt", 500), {"field": "args.currency", "op": "eq", "value": "ZZZ"}]})
-    assert _refused(conn, fin, widened, base=fin.live) == REQUIRED, "cannot tell is not a pass, even for a widening"
+def test_route_8_every_missing_data_guard_needs_the_review(conn, fin):
+    tool_is = {"field": "tool.name", "op": "eq", "value": fin.tool}
+    b, c = {"field": "args.b", "op": "exists"}, {"field": "args.c", "op": "exists"}
+    for name, rest in {
+        "round 2: an exists guard": (EXISTS, amount("gt", 500)),
+        "round 2: not(not exists)": ({"not": {"not": EXISTS}}, amount("gt", 500)),
+        "round 3: a value-dependent guard": (amount("gt", 500), {"any": [EXISTS, tool_is]}),
+        "round 3: a guard on some of the fields": (amount("gt", 500), {"any": [EXISTS, b, {"not": c}]}),
+    }.items():
+        _cycle(conn, fin, _cond(conn, fin, *rest), name)
 
 
-EXISTS = {"field": "args.amount", "op": "exists"}
+def test_route_9_one_is_not_true_and_800_is_not_800_point_0(conn, fin):
+    flag = {"field": "args.flag", "op": "eq", "value": 1}
+    _cycle(conn, fin, _cond(conn, fin, amount("gt", 800), flag))
+    _cycle(conn, fin, _cond(conn, fin, amount("gt", 800), {**flag, "value": True}), "eq 1 -> eq true")
+    _cycle(conn, fin, _cond(conn, fin, amount("gt", 800.0), {**flag, "value": True}), "gt 800 -> gt 800.0")
+    # and what was stored comes back as it was written: resubmitted, it is no change
+    assert _activate(conn, fin, _at(conn, fin), base=fin.live) == fin.live + 1
 
 
-def test_a_guard_that_lets_an_action_without_the_value_through_needs_the_review(conn, fin):
-    """Fix round 2, finding 1. "The amount must be there": every decision so far carried one, so
-    no real decision shows what is let go. The rule asks it of the newest decision with the value
-    taken away: under the live form that action paused (missing data fails closed), under these
-    it would be allowed."""
-    guards = {
-        "an exists guard": _cond(conn, fin, EXISTS, amount("gt", 500)),
-        "the guard written last": _cond(conn, fin, amount("gt", 500), EXISTS),
-        "not(not exists)": _cond(conn, fin, {"not": {"not": EXISTS}}, amount("gt", 500)),
-    }
-    assert not any(w["missing_inputs"] for w in L.witnesses(conn.cursor(), fin.key)), "no decision lacked its amount"
-    for name, form in guards.items():
-        assert _refused(conn, fin, form, base=fin.live) == REQUIRED, name
-    v = _draft(conn, fin, guards["an exists guard"], base=fin.live)
-    assert repo.get_policy(conn, fin.key)["secondReview"] == {"required": True, "version": v, "reviewedBy": None,
-                                                              "reviewedAt": None}, "the page says the same"
-    assert _refused(conn, fin, guards["an exists guard"], base=v) == REQUIRED
-    _review(conn, fin, v)
-    assert _activate(conn, fin, guards["an exists guard"], base=v) == v + 1
-
-
-def test_a_field_the_action_really_lacked_is_judged_by_the_missing_data_rule(conn, fin):
-    # one decision on an action that carried NO amount (it paused because missing data fails closed)
-    fire(conn, fin.key, [None], version=fin.live, action=fin.tool, missing=["args.amount"], first=40)
-    [w] = [w for w in L.witnesses(conn.cursor(), fin.key) if w["missing_inputs"]]
-    assert (w["action_name"], w["matched_values"], w["missing_inputs"]) == (fin.tool, {"tool.name": fin.tool},
-                                                                            ["args.amount"])
-    must_exist = _cond(conn, fin, amount("gt", 500), EXISTS)
-    assert _refused(conn, fin, must_exist, base=fin.live) == REQUIRED, "that action would no longer be asked about"
-    assert _activate(conn, fin, _at(conn, fin, 400), base=fin.live) == 3, "a tightening still asks about it"
-
-
-def test_a_change_that_leaves_missing_data_alone_needs_no_review(conn, fin):
-    # the same question, asked of a wording edit and of a real tightening: nothing is let go
-    assert _activate(conn, fin, _at(conn, fin, messageForAgent="TST reworded"), base=fin.live) == 3
-    assert _activate(conn, fin, _at(conn, fin, 400), base=3) == 4
-    assert _reviews(conn, fin) == []
-
-
-def test_the_live_missing_data_rule_is_read_from_what_was_compiled(conn, fin, monkeypatch):
-    """The live version was compiled fail-closed from a form that names no rule. If the company
-    default has since become fail-open, saving the same form again would compile it fail-open:
-    the rule must compare with what is enforced, not with what today's settings make of the form."""
-    cur = conn.cursor()
-    cur.execute("SELECT form_state->'hidden'->>'onMissingData', compiled->'trigger'->>'onMissingData' "
-                "FROM proc.bp_agent_policy_version WHERE policy_key = %s AND version = %s", (fin.key, fin.live))
-    assert cur.fetchone() == (None, "fail_closed")
-    real = SR.load_settings
-    monkeypatch.setattr(SR, "load_settings", lambda c: {**real(c), "on_missing_data": {"approve": "fail_open"}})
-    reworded = _at(conn, fin, messageForAgent="TST reworded")
-    assert SR.needed(cur, fin.key, fin.live, reworded) == fin.sid
-    assert SR.needed(cur, fin.key, fin.live, _cond(conn, fin, onMissingData="fail_closed")) is None
-
-
-# ------------------------------------------------------------------ a policy that reads a hidden value (finding 2)
-def test_a_policy_that_reads_a_hidden_value_is_covered(conn, make, monkeypatch):
-    """Every decision of this policy has the vendor stored as the mask, so the live form cannot be
-    shown to gate any of them. The suggested loosening needs the review all the same; so does a
-    tightening (it cannot be told apart: an accepted cost); an edit that changes nothing enforced
-    does not, and the decisions are not even read for it."""
-    w = make("Finance", vendor=True)
-    seen = L.witnesses(conn.cursor(), w.key)
-    assert len(seen) == 33 and {x["matched_values"]["args.vendor"] for x in seen} == {MASK}
-    live = _at(conn, w)
-    settings = SR.load_settings(conn)
-    assert {SR.gates(live, x, settings) for x in seen} == {None}
-    vendor = live["hidden"]["condition"]["all"][2]
-    assert _refused(conn, w, _at(conn, w, 800), base=w.live) == REQUIRED, "the suggested loosening itself"
-    assert _refused(conn, w, _cond(conn, w, amount("gt", 800)), base=w.live) == REQUIRED, "and with the hidden leaf dropped"
-    assert _refused(conn, w, _cond(conn, w, amount("gt", 400), vendor), base=w.live) == REQUIRED, "a tightening: cannot tell"
-    _no_witness_read(monkeypatch)
-    assert _activate(conn, w, _at(conn, w, owner=f"TST Other Owner {w.tag}", messageForAgent="TST reworded"),
-                     base=w.live) == 3
-    assert _reviews(conn, w) == []
-
-
-def test_a_decision_whose_value_is_hidden_asks_for_the_review_of_any_real_change(conn, fin):
-    # "cannot tell" about one decision: a wording edit is untouched, anything enforced needs the review
-    fire(conn, fin.key, [MASK], version=fin.live, action=fin.tool, first=41)
-    assert _refused(conn, fin, _at(conn, fin, 800), base=fin.live) == REQUIRED
-    assert _activate(conn, fin, _at(conn, fin, messageForAgent="TST reworded"), base=fin.live) == 3
-    fin.live = 3
-    tighter = _at(conn, fin, 400)
-    assert _refused(conn, fin, tighter, base=3) == REQUIRED, "even a tightening"
-    v = _draft(conn, fin, tighter, base=3)
-    _review(conn, fin, v)
-    assert _activate(conn, fin, tighter, base=v) == v + 1, "with a review it goes Active: nothing is blocked for ever"
+def test_route_10_who_decides_how_fast_and_what_is_hidden(conn, fin):
+    _cycle(conn, fin, _at(conn, fin, deciders=["TST Someone Else"]), "deciders")
+    _cycle(conn, fin, _at(conn, fin, responseTime="PT1H"), "response time")
+    flagged = _at(conn, fin)
+    flagged["hidden"]["inputs"][0]["sensitive"] = not flagged["hidden"]["inputs"][0]["sensitive"]
+    _cycle(conn, fin, flagged, "an input's sensitive flag")
+    _cycle(conn, fin, _at(conn, fin, limit={"on": True, "text": "TST UK only"}), "limit")
 
 
 def test_a_stored_suggestion_that_cannot_be_read_changes_nothing(conn, fin):
@@ -512,43 +449,56 @@ def test_a_stored_suggestion_that_cannot_be_read_changes_nothing(conn, fin):
     conn.cursor().execute("UPDATE proc.bp_agent_policy_suggestion SET proposal = '{\"kind\": \"threshold\"}'::jsonb "
                           "WHERE suggestion_id = %s", (fin.sid,))
     assert _refused(conn, fin, _at(conn, fin, 800), base=fin.live) == REQUIRED
-    assert _activate(conn, fin, _at(conn, fin, 400), base=fin.live) == 3
+    assert _activate(conn, fin, _at(conn, fin, messageForAgent="TST reworded"), base=fin.live) == 3
 
 
 # ------------------------------------------------------------------ what needs no review
-def _no_witness_read(monkeypatch):
-    def boom(cur, key):
-        raise AssertionError("the decision history must not be read for this policy")
-    monkeypatch.setattr(SR.learning, "witnesses", boom)
+def test_a_wording_only_edit_needs_no_review_in_finance(conn, fin):
+    live = _at(conn, fin)
+    edits = {
+        "name": f"TST renamed {fin.tag}",
+        "situation": "TST the agent is about to refund more than 500.",
+        "messageForAgent": "TST reworded",
+        "messageForPerson": "TST reworded for the person",
+        "owner": f"TST Other Owner {fin.tag}",
+        "reviewBy": "2027-06-30",
+        "examples": live["examples"][:1],
+    }
+    assert all(live[k] != v for k, v in edits.items())
+    for key, value in edits.items():
+        assert _activate(conn, fin, _at(conn, fin, **{key: value}), base=fin.live) == fin.live + 1, key
+        fin.live += 1
+    # all of them now differ from the first live form; another change note; then resubmitted unchanged
+    assert _activate(conn, fin, _at(conn, fin, changeNote="TST another note"), base=fin.live) == fin.live + 1
+    fin.live += 1
+    assert _activate(conn, fin, repo.get_policy(conn, fin.key)["versions"][-1]["form"], base=fin.live) == fin.live + 1
+    assert _reviews(conn, fin) == []
 
 
-def test_a_policy_with_no_suggestion_needs_no_review_even_when_looser(conn, fin, monkeypatch):
+def test_a_policy_with_no_suggestion_needs_no_review_whatever_changes(conn, fin):
     conn.cursor().execute("DELETE FROM proc.bp_agent_policy_suggestion WHERE policy_key = %s", (fin.key,))
-    _no_witness_read(monkeypatch)
-    assert _activate(conn, fin, _at(conn, fin, 800), base=fin.live) == 3
+    assert _activate(conn, fin, _at(conn, fin, 800), base=2) == 3
+    assert _activate(conn, fin, _at(conn, fin, 400, outcome="notify", notify=["TST Someone"]), base=3) == 4
+    assert _activate(conn, fin, _at(conn, fin, 400, businessArea="Operations"), base=4) == 5
+    assert _reviews(conn, fin) == []
 
 
-def test_operations_needs_no_second_review(conn, make, monkeypatch):
+def test_operations_needs_no_second_review_whatever_changes(conn, make):
     ops = make("Operations")
-    _no_witness_read(monkeypatch)
     form = _at(conn, ops, 800)
     v = _draft(conn, ops, form, base=ops.live)
     assert repo.get_policy(conn, ops.key)["secondReview"] == NONE
     assert _code(conn, ops, v, REVIEWER) == "not_needed"
-    assert _activate(conn, ops, form, base=v) == v + 1 and _reviews(conn, ops) == []
+    assert _activate(conn, ops, form, base=v) == v + 1
+    ops.live = v + 1
+    assert _activate(conn, ops, _cond(conn, ops, amount("gt", 400), onMissingData="fail_open"), base=ops.live) == v + 2
+    assert _reviews(conn, ops) == []
 
 
 def test_a_policy_outside_a_protected_area_is_not_covered_even_as_it_moves_into_one(conn, make):
     # the rule protects what is live in a protected area; Operations is not one
     ops = make("Operations")
     assert _activate(conn, ops, _at(conn, ops, 800, businessArea="Finance"), base=ops.live) == 3
-
-
-def test_tightening_or_an_unrelated_edit_needs_no_review_in_finance(conn, fin):
-    assert _activate(conn, fin, _at(conn, fin, messageForAgent="TST reworded"), base=fin.live) == 3
-    assert _activate(conn, fin, _at(conn, fin, 400), base=3) == 4
-    assert _activate(conn, fin, _at(conn, fin, 400, owner=f"TST Other Owner {fin.tag}"), base=4) == 5
-    assert _policy(conn, fin) == (5, "live", 5, 5) and _reviews(conn, fin) == []
 
 
 def test_moving_the_policy_out_of_finance_in_the_same_request_does_not_avoid_the_review(conn, fin):
@@ -610,11 +560,9 @@ def test_a_sign_in_without_an_email_cannot_review_when_the_owner_is_linked_by_em
 def test_a_review_is_refused_when_none_is_needed_or_the_version_is_not_the_latest_draft(conn, fin):
     assert _code(conn, fin, fin.live, REVIEWER) == "not_latest", "the latest version is live, not a draft"
     v = _draft(conn, fin, _at(conn, fin, messageForAgent="TST reworded"), base=fin.live)
-    assert _code(conn, fin, v, REVIEWER) == "not_needed", "nothing a person decided is let go"
+    assert _code(conn, fin, v, REVIEWER) == "not_needed", "nothing the policy enforces is changed"
     assert _code(conn, fin, fin.live, REVIEWER) == "not_latest"
     assert _code(conn, fin, v + 5, REVIEWER) == "not_latest"
-    tighter = _draft(conn, fin, _at(conn, fin, 400), base=v)
-    assert _code(conn, fin, tighter, REVIEWER) == "not_needed", "a tightening"
     with pytest.raises(L.Refused) as exc:
         SR.record(conn, "TST-nosuch", 1, principal=REVIEWER, note=None, now=NOW)
     assert exc.value.code == "not_found"
@@ -623,7 +571,7 @@ def test_a_review_is_refused_when_none_is_needed_or_the_version_is_not_the_lates
 
 # ------------------------------------------------------------------ fail closed
 def test_activation_is_refused_when_the_suggestions_cannot_be_read(conn, fin, monkeypatch):
-    form = _at(conn, fin, 400)                               # a tightening: it would need no review at all
+    form = _at(conn, fin, messageForAgent="TST reworded")    # a wording edit: it would need no review at all
     real = SR._SUGGESTION_SQL
     monkeypatch.setattr(SR, "_SUGGESTION_SQL", "SELECT suggestion_id FROM proc.bp_tst_no_such_table "
                                                "WHERE policy_key = %s")
@@ -642,13 +590,6 @@ def test_activation_is_refused_when_the_business_area_cannot_be_read(conn, fin, 
     assert _refused(conn, fin, form, base=v) == UNAVAILABLE
     assert repo.get_policy(conn, fin.key)["secondReview"] == {"required": True, "version": v, "reviewedBy": None,
                                                               "reviewedAt": None}, "the page fails closed too"
-
-
-def test_activation_is_refused_when_the_decisions_cannot_be_read(conn, fin, monkeypatch):
-    def boom(cur, key):
-        raise RuntimeError("the firing log cannot be read")
-    monkeypatch.setattr(SR.learning, "witnesses", boom)
-    assert _refused(conn, fin, _at(conn, fin, 400), base=fin.live) == UNAVAILABLE, "even a tightening: we cannot tell"
 
 
 def test_no_review_is_recorded_when_the_decider_map_cannot_be_read(conn, fin, monkeypatch):
@@ -676,9 +617,12 @@ def test_the_policy_page_says_a_review_is_required_and_then_who_did_it(conn, fin
     assert repo.get_policy(conn, fin.key)["secondReview"] == NONE, "it is live: nothing waits for a review"
 
 
-def test_the_policy_page_asks_for_nothing_on_a_draft_that_does_not_loosen(conn, fin):
-    _draft(conn, fin, _at(conn, fin, 400), base=fin.live)
+def test_the_policy_page_asks_for_nothing_on_a_draft_that_changes_only_wording(conn, fin):
+    v = _draft(conn, fin, _at(conn, fin, messageForAgent="TST reworded"), base=fin.live)
     assert repo.get_policy(conn, fin.key)["secondReview"] == NONE
+    v = _draft(conn, fin, _at(conn, fin, 400), base=v)
+    assert repo.get_policy(conn, fin.key)["secondReview"] == {"required": True, "version": v, "reviewedBy": None,
+                                                              "reviewedAt": None}, "a tightening is a change"
 
 
 # ------------------------------------------------------------------ through the whole app
