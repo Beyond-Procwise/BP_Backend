@@ -56,6 +56,7 @@ class Inputs:
     data: Dict[str, Any] = field(default_factory=dict)
     claims: List[Dict[str, Any]] = field(default_factory=list)   # facts read from Postgres that no person has vouched for
     request_texts: List[str] = field(default_factory=list)       # what the person asked for: the payment-details rule reads it too
+    asserted_texts: List[str] = field(default_factory=list)      # the person's own request on a classified run: carried, never verified
 
     # -- allowed sets --------------------------------------------------------
     def _allowed(self):
@@ -80,6 +81,10 @@ class Inputs:
             nums |= V.numbers_in(self.data.get(key))
             dates |= V.dates_in(self.data.get(key))
             refs |= set(V._REF.findall(str(self.data.get(key) or "")))   # a reference the person typed is theirs
+        for text in self.asserted_texts:     # the family a request was classified into may not carry the request itself
+            nums |= V.numbers_in(text)
+            dates |= V.dates_in(text)
+            refs |= set(V._REF.findall(text))
         nums.add(Decimal(int(self.data.get("round") or 1)))
         return nums, dates, refs
 
@@ -100,6 +105,14 @@ class Inputs:
         for r in self.reasoned.values():
             nums |= V.numbers_in(r["value"])
         return nums
+
+    def _verified_dates(self) -> Set:
+        dates: Set = set()
+        for f in self.facts.values():
+            dates |= V.dates_in(f.value)
+        for r in self.reasoned.values():
+            dates |= V.dates_in(r["value"])
+        return dates
 
     def check_text(self, text: str) -> List[Dict[str, str]]:
         nums, dates, refs = self._allowed()
@@ -127,7 +140,12 @@ class Inputs:
         verified = self._verified_numbers()
         verified |= {Decimal(int(self.data.get("round") or 1))}   # "round 2" is not a claim
         unverified = sorted(str(n) for n in V.figures_in(text) - verified)
-        problems = bool(hard or self.conflicts or self.assumptions or unverified or self.claims
+        # Dates likewise: one that no fact or reasoned value holds is the person's own, and is listed as written.
+        known_dates = self._verified_dates()
+        unverified_dates = [raw for raw, k in V.dates_written(text) if not any(V._same_date(k, d) for d in known_dates)]
+        # A warning as well as a list: the stored violations are what a reviewer's screen already shows.
+        violations += [V._v("unverified_date", raw, "warn") for raw in unverified_dates]
+        problems = bool(hard or self.conflicts or self.assumptions or unverified or unverified_dates or self.claims
                         or [k for k in missing if k not in self.carried] or carried_required)
         record = {
             "family_id": self.family.family_id,
@@ -145,6 +163,7 @@ class Inputs:
             "assumptions": self.assumptions,
             "request_text": (self.data.get("prompt") or "")[:2000] if isinstance(self.data.get("prompt"), str) else None,
             "unverified_figures": unverified,
+            "unverified_dates": unverified_dates,
             "violations": violations,
             "checked_at": datetime.now(timezone.utc).isoformat(),
         }
