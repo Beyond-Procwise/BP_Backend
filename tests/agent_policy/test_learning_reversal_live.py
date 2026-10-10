@@ -37,12 +37,12 @@ def _stored(conn, firing_ids):
     return cur.fetchall()
 
 
-def _firing(conn, key, outcome, result):
+def _firing(conn, key, outcome, result, *, by="person-0", case=None):
     cur = conn.cursor()
     cur.execute("INSERT INTO proc.bp_policy_firing (policy_key, policy_version, checkpoint, action_name, outcome, "
-                "result, matched_values, decided_by, decided_at, created_at) "
-                "VALUES (%s, 1, 'tool.call.before', 'tst', %s, %s, %s, 'person-0', %s, %s) RETURNING firing_id",
-                (key, outcome, result, json.dumps({"args.amount": 600}), NOW, NOW))
+                "result, matched_values, decision_id, decided_by, decided_at, created_at) "
+                "VALUES (%s, 1, 'tool.call.before', 'tst', %s, %s, %s, %s, %s, %s, %s) RETURNING firing_id",
+                (key, outcome, result, json.dumps({"args.amount": 600}), case, by, NOW, NOW))
     return cur.fetchone()[0]
 
 
@@ -95,6 +95,56 @@ def test_a_reversal_already_stored_on_a_later_row_of_the_case_still_counts_as_th
     _reverse(conn, second)                       # written straight to the table, on the later row
     assert _refusal(conn, first) == "already_reversed"
     assert [r[0] for r in _stored(conn, [first, second])] == [second]
+
+
+def test_a_notify_row_linked_to_the_case_first_does_not_take_or_show_the_reversal(world):
+    conn, t = world
+    other = t.key[:-1] + "b"                     # another policy: its notify row is linked to the same case
+    [case] = _case_ids(1)
+    notified = _firing(conn, other, "notify", "approved", by="system:group", case=case)      # the LOWER firing id
+    [approved] = fire(conn, t.key, [600], decision_ids=[case])
+    assert notified < approved
+    assert _refusal(conn, notified) == "not_approved", "a notify row is not a request anyone approved"
+    out = L.record_reversal(conn, approved, actor="tst-approver", reason=WHY, now=NOW)
+    assert out["firingId"] == approved
+    assert _stored(conn, [notified, approved]) == [(approved, "tst-approver", NOW, WHY)]
+    assert [f["reversed"] for f in V.policy_firings(conn, other, 50)] == [None], "the notify policy's row says nothing"
+    assert [f["reversed"]["reason"] for f in V.policy_firings(conn, t.key, 50)] == [WHY]
+    assert _refusal(conn, approved, "TST again") == "already_reversed"
+
+
+def test_another_policys_approved_row_in_the_same_case_is_a_different_request(world):
+    conn, t = world
+    other = t.key[:-1] + "b"
+    [case] = _case_ids(1)
+    theirs = _firing(conn, other, "approve", "approved", case=case)                          # lower id, other policy
+    [mine, repeat] = fire(conn, t.key, [600, 600], decision_ids=[case, case])
+    assert L.record_reversal(conn, repeat, actor="tst-approver", reason=WHY, now=NOW)["firingId"] == mine
+    assert [r[0] for r in _stored(conn, [theirs, mine, repeat])] == [mine], "this policy's earliest approved row"
+    assert [f["reversed"] for f in V.policy_firings(conn, other, 50)] == [None]
+    assert {f["id"]: bool(f["reversed"]) for f in V.policy_firings(conn, t.key, 50)} == {mine: True, repeat: True}
+    assert [d.reversed for d in L.decisions(conn.cursor(), other, [1])] == [False], "not evidence against the other policy"
+    assert [d.reversed for d in L.decisions(conn.cursor(), t.key, [1])] == [True]
+
+
+def test_a_linked_row_of_the_same_policy_that_was_not_approved_does_not_take_the_reversal(world):
+    conn, t = world
+    [case] = _case_ids(1)
+    blocked = _firing(conn, t.key, "approve", "blocked", case=case)                          # e.g. a replay's re-check
+    [approved] = fire(conn, t.key, [600], decision_ids=[case])
+    assert L.record_reversal(conn, approved, actor="tst-approver", reason=WHY, now=NOW)["firingId"] == approved
+    assert {f["id"]: bool(f["reversed"]) for f in V.policy_firings(conn, t.key, 50)} == {blocked: False, approved: True}
+
+
+@pytest.mark.parametrize("by", ["system:group", "System:timeout", " system:precedent", "   ", "", None])
+def test_only_a_persons_approval_can_be_marked_reversed(world, by):
+    conn, t = world
+    fid = _firing(conn, t.key, "approve", "approved", by=by)
+    with pytest.raises(L.Refused) as refused:
+        L.record_reversal(conn, fid, actor="tst-approver", reason=WHY, now=NOW)
+    assert (refused.value.code, refused.value.message) == \
+        ("not_approved", "Only a request a person approved can be marked as reversed.")
+    assert _stored(conn, [fid]) == []
 
 
 def test_two_unlinked_firings_are_two_decisions(world):

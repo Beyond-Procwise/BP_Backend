@@ -74,8 +74,9 @@ def test_learning_scan_says_so_when_a_suggestion_row_could_not_be_read(monkeypat
         def __exit__(self, *a): return False
     monkeypatch.setattr(db, "get_conn", lambda: _Ctx())
     quiet = {k: 0 for k in learning.COUNTERS}
-    assert "unreadable" in quiet
-    for counts, logged in (({**quiet, "policies": 4, "updated": 2}, False), ({**quiet, "policies": 4, "unreadable": 1}, True)):
+    assert "unreadable" in quiet and "skipped" in quiet
+    for counts, logged in (({**quiet, "policies": 4, "updated": 2}, False), ({**quiet, "policies": 4, "unreadable": 1}, True),
+                           ({**quiet, "policies": 4, "skipped": 1}, True)):
         caplog.clear()
         monkeypatch.setattr(learning, "scan", lambda conn, now, counts=counts: counts)
         with caplog.at_level(logging.INFO, logger="services.backend_scheduler"):

@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -50,7 +51,10 @@ logger = logging.getLogger(__name__)
 MAX_DECISIONS = 5000
 #: `errors`: a policy's scan step failed (or the scan could not start). `unreadable`: one stored
 #: suggestion row could not be read and was skipped; the rest of its policy was still processed.
-COUNTERS = ("policies", "raised", "updated", "reopened", "weakened", "superseded", "errors", "unreadable")
+#: `skipped`: the policy changed (or could not be re-read) between the scan reading it and locking
+#: it; nothing was judged, the next scan picks it up.
+COUNTERS = ("policies", "raised", "updated", "reopened", "weakened", "superseded", "errors", "unreadable",
+            "skipped")
 #: Every company setting the scan reads. Checked once, before anything is judged.
 SETTINGS = ("min_decisions", "min_days", "min_approvers", "wilson_lower", "median_seconds_floor",
             "not_yet_more", "dismiss_more")
@@ -72,7 +76,8 @@ class Target:
 
 # One row per approval case. A repeated agent call is linked to the same case and one decision
 # settles every linked row, so rows are not decisions: DISTINCT ON the case. A reversal recorded
-# on any row of the case reverses the decision. Timeouts, system deciders, a missing or blank
+# on any row of the case that is this policy's reverses the decision (a case can also link other
+# policies' rows: notify rows, a clash's losers). Timeouts, system deciders, a missing or blank
 # decider and still-paused rows are not people's decisions. The newest come first, so past the
 # cap it is the oldest that go unread: a new rejection or reversal is always seen.
 _DECIDED_SQL = """
@@ -83,7 +88,8 @@ _DECIDED_SQL = """
            EXISTS (SELECT 1 FROM proc.bp_policy_firing_reversal r
                      JOIN proc.bp_policy_firing o ON o.firing_id = r.firing_id
                     WHERE o.firing_id = f.firing_id
-                       OR (o.decision_id IS NOT NULL AND o.decision_id = f.decision_id)) AS reversed
+                       OR (o.decision_id IS NOT NULL AND o.decision_id = f.decision_id
+                           AND o.policy_key = f.policy_key)) AS reversed
       FROM proc.bp_policy_firing f
      WHERE f.policy_key = %s AND f.policy_version = ANY(%s)
        AND f.outcome = 'approve' AND f.result IN ('approved', 'rejected')
@@ -114,11 +120,11 @@ _SAME_CONDITION_SQL = """
      ORDER BY version
 """
 
-# The policy as it stands now, read under the lock: its live condition, whether it has a latest
-# version, and that version's condition. One statement, so the two are one consistent picture.
+# The policy as it stands now, read under the lock: its live version and condition, whether it has
+# a latest version, and that version's condition. One statement, so it is one consistent picture.
 _FRESH_SQL = """
     SELECT v.form_state -> 'hidden' -> 'condition', lv.version IS NOT NULL,
-           lv.form_state -> 'hidden' -> 'condition'
+           lv.form_state -> 'hidden' -> 'condition', p.live_version
       FROM proc.bp_agent_policy p
       LEFT JOIN proc.bp_agent_policy_version v ON v.policy_key = p.policy_key AND v.version = p.live_version
       LEFT JOIN proc.bp_agent_policy_version lv ON lv.policy_key = p.policy_key AND lv.version = p.latest_version
@@ -126,6 +132,7 @@ _FRESH_SQL = """
 """
 #: A latest version that exists but holds no condition: it cannot be judged.
 _UNREADABLE = "unreadable"
+_REAL_KEY = re.compile(r"^[A-Z]{3}-[0-9]{4,}$")
 
 _LOCK_SQL = """
     SELECT suggestion_id, change_key, status, n_at_action, proposal, confident
@@ -246,15 +253,18 @@ def _in_force(proposal: Dict[str, Any], target: Target, told: List[str]) -> bool
 
 def _fresh(cur, target: Target) -> Optional[Target]:
     """The target with its conditions as they are NOW (call it under the policy's lock), or None
-    when the live condition is no longer the one the target was read with: the versions whose
-    firings are the evidence were chosen for that condition, so nothing is judged this time.
-    A key with no policy row is a target a test injected: it stands as given."""
+    when the policy is no longer the one the target was read as: its live version or its live
+    condition moved (the versions whose firings are the evidence were chosen for those), or its
+    row cannot be found. Nothing is judged then; the next scan reads it afresh."""
     cur.execute(_FRESH_SQL, (target.key,))
     found = cur.fetchone()
     if found is None:
-        return target
+        # No policy row. For a real policy key that is a policy that cannot be re-read: skip it.
+        # Any other key is a target a test injected (TST-<hex>a keys are never real policies and
+        # have no row): it stands as given.
+        return None if _REAL_KEY.match(str(target.key)) else target
     live, has_latest, latest = _json(found[0]), found[1], _json(found[2])
-    if live != target.form["hidden"]["condition"]:
+    if found[3] != target.live_version or live != target.form["hidden"]["condition"]:
         return None
     return replace(target, latest_condition=(_UNREADABLE if latest is None else latest) if has_latest else None)
 
@@ -321,20 +331,23 @@ def _store(cur, target: Target, locked: List[tuple], proposals: List[Dict[str, A
         if change_key in proposed or status not in ("open", "not_yet", "dismissed"):
             continue
         proposal = _json(proposal)
-        current = None
+        group: List[Decided] = []
         try:
             still = isinstance(proposal, dict) and learning_patterns.targets(proposal, condition)
             if still and status == "open":
-                current = learning_stats.stats(learning_patterns.group_for(proposal, decided))
+                group = learning_patterns.group_for(proposal, decided)
         except Exception as exc:  # noqa: BLE001 - one unreadable row must not stop the policy's others
-            logger.warning("learning: suggestion %s of %s could not be read (%s); it is left as it is",
-                           suggestion_id, target.key, type(exc).__name__)
+            logger.warning("learning: suggestion %s of %s could not be read (%s: %s); it is left as it is",
+                           suggestion_id, target.key, type(exc).__name__, exc)
             counts["unreadable"] += 1
             continue
         if not still:
             cur.execute(_SUPERSEDE_SQL, (now, suggestion_id))        # the condition has moved on
             counts["superseded"] += 1
         elif status == "open":                                       # "Not enough yet"
+            # outside the guard: the arithmetic does not depend on the stored row, so a failure
+            # here is a bug and fails the policy's step loudly (`errors`)
+            current = learning_stats.stats(group)
             cur.execute(_WEAKEN_SQL, (json.dumps(current), now, suggestion_id))
             counts["weakened"] += 1 if confident else 0              # counted when it turns, not hourly
     return counts
@@ -347,9 +360,9 @@ def _scan_one(conn, target: Target, cfg: Dict[str, Any], now: datetime) -> Dict[
             locked = cur.fetchall()
             fresh = _fresh(cur, target)
             if fresh is None:
-                logger.info("learning: the condition of %s changed while it was being scanned; "
+                logger.info("learning: %s changed (or could not be re-read) while it was being scanned; "
                             "it is left for the next scan", target.key)
-                return {k: 0 for k in COUNTERS}
+                return {**{k: 0 for k in COUNTERS}, "skipped": 1}
             target = fresh
             condition = target.form["hidden"]["condition"]
             decided = decisions(cur, target.key, target.versions)
@@ -599,23 +612,30 @@ def note_save(cur, key: str, version: int, form: Dict[str, Any]) -> int:
 
 _NO_FIRING = ("not_found", "No such request.")
 _NOT_APPROVED = ("not_approved", "Only an approved request can be marked as reversed.")
+_NOT_A_PERSON = ("not_approved", "Only a request a person approved can be marked as reversed.")
 _ALREADY_REVERSED = ("already_reversed", "This request is already marked as reversed.")
 _REASON_REQUIRED = ("reason_required", "Say why it was reversed.")
 
-# The clicked row, the earliest row of its approval case (itself when it is not linked to one),
-# and whether any row of that case already carries a reversal. One decision settles every linked
-# row, so the case is what is reversed.
+# The clicked row; the earliest row of its approval case that is THIS policy's own approved request
+# (itself when it is not linked to a case); and whether any of this policy's rows of the case
+# already carries a reversal. One decision settles every linked row of the policy, so that is what
+# is reversed. A case's decision_id is also carried by rows that are not this request: other
+# policies' notify rows and a clash's losers (gate.link_paused_notifies, settled 'approved' with
+# the group), and a replay's re-check rows. One case is opened per approve policy
+# (approvals.open_case), and a repeat call reuses the case of its own policy, so "same policy_key,
+# approve, approved" is exactly the request and its repeats.
 _CASE_OF_SQL = """
-    SELECT f.outcome, f.result, o.firing_id, o.outcome, o.result,
+    SELECT f.outcome, f.result, f.decided_by,
+           (SELECT min(o.firing_id) FROM proc.bp_policy_firing o
+             WHERE (o.firing_id = f.firing_id OR (f.decision_id IS NOT NULL AND o.decision_id = f.decision_id))
+               AND o.policy_key = f.policy_key AND o.outcome = 'approve' AND o.result = 'approved'),
            EXISTS (SELECT 1 FROM proc.bp_policy_firing_reversal r
                      JOIN proc.bp_policy_firing s ON s.firing_id = r.firing_id
                     WHERE s.firing_id = f.firing_id
-                       OR (f.decision_id IS NOT NULL AND s.decision_id = f.decision_id))
+                       OR (f.decision_id IS NOT NULL AND s.decision_id = f.decision_id
+                           AND s.policy_key = f.policy_key))
       FROM proc.bp_policy_firing f
-      JOIN proc.bp_policy_firing o
-        ON o.firing_id = f.firing_id OR (f.decision_id IS NOT NULL AND o.decision_id = f.decision_id)
      WHERE f.firing_id = %s
-     ORDER BY o.firing_id LIMIT 1
 """
 _REVERSE_SQL = """
     INSERT INTO proc.bp_policy_firing_reversal (firing_id, reversed_by, reversed_at, reason)
@@ -626,25 +646,29 @@ _REVERSE_SQL = """
 def record_reversal(conn, firing_id: int, *, actor: str, reason: str, now: datetime) -> Dict[str, Any]:
     """An Approver's record that an approved request was later undone (a refund clawed back).
 
-    Stored on the EARLIEST firing row of the approval case, so one decision has at most one
-    reversal whichever linked row was clicked. Append-only: it cannot be undone, and the scan
+    Only a request a PERSON approved. Stored on the policy's EARLIEST approved firing row of the
+    approval case, so one decision has at most one reversal whichever linked row was clicked, and
+    never on another policy's row that shares the case. Append-only: it cannot be undone, and the scan
     counts it against every band that holds the decision."""
     reason = reason.strip() if isinstance(reason, str) else ""
     if not reason:
         raise Refused(*_REASON_REQUIRED)
-    approved = ("approve", "approved")
     with approvals._tx(conn):
         with conn.cursor() as cur:
             cur.execute(_CASE_OF_SQL, (firing_id,))
             found = cur.fetchone()
             if found is None:
                 raise Refused(*_NO_FIRING)
-            if (found[0], found[1]) != approved or (found[3], found[4]) != approved:
+            outcome, result, decided_by, first, reversed_ = found
+            if (outcome, result) != ("approve", "approved") or first is None:
                 raise Refused(*_NOT_APPROVED)
-            if found[5]:
+            # timeouts, group and precedent settlements are not a person's approval (as the scan reads them)
+            if not (decided_by or "").strip() or decided_by.strip().lower().startswith("system:"):
+                raise Refused(*_NOT_A_PERSON)
+            if reversed_:
                 raise Refused(*_ALREADY_REVERSED)
-            cur.execute(_REVERSE_SQL, (found[2], actor, now, reason))
+            cur.execute(_REVERSE_SQL, (first, actor, now, reason))
             if cur.fetchone() is None:               # someone else recorded it a moment ago
                 raise Refused(*_ALREADY_REVERSED)
-    return {"firingId": int(found[2]), "reversedBy": actor, "reversedAt": now.astimezone(timezone.utc).isoformat(),
+    return {"firingId": int(first), "reversedBy": actor, "reversedAt": now.astimezone(timezone.utc).isoformat(),
             "reason": reason}
