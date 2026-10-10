@@ -64,7 +64,8 @@ def test_canonical_text_tells_apart_what_python_calls_equal():
 
 # ------------------------------------------------------------------ the rule (pure)
 def test_the_enforced_keys_are_exactly_these():
-    assert SR.ENFORCED == ("outcome", "deciders", "notify", "responseTime", "limit", "hidden")
+    assert SR.ENFORCED == ("outcome", "deciders", "notify", "responseTime", "limit", "hidden", "source",
+                           "effectiveFrom")
     assert set(SR.ENFORCED) <= set(FORM_EXAMPLE), "each is a key a real form has"
 
 
@@ -77,8 +78,10 @@ SAME = {   # what a person may edit without a second person: none of it is enfor
     "the message for the person": full(messageForPerson="Reworded."),
     "change note": full(changeNote="a note"),
     "owner": full(owner="Someone else"),
+    "category": full(category="Another category"),
+    "sub-area": full(subArea="Another sub-area"),
     "review-by date": full(reviewBy="2027-01-01"),
-    "effective date": full(effectiveFrom="2026-03-01"),
+    # NOT here since fix round 4: the effective date (see DIFFERENT, "the date it starts")
     "examples": full(examples=[]),
     "the confirmation": full(checked={"by": "x", "at": "t"}),
     "the company's missing-data rule said out loud": hidden(onMissingData="fail_closed"),
@@ -124,6 +127,14 @@ DIFFERENT = {   # every route of the three review rounds, and each enforced key 
     "notify": full(notify=["Someone"]),
     "response time": full(responseTime="PT1H"),
     "limit": full(limit={"on": True, "text": "UK only"}),
+    # Fix round 4. Enforcement reads `source.document`: two policies from the same document are
+    # "tiered" (each keeps its approval levels), from different ones "conflicting" (last level
+    # only), so renaming it can skip a first-level decider. The whole key is compared.
+    "the source document renamed": full(source={**FORM_EXAMPLE["source"], "document": "Another policy document"}),
+    "the source reference": full(source={**FORM_EXAMPLE["source"], "reference": "9.9"}),
+    # Was pinned as "no change" until fix round 4. It is published to the orchestrator as
+    # `effective.from` and may be honoured outside this backend, so moving it is a change.
+    "the date it starts": full(effectiveFrom="2026-03-01"),
     "checkpoint": hidden(checkpoint="agent.reply.before"),
     "a tool removed": hidden(actions={**FORM_EXAMPLE["hidden"]["actions"], "tools": ["credit.issue"]}),
     "a tool added": hidden(actions={**FORM_EXAMPLE["hidden"]["actions"], "tools": ["refund.issue", "credit.issue", "x"]}),
