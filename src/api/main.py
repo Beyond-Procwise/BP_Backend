@@ -701,6 +701,11 @@ _AGENT_POLICY_SCREEN_EXEMPT = (
     # Cognito group name. Sensitive inputs are masked by the endpoint itself. Same rules as above.
     ("GET", re.compile(r"^/agent-policies/conflicts$")),
     ("GET", re.compile(r"^/agent-policies/conflicts/[0-9]{1,18}$")),
+    # Stage 5 suggestion reads (user ruling Q1, 2026-10-10): a card names the customer's own policy
+    # and its inputs, and the draft IS the customer's policy form (its situation, excerpt and
+    # document name). Same rules as above; POST .../act and every error answer are still scrubbed.
+    ("GET", re.compile(r"^/agent-policies/suggestions$")),
+    ("GET", re.compile(r"^/agent-policies/suggestions/[0-9]{1,18}/draft$")),
 )
 
 
