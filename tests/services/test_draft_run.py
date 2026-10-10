@@ -377,3 +377,55 @@ def test_with_no_tone_rules_there_are_no_tone_questions_and_the_stage_says_why()
     rec = _declared(engine=_policies(with_tone=False))[1]
     assert not [a for a in rec["assumption_items"] if a["id"].startswith("tone:")]
     assert rec["stage_status"]["tone"]["status"] == "unavailable"
+
+
+# --- the person's own words, when free text is classified into another family -------------------------
+# A free-text request reaches assurance with the person's words under `prompt`. The free_prompt family
+# carries that key; a family the request is CLASSIFIED into (a counter) does not, so a figure the person
+# typed used to fail as invented there. Their words are carried in every classified run, reported
+# unverified, and never beat a figure that must not be stated.
+
+def _typed(request, draft, **data):
+    d = {"prompt": request, "supplier_id": "S-1", "workflow_id": "wf-1", **data}
+    r = R.begin(env(fake({**CLS, "user_instruction": request}, PLAN, JUDGE_OK)), d, slug=None, workflow_id="wf-1",
+                request=request, classify=True)
+    assert r.family_source == "classified" and r.inputs.family.family_id == "negotiation_counter"
+    return r.finalize(draft, ["a@x.test"], "S-1")
+
+
+def _kinds(rec, kind):
+    return [v["detail"] for v in rec["violations"] if v["kind"] == kind]
+
+
+def test_a_figure_the_person_typed_is_carried_when_the_request_is_classified_as_a_counter():
+    rec = _typed("Tell Acme we would sign a 12-month commitment if they hold the price",
+                 "We would sign a 12-month commitment if you hold your price. Please confirm by Friday?")
+    assert _kinds(rec, "ungrounded_figure") == []
+    assert rec["unverified_figures"] == ["12"] and rec["status"] == "needs_review"
+
+
+def test_a_figure_the_person_did_not_type_still_fails_on_a_classified_request():
+    rec = _typed("Tell Acme we would sign a 12-month commitment if they hold the price",
+                 "We would sign an 18-month commitment if you hold your price. Please confirm by Friday?")
+    assert _kinds(rec, "ungrounded_figure") == ["18"]
+
+
+def test_a_date_and_a_reference_the_person_typed_are_carried_too():
+    rec = _typed("Ask Acme to confirm PO-77123 ships before 6 November 2026",
+                 "Please confirm that PO-77123 will ship before 6 November 2026. Please confirm by Friday?")
+    assert _kinds(rec, "ungrounded_date") == [] and _kinds(rec, "ungrounded_reference") == []
+    assert rec["unverified_dates"] == ["6 November 2026"]
+
+
+def test_a_walkaway_price_the_person_typed_is_still_never_stated():
+    rec = _typed("Counter at 44.80 but our limit is 46.00", "Our limit is 46.00 GBP. Please confirm by Friday?",
+                 walkaway_price=46.0)
+    assert _kinds(rec, "internal_figure_leaked") == ["walkaway_price"]
+    assert "46.00" in _kinds(rec, "ungrounded_figure")
+
+
+def test_an_instruction_on_a_declared_family_does_not_carry_its_figures():
+    r = R.begin(env(fake(JUDGE_OK)), dict(DATA), slug="email_family_negotiation_counter", workflow_id="wf-1",
+                instruction="mention a 12-month commitment")
+    rec = r.finalize(GOOD + " We would sign a 12-month commitment.", ["a@x.test"], "S-1")
+    assert _kinds(rec, "ungrounded_figure") == ["12"]

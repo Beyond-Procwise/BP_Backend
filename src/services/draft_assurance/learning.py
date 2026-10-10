@@ -106,6 +106,7 @@ def classify_edit(outcome: Dict[str, Any], capture: Dict[str, Any], rules: Dict[
         distance < rules["exemplar_max_distance"]
         and judge.get("status") == "scored" and float(judge.get("overall") or 0) >= rules["exemplar_min_judge"]
         and not (capture.get("carried_unverified") or {}) and not (capture.get("unverified_figures") or [])
+        and not any(v.get("kind") == "unverified_date" for v in (capture.get("violations") or []))
         # Beyond the four criteria in the spec: a draft whose price or deadline a person just overruled is not
         # an example of a good one, however few words changed.
         and all_confirmed and not fact_changes and not reasoned_changes
@@ -138,7 +139,7 @@ def run_learning(conn: Any, policy_engine: Any, now: Optional[datetime] = None) 
         cur.execute("""SELECT o.outcome_id, o.capture_id, o.sent_by, o.reviewed_by, o.edit_distance, o.edit_class,
                               o.removed_figures, o.added_figures, o.drafted_words, o.sent_words,
                               c.family_id, c.facts, c.reasoned, c.tone_variables, c.judge, c.assumption_items,
-                              c.assumptions_resolution, c.carried_unverified, c.unverified_figures, c.draft_text,
+                              c.assumptions_resolution, c.carried_unverified, c.unverified_figures, c.violations, c.draft_text,
                               c.assurance_status, c.brief
                        FROM email_agent.bp_draft_outcome o JOIN email_agent.bp_draft_capture c USING (capture_id)
                        WHERE o.outcome = 'sent' AND o.learning_processed_at IS NULL

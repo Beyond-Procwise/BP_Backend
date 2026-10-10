@@ -7,6 +7,7 @@ migration, parsed from the SQL file, so the migration cannot drift from the code
 
 import json
 import re
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -556,3 +557,45 @@ def test_from_decision_uses_the_repaired_text_and_clears_the_violation(monkeypat
     assert draft["assurance"]["repaired"] is True
     assert not [v for v in draft["assurance"]["violations"] if v["severity"] == "fail"]
     assert "44.80" in draft["text"] and "43.10" not in draft["text"]
+
+
+# --- dates that rest on nothing verified ------------------------------------------------------------------
+# Criterion 1: every stated fact traces to a Postgres row or is flagged as the person's own. Numbers were;
+# a carried DATE was accepted and listed nowhere.
+
+def test_a_date_backed_by_a_reasoned_value_with_a_basis_is_not_listed_as_unverified(family):
+    out = _inputs(family).finalize(GOOD, ["a@x.test"], ["a@x.test"])
+    assert out["unverified_dates"] == [] and out["status"] == "verified"
+
+
+def test_a_carried_date_is_listed_as_unverified_and_the_draft_needs_review():
+    fam = da.parse_family(_free_prompt_rules(), version=1)
+    inp = da.prepare_inputs(FakeConn(TABLES), fam, {"prompt": "Ask Acme to deliver by 12 March 2027", **KEYS},
+                            lookup_keys=KEYS)
+    out = inp.finalize("Please deliver by 12 March 2027. Could you confirm?", ["a@x.test"], ["a@x.test"])
+    assert not [v for v in out["violations"] if v["kind"] == "ungrounded_date"]
+    assert out["unverified_dates"] == ["12 March 2027"] and out["status"] == "needs_review"
+    # shown where the reviewer already looks, as a warning: it never fails the draft or sends it to repair
+    assert [v for v in out["violations"] if v["kind"] == "unverified_date"] == [
+        {"kind": "unverified_date", "detail": "12 March 2027", "severity": "warn"}]
+
+
+def test_the_same_carried_date_written_twice_is_listed_once():
+    fam = da.parse_family(_free_prompt_rules(), version=1)
+    inp = da.prepare_inputs(FakeConn(TABLES), fam, {"prompt": "deliver by 12 March 2027", **KEYS}, lookup_keys=KEYS)
+    out = inp.finalize("Deliver by 12 March 2027. To repeat: 2027-03-12. Could you confirm?", ["a@x.test"], ["a@x.test"])
+    assert out["unverified_dates"] == ["12 March 2027"]
+
+
+def test_a_date_inside_a_reference_is_not_a_date(family):
+    out = _inputs(family).finalize(GOOD + " This concerns REF-2026-11-15.", ["a@x.test"], ["a@x.test"])
+    assert out["unverified_dates"] == []
+
+
+def test_an_iso_date_is_year_month_day_whatever_the_day():
+    # Read day-first, 2026-10-05 came out as 10 May: a stored date then disagreed with "5 October 2026" in the email,
+    # and agreed with "10 May 2026".
+    assert V.dates_in("2026-10-05") == V.dates_in("5 October 2026") == {(2026, 10, 5)}
+    assert V.check_figures("Deliver by 5 October 2026.", set(), V.dates_in(date(2026, 10, 5)), set()) == []
+    assert [v["kind"] for v in V.check_figures("Deliver by 10 May 2026.", set(), V.dates_in("2026-10-05"), set())] == ["ungrounded_date"]
+    assert V._date_key("2026-13-45") is None

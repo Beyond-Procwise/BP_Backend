@@ -36,12 +36,12 @@ _n = [0]
 
 def sent(db, *, user="u1", family="negotiation_counter", edit=lambda t: t, facts=FACTS, reasoned=REASONED, judge=4.5,
          items=(), resolution=None, carried=None, unverified=(), status="verified", request=None, record=True,
-         clarification=None):
+         clarification=None, violations=()):
     """A draft that was captured and then sent (with ``edit`` applied). Returns the unique id."""
     _n[0] += 1
     uid = f"U-{_n[0]}"
     a = {"family_id": family, "family_version": 1, "mode": "shadow", "status": status, "facts": facts, "conflicts": [],
-         "reasoned": reasoned, "assumptions": [], "violations": [], "repaired": False, "carried_unverified": carried or {},
+         "reasoned": reasoned, "assumptions": [], "violations": list(violations), "repaired": False, "carried_unverified": carried or {},
          "unverified_figures": list(unverified), "assumption_items": list(items), "request_text": request,
          "judge": {"status": "scored", "overall": judge} if judge is not None else None,
          "tone": {"variables": {"escalation_level": 2}, "sources": {"escalation_level": {"source": "postgres"}}},
@@ -368,6 +368,7 @@ def test_a_barely_touched_well_judged_clean_draft_is_an_exemplar_candidate(db, e
     ("never judged", dict(judge=None)),
     ("a figure rests on the request alone", dict(unverified=["25"])),
     ("a fact was carried in unverified", dict(carried={"lead_time": "7"})),
+    ("a date rests on the request alone", dict(violations=[{"kind": "unverified_date", "detail": "12 March 2027", "severity": "warn"}])),
     ("an assumption was left unconfirmed", dict(items=[{"id": "a", "key": "a", "text": "t", "resolution": None}])),
     ("an assumption was edited, not confirmed", dict(items=[{"id": "a", "key": "a", "text": "t", "resolution": None}],
                                                      resolution={"a": {"action": "edit", "value": "x"}})),
