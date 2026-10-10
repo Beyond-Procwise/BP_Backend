@@ -672,7 +672,7 @@ def record_reversal(body: ReversalBody, firing_id: int = Path(ge=1, le=2 ** 63 -
 
     try:
         with _conn() as conn:
-            out = learning.record_reversal(conn, firing_id, actor=p.subject, reason=body.reason,
+            out = learning.record_reversal(conn, firing_id, actor=p.subject, email=p.email, reason=body.reason,
                                            now=datetime.now(timezone.utc))
     except learning.Refused as exc:
         _audit("refused", f"{p.subject} could not mark request {firing_id} as reversed: {exc.code}", code=exc.code)

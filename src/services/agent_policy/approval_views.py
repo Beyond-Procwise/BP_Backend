@@ -368,6 +368,17 @@ def list_cases(conn, principal, *, is_admin: bool, status: str = "open") -> List
     return out
 
 
+def shown_name(who: Any, email: Any = None) -> Optional[str]:
+    """Who to show for a recorded sign-in id: a `system:*` decider in the conflict history's words;
+    else the email recorded beside the id when there is one; else the id. None when there is no id,
+    so a name never appears where the id does not."""
+    if not str(who or "").strip():
+        return None
+    from services.agent_policy import conflict_history   # lazily: conflict_history reaches back here
+
+    return conflict_history.system_words(who) or str(email or "").strip() or who
+
+
 def _firing_view(row: Dict[str, Any], sensitive: Set[str],
                  reveal: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """`reveal`: the case's context, for a caller who may decide it. The log stores sensitive
@@ -393,6 +404,9 @@ def _firing_view(row: Dict[str, Any], sensitive: Set[str],
         "decisionId": row["decision_id"],
         "decidedLevel": row["decided_level"],
         "decidedBy": row["decided_by"],
+        # nothing records the email of whoever decided an approval (bp_decision.actioned_by and the
+        # audit record hold the sign-in id only): a person is the id, the system is worded
+        "decidedByName": shown_name(row["decided_by"]),
         "decidedAt": _iso(row["decided_at"]),
         "reason": row["reason"],
         "durationMs": row["duration_ms"],
@@ -407,7 +421,8 @@ def _reversal(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """A person's record that this approved request was later reversed, or None."""
     if row.get("rv_by") is None:
         return None
-    return {"by": row["rv_by"], "at": _iso(row["rv_at"]), "reason": row["rv_reason"]}
+    return {"by": row["rv_by"], "byName": shown_name(row["rv_by"], row.get("rv_email")),
+            "at": _iso(row["rv_at"]), "reason": row["rv_reason"]}
 
 
 _FIRING_COLS = ("firing_id, policy_key, policy_version, checkpoint, action_name, agent, workflow_id, "
@@ -495,7 +510,8 @@ def latest_replay(cur, case: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 # firing (LIMIT 1), so the join never adds or drops a firing row.
 _REVERSAL_JOIN = """
     LEFT JOIN LATERAL (
-        SELECT r.reversed_by AS rv_by, r.reversed_at AS rv_at, r.reason AS rv_reason
+        SELECT r.reversed_by AS rv_by, r.reversed_by_email AS rv_email, r.reversed_at AS rv_at,
+               r.reason AS rv_reason
           FROM proc.bp_policy_firing_reversal r
           JOIN proc.bp_policy_firing o ON o.firing_id = r.firing_id
          WHERE f.outcome = 'approve' AND f.result = 'approved'
@@ -506,10 +522,10 @@ _REVERSAL_JOIN = """
 
 
 def policy_firings(conn, policy_key: str, limit: int) -> List[Dict[str, Any]]:
-    """The policy's latest firings, newest first; `reversed` is {by, at, reason} or None."""
+    """The policy's latest firings, newest first; `reversed` is {by, byName, at, reason} or None."""
     with conn.cursor() as cur:
         cols = ", ".join(f"f.{c.strip()}" for c in _FIRING_COLS.split(","))
-        cur.execute(f"SELECT {cols}, rv.rv_by, rv.rv_at, rv.rv_reason FROM proc.bp_policy_firing f "
+        cur.execute(f"SELECT {cols}, rv.rv_by, rv.rv_email, rv.rv_at, rv.rv_reason FROM proc.bp_policy_firing f "
                     f"{_REVERSAL_JOIN} WHERE f.policy_key = %s "
                     "ORDER BY f.created_at DESC, f.firing_id DESC LIMIT %s", (policy_key, limit))
         rows = _rows(cur)
