@@ -176,7 +176,7 @@ def test_the_policy_activity_list_shows_the_reversal(world):
     L.record_reversal(conn, second, actor="tst-approver", reason=WHY, now=NOW)
     after = V.policy_firings(conn, t.key, 50)
     shown = {f["id"]: f["reversed"] for f in after}
-    mark = {"by": "tst-approver", "at": NOW.isoformat(), "reason": WHY}
+    mark = {"by": "tst-approver", "byName": "tst-approver", "at": NOW.isoformat(), "reason": WHY}
     assert shown == {first: mark, second: mark, other: None}, "the row and its linked sibling; not the other request"
     # the health line reads the same rows: nothing else about them changes, and there are no more of them
     assert [{k: v for k, v in f.items() if k != "reversed"} for f in after] == \
@@ -312,7 +312,7 @@ def test_the_activity_list_endpoint_shows_who_reversed_it_when_and_why(api, poli
     rows = r.json()["firings"]
     assert len(rows) == 33
     assert {f["id"]: f["reversed"] for f in rows if f["reversed"]} == \
-        {at_600: {"by": "tst-approver", "at": at.isoformat(), "reason": WHY}}
+        {at_600: {"by": "tst-approver", "byName": "tst-approver@example.test", "at": at.isoformat(), "reason": WHY}}
     # the approval detail's firing rows are a different read: they do not claim to know
     assert "reversed" not in V._firing_view({**_raw(policy.conn, at_600)}, set())
 

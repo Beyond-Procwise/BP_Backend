@@ -667,18 +667,20 @@ _CASE_OF_SQL = """
      WHERE f.firing_id = %s
 """
 _REVERSE_SQL = """
-    INSERT INTO proc.bp_policy_firing_reversal (firing_id, reversed_by, reversed_at, reason)
-    VALUES (%s, %s, %s, %s) ON CONFLICT (firing_id) DO NOTHING RETURNING firing_id
+    INSERT INTO proc.bp_policy_firing_reversal (firing_id, reversed_by, reversed_by_email, reversed_at, reason)
+    VALUES (%s, %s, %s, %s, %s) ON CONFLICT (firing_id) DO NOTHING RETURNING firing_id
 """
 
 
-def record_reversal(conn, firing_id: int, *, actor: str, reason: str, now: datetime) -> Dict[str, Any]:
+def record_reversal(conn, firing_id: int, *, actor: str, reason: str, now: datetime,
+                    email: Optional[str] = None) -> Dict[str, Any]:
     """An Approver's record that an approved request was later undone (a refund clawed back).
 
     Only a request a PERSON approved. Stored on the policy's EARLIEST approved firing row of the
     approval case, so one decision has at most one reversal whichever linked row was clicked, and
     never on another policy's row that shares the case. Append-only: it cannot be undone, and the scan
-    counts it against every band that holds the decision."""
+    counts it against every band that holds the decision. `email` is the actor's sign-in email, kept
+    (trimmed; NULL when the sign-in has none) so the activity list can show who by name."""
     reason = reason.strip() if isinstance(reason, str) else ""
     if not reason:
         raise Refused(*_REASON_REQUIRED)
@@ -696,7 +698,7 @@ def record_reversal(conn, firing_id: int, *, actor: str, reason: str, now: datet
                 raise Refused(*_NOT_A_PERSON)
             if reversed_:
                 raise Refused(*_ALREADY_REVERSED)
-            cur.execute(_REVERSE_SQL, (first, actor, now, reason))
+            cur.execute(_REVERSE_SQL, (first, actor, str(email or "").strip() or None, now, reason))
             if cur.fetchone() is None:               # someone else recorded it a moment ago
                 raise Refused(*_ALREADY_REVERSED)
     return {"firingId": int(first), "reversedBy": actor, "reversedAt": now.astimezone(timezone.utc).isoformat(),

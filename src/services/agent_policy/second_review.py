@@ -138,7 +138,7 @@ _FORM_SQL = "SELECT form_state, compiled FROM proc.bp_agent_policy_version WHERE
 _SETTING_SQL = "SELECT second_reviewer FROM proc.bp_business_area WHERE area_name = %s"
 # The base version's whole form and its review, if it has one. One statement.
 _REVIEWED_SQL = """
-    SELECT v.form_state, r.reviewed_by, r.reviewed_at
+    SELECT v.form_state, r.reviewed_by, r.reviewed_at, r.reviewed_by_email
       FROM proc.bp_agent_policy_version v
       LEFT JOIN proc.bp_agent_policy_second_review r ON r.policy_key = v.policy_key AND r.version = v.version
      WHERE v.policy_key = %s AND v.version = %s
@@ -150,8 +150,9 @@ _VERSION_SQL = ("SELECT saved_as, saved_by, form_state FROM proc.bp_agent_policy
 _SAVERS_SQL = ("SELECT saved_by FROM proc.bp_agent_policy_version "
                "WHERE policy_key = %s AND version > %s AND version <= %s ORDER BY version")
 _INSERT_SQL = """
-    INSERT INTO proc.bp_agent_policy_second_review (policy_key, version, suggestion_id, reviewed_by, reviewed_at, note)
-    VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (policy_key, version) DO NOTHING RETURNING version
+    INSERT INTO proc.bp_agent_policy_second_review
+           (policy_key, version, suggestion_id, reviewed_by, reviewed_by_email, reviewed_at, note)
+    VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (policy_key, version) DO NOTHING RETURNING version
 """
 
 
@@ -323,19 +324,23 @@ def record(conn, policy_key: str, version: int, *, principal, note: Optional[str
                 raise _refuse("identity_incomplete")
             if not owners or deciders.unmapped(owners, mapping):
                 raise _refuse("owner_unmapped")
-            cur.execute(_INSERT_SQL, (policy_key, version, found["suggestion_id"], principal.subject, now, note))
+            # the email is kept beside the id (NULL when the sign-in has none) so the page can name the reviewer
+            email = str(getattr(principal, "email", None) or "").strip() or None
+            cur.execute(_INSERT_SQL, (policy_key, version, found["suggestion_id"], principal.subject, email, now,
+                                      note))
             if cur.fetchone() is None:
                 raise _refuse("already_reviewed")
     return {"policyKey": policy_key, "version": version, "reviewedBy": principal.subject, "reviewedAt": _iso(now)}
 
 
-_NONE = {"required": False, "version": None, "reviewedBy": None, "reviewedAt": None}
+_NONE = {"required": False, "version": None, "reviewedBy": None, "reviewedByName": None, "reviewedAt": None}
 
 
 def status(cur, policy_key: str, head: Dict[str, Any], versions: List[Dict[str, Any]]) -> Dict[str, Any]:
     """For the policy page: whether the latest version, when it is a draft of a policy that is
-    or was live, needs a second review, and who gave it. The same rule as activation (`needed`),
-    so the page and the activation never disagree. `head` holds `liveVersion` and
+    or was live, needs a second review, and who gave it (`reviewedBy` the sign-in id,
+    `reviewedByName` the email recorded with the review, else that id). The same rule as
+    activation (`needed`), so the page and the activation never disagree. `head` holds `liveVersion` and
     `latestVersion`; `versions` are the policy's versions as the page shows them. Never raises:
     when it cannot tell, the review is shown as required (and it is said in the log)."""
     live, latest = head.get("liveVersion"), head.get("latestVersion")
@@ -349,9 +354,13 @@ def status(cur, policy_key: str, head: Dict[str, Any], versions: List[Dict[str, 
             return dict(_NONE)
         cur.execute(_REVIEWED_SQL, (policy_key, latest))
         row = cur.fetchone()
-        return {"required": True, "version": latest, "reviewedBy": row[1] if row else None,
+        by = row[1] if row else None
+        # the reviewer by name: the email recorded with the review, else the id (never without the id)
+        return {"required": True, "version": latest, "reviewedBy": by,
+                "reviewedByName": approval_views.shown_name(by, row[3]) if row else None,
                 "reviewedAt": _iso(row[2]) if row else None}
     except Exception:  # noqa: BLE001 - the page must not fail, and must not say "no review needed" on a guess
         logger.exception("second review: whether %s version %s needs one could not be worked out; "
                          "it is shown as required", policy_key, latest)
-        return {"required": True, "version": latest, "reviewedBy": None, "reviewedAt": None}
+        return {"required": True, "version": latest, "reviewedBy": None, "reviewedByName": None,
+                "reviewedAt": None}

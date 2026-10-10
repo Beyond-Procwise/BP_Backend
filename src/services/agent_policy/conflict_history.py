@@ -233,6 +233,19 @@ KIND_WORDS = {"policy": "Between policies", "live": "During an action"}
 DECIDED_BY_WORDS = {"person": "Person", "standing_rule": "Standing rule", "precedent": "Precedent",
                     "timeout": "Timeout", "block": "Not allowed (block)", "retired": "Policy retired",
                     "system": "By the system"}
+
+
+def system_words(actor: Any) -> Optional[str]:
+    """How a `system:*` decider (system:timeout, system:group, ...) is shown: the word this history
+    uses for that kind of decision, "By the system" for one with no word of its own. None for a
+    person (anything that is not `system:*`), whose id or name is shown instead."""
+    who = str(actor or "").strip().lower()
+    if not who.startswith("system:"):
+        return None
+    kind = who.partition(":")[2]
+    return DECIDED_BY_WORDS["system"] if kind == "person" else DECIDED_BY_WORDS.get(kind, DECIDED_BY_WORDS["system"])
+
+
 _DECISION_WORDS = {"approve": "Approve", "reject": "Reject", "moot": "Closed: policy retired",
                    "block": "Blocked", "standing_rule": "Decided by a standing rule"}
 _FORMULA = re.compile(r"^\s*[=+\-@]")

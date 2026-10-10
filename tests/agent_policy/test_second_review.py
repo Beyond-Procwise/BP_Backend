@@ -298,7 +298,7 @@ def test_the_policy_page_says_required_when_it_cannot_tell(caplog):
     head = {"liveVersion": 2, "latestVersion": 3}
     with caplog.at_level(logging.ERROR, logger=SR.__name__):
         got = SR.status(_Broken(), "FIN-0001", head, versions)
-    assert got == {"required": True, "version": 3, "reviewedBy": None, "reviewedAt": None}
+    assert got == {"required": True, "version": 3, "reviewedBy": None, "reviewedByName": None, "reviewedAt": None}
     assert any("FIN-0001" in r.getMessage() for r in caplog.records)
     # a draft on a retired policy is judged too (against what was last live)
     retired = versions[:1] + [{"version": 3, "savedAs": "retired", "form": form()},
@@ -307,7 +307,7 @@ def test_the_policy_page_says_required_when_it_cannot_tell(caplog):
 
 
 def test_the_policy_page_asks_nothing_when_there_is_no_draft_on_a_live_version():
-    none = {"required": False, "version": None, "reviewedBy": None, "reviewedAt": None}
+    none = {"required": False, "version": None, "reviewedBy": None, "reviewedByName": None, "reviewedAt": None}
     live = {"version": 2, "savedAs": "live", "form": form()}
     draft = {"version": 1, "savedAs": "draft", "form": form()}
     retired = {"version": 3, "savedAs": "retired", "form": form()}
