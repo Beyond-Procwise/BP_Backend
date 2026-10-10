@@ -502,6 +502,9 @@ _NOT_OPEN = ("not_open", "This suggestion is no longer open.")
 _NOT_CONFIDENT = ("not_confident", "There is not enough evidence yet.")
 _POLICY_CHANGED = ("policy_changed", "This policy has changed since the suggestion was made.")
 NOT_ALLOWED = ("not_allowed", "Only the policy's owner or an approver can hide a suggestion.")
+#: Why an open card's change cannot be drafted right now (`blocked` on the card).
+DRAFT_IN_THE_WAY = "The latest draft of this policy already changes this. Activate or discard that draft first."
+NOT_ACTIVE = "This policy is no longer Active."
 
 
 @dataclass(frozen=True)
@@ -541,12 +544,13 @@ def caller_of(conn, principal, *, editor: bool, approver: bool, mapping: Any = N
 
 
 # A suggestion with its policy's latest form (NULL when the policy row is gone), where the policy
-# stands, and the owner named by its LIVE version (the owner in force: a draft cannot rename its
-# way to a card). One statement, so a read is one consistent picture without a lock.
+# stands (its status, and its latest and live version numbers: a latest that is not the live one
+# is a draft), and the owner named by its LIVE version (the owner in force: a draft cannot rename
+# its way to a card). One statement, so a read is one consistent picture without a lock.
 _CARD_SQL = """
     SELECT s.suggestion_id, s.policy_key, s.status, s.kind, s.proposal, s.stats, s.confident, s.updated_at,
            v.form_state, p.status, p.latest_version, lv.form_state -> 'hidden' -> 'condition',
-           lv.form_state ->> 'owner'
+           lv.form_state ->> 'owner', p.live_version
       FROM proc.bp_agent_policy_suggestion s
       LEFT JOIN proc.bp_agent_policy p ON p.policy_key = s.policy_key
       LEFT JOIN proc.bp_agent_policy_version v ON v.policy_key = p.policy_key AND v.version = p.latest_version
@@ -570,12 +574,33 @@ def _card_row(r) -> Dict[str, Any]:
     return {"suggestion_id": r[0], "policy_key": r[1], "status": r[2], "kind": r[3], "proposal": _json(r[4]),
             "stats": _json(r[5]), "confident": r[6], "updated_at": r[7],
             "form": form if isinstance(form, dict) else None, "policy_status": r[9], "latest_version": r[10],
-            "live_condition": _json(r[11]), "owner": r[12]}
+            "live_condition": _json(r[11]), "owner": r[12], "live_version": r[13]}
 
 
 def _owner(row: Dict[str, Any]) -> str:
     """The owner in force: the one the policy's live version names ("" when it is not live)."""
     return str(row.get("owner") or "").strip()
+
+
+def _blocked(row: Dict[str, Any], proposal: Dict[str, Any]) -> Optional[str]:
+    """Why the change of an OPEN card cannot be drafted right now, in words for the person, or
+    None. Judged as `draft` judges it, from what the card's own row already holds (no read here):
+    the policy is no longer live; or its latest version is a draft whose condition no longer has
+    the state the change starts from (one that cannot be read included: `draft` refuses that too).
+    A row read without its policy row (only a test's injected suggestion) says nothing."""
+    status = row.get("policy_status")
+    if status is None:
+        return None
+    if status != "live":
+        return NOT_ACTIVE
+    latest, live = row.get("latest_version"), row.get("live_version")
+    if latest is None or live is None or latest == live:
+        return None
+    try:
+        starts_there = learning_patterns.targets(proposal, row["form"]["hidden"]["condition"])
+    except Exception:  # noqa: BLE001 - a draft that cannot be read is a draft in the way
+        starts_there = False
+    return None if starts_there else DRAFT_IN_THE_WAY
 
 
 def card(row: Dict[str, Any], caller: Optional[Caller] = None) -> Dict[str, Any]:
@@ -586,7 +611,10 @@ def card(row: Dict[str, Any], caller: Optional[Caller] = None) -> Dict[str, Any]
 
     `caller` is who is looking: `mine` says they are linked to the policy's owner, `canAct` that
     they may hide the card now (`Caller.may_hide`, on an open card). Both are false when nobody
-    says who is looking."""
+    says who is looking.
+
+    `blocked` is there only when an open card's change cannot be drafted right now (`_blocked`):
+    the sentence to show, with `canDraft` false, so nobody has to click to find out."""
     proposal = row.get("proposal") if isinstance(row.get("proposal"), dict) else {}
     stats = row.get("stats") if isinstance(row.get("stats"), dict) else {}
     form = row.get("form")
@@ -606,13 +634,15 @@ def card(row: Dict[str, Any], caller: Optional[Caller] = None) -> Dict[str, Any]
     when = row.get("updated_at")
     confident = bool(row.get("confident"))
     owner = _owner(row)
+    blocked = _blocked(row, proposal) if row["status"] == "open" else None
     return {"id": row["suggestion_id"], "policyKey": row["policy_key"],
             "policyName": (form.get("name") or "") if isinstance(form, dict) else "",
             "status": row["status"], "kind": row["kind"], "change": change or "", "evidence": evidence or "",
             "stats": {k: stats.get(k) for k in _CARD_STATS},
             # "suggestion confidence": never the same name as stage 1's extraction confidence
             "suggestionConfidence": "High" if confident else "Not enough yet",
-            "canDraft": confident and row["status"] == "open",
+            "canDraft": confident and row["status"] == "open" and blocked is None,
+            **({"blocked": blocked} if blocked else {}),
             "ownerName": owner, "mine": caller is not None and caller.owns(owner),
             "canAct": caller is not None and row["status"] == "open" and caller.may_hide(owner),
             "updatedAt": when.astimezone(timezone.utc).isoformat() if isinstance(when, datetime) else None}
