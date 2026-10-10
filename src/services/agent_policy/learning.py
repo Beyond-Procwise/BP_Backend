@@ -18,7 +18,8 @@ What a row's status means, and what moves it:
               either version still holds it, the scan never touches the row. Once neither does (the
               draft was saved back, or replaced) and the evidence still supports the change, the
               scan reopens it: nobody dismissed it, so it must not be silenced for good.
-  superseded  the policy's condition no longer has the state the change starts from.
+  superseded  the policy's condition no longer has the state the change starts from, or the live
+              form now marks the change's input sensitive (its value must not set a figure on a card).
 
 Locking. Every writer that works on ONE policy (the scan's per-policy step, act, note_save) first
 takes all of that policy's suggestion rows `ORDER BY suggestion_id FOR UPDATE` (_LOCK_SQL), so for
@@ -102,8 +103,12 @@ _DECIDED_SQL = """
      LIMIT %s
 """
 
+# Three reasons a live policy is left out, each on its own: it does not ask for approval, its
+# business area is "never suggest" NOW, or its compiled document does not say it is eligible.
+# `eligible` is compared as text: a stored value that is not a boolean then simply does not match,
+# where a cast would fail the statement and stop the scan for every policy.
 _TARGETS_SQL = """
-    SELECT p.policy_key, p.live_version, v.form_state, v.compiled,
+    SELECT p.policy_key, p.live_version, v.form_state,
            lv.form_state -> 'hidden' -> 'condition' AS latest_condition
       FROM proc.bp_agent_policy p
       JOIN proc.bp_agent_policy_version v ON v.policy_key = p.policy_key AND v.version = p.live_version
@@ -111,7 +116,7 @@ _TARGETS_SQL = """
       LEFT JOIN proc.bp_business_area a ON a.area_name = p.area_name
      WHERE p.status = 'live' AND v.form_state ->> 'outcome' = 'approve'
        AND COALESCE(a.never_suggest, FALSE) = FALSE
-       AND COALESCE((v.compiled -> 'learning' ->> 'eligible')::boolean, FALSE)
+       AND v.compiled -> 'learning' ->> 'eligible' = 'true'
 """
 _SAME_CONDITION_SQL = """
     SELECT version FROM proc.bp_agent_policy_version
@@ -203,14 +208,16 @@ def _targets(cur) -> Tuple[List[Target], List[str]]:
     cur.execute(_TARGETS_SQL)
     out: List[Target] = []
     unread: List[str] = []
-    for key, live_version, form, _compiled, latest_condition in cur.fetchall():
+    for key, live_version, form, latest_condition in cur.fetchall():
         try:
             form = _json(form)
             condition = form["hidden"]["condition"]
             cur.execute(_SAME_CONDITION_SQL, (key, json.dumps(condition)))
             versions = [r[0] for r in cur.fetchall()] or [live_version]
-        except Exception:  # noqa: BLE001 - one policy must not hide the others
-            logger.exception("learning: %s could not be read; it is skipped this time", key)
+        except Exception as exc:  # noqa: BLE001 - one policy must not hide the others
+            # one line, no stack trace: it is said again every hour until the policy is put right
+            logger.warning("learning: %s could not be read (%s: %s); it is skipped this time",
+                           key, type(exc).__name__, exc)
             unread.append(key)
             continue
         out.append(Target(key=key, live_version=live_version, form=form, versions=versions,
@@ -269,6 +276,13 @@ def _fresh(cur, target: Target) -> Optional[Target]:
     return replace(target, latest_condition=(_UNREADABLE if latest is None else latest) if has_latest else None)
 
 
+def _sensitive_fields(form: Dict[str, Any]) -> set:
+    """The fields the policy's live form marks sensitive. Enforcement masks such a value in the
+    log from the version that marks it; firings recorded BEFORE that still hold it in the clear."""
+    inputs = (form.get("hidden") or {}).get("inputs") or []
+    return {i.get("field") for i in inputs if isinstance(i, dict) and i.get("sensitive") and i.get("field")}
+
+
 def _wait(cfg: Dict[str, Any], status: str) -> float:
     """How many more decisions bring a hidden card back."""
     waits = {"not_yet": learning_stats._num(cfg, "not_yet_more"), "dismissed": learning_stats._num(cfg, "dismiss_more")}
@@ -292,13 +306,21 @@ def _store(cur, target: Target, locked: List[tuple], proposals: List[Dict[str, A
     `evidence` included); the `stats` column is the evidence for that change as of this scan.
     A stored row that cannot be read is logged, counted in `unreadable` and left exactly as it
     is; the policy's other rows are still processed.
+
+    A value marked sensitive never sets a figure on a card: a proposal on a field the live form
+    marks sensitive is not stored, and a card already shown or hidden on that field is superseded
+    (older firings, recorded before the input was marked, hold the value unmasked and could
+    otherwise put it in the "to" figure everyone who can read the queue sees).
     """
     counts = {k: 0 for k in COUNTERS}
     condition = target.form["hidden"]["condition"]
+    sensitive = _sensitive_fields(target.form)
     existing = {r[1]: r for r in locked}
     proposed = set()
     told: List[str] = []
     for p in proposals:
+        if p["field"] in sensitive:
+            continue
         change_key, n = p["changeKey"], p["stats"]["decisions"]
         proposed.add(change_key)
         row = existing.get(change_key)
@@ -333,7 +355,8 @@ def _store(cur, target: Target, locked: List[tuple], proposals: List[Dict[str, A
         proposal = _json(proposal)
         group: List[Decided] = []
         try:
-            still = isinstance(proposal, dict) and learning_patterns.targets(proposal, condition)
+            still = (isinstance(proposal, dict) and proposal.get("field") not in sensitive
+                     and learning_patterns.targets(proposal, condition))
             if still and status == "open":
                 group = learning_patterns.group_for(proposal, decided)
         except Exception as exc:  # noqa: BLE001 - one unreadable row must not stop the policy's others
@@ -342,7 +365,8 @@ def _store(cur, target: Target, locked: List[tuple], proposals: List[Dict[str, A
             counts["unreadable"] += 1
             continue
         if not still:
-            cur.execute(_SUPERSEDE_SQL, (now, suggestion_id))        # the condition has moved on
+            cur.execute(_SUPERSEDE_SQL, (now, suggestion_id))        # the condition has moved on, or
+                                                                     # its input is now sensitive
             counts["superseded"] += 1
         elif status == "open":                                       # "Not enough yet"
             # outside the guard: the arithmetic does not depend on the stored row, so a failure
@@ -434,7 +458,7 @@ class Refused(Exception):
 VERBS = {"not_yet": "not_yet", "dismiss": "dismissed"}
 #: The most cards one read of the queue returns (newest first).
 MAX_CARDS = 500
-_CARD_STATS = ("decisions", "approved", "approvers", "days", "medianSeconds", "wilsonLower")
+_CARD_STATS = ("decisions", "approved", "approvers", "days", "medianSeconds", "wilsonLower", "reversed")
 _NOT_FOUND = ("not_found", "No such suggestion.")
 _NOT_OPEN = ("not_open", "This suggestion is no longer open.")
 _NOT_CONFIDENT = ("not_confident", "There is not enough evidence yet.")
@@ -487,6 +511,11 @@ def card(row: Dict[str, Any]) -> Dict[str, Any]:
         except Exception as exc:  # noqa: BLE001 - one unreadable row must not empty the queue
             logger.warning("learning: the wording of suggestion %s could not be built (%s: %s); "
                            "the wording stored with it is shown", row.get("suggestion_id"), type(exc).__name__, exc)
+    # A reversal is what weakens a card whose approvals still read as full support: say so.
+    undone = stats.get("reversed")
+    if evidence and isinstance(undone, int) and not isinstance(undone, bool) and undone > 0:
+        evidence += (" 1 of them was later marked as reversed." if undone == 1
+                     else f" {undone} of them were later marked as reversed.")
     when = row.get("updated_at")
     confident = bool(row.get("confident"))
     return {"id": row["suggestion_id"], "policyKey": row["policy_key"],
