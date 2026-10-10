@@ -13,6 +13,7 @@ from __future__ import annotations
 import hmac
 import json
 import logging
+import math
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -199,9 +200,30 @@ def learning_settings(p: Principal = Depends(gateway_principal)):
         return _learning_settings_view(policy_settings.learning_of(policy_settings.load_settings(conn)))
 
 
+_AUDIT_TEXT = 100
+
+
+def _audit_scalar(value: Any) -> Any:
+    """What an audit record keeps of a value somebody SENT, before it has been judged: a finite
+    number or a short string as it is; anything else (NaN, Infinity, a whole number no float can
+    hold, null, a list, an object, long text) as its repr, cut to 100 characters. The audit column
+    is jsonb, which refuses NaN and Infinity: recording the raw value would fail the audit write,
+    and the request with it, before the body could be answered as the 422 it is."""
+    if isinstance(value, str) and len(value) <= _AUDIT_TEXT:
+        return value
+    if isinstance(value, (int, float)):
+        try:
+            if math.isfinite(value):
+                return value
+        except OverflowError:       # a whole number too large for a float
+            pass
+    return repr(value)[:_AUDIT_TEXT]
+
+
 @router.put("/settings/learning")
 def update_learning_settings(body: Dict[str, Any] = Body(...), p: Principal = Depends(gateway_principal)):
-    requested = {k: body.get(k) for k in policy_settings.LEARNING_KEYS}
+    # recorded before the body is judged, so only what the audit column can hold (`_audit_scalar`)
+    requested = {k: _audit_scalar(body.get(k)) for k in policy_settings.LEARNING_KEYS}
     _require(p, "Admin", "agent_policy.admin", {"settings": "learning", "requested": requested})
 
     def _audit(status: str, summary: str, **details):

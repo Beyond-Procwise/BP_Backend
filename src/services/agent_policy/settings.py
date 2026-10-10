@@ -85,7 +85,11 @@ def _in_range(key: str, value: Any) -> bool:
         return False
     if not isinstance(value, int) and (whole or not isinstance(value, float)):
         return False
-    return math.isfinite(value) and low <= value <= high
+    # A whole number is compared as it is: one too large for a float (1 followed by 400 zeros) is
+    # simply out of range, where math.isfinite would raise. Only a float can be NaN or infinite.
+    if isinstance(value, float) and not math.isfinite(value):
+        return False
+    return low <= value <= high
 
 
 def learning_problems(body: Any) -> List[Dict[str, str]]:
