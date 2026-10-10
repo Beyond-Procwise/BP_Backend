@@ -20,7 +20,8 @@ from tests.agent_policy.test_learning_settings import DEFAULTS, GOOD, URL, _hdr
 pytestmark = pytest.mark.skipif(os.getenv("PROCWISE_TEST_LIVE_DB") != "1", reason="live DB required")
 
 REAL_KEY = "agent_policy_settings"
-_ROW_SQL = "SELECT config_value::text, last_modified_by, last_modified_date FROM proc.bp_admin_config WHERE config_key = %s"
+_ROW_SQL = ("SELECT config_value::text, last_modified_by, last_modified_date FROM proc.bp_admin_config "
+            "WHERE config_key = %s")
 
 
 @pytest.fixture

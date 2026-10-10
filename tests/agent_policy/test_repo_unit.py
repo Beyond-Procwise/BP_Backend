@@ -84,12 +84,25 @@ def _page(monkeypatch, for_policy):
 
 
 def test_the_policy_page_carries_what_learning_returns(monkeypatch):
-    assert _page(monkeypatch, lambda cur, key: [{"id": 7, "policyKey": key}])["suggestions"] == [
+    assert _page(monkeypatch, lambda cur, key, caller: [{"id": 7, "policyKey": key}])["suggestions"] == [
         {"id": 7, "policyKey": "OPS-0042"}]
 
 
+def test_the_policy_page_reads_its_cards_as_the_caller(monkeypatch):
+    who, seen = object(), []
+    monkeypatch.setattr(repo.conflict_cases, "history_for",
+                        lambda cur, key, latest, status, viewer=None: {"conflicts": [], "pendingAction": None})
+    monkeypatch.setattr(repo.second_review, "status", lambda cur, key, head, versions: {"required": False})
+    monkeypatch.setattr(repo.learning, "for_policy", lambda cur, key, caller: seen.append(caller) or [])
+    for given in ({"caller": who}, {}):
+        conn = _Conn()
+        conn.cur = _PageCur([("live", 2, 2, "Operations")])
+        repo.get_policy(conn, "OPS-0042", **given)
+    assert seen == [who, None], "whose cards, and who may hide them, is the caller's; nobody when none is given"
+
+
 def test_the_policy_page_opens_without_suggestions_when_learning_cannot_be_read(monkeypatch, caplog):
-    def boom(cur, key):
+    def boom(cur, key, caller):
         raise RuntimeError("relation proc.bp_agent_policy_suggestion does not exist")
     got = _page(monkeypatch, boom)
     assert got["suggestions"] == [] and got["policyKey"] == "OPS-0042" and got["status"] == "live"

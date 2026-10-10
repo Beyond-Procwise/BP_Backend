@@ -4,7 +4,8 @@ The only learning module that touches the database. It reads the firing log and 
 proc.bp_agent_policy_suggestion (and a person's reversal records). It never writes a policy version: a
 suggestion is a row for an owner to review, and only a person's save changes a policy.
 
-The hourly scan raises and refreshes the rows; a person hides one (Not yet, Dismiss) or asks for
+The hourly scan raises and refreshes the rows; a person hides one (Not yet, Dismiss: only the
+policy's owner or an Approver, `Caller.may_hide`) or asks for
 it as an unsaved form (Draft this change, which writes nothing); a save that holds the change
 marks it saved. An Approver's record that an approved request was later reversed is the one other
 row this module writes (record_reversal, proc.bp_policy_firing_reversal, append-only).
@@ -38,9 +39,9 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from services.agent_policy import approvals, learning_draft, learning_patterns, learning_stats, settings
 from services.agent_policy.compiler import on_missing_for
@@ -463,12 +464,52 @@ _NOT_FOUND = ("not_found", "No such suggestion.")
 _NOT_OPEN = ("not_open", "This suggestion is no longer open.")
 _NOT_CONFIDENT = ("not_confident", "There is not enough evidence yet.")
 _POLICY_CHANGED = ("policy_changed", "This policy has changed since the suggestion was made.")
+NOT_ALLOWED = ("not_allowed", "Only the policy's owner or an approver can hide a suggestion.")
 
-# A suggestion with its policy's latest form (NULL when the policy row is gone) and where the
-# policy stands. One statement, so a read is one consistent picture without a lock.
+
+@dataclass(frozen=True)
+class Caller:
+    """Who is reading the queue or acting on a card, as far as learning needs to know.
+    `names`: the decider names the person is linked to in the decider map. `editor`: has the role
+    that edits drafts (Buyer) or higher. `approver`: has the Approver role or higher. `known`
+    False: the decider map could not be read, so `names` is empty and nothing can be called theirs."""
+    names: FrozenSet[str] = field(default_factory=frozenset)
+    editor: bool = False
+    approver: bool = False
+    known: bool = True
+
+    def owns(self, owner: str) -> bool:
+        """Is the person linked to this owner name? A blank owner is nobody's."""
+        return bool(owner) and owner in self.names
+
+    def may_hide(self, owner: str) -> bool:
+        """Not yet / Dismiss: the role that edits drafts, AND the policy's owner or an Approver."""
+        return self.editor and (self.approver or self.owns(owner))
+
+
+def caller_of(conn, principal, *, editor: bool, approver: bool, mapping: Any = None) -> Caller:
+    """The person as learning sees them: their roles (worked out by the endpoint) and the decider
+    names they are linked to, from `mapping` when the endpoint has already read the decider map,
+    else read here. Never raises: an unreadable decider map is `known` False."""
+    from services.agent_policy import approval_views, deciders   # lazily: approval_views reaches the gate
+
+    try:
+        names = frozenset(approval_views.caller_names(
+            principal, deciders.load_map(conn) if mapping is None else mapping))
+    except Exception as exc:  # noqa: BLE001 - the queue is still shown; nothing is called "mine"
+        logger.warning("learning: the decider map could not be read (%s: %s); no card is shown as the caller's",
+                       type(exc).__name__, exc)
+        return Caller(editor=editor, approver=approver, known=False)
+    return Caller(names=names, editor=editor, approver=approver)
+
+
+# A suggestion with its policy's latest form (NULL when the policy row is gone), where the policy
+# stands, and the owner named by its LIVE version (the owner in force: a draft cannot rename its
+# way to a card). One statement, so a read is one consistent picture without a lock.
 _CARD_SQL = """
     SELECT s.suggestion_id, s.policy_key, s.status, s.kind, s.proposal, s.stats, s.confident, s.updated_at,
-           v.form_state, p.status, p.latest_version, lv.form_state -> 'hidden' -> 'condition'
+           v.form_state, p.status, p.latest_version, lv.form_state -> 'hidden' -> 'condition',
+           lv.form_state ->> 'owner'
       FROM proc.bp_agent_policy_suggestion s
       LEFT JOIN proc.bp_agent_policy p ON p.policy_key = s.policy_key
       LEFT JOIN proc.bp_agent_policy_version v ON v.policy_key = p.policy_key AND v.version = p.latest_version
@@ -492,14 +533,23 @@ def _card_row(r) -> Dict[str, Any]:
     return {"suggestion_id": r[0], "policy_key": r[1], "status": r[2], "kind": r[3], "proposal": _json(r[4]),
             "stats": _json(r[5]), "confident": r[6], "updated_at": r[7],
             "form": form if isinstance(form, dict) else None, "policy_status": r[9], "latest_version": r[10],
-            "live_condition": _json(r[11])}
+            "live_condition": _json(r[11]), "owner": r[12]}
 
 
-def card(row: Dict[str, Any]) -> Dict[str, Any]:
+def _owner(row: Dict[str, Any]) -> str:
+    """The owner in force: the one the policy's live version names ("" when it is not live)."""
+    return str(row.get("owner") or "").strip()
+
+
+def card(row: Dict[str, Any], caller: Optional[Caller] = None) -> Dict[str, Any]:
     """What a person is shown. The change and its evidence are worded now, from the policy's form
     and the `stats` column (the evidence as of the latest scan): the sentence stored inside the
     proposal is from when the change was last supported, which on a weak card is out of date.
-    Without the policy's form, or when the wording cannot be built, the stored wording is used."""
+    Without the policy's form, or when the wording cannot be built, the stored wording is used.
+
+    `caller` is who is looking: `mine` says they are linked to the policy's owner, `canAct` that
+    they may hide the card now (`Caller.may_hide`, on an open card). Both are false when nobody
+    says who is looking."""
     proposal = row.get("proposal") if isinstance(row.get("proposal"), dict) else {}
     stats = row.get("stats") if isinstance(row.get("stats"), dict) else {}
     form = row.get("form")
@@ -518,6 +568,7 @@ def card(row: Dict[str, Any]) -> Dict[str, Any]:
                      else f" {undone} of them were later marked as reversed.")
     when = row.get("updated_at")
     confident = bool(row.get("confident"))
+    owner = _owner(row)
     return {"id": row["suggestion_id"], "policyKey": row["policy_key"],
             "policyName": (form.get("name") or "") if isinstance(form, dict) else "",
             "status": row["status"], "kind": row["kind"], "change": change or "", "evidence": evidence or "",
@@ -525,23 +576,26 @@ def card(row: Dict[str, Any]) -> Dict[str, Any]:
             # "suggestion confidence": never the same name as stage 1's extraction confidence
             "suggestionConfidence": "High" if confident else "Not enough yet",
             "canDraft": confident and row["status"] == "open",
+            "ownerName": owner, "mine": caller is not None and caller.owns(owner),
+            "canAct": caller is not None and row["status"] == "open" and caller.may_hide(owner),
             "updatedAt": when.astimezone(timezone.utc).isoformat() if isinstance(when, datetime) else None}
 
 
-def list_cards(conn, *, status: str = "open") -> List[Dict[str, Any]]:
-    """The queue, newest first: the open cards, or (`all`) every suggestion whatever became of it."""
+def list_cards(conn, *, status: str = "open", caller: Optional[Caller] = None) -> List[Dict[str, Any]]:
+    """The queue, newest first: the open cards, or (`all`) every suggestion whatever became of it.
+    Each card says whether it is `caller`'s and whether they may hide it."""
     if status not in ("open", "all"):
         raise ValueError(status)
     where = " WHERE s.status = 'open'" if status == "open" else ""
     with conn.cursor() as cur:
         cur.execute(_CARD_SQL + where + _CARD_ORDER + " LIMIT %s", (MAX_CARDS,))
-        return [card(_card_row(r)) for r in cur.fetchall()]
+        return [card(_card_row(r), caller) for r in cur.fetchall()]
 
 
-def for_policy(cur, key: str) -> List[Dict[str, Any]]:
-    """The open cards of one policy, for its page."""
+def for_policy(cur, key: str, caller: Optional[Caller] = None) -> List[Dict[str, Any]]:
+    """The open cards of one policy, for its page, as `caller` sees them."""
     cur.execute(_CARD_SQL + " WHERE s.policy_key = %s AND s.status = 'open'" + _CARD_ORDER, (key,))
-    return [card(_card_row(r)) for r in cur.fetchall()]
+    return [card(_card_row(r), caller) for r in cur.fetchall()]
 
 
 def _read(cur, suggestion_id: int) -> Dict[str, Any]:
@@ -552,10 +606,15 @@ def _read(cur, suggestion_id: int) -> Dict[str, Any]:
     return _card_row(r)
 
 
-def act(conn, suggestion_id: int, verb: str, *, actor: str, now: datetime) -> Dict[str, Any]:
+def act(conn, suggestion_id: int, verb: str, *, actor: str, now: datetime, caller: Caller) -> Dict[str, Any]:
     """Not yet / Dismiss: hide an open card, recording who, when and on how many decisions. The
     scan brings it back only after that many more, so the count is always written: the decisions
-    in the `stats` column, the evidence as of the latest scan."""
+    in the `stats` column, the evidence as of the latest scan.
+
+    Only the policy's owner (someone linked to the owner its live version names) or an Approver
+    may hide a card, and never anyone below the role that edits drafts: judged here, on the row as
+    it is under the lock, whatever the endpoint checked. Anyone else is Refused `not_allowed`,
+    before they learn whether the card is still open."""
     if verb not in VERBS:
         raise ValueError(verb)
     with approvals._tx(conn):
@@ -567,6 +626,8 @@ def act(conn, suggestion_id: int, verb: str, *, actor: str, now: datetime) -> Di
             cur.execute(_LOCK_SQL, (found[0],))          # the policy's rows, in the scan's order
             cur.fetchall()
             row = _read(cur, suggestion_id)              # read again, now that it cannot change
+            if not caller.may_hide(_owner(row)):
+                raise Refused(*NOT_ALLOWED)
             if row["status"] != "open":
                 raise Refused(*_NOT_OPEN)
             decided = (row["stats"] or {}).get("decisions") if isinstance(row["stats"], dict) else None
@@ -574,7 +635,7 @@ def act(conn, suggestion_id: int, verb: str, *, actor: str, now: datetime) -> Di
                 # a hidden card with no count would stay hidden for ever
                 raise ValueError(f"suggestion {suggestion_id} has no decision count")
             cur.execute(_ACT_SQL, (VERBS[verb], decided, actor, now, now, suggestion_id))
-            return card(_read(cur, suggestion_id))
+            return card(_read(cur, suggestion_id), caller)
 
 
 def draft(conn, suggestion_id: int) -> Dict[str, Any]:

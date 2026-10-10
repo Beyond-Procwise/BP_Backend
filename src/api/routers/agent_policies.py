@@ -639,8 +639,10 @@ def decide_conflict(decision_id: int, body: ConflictDecideBody, p: Principal = D
 
 # ---------------------------------------------------------------- learning suggestions (stage 5)
 # Declared before every /{key} route: "suggestions" is never read as a policy key. Reading the
-# queue is for anyone who may read policies; asking for the draft and hiding a card are for the
-# role that edits drafts (Buyer). Nothing here writes a policy: the draft is an unsaved form.
+# queue is for anyone who may read policies; asking for the draft is for the role that edits
+# drafts (Buyer). Hiding a card (Not yet, Dismiss) has the same floor, and then needs the policy's
+# owner or an Approver: learning.act judges that (stage 5b). Nothing here writes a policy: the
+# draft is an unsaved form.
 
 class SuggestionActBody(BaseModel):
     verb: str = Field(pattern="^(not_yet|dismiss)$")
@@ -649,18 +651,36 @@ class SuggestionActBody(BaseModel):
 _SUGGESTION_ID = Path(ge=1, le=2 ** 63 - 1)
 
 
+def _learning_caller(conn, p: Principal, role: str, mapping: Any = None) -> learning.Caller:
+    """Who is asking, for the queue's `mine` / `canAct` and for the owner-or-Approver rule.
+    `mapping`: the decider map, when the endpoint has already read it."""
+    rank = _RANK.get(role, 0)
+    return learning.caller_of(conn, p, editor=rank >= _RANK["Buyer"], approver=rank >= _RANK["Approver"],
+                              mapping=mapping)
+
+
 def _refused_learning(exc: learning.Refused) -> JSONResponse:
     if exc.code == "not_found":
         raise HTTPException(status_code=404, detail=exc.message)
+    if exc.code == "not_allowed":
+        raise HTTPException(status_code=403, detail=exc.message)
     return JSONResponse(status_code=409, content={"code": exc.code, "message": exc.message})
 
 
 @router.get("/suggestions")
 def list_suggestions(status: str = Query(default="open", pattern="^(open|all)$"),
+                     mine: Optional[str] = Query(default=None, pattern="^1$"),
                      p: Principal = Depends(gateway_principal)):
-    _require(p, "Viewer", "agent_policy.read", {})
+    """`mine=1`: only the cards of policies whose owner the caller is linked to. When the decider
+    map cannot be read nothing can be called theirs: every card is returned (filter or not), with
+    `mine` false, and the answer says `mineUnavailable`."""
+    role = _require(p, "Viewer", "agent_policy.read", {})
     with _conn() as conn:
-        return {"suggestions": learning.list_cards(conn, status=status)}
+        who = _learning_caller(conn, p, role)
+        cards = learning.list_cards(conn, status=status, caller=who)
+    if not who.known:
+        return {"suggestions": cards, "mineUnavailable": True}
+    return {"suggestions": [c for c in cards if c["mine"]] if mine else cards}
 
 
 @router.get("/suggestions/{suggestion_id}/draft")
@@ -676,8 +696,10 @@ def draft_suggestion(suggestion_id: int = _SUGGESTION_ID, p: Principal = Depends
 @router.post("/suggestions/{suggestion_id}/act", status_code=201)
 def act_on_suggestion(body: SuggestionActBody, suggestion_id: int = _SUGGESTION_ID,
                       p: Principal = Depends(gateway_principal)):
-    # audited before (the authorize record) and after (done / refused / error), as decide is
-    _require(p, "Buyer", "agent_policy.suggestion_act", {"suggestion": suggestion_id, "verb": body.verb})
+    # audited before (the authorize record) and after (done / refused / error), as decide is.
+    # Buyer is the floor (the gateway's too); the owner-or-Approver rule is learning.act's, and its
+    # refusal is audited as refused and answered 403.
+    role = _require(p, "Buyer", "agent_policy.suggestion_act", {"suggestion": suggestion_id, "verb": body.verb})
 
     def _audit(status: str, summary: str, **details):
         agent_actions.record_action_or_fail(
@@ -687,7 +709,8 @@ def act_on_suggestion(body: SuggestionActBody, suggestion_id: int = _SUGGESTION_
 
     try:
         with _conn() as conn:
-            out = learning.act(conn, suggestion_id, body.verb, actor=p.subject, now=datetime.now(timezone.utc))
+            out = learning.act(conn, suggestion_id, body.verb, actor=p.subject, now=datetime.now(timezone.utc),
+                               caller=_learning_caller(conn, p, role))
     except learning.Refused as exc:
         _audit("refused", f"{p.subject} could not {body.verb} suggestion {suggestion_id}: {exc.code}", code=exc.code)
         return _refused_learning(exc)
@@ -803,7 +826,10 @@ def get_one(key: str, p: Principal = Depends(gateway_principal)):
     role = _require(p, "Viewer", "agent_policy.read", {"policy": key})
     with _conn() as conn:
         try:
-            got = repo.get_policy(conn, key, viewer=conflict_history.viewer(conn, p, is_admin=role == "Admin"))
+            viewer = conflict_history.viewer(conn, p, is_admin=role == "Admin")
+            # the decider map the viewer was built from serves the cards too (one read)
+            got = repo.get_policy(conn, key, viewer=viewer,
+                                  caller=_learning_caller(conn, p, role, getattr(viewer, "mapping", None)))
         except repo.NotFound:
             raise HTTPException(status_code=404, detail="no such policy")
     if role != "Admin":
