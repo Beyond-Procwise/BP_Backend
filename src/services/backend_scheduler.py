@@ -575,7 +575,7 @@ class BackendScheduler:
 
             with get_conn() as conn:
                 counts = learning.scan(conn, datetime.now(timezone.utc))
-            if any(counts.get(k) for k in ("raised", "reopened", "weakened", "superseded", "errors")):
+            if any(counts.get(k) for k in ("raised", "reopened", "weakened", "superseded", "errors", "unreadable")):
                 logger.info("agent policy learning scan: %s", counts)
         except Exception:
             logger.exception("agent policy learning scan failed")

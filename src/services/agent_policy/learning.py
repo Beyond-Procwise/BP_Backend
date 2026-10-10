@@ -22,7 +22,10 @@ What a row's status means, and what moves it:
 
 Locking. Every writer that works on ONE policy (the scan's per-policy step, act, note_save) first
 takes all of that policy's suggestion rows `ORDER BY suggestion_id FOR UPDATE` (_LOCK_SQL), so for
-one policy a person's action and the scan run one after the other, never interleaved. The scan's
+one policy a person's action and the scan run one after the other, never interleaved. The scan
+read its policies before it took that lock, so under the lock it reads the policy's live and
+latest conditions again (_FRESH_SQL) and judges "in force" on those: a save that landed in
+between is seen. If the live condition itself moved, the policy waits for the next scan. The scan's
 closing statement (_GONE_SQL) works across policies; it takes its rows in the same suggestion_id
 order before changing them, so it cannot deadlock with the per-policy writers. `draft` takes no
 lock: it is one read statement and writes nothing.
@@ -33,7 +36,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -45,7 +48,9 @@ logger = logging.getLogger(__name__)
 
 #: The most decisions read for one policy in one scan: past it, the newest are the ones read.
 MAX_DECISIONS = 5000
-COUNTERS = ("policies", "raised", "updated", "reopened", "weakened", "superseded", "errors")
+#: `errors`: a policy's scan step failed (or the scan could not start). `unreadable`: one stored
+#: suggestion row could not be read and was skipped; the rest of its policy was still processed.
+COUNTERS = ("policies", "raised", "updated", "reopened", "weakened", "superseded", "errors", "unreadable")
 #: Every company setting the scan reads. Checked once, before anything is judged.
 SETTINGS = ("min_decisions", "min_days", "min_approvers", "wilson_lower", "median_seconds_floor",
             "not_yet_more", "dismiss_more")
@@ -56,7 +61,8 @@ class Target:
     """A live approve policy to look at: its live form, and every live version of it that had the
     identical condition (their firings are evidence for the same condition). `latest_condition`
     is the condition of the policy's latest version (a draft beside the live one, when there is
-    one); None means there is nothing newer to read and the live condition stands for it."""
+    one); None means there is nothing newer to read and the live condition stands for it.
+    Anything else that is not a condition (not a dict) means the latest version cannot be read."""
     key: str
     live_version: int
     form: Dict[str, Any]
@@ -107,6 +113,19 @@ _SAME_CONDITION_SQL = """
        AND form_state -> 'hidden' -> 'condition' = %s::jsonb
      ORDER BY version
 """
+
+# The policy as it stands now, read under the lock: its live condition, whether it has a latest
+# version, and that version's condition. One statement, so the two are one consistent picture.
+_FRESH_SQL = """
+    SELECT v.form_state -> 'hidden' -> 'condition', lv.version IS NOT NULL,
+           lv.form_state -> 'hidden' -> 'condition'
+      FROM proc.bp_agent_policy p
+      LEFT JOIN proc.bp_agent_policy_version v ON v.policy_key = p.policy_key AND v.version = p.live_version
+      LEFT JOIN proc.bp_agent_policy_version lv ON lv.policy_key = p.policy_key AND lv.version = p.latest_version
+     WHERE p.policy_key = %s
+"""
+#: A latest version that exists but holds no condition: it cannot be judged.
+_UNREADABLE = "unreadable"
 
 _LOCK_SQL = """
     SELECT suggestion_id, change_key, status, n_at_action, proposal, confident
@@ -207,10 +226,37 @@ def _latest_condition(target: Target) -> Any:
     return target.form["hidden"]["condition"] if target.latest_condition is None else target.latest_condition
 
 
-def _in_force(proposal: Dict[str, Any], target: Target) -> bool:
-    """Whether a version in force, the live one or the latest, holds the proposal's change."""
-    return any(learning_patterns.applied(proposal, c)
-               for c in (target.form["hidden"]["condition"], _latest_condition(target)))
+def _in_force(proposal: Dict[str, Any], target: Target, told: List[str]) -> bool:
+    """Whether a version in force, the live one or the latest, holds the proposal's change.
+    When that cannot be told (the latest version's condition is not a condition, or cannot be
+    compared) the answer is yes: a saved row is left alone rather than reopened on a guess.
+    Said once per policy (`told` remembers)."""
+    try:
+        latest = _latest_condition(target)
+        if not isinstance(latest, dict):
+            raise TypeError("the latest version's condition is not a condition")
+        return any(learning_patterns.applied(proposal, c) for c in (target.form["hidden"]["condition"], latest))
+    except Exception as exc:  # noqa: BLE001 - one unreadable version must not fail the policy's scan step
+        if not told:
+            told.append(target.key)
+            logger.warning("learning: whether a saved change of %s is in force cannot be told (%s: %s); "
+                           "its saved suggestions are left as they are", target.key, type(exc).__name__, exc)
+        return True
+
+
+def _fresh(cur, target: Target) -> Optional[Target]:
+    """The target with its conditions as they are NOW (call it under the policy's lock), or None
+    when the live condition is no longer the one the target was read with: the versions whose
+    firings are the evidence were chosen for that condition, so nothing is judged this time.
+    A key with no policy row is a target a test injected: it stands as given."""
+    cur.execute(_FRESH_SQL, (target.key,))
+    found = cur.fetchone()
+    if found is None:
+        return target
+    live, has_latest, latest = _json(found[0]), found[1], _json(found[2])
+    if live != target.form["hidden"]["condition"]:
+        return None
+    return replace(target, latest_condition=(_UNREADABLE if latest is None else latest) if has_latest else None)
 
 
 def _wait(cfg: Dict[str, Any], status: str) -> float:
@@ -227,18 +273,21 @@ def _checked_settings(conn) -> Dict[str, Any]:
     return cfg
 
 
-def _store(cur, target: Target, proposals: List[Dict[str, Any]], decided: List[Decided],
+def _store(cur, target: Target, locked: List[tuple], proposals: List[Dict[str, Any]], decided: List[Decided],
            cfg: Dict[str, Any], now: datetime) -> Dict[str, int]:
-    """Bring the policy's suggestion rows in line with this scan's proposals.
+    """Bring the policy's suggestion rows (`locked`: what _LOCK_SQL returned) in line with this
+    scan's proposals.
 
     The stored proposal is the change as it was last supported (its own `stats`, `plain` and
     `evidence` included); the `stats` column is the evidence for that change as of this scan.
+    A stored row that cannot be read is logged, counted in `unreadable` and left exactly as it
+    is; the policy's other rows are still processed.
     """
     counts = {k: 0 for k in COUNTERS}
     condition = target.form["hidden"]["condition"]
-    cur.execute(_LOCK_SQL, (target.key,))
-    existing = {r[1]: r for r in cur.fetchall()}
+    existing = {r[1]: r for r in locked}
     proposed = set()
+    told: List[str] = []
     for p in proposals:
         change_key, n = p["changeKey"], p["stats"]["decisions"]
         proposed.add(change_key)
@@ -250,7 +299,7 @@ def _store(cur, target: Target, proposals: List[Dict[str, Any]], decided: List[D
             counts["raised"] += cur.rowcount
             continue
         suggestion_id, _key, status, n_at_action = row[0], row[1], row[2], row[3]
-        if status == "saved" and _in_force(p, target):
+        if status == "saved" and _in_force(p, target, told):
             continue                                   # saved, and a version in force still holds it
         # A saved row whose change is in neither the live nor the latest version any more (the
         # draft was saved back, or replaced) returns: nobody dismissed it.
@@ -272,11 +321,20 @@ def _store(cur, target: Target, proposals: List[Dict[str, Any]], decided: List[D
         if change_key in proposed or status not in ("open", "not_yet", "dismissed"):
             continue
         proposal = _json(proposal)
-        if not isinstance(proposal, dict) or not learning_patterns.targets(proposal, condition):
+        current = None
+        try:
+            still = isinstance(proposal, dict) and learning_patterns.targets(proposal, condition)
+            if still and status == "open":
+                current = learning_stats.stats(learning_patterns.group_for(proposal, decided))
+        except Exception as exc:  # noqa: BLE001 - one unreadable row must not stop the policy's others
+            logger.warning("learning: suggestion %s of %s could not be read (%s); it is left as it is",
+                           suggestion_id, target.key, type(exc).__name__)
+            counts["unreadable"] += 1
+            continue
+        if not still:
             cur.execute(_SUPERSEDE_SQL, (now, suggestion_id))        # the condition has moved on
             counts["superseded"] += 1
         elif status == "open":                                       # "Not enough yet"
-            current = learning_stats.stats(learning_patterns.group_for(proposal, decided))
             cur.execute(_WEAKEN_SQL, (json.dumps(current), now, suggestion_id))
             counts["weakened"] += 1 if confident else 0              # counted when it turns, not hourly
     return counts
@@ -285,6 +343,14 @@ def _store(cur, target: Target, proposals: List[Dict[str, Any]], decided: List[D
 def _scan_one(conn, target: Target, cfg: Dict[str, Any], now: datetime) -> Dict[str, int]:
     with approvals._tx(conn):
         with conn.cursor() as cur:
+            cur.execute(_LOCK_SQL, (target.key,))          # first: nothing below is judged unlocked
+            locked = cur.fetchall()
+            fresh = _fresh(cur, target)
+            if fresh is None:
+                logger.info("learning: the condition of %s changed while it was being scanned; "
+                            "it is left for the next scan", target.key)
+                return {k: 0 for k in COUNTERS}
+            target = fresh
             condition = target.form["hidden"]["condition"]
             decided = decisions(cur, target.key, target.versions)
             proposals = learning_patterns.propose(condition, decided, cfg)
@@ -292,12 +358,13 @@ def _scan_one(conn, target: Target, cfg: Dict[str, Any], now: datetime) -> Dict[
                 p["plain"] = learning_draft.plain(p, target.form)
                 p["evidence"] = learning_draft.evidence(p, target.form)
                 p["inputName"] = learning_draft._input(target.form, p["field"]).get("name") or p["field"]
-            return _store(cur, target, proposals, decided, cfg, now)
+            return _store(cur, target, locked, proposals, decided, cfg, now)
 
 
 def scan(conn, now: datetime, *, only: Optional[List[Target]] = None) -> Dict[str, int]:
     """The hourly look at every live approve policy. Each policy is its own transaction and its
-    own failure: one that cannot be read is counted in `errors` and the rest still run. A company
+    own failure: one that cannot be read is counted in `errors` and the rest still run (one stored
+    row that cannot be read is counted in `unreadable`, and the rest of its policy still runs). A company
     setting that is not a usable number stops the whole scan with one warning and one error:
     nothing is judged on a guess. Never raises. `only` narrows the scan to the given targets (tests)."""
     counts = {k: 0 for k in COUNTERS}
