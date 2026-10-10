@@ -17,9 +17,13 @@ When a version needs a second review: ALL of
     status (superseded and dismissed included). The row's content is not read.
   * and EITHER
       - what it enforces changes at all: the new form differs from the live form in any of
-        `ENFORCED` (`outcome`, `deciders`, `notify`, `responseTime`, `limit`, and everything
+        `ENFORCED` (`outcome`, `deciders`, `notify`, `responseTime`, `limit`, everything
         under `hidden`: condition, checkpoint, actions, inputs, units, timeWindow,
-        onMissingData and every other key there). The missing-data rule is compared as it is
+        onMissingData and every other key there; the whole of `source`; and
+        `effectiveFrom`). `source.document` is enforced: two policies on the same tool from
+        the same document are tiered (each keeps its approval levels), from different
+        documents they conflict (last level only). `effectiveFrom` is published to the
+        orchestrator as `effective.from`. The missing-data rule is compared as it is
         enforced: for the live form, the one compiled into the live version
         (`compiled.trigger.onMissingData`, what enforcement reads; the form with today's
         settings only when no compiled rule can be read); for the new form, the one a save
@@ -52,9 +56,17 @@ Who may review
   review is refused until an administrator links it. WHO ACTIVATES is not restricted.
 
 Fail closed
-  If the suggestion table, the versions, the business area or the settings cannot be read,
-  activation is refused with `second_review_unavailable` and the policy page shows the review
-  as required. If the decider map cannot be read, no review is recorded.
+  If the suggestion table, the versions or the business area cannot be read, activation is
+  refused with `second_review_unavailable` and the policy page shows the review as required.
+  If the decider map cannot be read, no review is recorded.
+  The company settings are different: `settings.load_settings` never raises, it logs a warning
+  and hands back the ruled defaults. So this module cannot refuse on unreadable settings by
+  itself. What is guaranteed is narrower: inside the save's transaction a settings read the
+  database refuses leaves the transaction unusable, so the activation ends in this refusal
+  (when a review is needed) or in a server error (when the save's next statement fails), and
+  no version goes Active either way. Where there is no transaction (the policy page), and
+  when the stored settings read but cannot be understood, the rule is judged with the
+  defaults.
 
 Cost for everyone else
   A policy with no suggestion row costs ONE statement at activation. One with a suggestion row in
@@ -65,8 +77,15 @@ Known limits (deliberate)
   * A policy that learning has never raised a suggestion on is not covered.
   * Retiring a policy outright, or creating a brand-new one, needs only the Approver role.
   * An Admin can switch the area's setting off (audited with the before and after values).
-  * Wording, owner and dates are not covered (name, situation, messages, owner, effective and
-    review-by dates, examples, source): editing them needs no review.
+  * Wording, owner and the review-by date are not covered (name, situation, the two messages,
+    category, sub-area, owner, review-by date, examples, change note): editing them needs no
+    review.
+  * The company's default response time is applied when a version is compiled and is not
+    compared here: a form that names no response time picks up whatever the default is at its
+    next save, with no review.
+  * One Approver can still weaken a protected policy without editing it: by creating a new
+    policy on the same tool and deciding the resulting conflict in the new one's favour, or by
+    retiring it. Those are stage 4 and stage 1 powers and are outside this module.
   * A policy that is live in an unprotected area is not covered, even as it moves into a
     protected one; a move between two protected areas needs no review.
 """
@@ -104,8 +123,10 @@ UNAVAILABLE = {"field": "secondReview", "code": "second_review_unavailable",
 #: The two keys of a form that may differ between the reviewed version and the activating request.
 NOT_REVIEWED = ("checked", "changeNote")
 #: The keys of a form that say what the policy enforces. A difference in any of them (in
-#: anything at all under `hidden`) is a change that needs the second person.
-ENFORCED = ("outcome", "deciders", "notify", "responseTime", "limit", "hidden")
+#: anything at all under `hidden` or `source`) is a change that needs the second person.
+#: `source.document` decides whether two policies on one tool are tiered or conflicting;
+#: `effectiveFrom` is published to the orchestrator as `effective.from`.
+ENFORCED = ("outcome", "deciders", "notify", "responseTime", "limit", "hidden", "source", "effectiveFrom")
 
 # "Learning has spoken": any row, any status. Its id is kept on the review row.
 _SUGGESTION_SQL = """

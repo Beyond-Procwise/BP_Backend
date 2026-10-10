@@ -94,15 +94,40 @@ def make(conn, monkeypatch):
         return w
 
     yield _make
-    c = conn.cursor()
+    failed = _clean_up(conn, made)
+    assert not failed, f"teardown left test data behind: {failed}"
+
+
+def _retire(conn, key):
+    got = repo.get_policy(conn, key)
+    if got["status"] != "retired":
+        repo.retire(conn, key, base_version=got["latestVersion"], actor="test", change_note="test teardown")
+
+
+def _clean_up(conn, made):
+    """Remove what each made policy left, one step at a time: a step that fails is noted and the
+    rest (of that policy and of every other) still run. Returns what failed, as text."""
+    def delete(sql, value):
+        conn.cursor().execute(sql, (value,))
+
+    failed = []
     for w in made:
-        c.execute("DELETE FROM proc.bp_policy_decider_map WHERE decider_name LIKE %s", (f"TST % {w.tag}",))
+        steps = [("decider map", lambda: delete("DELETE FROM proc.bp_policy_decider_map WHERE decider_name LIKE %s",
+                                                f"TST % {w.tag}"))]
         if w.key:
-            c.execute("DELETE FROM proc.bp_agent_policy_second_review WHERE policy_key = %s", (w.key,))
-            c.execute("DELETE FROM proc.bp_agent_policy_suggestion WHERE policy_key = %s", (w.key,))
-            got = repo.get_policy(conn, w.key)
-            if got["status"] != "retired":
-                repo.retire(conn, w.key, base_version=got["latestVersion"], actor="test", change_note="test teardown")
+            steps += [
+                ("second reviews", lambda: delete("DELETE FROM proc.bp_agent_policy_second_review "
+                                                  "WHERE policy_key = %s", w.key)),
+                ("suggestions", lambda: delete("DELETE FROM proc.bp_agent_policy_suggestion WHERE policy_key = %s",
+                                               w.key)),
+                ("retire", lambda: _retire(conn, w.key)),
+            ]
+        for what, step in steps:
+            try:
+                step()
+            except Exception as exc:  # noqa: BLE001 - one failure must not leave the others' data behind
+                failed.append(f"{w.key or w.tag} {what}: {exc!r}")
+    return failed
 
 
 @pytest.fixture
@@ -442,6 +467,44 @@ def test_route_10_who_decides_how_fast_and_what_is_hidden(conn, fin):
     flagged["hidden"]["inputs"][0]["sensitive"] = not flagged["hidden"]["inputs"][0]["sensitive"]
     _cycle(conn, fin, flagged, "an input's sensitive flag")
     _cycle(conn, fin, _at(conn, fin, limit={"on": True, "text": "TST UK only"}), "limit")
+
+
+def test_route_11_renaming_the_source_document_needs_the_review(conn, fin):
+    """Enforcement reads `source.document`: it decides whether this policy and another on the
+    same tool are tiered (each keeps its approval levels) or conflicting (last level only)."""
+    live = _at(conn, fin)
+    renamed = _at(conn, fin, source={**live["source"], "document": f"TST another document {fin.tag}"})
+    assert {k for k in live if live[k] != renamed[k]} == {"source"}, "nothing else is changed"
+    assert live["source"]["document"] != renamed["source"]["document"]
+    _cycle(conn, fin, renamed, "the source document renamed")
+
+
+def test_the_teardown_carries_on_past_a_step_that_fails(conn):
+    """One policy that cannot be cleaned up must not leave the others' rows behind."""
+    done = []
+
+    class _Cur:
+        def execute(self, sql, params=None):
+            if params == ("TST-broken",) or params == ("TST % broken",):
+                raise RuntimeError("cannot be removed")
+            done.append((sql.split()[2], params[0]))
+
+    fake = SimpleNamespace(cursor=_Cur)
+    made = [SimpleNamespace(tag="broken", key="TST-broken"), SimpleNamespace(tag="never", key=None),
+            SimpleNamespace(tag="fine", key="TST-fine")]
+    retired = []
+    real = globals()["_retire"]
+    globals()["_retire"] = lambda c, key: retired.append(key) if key == "TST-fine" else 1 / 0
+    try:
+        failed = _clean_up(fake, made)
+    finally:
+        globals()["_retire"] = real
+    assert [f.split(":")[0] for f in failed] == ["TST-broken decider map", "TST-broken second reviews",
+                                                 "TST-broken suggestions", "TST-broken retire"]
+    assert done == [("proc.bp_policy_decider_map", "TST % never"), ("proc.bp_policy_decider_map", "TST % fine"),
+                    ("proc.bp_agent_policy_second_review", "TST-fine"),
+                    ("proc.bp_agent_policy_suggestion", "TST-fine")]
+    assert retired == ["TST-fine"]
 
 
 def test_a_stored_suggestion_that_cannot_be_read_changes_nothing(conn, fin):
