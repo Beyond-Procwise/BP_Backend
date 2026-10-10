@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from services import output_safety as osafe
-from services.agent_policy import conflict_cases, contract, learning, readiness
+from services.agent_policy import conflict_cases, contract, learning, readiness, second_review
 from services.agent_policy.compiler import compile_policy
 from services.agent_policy.registry import load_registry
 from services.agent_policy.settings import load_settings
@@ -265,6 +265,11 @@ def save_version(conn, policy_key: str, form: Dict[str, Any], *, base_version: i
                 if contract_problems:
                     problems.append({"field": "registry", "code": "contract", "count": len(set(contract_problems)),
                                      "routeTo": "administrator", "message": CONTRACT_FAILED})
+            # Last, and whatever else is wrong, so the list is complete in one go. Worked out from
+            # the conditions and the stored suggestions, not from anything the browser sent. If it
+            # cannot be checked it answers with a problem (never an empty list), so a failed read
+            # here always ends in the refusal below.
+            problems += second_review.activation_problems(cur, policy_key, row["live_version"], base_version, form)
             if problems:
                 raise NotReady(problems)   # the full list, in one go; nothing written
             _write_version(cur, policy_key, version, "live", form, actor, change_note, document_text)
@@ -352,7 +357,9 @@ def get_policy(conn, policy_key: str, *, viewer=None) -> Dict[str, Any]:
     return {"policyKey": policy_key, "status": head[0], "liveVersion": head[1], "latestVersion": head[2],
             "areaName": head[3], "versions": versions, "conflicts": history["conflicts"],
             "pendingConflictAction": history["pendingAction"],
-            "suggestions": learning.for_policy(cur, policy_key)}
+            "suggestions": learning.for_policy(cur, policy_key),
+            "secondReview": second_review.status(cur, policy_key, {"liveVersion": head[1], "latestVersion": head[2]},
+                                                 versions)}
 
 
 def list_policies(conn) -> List[Dict[str, Any]]:

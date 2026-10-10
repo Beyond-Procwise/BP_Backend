@@ -29,7 +29,7 @@ from services import agent_actions, rbac
 from services.agent_policy import (approval_views, approvals, conditions, conflict_cases, conflict_detect,
                                    conflict_history, conflict_views, contract, documents, learning, live_policies, readiness,
                                    run_runner,
-                                   run_store, sections)
+                                   run_store, second_review, sections)
 from services.agent_policy.compiler import compile_policy
 from services.agent_policy.registry import load_registry
 from services.agent_policy.settings import load_settings
@@ -672,6 +672,48 @@ def record_reversal(body: ReversalBody, firing_id: int = Path(ge=1, le=2 ** 63 -
         _audit("done", f"{p.subject} marked request {firing_id} as reversed", storedOn=out["firingId"])
     except Exception:  # noqa: BLE001
         logger.exception("the reversal of firing %s was recorded but its audit record failed", firing_id)
+    return out
+
+
+# ---------------------------------------------------------------- the second reviewer
+# Decision 11 and ruling Q3 (2026-10-10). The role is checked here; who may NOT review (the person
+# who saved the draft, the policy's owner) is decided in second_review.record. Two path segments
+# ending in a word no other route uses, and declared before the one-segment "/{key}" routes.
+
+class SecondReviewBody(BaseModel):
+    version: int = Field(ge=1, le=2 ** 31 - 1)
+    note: Optional[str] = Field(default=None, max_length=2000)
+
+
+@router.post("/{key}/second-review", status_code=201)
+def record_second_review(key: str, body: SecondReviewBody, p: Principal = Depends(gateway_principal)):
+    # audited before (the authorize record) and after (done / refused / error), as decide is
+    _require(p, "Approver", "agent_policy.second_review", {"policy": key, "version": body.version})
+
+    def _audit(status: str, summary: str, **details):
+        agent_actions.record_action_or_fail(
+            phase="act", action_type="agent_policy.second_review", agent="agent_policy_api", status=status,
+            summary=summary, details={"policy": key, "version": body.version, "principal": p.subject, **details})
+
+    what = f"{key} version {body.version}"
+    try:
+        if not approval_views.KEY_RE.match(key):
+            raise learning.Refused("not_found", second_review.REFUSALS["not_found"])
+        with _conn() as conn:
+            out = second_review.record(conn, key, body.version, principal=p, note=body.note,
+                                       now=datetime.now(timezone.utc))
+    except learning.Refused as exc:
+        _audit("refused", f"{p.subject} could not record a second review of {what}: {exc.code}", code=exc.code)
+        return _refused_learning(exc)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("recording the second review of %s failed", what)
+        _audit("error", f"{p.subject} could not record a second review of {what}: {type(exc).__name__}", code="error")
+        raise HTTPException(status_code=500, detail="That could not be recorded. Please try again.")
+    # The review is committed: a failed audit record must not turn it into an error answer.
+    try:
+        _audit("done", f"{p.subject} recorded a second review of {what}")
+    except Exception:  # noqa: BLE001
+        logger.exception("the second review of %s was recorded but its audit record failed", what)
     return out
 
 
