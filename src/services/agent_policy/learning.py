@@ -12,16 +12,19 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from services.agent_policy import approvals, learning_draft, learning_patterns, learning_stats, settings
 from services.agent_policy.learning_stats import Decided
 
 logger = logging.getLogger(__name__)
 
-#: The most decisions read for one policy in one scan.
+#: The most decisions read for one policy in one scan: past it, the newest are the ones read.
 MAX_DECISIONS = 5000
 COUNTERS = ("policies", "raised", "updated", "reopened", "weakened", "superseded", "errors")
+#: Every company setting the scan reads. Checked once, before anything is judged.
+SETTINGS = ("min_decisions", "min_days", "min_approvers", "wilson_lower", "median_seconds_floor",
+            "not_yet_more", "dismiss_more")
 
 
 @dataclass
@@ -37,8 +40,11 @@ class Target:
 # One row per approval case. A repeated agent call is linked to the same case and one decision
 # settles every linked row, so rows are not decisions: DISTINCT ON the case. A reversal recorded
 # on any row of the case reverses the decision. Timeouts, system deciders, a missing or blank
-# decider and still-paused rows are not people's decisions.
+# decider and still-paused rows are not people's decisions. The newest come first, so past the
+# cap it is the oldest that go unread: a new rejection or reversal is always seen.
 _DECIDED_SQL = """
+    SELECT d.firing_id, d.matched_values, d.result, d.decided_by, d.created_at, d.decided_at, d.reversed
+      FROM (
     SELECT DISTINCT ON (COALESCE(f.decision_id, -f.firing_id))
            f.firing_id, f.matched_values, f.result, f.decided_by, f.created_at, f.decided_at,
            EXISTS (SELECT 1 FROM proc.bp_policy_firing_reversal r
@@ -49,9 +55,11 @@ _DECIDED_SQL = """
      WHERE f.policy_key = %s AND f.policy_version = ANY(%s)
        AND f.outcome = 'approve' AND f.result IN ('approved', 'rejected')
        AND f.decided_at IS NOT NULL AND f.decided_by IS NOT NULL
-       AND f.decided_by NOT LIKE 'system:%%'
+       AND lower(btrim(f.decided_by)) NOT LIKE 'system:%%'
        AND btrim(f.decided_by) <> ''
      ORDER BY COALESCE(f.decision_id, -f.firing_id), f.firing_id
+           ) d
+     ORDER BY d.decided_at DESC, d.firing_id DESC
      LIMIT %s
 """
 
@@ -73,7 +81,7 @@ _SAME_CONDITION_SQL = """
 
 _LOCK_SQL = """
     SELECT suggestion_id, change_key, status, n_at_action, proposal, confident
-      FROM proc.bp_agent_policy_suggestion WHERE policy_key = %s FOR UPDATE
+      FROM proc.bp_agent_policy_suggestion WHERE policy_key = %s ORDER BY suggestion_id FOR UPDATE
 """
 _INSERT_SQL = """
     INSERT INTO proc.bp_agent_policy_suggestion
@@ -116,11 +124,12 @@ def _json(raw: Any) -> Any:
 
 def decisions(cur, key: str, versions: List[int]) -> List[Decided]:
     """What people decided under these versions of the policy, one per approval case."""
-    cur.execute(_DECIDED_SQL, (key, list(versions), MAX_DECISIONS))
+    cur.execute(_DECIDED_SQL, (key, list(versions), MAX_DECISIONS + 1))     # one extra: is there more?
     rows = cur.fetchall()
-    if len(rows) >= MAX_DECISIONS:
-        logger.warning("learning: %s has more than %d decisions; only the first %d are read",
+    if len(rows) > MAX_DECISIONS:
+        logger.warning("learning: %s has more than %d decisions; only the newest %d are read",
                        key, MAX_DECISIONS, MAX_DECISIONS)
+        rows = rows[:MAX_DECISIONS]
     out: List[Decided] = []
     for firing_id, values, result, decided_by, asked_at, decided_at, reversed_ in rows:
         values = _json(values)
@@ -130,18 +139,47 @@ def decisions(cur, key: str, versions: List[int]) -> List[Decided]:
     return out
 
 
-def targets(cur) -> List[Target]:
-    """Every live approve policy learning may suggest on. The area's "never suggest" setting is
-    read here, at scan time, as well as the eligibility compiled when the version was saved."""
+def _targets(cur) -> Tuple[List[Target], List[str]]:
+    """The targets, and the keys of policies that are targets but could not be read."""
     cur.execute(_TARGETS_SQL)
     out: List[Target] = []
+    unread: List[str] = []
     for key, live_version, form, _compiled in cur.fetchall():
-        form = _json(form)
-        condition = ((form or {}).get("hidden") or {}).get("condition") if isinstance(form, dict) else None
-        cur.execute(_SAME_CONDITION_SQL, (key, json.dumps(condition)))
-        versions = [r[0] for r in cur.fetchall()] or [live_version]
+        try:
+            form = _json(form)
+            condition = form["hidden"]["condition"]
+            cur.execute(_SAME_CONDITION_SQL, (key, json.dumps(condition)))
+            versions = [r[0] for r in cur.fetchall()] or [live_version]
+        except Exception:  # noqa: BLE001 - one policy must not hide the others
+            logger.exception("learning: %s could not be read; it is skipped this time", key)
+            unread.append(key)
+            continue
         out.append(Target(key=key, live_version=live_version, form=form, versions=versions))
-    return out
+    return out, unread
+
+
+def targets(cur) -> List[Target]:
+    """Every live approve policy learning may suggest on. The area's "never suggest" setting is
+    read here, at scan time, as well as the eligibility compiled when the version was saved.
+    A policy whose row cannot be read is logged by key and left out; the rest are returned."""
+    return _targets(cur)[0]
+
+
+_HIDDEN = ("not_yet", "dismissed")
+
+
+def _wait(cfg: Dict[str, Any], status: str) -> float:
+    """How many more decisions bring a hidden card back."""
+    waits = {"not_yet": learning_stats._num(cfg, "not_yet_more"), "dismissed": learning_stats._num(cfg, "dismiss_more")}
+    return waits.get(status, max(waits.values()))
+
+
+def _checked_settings(conn) -> Dict[str, Any]:
+    """The learning settings, every one a usable number, or TypeError/ValueError naming the first that is not."""
+    cfg = settings.load_settings(conn)["learning"]
+    for name in SETTINGS:
+        learning_stats._num(cfg, name)
+    return cfg
 
 
 def _store(cur, target: Target, proposals: List[Dict[str, Any]], decided: List[Decided],
@@ -169,12 +207,20 @@ def _store(cur, target: Target, proposals: List[Dict[str, Any]], decided: List[D
         suggestion_id, _key, status, n_at_action = row[0], row[1], row[2], row[3]
         if status == "saved":
             continue                                   # once saved, never suggested again
-        if status in ("not_yet", "dismissed"):
-            more = learning_stats._num(cfg, "not_yet_more" if status == "not_yet" else "dismiss_more")
-            if n < (n_at_action or 0) + more:
+        counter = {"superseded": "raised", "open": "updated"}.get(status, "reopened")
+        # A card a person hid comes back only on that many more decisions. Superseding keeps the
+        # count, so a hidden card whose condition went away and came back is still hidden; which
+        # of the two it was is no longer known, so the longer wait applies.
+        if status in _HIDDEN or (status == "superseded" and n_at_action is not None):
+            if n_at_action is None:
+                logger.warning("learning: suggestion %s is %s with no decision count; it stays hidden",
+                               suggestion_id, status)
                 continue
+            if n < n_at_action + _wait(cfg, status):
+                continue
+            counter = "reopened"
         cur.execute(_OPEN_SQL, args + (suggestion_id,))
-        counts[{"superseded": "raised", "open": "updated"}.get(status, "reopened")] += 1
+        counts[counter] += 1
     for change_key, (suggestion_id, _key, status, _n, proposal, confident) in existing.items():
         if change_key in proposed or status not in ("open", "not_yet", "dismissed"):
             continue
@@ -204,20 +250,28 @@ def _scan_one(conn, target: Target, cfg: Dict[str, Any], now: datetime) -> Dict[
 
 def scan(conn, now: datetime, *, only: Optional[List[Target]] = None) -> Dict[str, int]:
     """The hourly look at every live approve policy. Each policy is its own transaction and its
-    own failure: one that cannot be read is counted in `errors` and the rest still run. Never
-    raises. `only` narrows the scan to the given targets (tests)."""
+    own failure: one that cannot be read is counted in `errors` and the rest still run. A company
+    setting that is not a usable number stops the whole scan with one warning and one error:
+    nothing is judged on a guess. Never raises. `only` narrows the scan to the given targets (tests)."""
     counts = {k: 0 for k in COUNTERS}
     try:
-        cfg = settings.load_settings(conn)["learning"]
+        cfg = _checked_settings(conn)
+    except Exception as exc:  # noqa: BLE001 - a setting that is not a number: no suggestion, never a guess
+        logger.warning("learning scan not run, nothing written: %s", exc)
+        counts["errors"] += 1
+        return counts
+    unread: List[str] = []
+    try:
         if only is None:
             with conn.cursor() as cur:
-                todo = targets(cur)
+                todo, unread = _targets(cur)
         else:
             todo = list(only)
     except Exception:  # noqa: BLE001 - nothing was read, so nothing is judged or superseded
         logger.exception("learning scan could not load its policies")
         counts["errors"] += 1
         return counts
+    counts["errors"] += len(unread)
     for target in todo:
         counts["policies"] += 1
         try:
@@ -230,7 +284,8 @@ def scan(conn, now: datetime, *, only: Optional[List[Target]] = None) -> Dict[st
         try:
             with approvals._tx(conn):
                 with conn.cursor() as cur:
-                    cur.execute(_GONE_SQL, (now, [t.key for t in todo]))
+                    # an unread policy is still a policy: its cards are not closed
+                    cur.execute(_GONE_SQL, (now, [t.key for t in todo] + unread))
                     counts["superseded"] += cur.rowcount
         except Exception:  # noqa: BLE001
             counts["errors"] += 1

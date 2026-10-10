@@ -19,6 +19,7 @@ The base data, used by most tests: 33 approvals, i = 0..32, amounts 510, 520, ..
 """
 import copy
 import json
+import logging
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -56,7 +57,7 @@ def world():
 
 
 def fire(conn, key, amounts, *, result="approved", seconds=60, version=1, decision_ids=None, by=None,
-         first=0, at=None):
+         first=0, at=None, extra=None, asked_at=None):
     """One settled approve firing per amount. Row number p is decision i = at[p] (or first + p):
     asked on slot (7 * i) % 30 of 30 slots over 40 days, decided by person i % 3. Time and decider
     do not follow the amount (see the module docstring)."""
@@ -64,12 +65,13 @@ def fire(conn, key, amounts, *, result="approved", seconds=60, version=1, decisi
     cur = conn.cursor()
     for p, amount in enumerate(amounts):
         i = at[p] if at is not None else first + p
-        asked = START + timedelta(days=40 * ((7 * i) % 30) / 29)
+        asked = asked_at or START + timedelta(days=40 * ((7 * i) % 30) / 29)
+        values = extra[p] if extra else {}
         cur.execute(
             "INSERT INTO proc.bp_policy_firing (policy_key, policy_version, checkpoint, action_name, outcome, "
             "result, matched_values, decision_id, decided_level, decided_by, decided_at, created_at) "
             "VALUES (%s,%s,'tool.call.before','tst','approve',%s,%s,%s,0,%s,%s,%s) RETURNING firing_id",
-            (key, version, result, json.dumps({"tool.name": "refund.issue", "args.amount": amount}),
+            (key, version, result, json.dumps({"tool.name": "refund.issue", "args.amount": amount, **values}),
              decision_ids[p] if decision_ids else None, by or f"person-{i % 3}",
              asked + timedelta(seconds=seconds), asked))
         ids.append(cur.fetchone()[0])
@@ -162,6 +164,8 @@ def test_timeouts_and_system_decisions_are_not_evidence(world):
     fire(conn, t.key, BASE[:30], by="system:precedent")
     fire(conn, t.key, BASE[:30], by="system:group")
     fire(conn, t.key, BASE[:30], by="  ")
+    fire(conn, t.key, BASE[:30], by="System:timeout")
+    fire(conn, t.key, BASE[:30], by=" system:group")
     counts = L.scan(conn, NOW, only=[t])
     assert L.decisions(conn.cursor(), t.key, [1]) == []
     assert row(conn, t.key) == [] and counts["errors"] == 0
@@ -311,9 +315,180 @@ def test_one_broken_policy_does_not_stop_the_others(world):
     assert conn.autocommit is True, "the failed policy's transaction was closed"
 
 
-def test_a_non_numeric_setting_raises_no_suggestion(world, monkeypatch):
+def _learning_log(caplog):
+    return [r for r in caplog.records if r.name == L.logger.name]
+
+
+@pytest.mark.parametrize("key,value", [("min_decisions", "thirty"), ("dismiss_more", None),
+                                       ("wilson_lower", float("nan")), ("min_days", -1), ("min_approvers", True)])
+def test_a_non_numeric_setting_raises_no_suggestion(world, monkeypatch, caplog, key, value):
+    conn, t = world
+    _, b, _c = _siblings(t.key)
+    fire(conn, t.key, BASE)
+    fire(conn, b, BASE)
+    monkeypatch.setattr(S, "load_settings", lambda conn=None: S.merge({"learning": {key: value}}))
+    with caplog.at_level(logging.WARNING, logger=L.logger.name):
+        counts = L.scan(conn, NOW, only=[t, L.Target(key=b, live_version=1, form=t.form, versions=[1])])
+    assert row(conn, t.key) == [] and row(conn, b) == []
+    assert counts == {**dict.fromkeys(L.COUNTERS, 0), "errors": 1}, "one error for the scan, not one per policy"
+    [record] = _learning_log(caplog)
+    assert record.levelno == logging.WARNING and record.exc_info is None and key in record.getMessage()
+
+
+def _setting(monkeypatch, **learning):
+    monkeypatch.setattr(S, "load_settings", lambda conn=None: S.merge({"learning": learning}))
+
+
+def test_a_dismissed_card_does_not_return_when_the_condition_goes_away_and_comes_back(world):
     conn, t = world
     fire(conn, t.key, BASE)
-    monkeypatch.setattr(S, "load_settings", lambda conn=None: S.merge({"learning": {"min_decisions": "thirty"}}))
+    assert L.scan(conn, NOW, only=[t])["raised"] == 1
+    _set_status(conn, t.key, "dismissed", 30)             # dismissed when the card showed 30 decisions
+    # limit 700: 13 decisions above it, nothing proposed; the dismissed card no longer fits -> superseded
+    assert L.scan(conn, NOW, only=[_limit(t, 700)])["superseded"] == 1
+    assert [(r[0], r[4]) for r in row(conn, t.key)] == [("superseded", 30)], "it remembers it was dismissed at 30"
+    # limit back to 500: the same 33 decisions propose 800 on 30 again. 30 < 30 + max(30, 30): no new
+    # evidence since the owner said no, so it must not come back.
     counts = L.scan(conn, NOW, only=[t])
-    assert row(conn, t.key) == [] and counts["errors"] == 1 and counts["raised"] == 0
+    assert (counts["raised"], counts["reopened"], counts["updated"]) == (0, 0, 0)
+    assert [(r[0], r[4]) for r in row(conn, t.key)] == [("superseded", 30)]
+    # 27 more, i = 33..59, 840..1100: 60 in all, bands 510..800 and 810..1100 -> to 1100 on 60 >= 30 + 30
+    fire(conn, t.key, [510 + 10 * i for i in range(33, 60)], first=33)
+    counts = L.scan(conn, NOW, only=[t])
+    assert (counts["reopened"], counts["raised"]) == (1, 0), "a hidden card coming back is a reopen"
+    [(status, confident, proposal, stats, n_at_action)] = row(conn, t.key)
+    assert (status, confident, proposal["to"], stats["decisions"], n_at_action) == ("open", True, 1100, 60, None)
+
+
+def test_the_longer_of_the_two_waits_applies_once_superseded(world, monkeypatch):
+    conn, t = world
+    fire(conn, t.key, BASE)
+    L.scan(conn, NOW, only=[t])
+    _set_status(conn, t.key, "superseded", 30)            # was not_yet or dismissed: no longer known
+    # 27 more: 60 decisions, to 1100 on 60. not_yet_more 30 would let it back (60 >= 60);
+    # dismiss_more 31 does not (60 < 61). The longer wait decides.
+    fire(conn, t.key, [510 + 10 * i for i in range(33, 60)], first=33)
+    _setting(monkeypatch, dismiss_more=31)
+    assert L.scan(conn, NOW, only=[t])["reopened"] == 0 and row(conn, t.key)[0][0] == "superseded"
+    _setting(monkeypatch, dismiss_more=30)
+    assert L.scan(conn, NOW, only=[t])["reopened"] == 1 and row(conn, t.key)[0][0] == "open"
+
+
+@pytest.mark.parametrize("status", ["not_yet", "dismissed"])
+def test_a_hidden_card_with_no_decision_count_stays_hidden_and_says_so(world, caplog, status):
+    conn, t = world
+    fire(conn, t.key, BASE)
+    L.scan(conn, NOW, only=[t])
+    _set_status(conn, t.key, status, None)
+    cur = conn.cursor()
+    cur.execute("SELECT suggestion_id FROM proc.bp_agent_policy_suggestion WHERE policy_key = %s", (t.key,))
+    suggestion_id = cur.fetchone()[0]
+    # 40 more: 73 decisions, to 1100 on 60. Counting the missing number as 0 would reopen it (60 >= 30).
+    fire(conn, t.key, [510 + 10 * i for i in range(33, 73)], first=33)
+    with caplog.at_level(logging.WARNING, logger=L.logger.name):
+        counts = L.scan(conn, NOW, only=[t])
+    assert (counts["reopened"], counts["updated"], counts["errors"]) == (0, 0, 0)
+    assert [(r[0], r[2]["to"]) for r in row(conn, t.key)] == [(status, 800)]
+    [record] = _learning_log(caplog)
+    assert record.levelno == logging.WARNING and str(suggestion_id) in record.getMessage()
+
+
+def test_past_the_cap_the_newest_decisions_are_the_ones_read(world, monkeypatch, caplog):
+    conn, t = world
+    monkeypatch.setattr(L, "MAX_DECISIONS", 30)
+    # Written FIRST (lowest firing id) but decided LAST: a rejection at 600, asked yesterday.
+    [rejected] = fire(conn, t.key, [600], result="rejected", asked_at=NOW - timedelta(days=1))
+    ids = fire(conn, t.key, BASE[:29])                    # i 0..28, 510..790: 30 decisions in all
+    with caplog.at_level(logging.WARNING, logger=L.logger.name):
+        assert len(L.decisions(conn.cursor(), t.key, [1])) == 30
+    assert _learning_log(caplog) == [], "exactly at the cap is not past it"
+    fire(conn, t.key, [800], first=29)                    # i 29: 31 decisions, one more than the cap
+    with caplog.at_level(logging.WARNING, logger=L.logger.name):
+        read = [d.firing_id for d in L.decisions(conn.cursor(), t.key, [1])]
+    # The oldest decision is i 0 (slot 0, 45 days ago); it is the one left out, not the rejection.
+    assert len(read) == 30 and rejected in read and ids[0] not in read
+    assert read[0] == rejected, "newest first"
+    [record] = _learning_log(caplog)
+    assert t.key in record.getMessage()
+    # Read: 520..800 approved (29) and the rejection at 600 = one band of 30 with 29 approved
+    # (Wilson 0.8333 < 0.85) -> nothing. Had the rejection been cut off: 510..800, 30 of 30 -> 800.
+    counts = L.scan(conn, NOW, only=[t])
+    assert row(conn, t.key) == [] and counts["errors"] == 0
+
+
+def test_a_weak_card_recovers_when_the_evidence_does(world, monkeypatch):
+    conn, t = world
+    fire(conn, t.key, BASE)
+    assert L.scan(conn, NOW, only=[t])["raised"] == 1
+    _setting(monkeypatch, min_approvers=4)                # the company now wants 4 people; there are 3
+    assert L.scan(conn, NOW, only=[t])["weakened"] == 1 and row(conn, t.key)[0][1] is False
+    _setting(monkeypatch, min_approvers=3)
+    counts = L.scan(conn, NOW, only=[t])
+    assert (counts["updated"], counts["raised"], counts["reopened"], counts["weakened"]) == (1, 0, 0, 0)
+    [(status, confident, proposal, stats, _n)] = row(conn, t.key)
+    assert (status, confident, proposal["to"], stats["decisions"]) == ("open", True, 800, 30)
+
+
+def test_a_value_people_always_approve_is_suggested_for_removal_from_a_list(world):
+    conn, t = world
+    form = copy.deepcopy(t.form)
+    form["hidden"]["condition"]["all"].append({"field": "customer.country", "op": "in", "value": ["FR", "DE"]})
+    form["hidden"]["inputs"].append({"name": "Customer country", "field": "customer.country", "type": "string"})
+    t = L.Target(key=t.key, live_version=1, form=form, versions=[1])
+    # The base 33: i 0..29 (510..800) are FR, i 30..32 are DE. FR = 30 consecutive i, all approved,
+    # 40 days, 3 people: passes. DE = 3 decisions: no. The amounts also give the threshold card (800 on 30).
+    fire(conn, t.key, BASE, extra=[{"customer.country": "FR" if i < 30 else "DE"} for i in range(33)])
+    counts = L.scan(conn, NOW, only=[t])
+    assert (counts["raised"], counts["errors"]) == (2, 0)
+    cards = by_change(conn, t.key)
+    assert set(cards) == {CHANGE_500, "list:customer.country:FR"}
+    card = cards["list:customer.country:FR"]
+    assert (card["status"], card["confident"], card["proposal"]["kind"], card["proposal"]["remove"]) == \
+        ("open", True, "list", "FR")
+    assert card["proposal"]["plain"] == "Stop asking for approval when Customer country is FR?"
+    assert (card["stats"]["decisions"], card["stats"]["approved"]) == (30, 30)
+    cur = conn.cursor()
+    cur.execute("SELECT kind FROM proc.bp_agent_policy_suggestion WHERE policy_key = %s AND change_key = %s",
+                (t.key, "list:customer.country:FR"))
+    assert cur.fetchone()[0] == "list"
+    # a rejection for FR: the group is 30 of 31 (Wilson 0.8382 < 0.85) -> the list card turns weak
+    fire(conn, t.key, [505], result="rejected", first=33, extra=[{"customer.country": "FR"}])
+    L.scan(conn, NOW, only=[t])
+    weak = by_change(conn, t.key)["list:customer.country:FR"]
+    assert (weak["confident"], weak["stats"]["decisions"], weak["stats"]["approved"]) == (False, 31, 30)
+
+
+def test_cards_of_policies_no_longer_scanned_are_closed_and_no_others():
+    """The one statement the unscoped scan ends with, run by hand in a transaction that is ROLLED BACK.
+    Its key list is every key in the table plus nothing of ours, so the only rows it can match are the
+    throwaway ones inserted in the same transaction. Nothing in the shared table changes."""
+    gone, kept = f"ZZT-{uuid.uuid4().int % 10 ** 9 + 10 ** 9}", f"ZZT-{uuid.uuid4().int % 10 ** 9 + 2 * 10 ** 9}"
+    test_key = f"TST-{uuid.uuid4().hex[:6]}a"
+    with get_conn() as conn:
+        conn.autocommit = False
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT DISTINCT policy_key FROM proc.bp_agent_policy_suggestion")
+            everyone = [r[0] for r in cur.fetchall()]
+            rows = [(gone, "a", "open"), (gone, "b", "not_yet"), (gone, "c", "dismissed"), (gone, "d", "saved"),
+                    (kept, "a", "open"), (test_key, "a", "open")]
+            for key, change, status in rows:
+                cur.execute("INSERT INTO proc.bp_agent_policy_suggestion (policy_key, change_key, policy_version, "
+                            "kind, proposal, stats, confident, status) VALUES (%s,%s,1,'threshold','{}','{}',true,%s)",
+                            (key, change, status))
+            cur.execute(L._GONE_SQL, (NOW, everyone + [kept]))
+            assert cur.rowcount == 3, "only the throwaway policy's three live cards"
+            cur.execute("SELECT policy_key, change_key, status, updated_at FROM proc.bp_agent_policy_suggestion "
+                        "WHERE policy_key = ANY(%s)", ([gone, kept, test_key],))
+            after = {(r[0], r[1]): (r[2], r[3]) for r in cur.fetchall()}
+            assert {k: v[0] for k, v in after.items()} == {
+                (gone, "a"): "superseded", (gone, "b"): "superseded", (gone, "c"): "superseded",
+                (gone, "d"): "saved", (kept, "a"): "open", (test_key, "a"): "open"}
+            assert after[(gone, "a")][1] == NOW
+        finally:
+            conn.rollback()
+            conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("SELECT count(*) FROM proc.bp_agent_policy_suggestion WHERE policy_key = ANY(%s)",
+                    ([gone, kept, test_key],))
+        assert cur.fetchone()[0] == 0, "rolled back"
