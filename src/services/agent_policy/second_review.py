@@ -101,7 +101,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from services.agent_policy import approval_views, approvals, deciders
+from services.agent_policy import approval_views, approvals, deciders, people
 from services.agent_policy.compiler import on_missing_for
 from services.agent_policy.learning import Refused
 from services.agent_policy.settings import load_settings
@@ -364,7 +364,7 @@ _NONE = {"required": False, "version": None, "reviewedBy": None, "reviewedByName
 def status(cur, policy_key: str, head: Dict[str, Any], versions: List[Dict[str, Any]]) -> Dict[str, Any]:
     """For the policy page: whether the latest version, when it is a draft of a policy that is
     or was live, needs a second review, and who gave it (`reviewedBy` the sign-in id,
-    `reviewedByName` the email recorded with the review, else that id). The same rule as
+    `reviewedByName` the email recorded with the review, else the one remembered for the id, else that id). The same rule as
     activation (`needed`), so the page and the activation never disagree. While a required review
     is not yet recorded the answer also carries `whoMayReview`, the one sentence that says who may. `head` holds `liveVersion` and
     `latestVersion`; `versions` are the policy's versions as the page shows them. Never raises:
@@ -381,9 +381,11 @@ def status(cur, policy_key: str, head: Dict[str, Any], versions: List[Dict[str, 
         cur.execute(_REVIEWED_SQL, (policy_key, latest))
         row = cur.fetchone()
         by = row[1] if row else None
-        # the reviewer by name: the email recorded with the review, else the id (never without the id)
+        # the reviewer by name: the email recorded with the review, else the one remembered for the
+        # id (looked up only then), else the id (never without the id)
+        email = (str(row[3] or "").strip() or people.names(cur, [by]).get(by)) if by else None
         return {"required": True, "version": latest, "reviewedBy": by,
-                "reviewedByName": approval_views.shown_name(by, row[3]) if row else None,
+                "reviewedByName": approval_views.shown_name(by, email) if row else None,
                 "reviewedAt": _iso(row[2]) if row else None,
                 **({} if by else {"whoMayReview": WHO_MAY_REVIEW})}
     except Exception:  # noqa: BLE001 - the page must not fail, and must not say "no review needed" on a guess

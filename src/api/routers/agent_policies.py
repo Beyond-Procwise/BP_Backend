@@ -27,8 +27,8 @@ from api.auth import Principal
 from repositories import agent_policy_repo as repo
 from services import agent_actions, rbac
 from services.agent_policy import (approval_views, approvals, conditions, conflict_cases, conflict_detect,
-                                   conflict_history, conflict_views, contract, documents, learning, live_policies, readiness,
-                                   run_runner,
+                                   conflict_history, conflict_views, contract, documents, learning, live_policies, people,
+                                   readiness, run_runner,
                                    run_store, second_review, sections)
 from services.agent_policy.compiler import compile_policy
 from services.agent_policy import settings as policy_settings
@@ -85,7 +85,23 @@ def _require(principal: Principal, minimum: str, action: str, details: Dict[str,
             details={**details, "principal": principal.subject, "role": role, "minimum": minimum})
     if not allowed:
         raise HTTPException(status_code=403, detail=f"{action} needs the {minimum} role or higher")
+    if action != "agent_policy.read":
+        _remember(principal)          # a write by a signed-in person: who they are, for the screens
     return role
+
+
+def _remember(principal: Principal) -> None:
+    """Keep the caller's email under their sign-in id (people.remember), once per write request:
+    this is the one place, reached from `_require` for every action that is not a read, so a GET
+    never writes. On a short connection of its own, opened only when there is something to keep.
+    Never raises: remembering a name must never fail a person's action."""
+    if people.identity(principal) is None:
+        return
+    try:
+        with _conn() as conn:
+            people.remember(conn, principal)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("agent policy people: %s could not be remembered (%s)", principal.subject, type(exc).__name__)
 
 
 class CreateBody(BaseModel):

@@ -19,7 +19,7 @@ import json
 import re
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
-from services.agent_policy import approvals, conditions, conflict_payload, deciders
+from services.agent_policy import approvals, conditions, conflict_payload, deciders, people
 from services.agent_policy.enforcement import MASK
 from services.agent_policy.replay import mask_text
 
@@ -370,8 +370,8 @@ def list_cases(conn, principal, *, is_admin: bool, status: str = "open") -> List
 
 def shown_name(who: Any, email: Any = None) -> Optional[str]:
     """Who to show for a recorded sign-in id: a `system:*` decider in the conflict history's words;
-    else the email recorded beside the id when there is one; else the id. None when there is no id,
-    so a name never appears where the id does not."""
+    else the email recorded beside the id (or remembered for it, `people.names`) when there is
+    one; else the id. None when there is no id, so a name never appears where the id does not."""
     if not str(who or "").strip():
         return None
     from services.agent_policy import conflict_history   # lazily: conflict_history reaches back here
@@ -380,9 +380,13 @@ def shown_name(who: Any, email: Any = None) -> Optional[str]:
 
 
 def _firing_view(row: Dict[str, Any], sensitive: Set[str],
-                 reveal: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                 reveal: Optional[Dict[str, Any]] = None,
+                 names: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """`reveal`: the case's context, for a caller who may decide it. The log stores sensitive
-    values already masked; the eligible approver sees them from the case, as in `inputs`."""
+    values already masked; the eligible approver sees them from the case, as in `inputs`.
+    `names`: the remembered emails of the sign-in ids in this answer (`people.names`, read once
+    by the caller for the whole answer)."""
+    names = names or {}
     values = _mask_values(_j(row["matched_values"], {}) or {}, sensitive)
     if reveal is not None:
         for k in list(values):
@@ -404,25 +408,35 @@ def _firing_view(row: Dict[str, Any], sensitive: Set[str],
         "decisionId": row["decision_id"],
         "decidedLevel": row["decided_level"],
         "decidedBy": row["decided_by"],
-        # nothing records the email of whoever decided an approval (bp_decision.actioned_by and the
-        # audit record hold the sign-in id only): a person is the id, the system is worded
-        "decidedByName": shown_name(row["decided_by"]),
+        # the decision itself records the sign-in id only: a person is shown by the email remembered
+        # for that id (people.remember, on their writes), else by the id; the system is worded
+        "decidedByName": shown_name(row["decided_by"], names.get(row["decided_by"])),
         "decidedAt": _iso(row["decided_at"]),
         "reason": row["reason"],
         "durationMs": row["duration_ms"],
         "reversalOf": row["reversal_of"],
         "createdAt": _iso(row["created_at"]),
         # only where the read joined the reversal record (the policy's activity list)
-        **({"reversed": _reversal(row)} if "rv_by" in row else {}),
+        **({"reversed": _reversal(row, names)} if "rv_by" in row else {}),
     }
 
 
-def _reversal(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """A person's record that this approved request was later reversed, or None."""
+def _reversal(row: Dict[str, Any], names: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:
+    """A person's record that this approved request was later reversed, or None. Who by: the email
+    stored with the record, else the one remembered for the id (`names`), else the id."""
     if row.get("rv_by") is None:
         return None
-    return {"by": row["rv_by"], "byName": shown_name(row["rv_by"], row.get("rv_email")),
+    email = str(row.get("rv_email") or "").strip() or (names or {}).get(row["rv_by"])
+    return {"by": row["rv_by"], "byName": shown_name(row["rv_by"], email),
             "at": _iso(row["rv_at"]), "reason": row["rv_reason"]}
+
+
+def _to_name(firing_rows: Iterable[Dict[str, Any]]) -> List[Any]:
+    """The sign-in ids of firing rows that need a name looked up: whoever decided, and whoever
+    recorded a reversal with no email stored beside it."""
+    out = [r.get("decided_by") for r in firing_rows]
+    out += [r.get("rv_by") for r in firing_rows if not str(r.get("rv_email") or "").strip()]
+    return out
 
 
 _FIRING_COLS = ("firing_id, policy_key, policy_version, checkpoint, action_name, agent, workflow_id, "
@@ -449,7 +463,7 @@ def get_case(conn, decision_id: int, principal, *, is_admin: bool) -> Optional[D
                     "FROM proc.bp_decision WHERE subject_type = %s AND subject_id = %s "
                     "AND decision IN ('approve','reject') AND actioned_by IS NOT NULL ORDER BY decision_id",
                     (approvals.SUBJECT_TYPE, case["subject_id"]))
-        decisions = [{"id": int(r["decision_id"]), "verb": r["decision"], "by": r["actioned_by"],
+        decisions = [{"id": int(r["decision_id"]), "verb": r["decision"], "by": r["actioned_by"], "byName": None,
                       "at": _iso(r["actioned_at"]), "reason": r["override_reason"],
                       "level": r["current_level"],
                       "levelName": (_j(r["facts"], {}) or {}).get("decidedLevelName"),
@@ -471,11 +485,16 @@ def get_case(conn, decision_id: int, principal, *, is_admin: bool) -> Optional[D
         docs = _compiled(cur, pairs[:1])
         decided = outcomes(cur, [case])
         group = approvals.group_state(cur, int(case["decision_id"]), facts)
+        # every name in this answer with one read: whoever decided, on the case and on its firings
+        names = people.names(cur, [d["by"] for d in decisions] + _to_name(firing_rows))
+    for d in decisions:
+        d["byName"] = shown_name(d["by"], names.get(d["by"]))     # beside `by`, never without it
     ok = can_decide(principal, case, mapping)
     view = case_view(case, unmasked=ok, sensitive=sensitive, doc=docs.get(_pair(case)), decidable=ok,
                      outcome=decided.get(case["subject_id"]), live=lives.get(_live_id(case)))
     view["history"] = {"decisions": decisions, "notes": notes,
-                       "firings": [_firing_view(r, sensitive, reveal=_ctx(case["facts"]) if ok else None)
+                       "firings": [_firing_view(r, sensitive, reveal=_ctx(case["facts"]) if ok else None,
+                                                names=names)
                                    for r in firing_rows],
                        "replay": replay,
                        # every approval the action needs: {open, approved, rejected, total}
@@ -522,7 +541,8 @@ _REVERSAL_JOIN = """
 
 
 def policy_firings(conn, policy_key: str, limit: int) -> List[Dict[str, Any]]:
-    """The policy's latest firings, newest first; `reversed` is {by, byName, at, reason} or None."""
+    """The policy's latest firings, newest first; `reversed` is {by, byName, at, reason} or None.
+    `decidedByName` and `reversed.byName` are the person's remembered email when one is known."""
     with conn.cursor() as cur:
         cols = ", ".join(f"f.{c.strip()}" for c in _FIRING_COLS.split(","))
         cur.execute(f"SELECT {cols}, rv.rv_by, rv.rv_email, rv.rv_at, rv.rv_reason FROM proc.bp_policy_firing f "
@@ -530,7 +550,8 @@ def policy_firings(conn, policy_key: str, limit: int) -> List[Dict[str, Any]]:
                     "ORDER BY f.created_at DESC, f.firing_id DESC LIMIT %s", (policy_key, limit))
         rows = _rows(cur)
         sensitive = sensitive_for(cur, [(r["policy_key"], r["policy_version"]) for r in rows])
-    return [_firing_view(r, sensitive) for r in rows]
+        names = people.names(cur, _to_name(rows))            # one read for the whole list
+    return [_firing_view(r, sensitive, names=names) for r in rows]
 
 
 # ---------------------------------------------------------------------------- notifications

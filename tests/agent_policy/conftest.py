@@ -15,6 +15,7 @@ from services.agent_policy import conflict_cases
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "conflict_detection: keep conflict detection after a save live")
+    config.addinivalue_line("markers", "people: keep remembering the caller of a write live (people.remember)")
 
 
 @pytest.fixture(autouse=True)
@@ -47,3 +48,15 @@ def _suggestion_notices_are_removed(monkeypatch):
 
         with get_conn() as conn:
             conn.cursor().execute("DELETE FROM proc.bp_policy_notification WHERE link = ANY(%s)", (told,))
+
+
+@pytest.fixture(autouse=True)
+def _nobody_is_remembered(request, monkeypatch):
+    """Every agent-policy write through the router remembers the caller's email on a connection of
+    its own (stage 5b, people.remember). The router tests drive hundreds of writes as made-up
+    people, against scripted connections or the shared test database: remembering is a no-op here
+    unless a test is marked ``people`` (the people tests drive it, and remove their own rows)."""
+    if request.node.get_closest_marker("people") is None:
+        from api.routers import agent_policies
+
+        monkeypatch.setattr(agent_policies, "_remember", lambda principal: None)
