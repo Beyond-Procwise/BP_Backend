@@ -266,7 +266,8 @@ def save_version(conn, policy_key: str, form: Dict[str, Any], *, base_version: i
                     problems.append({"field": "registry", "code": "contract", "count": len(set(contract_problems)),
                                      "routeTo": "administrator", "message": CONTRACT_FAILED})
             # Last, and whatever else is wrong, so the list is complete in one go. Worked out from
-            # the conditions and the stored suggestions, not from anything the browser sent. If it
+            # the policy's own decision history and the form as it will be stored (`form` is
+            # already past attribute_confirmation), not from anything the browser claims. If it
             # cannot be checked it answers with a problem (never an empty list), so a failed read
             # here always ends in the refusal below.
             problems += second_review.activation_problems(cur, policy_key, row["live_version"], base_version, form)

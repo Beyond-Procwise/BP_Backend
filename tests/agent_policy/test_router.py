@@ -172,13 +172,16 @@ def test_feed_is_503_when_its_key_is_unset(client, monkeypatch):
 
 class _Cur:
     def execute(self, *a, **k): pass
-    def fetchone(self): return ("Finance",)
+    def fetchone(self): return ("Finance", False, True)      # the area, and its two settings BEFORE the change
 
 
 class _CurConn:
+    done = []
     def __enter__(self): return self
     def __exit__(self, *a): return False
     def cursor(self): return _Cur()
+    def commit(self): _CurConn.done.append("commit")
+    def rollback(self): _CurConn.done.append("rollback")
 
 
 def test_taxonomy_update_needs_admin(client, monkeypatch):
@@ -187,6 +190,35 @@ def test_taxonomy_update_needs_admin(client, monkeypatch):
     assert client.put("/agent-policies/taxonomy/Finance", json=body, headers=BUYER).status_code == 403
     r = client.put("/agent-policies/taxonomy/Finance", json=body, headers=GOOD)
     assert r.status_code == 200 and r.json()["subAreas"] == ["General", "Refunds"]
+
+
+def test_taxonomy_update_records_the_settings_before_and_after(client, monkeypatch):
+    monkeypatch.setattr(R, "_conn", _CurConn)
+    monkeypatch.setattr(_CurConn, "done", [])
+    body = {"subAreas": [], "neverSuggest": True, "secondReviewer": False}
+    assert client.put("/agent-policies/taxonomy/Finance", json=body, headers=GOOD).status_code == 200
+    authorize, act = client.audits[-2:]
+    assert (authorize["phase"], authorize["status"], authorize["details"]["requested"]) == (
+        "authorize", "allowed", {"neverSuggest": True, "secondReviewer": False})
+    assert (act["phase"], act["action_type"], act["status"]) == ("act", "agent_policy.admin", "done")
+    assert act["details"] == {"area": "Finance", "principal": "u1",
+                              "before": {"neverSuggest": False, "secondReviewer": True},
+                              "after": {"neverSuggest": True, "secondReviewer": False}}
+    assert _CurConn.done == ["commit"]
+
+
+def test_a_taxonomy_change_whose_record_cannot_be_written_is_not_made(client, monkeypatch):
+    monkeypatch.setattr(R, "_conn", _CurConn)
+    monkeypatch.setattr(_CurConn, "done", [])
+
+    def audit(**kw):
+        if kw["phase"] == "act":
+            raise RuntimeError("the audit table cannot be written")
+    monkeypatch.setattr(R.agent_actions, "record_action_or_fail", audit)
+    body = {"subAreas": [], "neverSuggest": False, "secondReviewer": False}
+    with pytest.raises(RuntimeError):
+        client.put("/agent-policies/taxonomy/Finance", json=body, headers=GOOD)
+    assert _CurConn.done == ["rollback"], "switching the second reviewer off without a record of it is undone"
 
 
 def test_retire_needs_approver(client, monkeypatch):

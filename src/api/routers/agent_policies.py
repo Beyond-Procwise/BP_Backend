@@ -135,17 +135,32 @@ def taxonomy(p: Principal = Depends(gateway_principal)):
 
 @router.put("/taxonomy/{area}")
 def update_area(area: str, body: AreaBody, p: Principal = Depends(gateway_principal)):
-    _require(p, "Admin", "agent_policy.admin", {"area": area})
+    after = {"neverSuggest": body.neverSuggest, "secondReviewer": body.secondReviewer}
+    _require(p, "Admin", "agent_policy.admin", {"area": area, "requested": after})
     subs = [s.strip() for s in body.subAreas if s.strip()]
     if "General" not in subs:
         subs.insert(0, "General")
     with _conn() as conn:
-        cur = conn.cursor()
-        cur.execute("UPDATE proc.bp_business_area SET sub_areas=%s, never_suggest=%s, second_reviewer=%s,"
-                    " last_modified_by=%s, last_modified_at=now() WHERE area_name=%s RETURNING area_name",
-                    (subs, body.neverSuggest, body.secondReviewer, p.subject, area))
-        if not cur.fetchone():
-            raise HTTPException(status_code=404, detail="no such business area")
+        # The change and the record of what it changed are one write: these two settings switch
+        # safeguards off (learning's suggestions, the second reviewer), so the audit row holds the
+        # values before and after, and a change whose record cannot be written is not made.
+        with approvals._tx(conn):
+            cur = conn.cursor()
+            cur.execute("UPDATE proc.bp_business_area a SET sub_areas=%s, never_suggest=%s, second_reviewer=%s,"
+                        " last_modified_by=%s, last_modified_at=now()"
+                        " FROM (SELECT area_name, never_suggest, second_reviewer FROM proc.bp_business_area"
+                        "        WHERE area_name=%s FOR UPDATE) old"
+                        " WHERE a.area_name = old.area_name"
+                        " RETURNING a.area_name, old.never_suggest, old.second_reviewer",
+                        (subs, body.neverSuggest, body.secondReviewer, p.subject, area))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="no such business area")
+            before = {"neverSuggest": row[1], "secondReviewer": row[2]}
+            agent_actions.record_action_or_fail(
+                phase="act", action_type="agent_policy.admin", agent="agent_policy_api", status="done",
+                summary=f"{p.subject} changed the settings of business area {area}",
+                details={"area": area, "principal": p.subject, "before": before, "after": after})
     return {"areaName": area, "subAreas": subs, "neverSuggest": body.neverSuggest, "secondReviewer": body.secondReviewer}
 
 
