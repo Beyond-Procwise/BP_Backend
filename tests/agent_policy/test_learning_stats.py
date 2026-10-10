@@ -73,3 +73,19 @@ def test_exactly_on_each_threshold_passes():
 def test_a_setting_that_is_not_a_number_raises_and_never_guesses():
     with pytest.raises(TypeError):
         LS.failed_guardrails(LS.stats(group()), {**CFG, "min_decisions": "thirty"})
+
+
+def test_the_wilson_guardrail_is_judged_before_rounding():
+    # 122 of 134: the bound is 0.849988..., under 0.85. Shown to four places it reads 0.85, and the
+    # displayed figure must not be what decides.
+    s = LS.stats(group(n=134, approved=122))
+    assert s["wilsonLower"] == 0.85 and LS.wilson_lower(122, 134) < 0.85
+    assert LS.failed_guardrails(s, CFG) == ["wilson_lower"]
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf"), -1])
+def test_a_setting_that_is_not_finite_or_is_negative_raises(bad):
+    # with NaN every "<" comparison is False, so every guardrail would pass
+    for key in ("min_decisions", "min_days", "min_approvers", "wilson_lower", "median_seconds_floor"):
+        with pytest.raises((ValueError, TypeError)):
+            LS.failed_guardrails(LS.stats(group(n=5)), {**CFG, key: bad})
