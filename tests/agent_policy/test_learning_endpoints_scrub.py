@@ -74,6 +74,40 @@ def _refuse(code, message):
     return _raise
 
 
+# ------------------------------------------------------------------ ruling Q1: the two reads
+def test_the_queue_passes_the_customers_own_wording_through(client, state):
+    r = client.get("/agent-policies/suggestions", headers=HDR)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"suggestions": state["cards"]}, r.text
+    assert "01/04/2026" in r.text and "[withheld]" not in r.text
+    assert client.get("/agent-policies/suggestions?status=all", headers=HDR).json() == {"suggestions": state["cards"]}
+
+
+def test_the_draft_passes_the_customers_own_policy_form_through(client, state):
+    r = client.get("/agent-policies/suggestions/12/draft", headers=HDR)
+    assert r.status_code == 200, r.text
+    assert r.json() == state["draft"], r.text
+    assert r.json()["form"]["situation"] == DATED and "[withheld]" not in r.text
+
+
+def test_exactly_the_two_suggestion_reads_are_exempt():
+    from api import main as M
+    for path in ["/agent-policies/suggestions", "/agent-policies/suggestions/12/draft",
+                 "/agent-policies/suggestions/123456789012345678/draft"]:
+        assert M._agent_policy_screen_exempt("GET", path, 200), path
+        for status in (404, 409, 422, 500):
+            assert not M._agent_policy_screen_exempt("GET", path, status), (path, status)   # errors still scrubbed
+        assert not M._agent_policy_screen_exempt("GET", path + "/", 200), path              # trailing slash
+        assert not M._agent_policy_screen_exempt("POST", path, 200), path                   # another method
+    for method in ("POST", "GET"):
+        for status in (200, 201):
+            assert not M._agent_policy_screen_exempt(method, "/agent-policies/suggestions/12/act", status)
+    for path in ["/agent-policies/suggestions/12", "/agent-policies/suggestions/abc/draft",
+                 "/agent-policies/suggestions/1234567890123456789/draft", "/agent-policies/suggestions/12/draft/x",
+                 "/agent-policies/suggestions/-1/draft", "/agent-policies/suggestionsx", "/agent-policies/suggestions/draft"]:
+        assert not M._agent_policy_screen_exempt("GET", path, 200), path
+
+
 # ------------------------------------------------------------------ still scrubbed
 def test_a_409_from_the_draft_is_still_scrubbed(client, monkeypatch):
     monkeypatch.setattr(L, "draft", _refuse("policy_changed", "See proc.bp_agent_policy_suggestion for 01/04/2026."))
