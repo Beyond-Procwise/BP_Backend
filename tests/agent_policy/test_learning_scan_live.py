@@ -57,21 +57,29 @@ def world():
 
 
 def fire(conn, key, amounts, *, result="approved", seconds=60, version=1, decision_ids=None, by=None,
-         first=0, at=None, extra=None, asked_at=None):
+         first=0, at=None, extra=None, asked_at=None, action=None, missing=None):
     """One settled approve firing per amount. Row number p is decision i = at[p] (or first + p):
     asked on slot (7 * i) % 30 of 30 slots over 40 days, decided by person i % 3. Time and decider
-    do not follow the amount (see the module docstring)."""
+    do not follow the amount (see the module docstring).
+
+    `action`: the tool the row is about, written as the gate writes it (the `action_name` column
+    AND `tool.name` in the values); without it the row keeps the placeholder names. `missing`: the
+    row's `missing_inputs`; an amount of None is then left out of the values, as the gate leaves
+    out a field the action did not carry."""
     ids = []
     cur = conn.cursor()
     for p, amount in enumerate(amounts):
         i = at[p] if at is not None else first + p
         asked = asked_at or START + timedelta(days=40 * ((7 * i) % 30) / 29)
         values = extra[p] if extra else {}
+        held = {"tool.name": action or "refund.issue", "args.amount": amount, **values}
+        if amount is None:
+            del held["args.amount"]
         cur.execute(
             "INSERT INTO proc.bp_policy_firing (policy_key, policy_version, checkpoint, action_name, outcome, "
-            "result, matched_values, decision_id, decided_level, decided_by, decided_at, created_at) "
-            "VALUES (%s,%s,'tool.call.before','tst','approve',%s,%s,%s,0,%s,%s,%s) RETURNING firing_id",
-            (key, version, result, json.dumps({"tool.name": "refund.issue", "args.amount": amount, **values}),
+            "result, matched_values, missing_inputs, decision_id, decided_level, decided_by, decided_at, created_at) "
+            "VALUES (%s,%s,'tool.call.before',%s,'approve',%s,%s,%s,%s,0,%s,%s,%s) RETURNING firing_id",
+            (key, version, action or "tst", result, json.dumps(held), list(missing or []),
              decision_ids[p] if decision_ids else None, by or f"person-{i % 3}",
              asked + timedelta(seconds=seconds), asked))
         ids.append(cur.fetchone()[0])

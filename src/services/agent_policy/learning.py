@@ -198,6 +198,44 @@ def decisions(cur, key: str, versions: List[int]) -> List[Decided]:
     return out
 
 
+# The policy's whole decision history, for the second reviewer (second_review.py): the same rows
+# as _DECIDED_SQL (one per approval case, people only, newest first) but across EVERY version of
+# the policy, and carrying what is needed to ask "would this action still pause for a person
+# under another form?": the checkpoint, the tool (action_name), the values the firing version's
+# condition read and found (matched_values) and the ones it read and did not find (missing_inputs).
+_WITNESS_SQL = """
+    SELECT d.firing_id, d.checkpoint, d.action_name, d.matched_values, d.missing_inputs
+      FROM (
+    SELECT DISTINCT ON (COALESCE(f.decision_id, -f.firing_id))
+           f.firing_id, f.checkpoint, f.action_name, f.matched_values, f.missing_inputs, f.decided_at
+      FROM proc.bp_policy_firing f
+     WHERE f.policy_key = %s
+       AND f.outcome = 'approve' AND f.result IN ('approved', 'rejected')
+       AND f.decided_at IS NOT NULL AND f.decided_by IS NOT NULL
+       AND lower(btrim(f.decided_by)) NOT LIKE 'system:%%'
+       AND btrim(f.decided_by) <> ''
+     ORDER BY COALESCE(f.decision_id, -f.firing_id), f.firing_id
+           ) d
+     ORDER BY d.decided_at DESC, d.firing_id DESC
+     LIMIT %s
+"""
+
+
+def witnesses(cur, key: str) -> List[Dict[str, Any]]:
+    """Every decision a person made under ANY version of the policy, one per approval case, the
+    newest MAX_DECISIONS: `{"firing_id", "checkpoint", "action_name", "matched_values",
+    "missing_inputs"}`. A row is handed on as stored; `matched_values` that is not an object is
+    None (the reader of the row decides what an unreadable one means). Raises on a failed read."""
+    cur.execute(_WITNESS_SQL, (key, MAX_DECISIONS))
+    out: List[Dict[str, Any]] = []
+    for firing_id, checkpoint, action_name, values, missing in cur.fetchall():
+        values = _json(values)
+        out.append({"firing_id": firing_id, "checkpoint": checkpoint, "action_name": action_name,
+                    "matched_values": values if isinstance(values, dict) else None,
+                    "missing_inputs": [str(m) for m in missing] if isinstance(missing, (list, tuple)) else None})
+    return out
+
+
 def _targets(cur) -> Tuple[List[Target], List[str]]:
     """The targets, and the keys of policies that are targets but could not be read."""
     cur.execute(_TARGETS_SQL)
