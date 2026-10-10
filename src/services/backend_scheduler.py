@@ -448,6 +448,7 @@ class BackendScheduler:
         self._register_email_draft_sweep_job()
         self._register_agent_policy_approvals_job()
         self._register_agent_policy_conflict_scan_job()
+        self._register_agent_policy_learning_scan_job()
 
     AGENT_POLICY_APPROVALS_JOB_NAME = "agent-policy-approval-sweep"
 
@@ -538,6 +539,45 @@ class BackendScheduler:
                 logger.info("agent policy conflict scan: %s", counts)
         except Exception:
             logger.exception("agent policy conflict scan failed")
+
+    AGENT_POLICY_LEARNING_SCAN_JOB_NAME = "agent-policy-learning-scan"
+    # Its own lane, like the conflict scan: it reads every live approve policy's decisions and
+    # must never hold up the shared lane. Nothing else writes the suggestion rows it writes.
+    AGENT_POLICY_LEARNING_SCAN_LANE = "agent-policy-learning"
+
+    def _register_agent_policy_learning_scan_job(self) -> None:
+        """Look for approve policies people keep approving, every hour (first run 10 min after start).
+
+        ON unless AGENT_POLICY_LEARNING_SCAN=off. It only ever writes suggestion rows for an owner
+        to review; it never changes a policy. Idempotent: one row per policy and change.
+        """
+        import os
+        if os.environ.get("AGENT_POLICY_LEARNING_SCAN", "on").strip().lower() == "off":
+            logger.info("agent policy learning scan not registered (AGENT_POLICY_LEARNING_SCAN=off)")
+            return
+        if self.AGENT_POLICY_LEARNING_SCAN_JOB_NAME in self._jobs:
+            return
+        self.register_job(
+            self.AGENT_POLICY_LEARNING_SCAN_JOB_NAME,
+            self._run_agent_policy_learning_scan,
+            interval=timedelta(hours=1),
+            initial_delay=timedelta(minutes=10),
+            lane=self.AGENT_POLICY_LEARNING_SCAN_LANE,
+        )
+
+    def _run_agent_policy_learning_scan(self) -> None:
+        try:
+            from datetime import datetime, timezone
+
+            from services.agent_policy import learning
+            from services.db import get_conn
+
+            with get_conn() as conn:
+                counts = learning.scan(conn, datetime.now(timezone.utc))
+            if any(counts.get(k) for k in ("raised", "reopened", "weakened", "superseded", "errors")):
+                logger.info("agent policy learning scan: %s", counts)
+        except Exception:
+            logger.exception("agent policy learning scan failed")
 
     EMAIL_LEARNING_JOB_NAME = "email-learning"
 
