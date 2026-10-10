@@ -489,14 +489,18 @@ def latest_replay(cur, case: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------- firings
-# The reversal of a firing's approval case: recorded on one row of the case (the earliest), shown on
-# every linked row. At most one per firing (LIMIT 1), so the join never adds or drops a firing row.
+# The reversal of an approved request: recorded on one of the policy's approved rows of the approval
+# case (the earliest), shown on every linked approved row of the SAME policy. Never on a row that
+# merely shares the case (another policy's notify row, a clash's loser, a re-check). At most one per
+# firing (LIMIT 1), so the join never adds or drops a firing row.
 _REVERSAL_JOIN = """
     LEFT JOIN LATERAL (
         SELECT r.reversed_by AS rv_by, r.reversed_at AS rv_at, r.reason AS rv_reason
           FROM proc.bp_policy_firing_reversal r
           JOIN proc.bp_policy_firing o ON o.firing_id = r.firing_id
-         WHERE o.firing_id = f.firing_id OR (f.decision_id IS NOT NULL AND o.decision_id = f.decision_id)
+         WHERE f.outcome = 'approve' AND f.result = 'approved'
+           AND (o.firing_id = f.firing_id
+                OR (f.decision_id IS NOT NULL AND o.decision_id = f.decision_id AND o.policy_key = f.policy_key))
          ORDER BY r.firing_id LIMIT 1) rv ON TRUE
 """
 

@@ -419,8 +419,22 @@ def test_a_policy_whose_live_condition_changed_since_the_scan_read_it_is_left_fo
     with caplog.at_level(logging.INFO, logger=L.logger.name):
         counts = L.scan(conn, NOW, only=[stale])
     # evidence read for "over 500" says nothing about a policy that now says "over 700"
-    assert counts == {**{k: 0 for k in L.COUNTERS}, "policies": 1}
+    assert counts == {**{k: 0 for k in L.COUNTERS}, "policies": 1, "skipped": 1}
     assert _row(conn, world) == before
     assert [r for r in caplog.records if world.key in r.getMessage() and "next scan" in r.getMessage()]
     # the next scan reads the policy afresh: the 500 card is closed for good or kept saved, never reopened at 500
     assert _scan(conn, world)["reopened"] == 0 and _row(conn, world)[0] == "saved"
+
+
+def test_a_policy_whose_live_version_changed_since_the_scan_read_it_is_left_for_the_next_scan(client, conn, world):
+    stale = _stale_target(conn, world)                       # live version 2, limit 500
+    # the same condition activated again as a new version: the versions whose firings are the
+    # evidence were listed for the old one
+    r = _save(client, world, _live_form(conn, world, owner=f"TST Other owner {world.tag}"), base=world.live,
+              headers=APPROVER, intent="activate")
+    assert r.status_code in (200, 201), r.text
+    assert _policy(conn, world)[2] == world.live + 1 and _row(conn, world)[0] == "open"
+    counts = L.scan(conn, NOW, only=[stale])
+    assert counts == {**{k: 0 for k in L.COUNTERS}, "policies": 1, "skipped": 1}
+    fresh = _scan(conn, world)                               # the next scan: both versions' firings count
+    assert (fresh["skipped"], fresh["updated"]) == (0, 1) and _row(conn, world)[0] == "open"

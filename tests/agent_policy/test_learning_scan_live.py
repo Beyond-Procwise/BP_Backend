@@ -573,6 +573,7 @@ def test_one_unreadable_suggestion_row_is_skipped_and_the_policys_other_rows_are
     assert (got["tst:no-field"]["status"], got["tst:no-to"]["status"]) == ("open", "open"), "left exactly as they were"
     said = [r.getMessage() for r in caplog.records if "could not be read" in r.getMessage()]
     assert len(said) == 2 and all("KeyError" in m for m in said)
+    assert "'field'" in said[0] and "'to'" in said[1], "what was wrong, as well as its kind"
     assert f"suggestion {no_field} " in said[0] and f"suggestion {no_to} " in said[1]
 
 
@@ -611,3 +612,15 @@ def test_a_latest_condition_that_cannot_be_compared_does_not_fail_the_policys_st
     assert _saved(conn, t.key) == [("saved", 2, None)]
     told = [r.getMessage() for r in caplog.records if t.key in r.getMessage() and "in force" in r.getMessage()]
     assert len(told) == 1 and "ValueError" in told[0], "once per policy, with the kind of failure"
+
+
+def test_a_fault_in_the_statistics_fails_the_policys_step_loudly(world, monkeypatch):
+    conn, t = world
+    ids = fire(conn, t.key, BASE)
+    L.scan(conn, NOW, only=[t])
+    _reverse(conn, ids[BASE.index(600)])          # nothing is proposed now: the open card's evidence is recomputed
+    monkeypatch.setattr(L.learning_stats, "stats", lambda group: 1 / 0)
+    counts = L.scan(conn, NOW, only=[t])
+    # not an unreadable row: a bug in the arithmetic must not quietly freeze a card
+    assert (counts["errors"], counts["unreadable"], counts["weakened"]) == (1, 0, 0)
+    assert row(conn, t.key)[0][1] is True, "the step was rolled back"

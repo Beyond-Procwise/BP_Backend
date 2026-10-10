@@ -74,6 +74,9 @@ def test_the_scan_counts_the_unreadable_policy_and_does_not_close_its_cards(monk
     conn = _Conn(_policies())
     counts = L.scan(conn, NOW)
     assert (counts["policies"], counts["errors"]) == (2, 1)
+    # the scripted database has no policy row for either real key under the lock: a real policy
+    # that cannot be re-read is left for the next scan, never judged on what was read before
+    assert counts["skipped"] == 2 and not [s for s, _p in conn.ran if s == L._DECIDED_SQL]
     [(_sql, params)] = [r for r in conn.ran if r[0] == L._GONE_SQL]
     assert params == (NOW, ["FIN-0001", "FIN-0003", "FIN-0002"]), \
         "a policy that could not be read is still a policy: its cards are not superseded"
