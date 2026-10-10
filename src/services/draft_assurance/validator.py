@@ -9,6 +9,7 @@ payload carried that no row confirmed (accepted, but reported as unverified).
 from __future__ import annotations
 
 import re
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
@@ -77,6 +78,13 @@ def numbers_in(obj: Any) -> Set[Decimal]:
 
 
 def _date_key(text: str) -> Optional[Tuple[Optional[int], int, int]]:
+    iso = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", text.strip())
+    if iso:      # year-month-day is never day-first: read that way, 2026-10-05 became 10 May
+        try:
+            d = date(*map(int, iso.groups()))
+        except ValueError:
+            return None
+        return (d.year, d.month, d.day)
     try:
         probe = _dateparser.parse(text, default=_dateparser.parse("1900-01-01"), dayfirst=True)
     except (ValueError, OverflowError):
@@ -205,3 +213,14 @@ def figures_in(text: str) -> Set[Decimal]:
 
     scrubbed = _DATE.sub(" ", _REF.sub(" ", text or ""))
     return {d for d in (to_decimal(m.group(0)) for m in _NUMBER.finditer(scrubbed)) if d is not None}
+
+
+def dates_written(text: str) -> List[Tuple[str, Tuple[Optional[int], int, int]]]:
+    """The dates in a text as written, with their keys, once references are set aside. One entry per distinct date."""
+
+    out: List[Tuple[str, Tuple[Optional[int], int, int]]] = []
+    for m in _DATE.finditer(_REF.sub(" ", text or "")):
+        k = _date_key(m.group(0))
+        if k is not None and not any(_same_date(k, seen) for _, seen in out):
+            out.append((m.group(0), k))
+    return out

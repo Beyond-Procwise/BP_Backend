@@ -220,6 +220,9 @@ def begin(env: Env, data: Dict[str, Any], *, slug: Optional[str], workflow_id: O
             lk = {**candidates, **data, **(lookup or {}), "workflow_id": workflow_id or data.get("workflow_id")}
             run.inputs = prepare_inputs(conn, family, data, lookup_keys=lk)
             run.inputs.request_texts = run.request_texts()
+            if classify and isinstance(request, str) and request.strip():
+                # Free text: the request is the person's own words whichever family it was classified into.
+                run.inputs.asserted_texts = [request]
             directives = None
             try:
                 rules = tone_mod.load_rules(env.policy_engine)
