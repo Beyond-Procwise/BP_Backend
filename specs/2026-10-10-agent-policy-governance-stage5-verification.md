@@ -862,3 +862,25 @@ step above. Long answers are cut at 230 characters.
 | 91 | 12:28:28 | admin | `POST /agent-policies/OPS-0545/retire` `{"baseVersion": 2, "changeNote": "Stage 5 demo clean-up"}` | 201 `{"policyKey": "OPS-0545", "version": 3}` |
 | 92 | 12:28:28 | admin | `GET /agent-policies/OPS-0546` | 200 policy read (live, live v3, latest v5) |
 | 93 | 12:28:28 | admin | `POST /agent-policies/OPS-0546/retire` `{"baseVersion": 5, "changeNote": "Stage 5 demo clean-up"}` | 201 `{"policyKey": "OPS-0546", "version": 6}` |
+
+## After this note: the final review and its fix wave (2026-10-10)
+
+The demonstration above ran on BP `f0a55677`, gateway `2c5f799`, UI `5251664`. A whole-branch review followed
+and a fix wave landed afterwards (BP `9fbee672..a87b160a`, gateway `2d26337`, UI `8e2c25d`), each re-reviewed.
+What changed relative to the note above:
+
+- **The hourly learning scan now ships OFF.** It registers only when `AGENT_POLICY_LEARNING_SCAN` is `on`, `1`
+  or `true`. Wherever this note or plan decision 13 says it is on unless switched off, that is superseded. Run
+  it once under supervision on each database before switching it on.
+- **D1, D2, D4 and D5 are fixed**: the "Second review" label no longer runs into its sentence; the Suggestions
+  queue and count refresh after a save; a weakened card says "N of them were later marked as reversed"; a live
+  test proves a block policy and a policy in a never-suggest area are not scanned. **D3 is open**: "Reviewed by"
+  and "Approved by" still show a sign-in id (a name needs the email stored with the record).
+- The policy page opens without suggestions when learning cannot be read; a proposal on a field marked
+  sensitive in the live form is never raised; a stale Business areas screen can no longer overwrite the other
+  switch; the gateway's area-settings update accepts only the three settings.
+- These later fixes were covered by automated tests and review, not by a second run of the private stack.
+- Suites after the fix wave: BP fake 1 failed / 845 passed, live 1 failed / 1290 passed (the known
+  `test_conflict_scan_has_its_own_lane`); gateway 395 passed; UI agentPolicy 391/391, whole suite the known 7.
+  One stage 4 test (`test_conflict_export_live.py::test_the_policy_export_masks_per_caller`) failed once in one
+  of three full live runs and passed otherwise; unexplained, in code this branch does not touch.
