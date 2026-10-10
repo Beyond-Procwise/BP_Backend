@@ -542,7 +542,8 @@ class BackendScheduler:
 
     AGENT_POLICY_LEARNING_SCAN_JOB_NAME = "agent-policy-learning-scan"
     # Its own lane, like the conflict scan: it reads every live approve policy's decisions and
-    # must never hold up the shared lane. Nothing else writes the suggestion rows it writes.
+    # must never hold up the shared lane. People's actions on a card (not yet, dismiss, a save)
+    # write the same suggestion rows, so the scan locks a policy's rows before it changes them.
     AGENT_POLICY_LEARNING_SCAN_LANE = "agent-policy-learning"
 
     def _register_agent_policy_learning_scan_job(self) -> None:
