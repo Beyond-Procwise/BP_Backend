@@ -56,6 +56,10 @@ class ApproveRequest(BaseModel):
     """What is being approved. Deliberately carries no actor field."""
 
     reason: Optional[str] = None
+    # The version the approver read (``content_hash`` from GET /approvals/drafts/...).
+    # When given, an approval of a draft that has changed since is refused, so nobody
+    # approves words they did not see. Absent, the draft as it stands is approved.
+    content_hash: Optional[str] = None
 
 
 class RevokeRequest(BaseModel):
@@ -270,6 +274,106 @@ def list_pending(principal=Depends(require_user)) -> Dict[str, Any]:
     return {"pending": rows, "count": len(rows)}
 
 
+def _describe_draft(
+    draft: Dict[str, Any],
+    approval: Optional[Dict[str, Any]],
+    *,
+    viewer: str,
+    created_on: Any = None,
+    with_text: bool = False,
+) -> Dict[str, Any]:
+    """One unsent draft as an approver needs to see it.
+
+    Everything is read off what a send with no overrides would transmit right now --
+    the same resolution the approval and the send guard both hash -- so the subject,
+    recipients and words shown are the ones the approval will be bound to.
+    """
+
+    effective = resolve_effective_content(draft)
+    digest = content_hash(effective)
+    requested_by = str(draft.get("requested_by") or "").strip() or None
+
+    state: Optional[Dict[str, Any]] = None
+    if approval:
+        grounding = approval.get("grounding")
+        approved_hash = grounding.get("content_hash") if isinstance(grounding, dict) else None
+        state = {
+            "approval_id": approval.get("approval_id"),
+            "actioned_by": approval.get("actioned_by"),
+            "actioned_at": approval.get("actioned_at"),
+            # The send guard refuses an approval whose recorded content is not the
+            # content about to go. Said here so a screen can ask for a fresh approval
+            # instead of offering a Send that will be refused.
+            "covers_this_version": bool(approved_hash) and approved_hash == digest,
+        }
+
+    out: Dict[str, Any] = {
+        "unique_id": draft.get("unique_id"),
+        "workflow_id": draft.get("workflow_id"),
+        "supplier_id": draft.get("supplier_id"),
+        "supplier_name": draft.get("supplier_name"),
+        "recipients": effective["recipients"],
+        "subject": effective["subject"],
+        "created_on": created_on,
+        "requested_by": requested_by,
+        # Self-approval is refused on the stored requester; a screen says so up front.
+        "requested_by_you": bool(requested_by) and requested_by == viewer,
+        "content_hash": digest,
+        "approval": state,
+    }
+    if with_text:
+        attachments = effective.get("attachments")
+        out["body_text"] = _email_text(effective["body"])
+        out["attachment_count"] = len(attachments) if isinstance(attachments, list) else 0
+    return out
+
+
+def _email_text(body: Optional[str]) -> str:
+    """The email's words, one paragraph per line: no markup, no hidden marker."""
+
+    from src.services.draft_assurance.capture import plain
+
+    lines = (line.strip() for line in plain(body).splitlines())
+    return "\n".join(line for line in lines if line)
+
+
+@router.get("/drafts")
+def list_drafts(principal=Depends(require_user)) -> Dict[str, Any]:
+    """Every unsent draft: waiting for approval, or approved and waiting to be sent."""
+
+    viewer = str(getattr(principal, "subject", "") or "")
+    _require_capability(principal, {"action": "list_drafts"}, actioned_by=viewer or None)
+    rows = [
+        _describe_draft(
+            entry["draft"], entry.get("approval"),
+            viewer=viewer, created_on=entry.get("created_on"),
+        )
+        for entry in approval_store.list_unsent_drafts(limit=200)
+    ]
+    return {"drafts": rows, "count": len(rows)}
+
+
+@router.get("/drafts/{unique_id}")
+def read_draft(unique_id: str, principal=Depends(require_user)) -> Dict[str, Any]:
+    """One unsent draft in full, as the words the supplier would receive."""
+
+    viewer = str(getattr(principal, "subject", "") or "")
+    _require_capability(
+        principal, {"action": "read_draft", "unique_id": unique_id}, actioned_by=viewer or None
+    )
+    draft = _load_draft(unique_id)
+    if draft is None:
+        raise HTTPException(
+            status_code=404, detail=f"no unsent draft with unique_id {unique_id}"
+        )
+    approval = approval_store.find_dispatch_approval(
+        rfq_id=draft.get("rfq_id"),
+        workflow_id=draft.get("workflow_id"),
+        unique_id=draft.get("unique_id"),
+    )
+    return _describe_draft(draft, approval, viewer=viewer, with_text=True)
+
+
 @router.post("/dispatch/{unique_id}")
 def approve_dispatch(
     unique_id: str,
@@ -303,6 +407,11 @@ def approve_dispatch(
     # right now -- the same computation the send path uses (see C1), so an
     # unedited draft's approval and its eventual send agree (see C2).
     digest = content_hash(resolve_effective_content(draft))
+    if body.content_hash and body.content_hash != digest:
+        raise HTTPException(
+            status_code=409,
+            detail="this email changed after you opened it; read it again before approving",
+        )
     approval_id = approval_store.record_approval(
         rfq_id=draft.get("rfq_id"),
         workflow_id=draft.get("workflow_id"),

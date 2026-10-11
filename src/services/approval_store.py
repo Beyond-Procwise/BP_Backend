@@ -184,6 +184,47 @@ def find_dispatch_approval(
         return _run(own)
 
 
+def list_unsent_drafts(*, limit: int = 200, conn: Any = None) -> List[Dict[str, Any]]:
+    """Every unsent draft with its current approval, newest first.
+
+    ``list_pending_dispatch_approvals`` leaves out a draft once it is approved, so a
+    person could approve an email and then have nowhere to send it from. Each entry is
+    ``{"draft": <hydrated>, "approval": <row or None>, "created_on": <when drafted>}``;
+    the caller decides what of it to show.
+    """
+
+    sql = (
+        "SELECT " + ", ".join(DRAFT_COLUMNS) + ", created_on "
+        "  FROM proc.draft_rfq_emails "
+        " WHERE sent IS NOT TRUE "
+        "   AND unique_id IS NOT NULL "
+        " ORDER BY created_on DESC "
+        " LIMIT %s"
+    )
+
+    def _run(connection: Any) -> List[Dict[str, Any]]:
+        cur = _dict_cursor(connection)
+        cur.execute(sql, (int(limit),))
+        out: List[Dict[str, Any]] = []
+        for raw in cur.fetchall():
+            row = dict(raw)
+            draft = hydrate_draft(row)
+            # One lookup per draft, as the pending list does: fine at today's backlog.
+            approval = find_dispatch_approval(
+                rfq_id=draft.get("rfq_id"),
+                workflow_id=draft.get("workflow_id"),
+                unique_id=draft.get("unique_id"),
+                conn=connection,
+            )
+            out.append({"draft": draft, "approval": approval, "created_on": row.get("created_on")})
+        return out
+
+    if conn is not None:
+        return _run(conn)
+    with get_conn() as own:
+        return _run(own)
+
+
 def negotiation_workflow_exists(*, workflow_id: Optional[str], conn: Any = None) -> bool:
     """Whether ``workflow_id`` corresponds to a real negotiation.
 
