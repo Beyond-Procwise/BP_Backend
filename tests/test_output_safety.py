@@ -283,3 +283,60 @@ def test_error_detail_degrades_to_plain_english():
     out = osafe.scrub_payload(body)
     assert out["detail"] == osafe.SAFE_REPLY
     assert "proc." not in out["detail"]
+
+
+# --------------------------------------------------------------------------------------
+# The email tracking marker. Every stored draft ends with a hidden comment the reply matcher
+# reads, and its last part is "TOKEN:<12 hex>". The credential rule read that as a leaked
+# secret and replaced the whole email with the apology sentence: on 2026-10-11, 42 of the 47
+# drafts in the test corpus came back from the API unreadable. The token is the product's
+# own marker and goes to the supplier inside the email; it is not a secret.
+# --------------------------------------------------------------------------------------
+
+def _marked(body: str, **kw) -> str:
+    from utils.email_markers import attach_hidden_marker
+
+    marked, _ = attach_hidden_marker(body, **kw)
+    assert "TOKEN:" in marked  # the precondition: the marker really carries a token
+    return marked
+
+
+EMAIL = "<p>Dear Nadia,</p><p>We can offer 455.00 GBP per unit. Please reply by 17 October 2026.</p>"
+
+
+def test_a_draft_with_its_tracking_marker_is_served_as_written():
+    body = _marked(EMAIL, supplier_id="SUP-TestSuppliesLtd", unique_id="PROC-WF-4235C7CFA99F")
+
+    assert osafe.scrub_payload({"body": body}, where="/agents/execute") == {"body": body}
+
+
+def test_the_marker_with_a_run_id_is_served_as_written():
+    body = _marked(EMAIL, supplier_id="SUP-A", unique_id="PROC-WF-4235C7CFA99F", run_id="run-7")
+
+    assert osafe.is_safe(body)
+
+
+@pytest.mark.parametrize("leak", [
+    "token: sk_live_9f8a7b6c5d4e",
+    "TOKEN:C2E75A83D69C",                                   # the bare shape, outside a marker
+    "<!-- TOKEN:C2E75A83D69C -->",                          # a comment, but not the marker
+    "<!-- PROCWISE_MARKER:TRACKING:PROC-WF-1|TOKEN:sk_live_9f8a7b6c -->",   # not 12 hex
+    "<!-- PROCWISE_MARKER:TRACKING:PROC-WF-1|TOKEN:C2E75A83D69C|password=hunter2 -->",
+    "<!-- PROCWISE_MARKER:TRACKING:PROC-WF-1|TOKEN:C2E75A83D69C --> token: C2E75A83D69C",
+])
+def test_a_token_anywhere_else_is_still_a_credential(leak):
+    kinds = {v.kind for v in osafe.inspect(EMAIL + "\n\n" + leak)}
+
+    assert "credential" in kinds
+
+
+def test_the_marker_excuses_only_its_token_not_the_email_around_it():
+    body = _marked(EMAIL + "<p>Rows are in proc.bp_supplier.</p>", unique_id="PROC-WF-4235C7CFA99F")
+
+    assert osafe.enforce(body) == osafe.SAFE_REPLY
+
+
+def test_a_leak_inside_the_marker_is_still_caught():
+    body = EMAIL + "\n\n<!-- PROCWISE_MARKER:TRACKING:AWS_SECRET_ACCESS_KEY|TOKEN:C2E75A83D69C -->"
+
+    assert not osafe.is_safe(body)
