@@ -50,9 +50,10 @@ _INTERNAL_QUOTE_COLS = ("total_cost", "total_margin", "margin_pct")
 _INTERNAL_LINE_COLS = ("unit_cost", "cost_tier_applied", "line_margin", "line_margin_pct")
 
 _AGENT = "SellSide"
-# Approving, issuing and closing a quote cannot be taken back, so each is recorded or it
+# Approving, issuing, sending and closing a quote cannot be taken back, so each is recorded or it
 # does not happen. Drafting, submitting and superseding are recorded best-effort.
-_MUST_RECORD = frozenset({"sales_quote.approved", "sales_quote.issued", "sales_quote.outcome"})
+_MUST_RECORD = frozenset({"sales_quote.approved", "sales_quote.issued", "sales_quote.sent",
+                          "sales_quote.outcome"})
 
 
 def record_event(conn: Any, event: str, quote: Dict[str, Any], *, actor: Optional[str],
@@ -271,7 +272,7 @@ def get_quote_internal(conn: Any, sales_quote_id: int) -> Dict[str, Any]:
 
 def _transition(conn: Any, sales_quote_id: int, *, frm: str, to: str, event: str,
                 actor: Optional[str], check=None, sets: str = "",
-                params: tuple = ()) -> Dict[str, Any]:
+                params: tuple = (), before_commit=None) -> Dict[str, Any]:
     cur = dict_cursor(conn)
     try:
         cur.execute(f"SELECT {', '.join(_QUOTE_COLS)} FROM proc.bp_sales_quote "
@@ -289,6 +290,10 @@ def _transition(conn: Any, sales_quote_id: int, *, frm: str, to: str, event: str
             f"last_modified_date = now(){sets} WHERE sales_quote_id = %s",
             (to, phase, sub, *params, sales_quote_id))
         record_event(conn, event, row, actor=actor, from_status=frm, to_status=to, **extra)
+        # The last word before the change is kept: it sees the quote as it will be, and
+        # raising here undoes the change, its event and any number it was given.
+        if before_commit is not None:
+            before_commit()
     except Exception:
         conn.rollback()
         raise
@@ -321,9 +326,13 @@ def approve(conn: Any, sales_quote_id: int, *, approver: Optional[str]) -> Dict[
                        sets=", approved_by = %s, approved_at = now()", params=(approver,))
 
 
-def issue(conn: Any, sales_quote_id: int, *, actor: Optional[str]) -> Dict[str, Any]:
+def issue(conn: Any, sales_quote_id: int, *, actor: Optional[str],
+          before_commit=None) -> Dict[str, Any]:
     """Issue the quote and give it its number, in one transaction: the number is the next
-    in the series with none missing, and an issue that fails gives it back."""
+    in the series with none missing, and an issue that fails gives it back.
+
+    ``before_commit`` is called once the quote is issued and numbered but before any of
+    that is kept (quote_send uses it to refuse an issue whose quote could not be sent)."""
     def _check(row, cur):
         if row["valid_until"] < dt.date.today():
             raise StateConflict(f"quote {sales_quote_id} has expired ({row['valid_until']})")
@@ -336,4 +345,4 @@ def issue(conn: Any, sales_quote_id: int, *, actor: Optional[str]) -> Dict[str, 
         return {"quote_number": number}
     return _transition(conn, sales_quote_id, frm="approved", to="issued", check=_check,
                        event="sales_quote.issued", actor=actor,
-                       sets=", issued_at = now()")
+                       sets=", issued_at = now()", before_commit=before_commit)

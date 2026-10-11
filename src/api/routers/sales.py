@@ -21,7 +21,7 @@ import datetime as dt
 from decimal import Decimal
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
 
@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field
 # sell-side services' rollback-before-raise is a no-op and FOR UPDATE locks don't hold.
 from src.services.sell_side._db import transactional_conn as get_conn
 from src.services.sell_side import (accounts, calibration, opportunities, outcomes,
-                                    quote_render, quotes)
+                                    quote_render, quote_send, quotes)
 
 from src.services import agent_actions
 from src.services.rga import quote_pipeline
@@ -141,6 +141,11 @@ class QuoteBody(BaseModel):
     contact_id: Optional[int] = None
     quote_date: Optional[dt.date] = None
     supersedes_id: Optional[int] = None
+
+
+class SendBody(BaseModel):
+    """Which contact the quote goes to, if not the quote's own. Never an address."""
+    contact_id: Optional[int] = None
 
 
 class OutcomeBody(BaseModel):
@@ -297,6 +302,48 @@ def customer_pdf(quote_id: int, principal=Depends(require_user)):
                                      quotes.get_quote_internal(c, quote_id), fmt="pdf")
         return Response(pdf.content, media_type=pdf.media_type, headers={
             "Content-Disposition": f'inline; filename="quote-{quote_id}.pdf"'})
+
+
+def _sender(request: Request) -> Optional[str]:
+    settings = getattr(getattr(request.app.state, "agent_nick", None), "settings", None)
+    return (str(getattr(settings, "ses_default_sender", "") or "").strip() or None)
+
+
+@router.get("/quotes/{quote_id}/send-draft")
+def send_draft(quote_id: int, request: Request, contact_id: Optional[int] = None,
+               principal=Depends(require_user)):
+    """The cover email for this quote and whether it can be sent. Sends nothing."""
+    gate("quote.read", principal, agent=_AGENT, context={"sales_quote_id": quote_id})
+    with http_errors(), get_conn() as c:
+        return money_json(quote_send.draft(c, quote_id, principal=principal,
+                                           sender=_sender(request), contact_id=contact_id))
+
+
+@router.post("/quotes/{quote_id}/send")
+def send(quote_id: int, request: Request, body: Optional[SendBody] = None,
+         principal=Depends(require_user)):
+    """Send the quote to its customer. Sending an approved quote is what issues it, so it
+    asks for both permits; neither is granted by default."""
+    context = {"sales_quote_id": quote_id}
+    gate("sales_quote.send", principal, agent=_AGENT, context=context)
+    agent_nick = getattr(request.app.state, "agent_nick", None)
+    if agent_nick is None:
+        raise HTTPException(status_code=503, detail="the mail relay is not available")
+    from src.services.email_service import EmailService
+
+    with http_errors(), get_conn() as c:
+        if quotes.get_quote(c, quote_id)["status"] == "approved":
+            gate("sales_quote.issue", principal, agent=_AGENT, context=context)
+        try:
+            return money_json(quote_send.send(
+                c, quote_id, principal=principal, sender=_sender(request),
+                mailer=EmailService(agent_nick).send_email,
+                contact_id=body.contact_id if body else None))
+        except quote_send.SendRefused as exc:      # before http_errors flattens it to text
+            raise HTTPException(status_code=409, detail={
+                "message": str(exc), "checks": exc.checks}) from None
+        except quote_send.SendFailed as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from None
 
 
 @router.post("/quotes/{quote_id}/outcome")
