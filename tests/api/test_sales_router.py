@@ -251,3 +251,112 @@ def test_money_leaves_as_a_string_not_a_float(client, both_records):
     body = client.get("/sales/quotes/9/customer").json()
     assert body["total_ex_tax"] == "56.00"
     assert body["lines"][0]["unit_price"] == "14"
+
+
+# --- sending (B12) -----------------------------------------------------------
+
+class _Nick:
+    class settings:
+        ses_default_sender = "quotes@example.test"
+
+
+@pytest.fixture
+def sending(client, monkeypatch):
+    """The send route with a mail relay present and the service stood in for."""
+    client.app.state.agent_nick = _Nick()
+    client.sent = []
+
+    def _send(conn, qid, **kw):
+        client.sent.append(kw)
+        return {"status": "sent", "sales_quote_id": qid, "quote_number": "Q-2026-0001"}
+
+    monkeypatch.setattr(sr.quote_send, "send", _send)
+    monkeypatch.setattr(sr.quotes, "get_quote", lambda conn, qid: _quote("approved"))
+    return client
+
+
+def test_sending_an_approved_quote_asks_to_send_and_to_issue(sending):
+    r = sending.post("/sales/quotes/9/send")
+    assert r.status_code == 200, r.text
+    assert r.json()["quote_number"] == "Q-2026-0001"
+    assert sending.gates == ["sales_quote.send", "sales_quote.issue"]
+    (kw,) = sending.sent
+    assert kw["principal"].subject == CALLER and kw["sender"] == "quotes@example.test"
+    assert kw["contact_id"] is None and callable(kw["mailer"])
+
+
+def test_sending_a_quote_already_issued_asks_only_to_send(sending, monkeypatch):
+    monkeypatch.setattr(sr.quotes, "get_quote", lambda conn, qid: _quote("issued"))
+    assert sending.post("/sales/quotes/9/send").status_code == 200
+    assert sending.gates == ["sales_quote.send"]
+
+
+def test_a_caller_names_a_contact_and_never_an_address(sending):
+    r = sending.post("/sales/quotes/9/send", json={
+        "contact_id": 44, "to": "someone@else.example", "recipients": ["x@y.example"],
+        "subject": "mine", "body": "mine"})
+    assert r.status_code == 200, r.text
+    (kw,) = sending.sent
+    assert kw["contact_id"] == 44
+    assert set(kw) == {"principal", "sender", "mailer", "contact_id"}
+
+
+def test_a_send_that_is_not_permitted_reaches_nothing(sending, monkeypatch):
+    def _deny(action, *a, **k):
+        raise sr.NotPermitted(f"{action} is not permitted")
+
+    monkeypatch.setattr(sr, "gate", _deny)
+    assert sending.post("/sales/quotes/9/send").status_code == 403
+    assert sending.sent == []
+
+
+def test_a_caller_who_may_send_but_not_issue_cannot_issue_by_sending(sending, monkeypatch):
+    def _only_send(action, *a, **k):
+        if action == "sales_quote.issue":
+            raise sr.NotPermitted("sales_quote.issue is not permitted")
+        return _PERMITTED
+
+    monkeypatch.setattr(sr, "gate", _only_send)
+    assert sending.post("/sales/quotes/9/send").status_code == 403
+    assert sending.sent == []
+
+
+def test_a_refused_send_says_which_checks_refused_it(sending, monkeypatch):
+    checks = [{"id": "has_recipient", "passed": False, "severity": "block",
+               "message": "The quote has no contact to send to."},
+              {"id": "quote_approved", "passed": True, "severity": "block",
+               "message": "The quote is approved."}]
+
+    def _refuse(conn, qid, **kw):
+        raise sr.quote_send.SendRefused(checks)
+
+    monkeypatch.setattr(sr.quote_send, "send", _refuse)
+    r = sending.post("/sales/quotes/9/send")
+    assert r.status_code == 409
+    assert r.json()["detail"]["checks"] == checks
+    assert "no contact to send to" in r.json()["detail"]["message"]
+
+
+def test_an_email_the_relay_did_not_take_is_a_502(sending, monkeypatch):
+    def _fail(conn, qid, **kw):
+        raise sr.quote_send.SendFailed("not accepted for delivery")
+
+    monkeypatch.setattr(sr.quote_send, "send", _fail)
+    r = sending.post("/sales/quotes/9/send")
+    assert r.status_code == 502 and "not accepted" in r.json()["detail"]
+
+
+def test_with_no_mail_relay_nothing_is_attempted(sending):
+    del sending.app.state.agent_nick
+    assert sending.post("/sales/quotes/9/send").status_code == 503
+    assert sending.sent == []
+
+
+def test_the_send_draft_is_a_read_and_sends_nothing(sending, monkeypatch):
+    seen = []
+    monkeypatch.setattr(sr.quote_send, "draft",
+                        lambda conn, qid, **kw: seen.append(kw) or {"can_send": True})
+    r = sending.get("/sales/quotes/9/send-draft?contact_id=44")
+    assert r.status_code == 200 and r.json() == {"can_send": True}
+    assert sending.gates == ["quote.read"] and sending.sent == []
+    assert seen[0]["contact_id"] == 44 and seen[0]["sender"] == "quotes@example.test"

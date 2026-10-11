@@ -150,3 +150,58 @@ takes none; a quote is numbered once; two quotes cannot hold one number. Tests d
 `LIVETEST` series that is deleted afterwards, so a run uses no real number. Eleven deliberate
 breaks, including an allocator with no lock and one that commits early: all go red.
 Suites against bp_testdb: 943 passed, the same 3 unrelated failures as above.
+
+## B12. Send — added 2026-10-11, branch `qda-b12-send`
+
+Ruling from Nick, 2026-10-11: **sending is the act that issues the quote.**
+
+- `sell_side/quote_send.py`. `POST /sales/quotes/{id}/send` emails the quote's PDF to a
+  contact on the quote's account. `GET /sales/quotes/{id}/send-draft` returns the cover
+  draft and its checks and changes nothing.
+- **Order.** An approved quote is issued and numbered; every check the send needs runs
+  before that is kept (`quotes.issue(before_commit=)`), so a quote that could not be sent
+  is not issued and its number goes back. The issue is then kept, the email goes, and
+  `sales_quote.sent` is recorded. An email the relay does not take leaves the quote
+  issued, numbered and unsent, and the same call sends it. The other order (email first)
+  could put a number in a customer's hands that the next quote is then given.
+- **One email at a time.** The quote's row is locked before its status is read and again
+  from the last check until the record is written. Of two sends at once, one goes.
+- **Recipient.** The quote's own contact, or another contact on the same account named by
+  `contact_id`. No address is accepted from the caller. One plain address only.
+- **Cover.** Fixed words around the quote's number: no price, total, date, term or draft
+  reference. No model is called. Subject `Quote <number>`.
+- **Checks** (all block; the send route returns them all on a 409): `quote_approved`,
+  `quote_in_date`, `not_already_sent`, `quote_numbered`, `has_recipient`,
+  `named_docs_attached` (the PDF passed `postcheck.run_quote`), `attachments_within_limit`,
+  `no_internal_ids`, `figures_traced`, `no_bank_details`, `mailbox_can_send`,
+  `sent_by_a_person`, `within_daily_limit`.
+- **Permission.** The route asks `sales_quote.send`, and `sales_quote.issue` as well when
+  the quote is still only approved. `sales_quote.send` is refused for everyone until
+  `deploy/sql/2026-10-11_sales_quote_send_authority.sql` is applied. **It is not applied**:
+  it switches on real email to customers and waits for Nick's yes.
+- **Record.** `email.send` (allowed) is written on its own connection before the relay is
+  called, so an email that cannot be recorded does not go and one that goes counts against
+  the sender's daily limit (`email_dispatch_guard.check_daily_volume`, lifted out of
+  `check_dispatch` unchanged). `sales_quote.sent` carries the message id, the recipient,
+  the contact, and the PDF's SHA-256, size, pack hash, AST hash and renderer version.
+  A refused send writes `sales_quote.send_blocked`; a failed one `sales_quote.send_failed`.
+
+Differences from the contract (`EmailCompose/BACKEND_CONTRACT.md` §2.9), and limits:
+
+1. **The event is `sales_quote.sent`, not `quote.sent`,** to sit with the other quote events.
+2. **"Sent" is not a status.** The quote's status stays `issued`; that it went is the
+   `sales_quote.sent` event, read back by `send-draft` as `sent`. A status or column would
+   need a migration.
+3. **The existing `POST /quotes/{id}/issue` is unchanged.** It still issues without
+   sending. Under the ruling it is now a second way to issue; whether to remove it is Nick's.
+4. **The PDF sent is not stored.** Its hash and the record needed to rebuild it are. §2.6
+   asks for the exact artefact to be kept; there is nowhere to keep it yet.
+5. **The compose envelope service (`/api/v1/negotiation/drafts/*`) is not built here.**
+   The draft is returned in that envelope's shape for a quote, read-only. The cover cannot
+   be edited, so there is no patch, regenerate or acknowledge.
+6. **If the email goes and the record of it then cannot be written,** the call fails and
+   the quote reads as not sent, so a retry sends it again (same number, same document).
+   Rare, and reported as an error rather than hidden.
+7. **Quotes 496 and 529 on bp_testdb** (issued before numbering) cannot be sent: a
+   customer is not sent a quote with no number.
+8. **Replies** go to the sending address (`ses_default_sender`). Nothing here reads them.

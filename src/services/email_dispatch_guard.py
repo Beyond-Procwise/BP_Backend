@@ -339,6 +339,42 @@ def _facts_recheck(conn: Any, draft: Dict[str, Any], policy_engine: Optional[Any
         return {"checked": False, "changed": [], "reason": f"{type(exc).__name__}"}
 
 
+def check_daily_volume(
+    *, conn: Any, principal: Optional[Any], policy_engine: Optional[Any] = None
+) -> Optional[guardrail.Decision]:
+    """The per-user daily cap of check 5, on its own. A denial, or ``None``.
+
+    Factored out for a send path that is not an RFQ dispatch -- a customer
+    quote -- so it counts against, and is stopped by, the same cap rather than
+    a second copy of it. It counts ``email.send`` rows recorded as allowed for
+    this principal, so such a path must record its own sends under that name.
+    """
+
+    volume = _rules(policy_engine, "email_volume")
+    try:
+        max_per_day = int(volume.get("max_per_user_per_day"))
+    except (TypeError, ValueError):
+        return None
+    principal_subject = getattr(principal, "subject", None)
+    daily_count = _daily_send_count(conn, principal_subject)
+    if daily_count is None:
+        return guardrail.deny_from_policy(
+            "could not determine this user's daily send count; "
+            "denying rather than sending unmetered",
+            _policy(policy_engine, "email_volume"),
+            policy_name="EmailVolumePolicy",
+        )
+    if daily_count >= max_per_day:
+        return guardrail.deny_from_policy(
+            f"daily volume cap reached: {daily_count}/{max_per_day} "
+            "for this user",
+            _policy(policy_engine, "email_volume"),
+            policy_name="EmailVolumePolicy",
+            principal=principal_subject,
+        )
+    return None
+
+
 def check_dispatch(
     *,
     conn: Any,
@@ -658,28 +694,11 @@ def check_dispatch(
                 policy_name="EmailVolumePolicy",
             )
 
-        try:
-            max_per_day = int(volume.get("max_per_user_per_day"))
-        except (TypeError, ValueError):
-            max_per_day = None
-        if max_per_day is not None:
-            principal_subject = getattr(principal, "subject", None)
-            daily_count = _daily_send_count(conn, principal_subject)
-            if daily_count is None:
-                return guardrail.deny_from_policy(
-                    "could not determine this user's daily send count; "
-                    "denying rather than sending unmetered",
-                    _policy(policy_engine, "email_volume"),
-                    policy_name="EmailVolumePolicy",
-                )
-            if daily_count >= max_per_day:
-                return guardrail.deny_from_policy(
-                    f"daily volume cap reached: {daily_count}/{max_per_day} "
-                    "for this user",
-                    _policy(policy_engine, "email_volume"),
-                    policy_name="EmailVolumePolicy",
-                    principal=principal_subject,
-                )
+        over_daily_cap = check_daily_volume(
+            conn=conn, principal=principal, policy_engine=policy_engine
+        )
+        if over_daily_cap is not None:
+            return over_daily_cap
 
         return guardrail.Decision(
             allowed=True,
