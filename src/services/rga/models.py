@@ -131,6 +131,8 @@ class FindingCode(str, Enum):
     RENDER_FAILED = "RENDER_FAILED"
     MEASURE_UNAVAILABLE = "MEASURE_UNAVAILABLE"
     PARTIAL_CURRENCY_CONVERSION = "PARTIAL_CURRENCY_CONVERSION"
+    # A customer quote (services/rga/quote_models). Its lines do not add up to its total.
+    QUOTE_TOTAL_MISMATCH = "QUOTE_TOTAL_MISMATCH"
 
 
 class Finding(BaseModel):
@@ -471,10 +473,9 @@ class FactPack(BaseModel):
     facts: List[FactEntry] = Field(default_factory=list)
     findings: List[Finding] = Field(default_factory=list)
 
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def hash(self) -> str:
-        return canonical_hash({
+    def _hashed(self) -> Dict[str, Any]:
+        """What the hash covers. A pack that carries more than facts adds to this."""
+        return {
             "report_type_id": self.report_type_id,
             "tenant_id": self.tenant_id,
             "scope": self.scope,
@@ -483,7 +484,12 @@ class FactPack(BaseModel):
                 f.model_dump(mode="json", exclude={"display"}) for f in self.facts
             ],
             "findings": [f.model_dump(mode="json") for f in self.findings],
-        })
+        }
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def hash(self) -> str:
+        return canonical_hash(self._hashed())
 
     def fact(self, fact_id: str) -> Optional[FactEntry]:
         for entry in self.facts:

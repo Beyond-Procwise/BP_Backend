@@ -73,6 +73,7 @@ _COMPOSER_NOTES: Dict[str, Any] = {}   # text, or a callable(pack) -> text
 _COMPOSER_LABELS: Dict[str, Callable[[Any], str]] = {}
 _TITLES: Dict[str, str] = {}
 _PROSE_RULES: Dict[str, Callable[[Any], List[str]]] = {}
+_PACK_CLASSES: Dict[str, type] = {}
 #: The title a report type draws with when it registered none (the first report type's).
 DEFAULT_TITLE = "Executive procurement summary"
 
@@ -81,10 +82,13 @@ def register(report_type_id: str, *, section_order: Optional[List[str]] = None,
              composer_note: Any = None,
              composer_label: Optional[Callable[[Any], str]] = None,
              title: Optional[str] = None,
-             prose_rules: Optional[Callable[[Any], List[str]]] = None
+             prose_rules: Optional[Callable[[Any], List[str]]] = None,
+             pack_class: Optional[type] = None
              ) -> Callable[[Callable[["FactBuilder"], None]], Callable]:
     """Register the deterministic query set for one report type, and -- if the report has
-    one -- the order of its sections, a property of the report rather than a preference."""
+    one -- the order of its sections, a property of the report rather than a preference.
+    ``pack_class`` is for a type whose pack carries more than facts (a quote's lines); its
+    builder supplies the rest through ``FactBuilder.extras``."""
 
     def _wrap(fn: Callable[["FactBuilder"], None]) -> Callable:
         _BUILDERS[report_type_id] = fn
@@ -98,6 +102,8 @@ def register(report_type_id: str, *, section_order: Optional[List[str]] = None,
             _TITLES[report_type_id] = title
         if prose_rules is not None:
             _PROSE_RULES[report_type_id] = prose_rules
+        if pack_class is not None:
+            _PACK_CLASSES[report_type_id] = pack_class
         return fn
 
     return _wrap
@@ -149,6 +155,8 @@ class FactBuilder:
         self.as_of = as_of
         self.facts: List[FactEntry] = []
         self.findings: List[Finding] = []
+        # Fields of a pack class that has more than facts and findings. Empty for a report.
+        self.extras: Dict[str, Any] = {}
         self._next = 1
 
     # -- ids ---------------------------------------------------------------
@@ -295,7 +303,7 @@ def build_fact_pack(
     builder = FactBuilder(pack_id=pack_id, scope=scope, as_of=resolved_as_of)
     _BUILDERS[report_type_id](builder)
 
-    pack = FactPack(
+    pack = _PACK_CLASSES.get(report_type_id, FactPack)(
         pack_id=pack_id,
         report_type_id=report_type_id,
         scope=scope,
@@ -304,6 +312,7 @@ def build_fact_pack(
         generated_by=generated_by,
         facts=builder.facts,
         findings=builder.findings,
+        **builder.extras,
     )
 
     if emit_audit:
