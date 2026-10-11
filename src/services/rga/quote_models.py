@@ -28,11 +28,29 @@ from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from src.services.analytics.formatting import currency_symbol, format_money_exact
 from src.services.rga.models import FACT_ID, FactPack
 
 # L<sales_quote_line_id>: the line's own row id, so a line keeps its id across rebuilds.
 LINE_ID = re.compile(r"^L\d+$")
 TERM_ID = re.compile(r"^T\d{4}$")
+# N<justification_id>.
+NOTE_ID = re.compile(r"^N\d+$")
+
+
+def unit_money(value: Decimal, currency: Optional[str]) -> str:
+    """A unit price in full. Catalogue prices run to four places (173.6667), and rounding
+    one to pence prints a price that does not multiply up to the line total."""
+    exact = value.quantize(Decimal("0.0001")).normalize()
+    if exact == exact.quantize(Decimal("0.01")):
+        return format_money_exact(exact, currency)
+    sign = "-" if exact < 0 else ""
+    return f"{sign}{currency_symbol(currency)}{abs(exact):,f}"
+
+
+def long_date(value: date) -> str:
+    """14 September 2026: no reading of it as the ninth of the fourteenth month."""
+    return f"{value.day} {value:%B} {value.year}"
 
 
 def _evidenced(value: str) -> str:
@@ -81,6 +99,19 @@ class QuoteLine(BaseModel):
     _id = field_validator("line_id")(lambda v: _ids([v], LINE_ID, "L501")[0])
     _evidence = field_validator("provenance_id")(_evidenced)
 
+    def cell(self, column: str) -> str:
+        """The exact text a renderer prints for one column of this line, and the text the
+        post-check looks for. One spelling, so a price drawn another way traces to nothing."""
+        if column == "line_no":
+            return str(self.line_no)
+        if column == "quantity":
+            return f"{self.quantity.normalize():,f}"
+        if column == "unit_price":
+            return unit_money(self.unit_price, self.currency)
+        if column == "line_total":
+            return format_money_exact(self.line_total, self.currency)
+        return getattr(self, column) or ""
+
 
 class QuoteTerm(BaseModel):
     """One term, word for word as the terms library holds it. Never written by a model."""
@@ -93,6 +124,21 @@ class QuoteTerm(BaseModel):
     provenance_id: str = Field(min_length=1)
 
     _id = field_validator("term_id")(lambda v: _ids([v], TERM_ID, "T0001")[0])
+    _evidence = field_validator("provenance_id")(_evidenced)
+
+
+class QuoteNote(BaseModel):
+    """A sentence already on record as safe for the customer to read (a justification
+    marked ``customer_safe``). Printed word for word; never written here."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    note_id: str
+    kind: str
+    text: str = Field(min_length=1)
+    provenance_id: str = Field(min_length=1)
+
+    _id = field_validator("note_id")(lambda v: _ids([v], NOTE_ID, "N801")[0])
     _evidence = field_validator("provenance_id")(_evidenced)
 
 
@@ -124,6 +170,7 @@ class QuotePack(FactPack):
     identity: QuoteIdentity
     lines: List[QuoteLine] = Field(min_length=1)
     terms: List[QuoteTerm] = Field(default_factory=list)
+    notes: List[QuoteNote] = Field(default_factory=list)
     total_fact_id: str
 
     @field_validator("lines")
@@ -138,12 +185,19 @@ class QuotePack(FactPack):
         _distinct([t.term_id for t in terms], "term")
         return terms
 
+    @field_validator("notes")
+    @classmethod
+    def _note_ids_are_distinct(cls, notes: List[QuoteNote]) -> List[QuoteNote]:
+        _distinct([n.note_id for n in notes], "note")
+        return notes
+
     def _hashed(self) -> Dict[str, Any]:
         return {
             **super()._hashed(),
             "identity": self.identity.model_dump(mode="json"),
             "lines": [l.model_dump(mode="json") for l in self.lines],
             "terms": [t.model_dump(mode="json") for t in self.terms],
+            "notes": [n.model_dump(mode="json") for n in self.notes],
             "total_fact_id": self.total_fact_id,
         }
 
@@ -152,6 +206,9 @@ class QuotePack(FactPack):
 
     def term(self, term_id: str) -> Optional[QuoteTerm]:
         return next((t for t in self.terms if t.term_id == term_id), None)
+
+    def note(self, note_id: str) -> Optional[QuoteNote]:
+        return next((n for n in self.notes if n.note_id == note_id), None)
 
 
 # --------------------------------------------------------------------------
@@ -162,6 +219,8 @@ LineColumn = Literal["line_no", "sku", "mpn", "description", "quantity", "unit_o
                      "unit_price", "line_total"]
 _DEFAULT_COLUMNS: List[str] = ["line_no", "sku", "description", "quantity",
                                "unit_of_measure", "unit_price", "line_total"]
+# A line drawn without these is not the line the customer is being offered.
+REQUIRED_COLUMNS = ("description", "quantity", "unit_price", "line_total")
 
 
 class _QuoteBlock(BaseModel):
@@ -184,6 +243,9 @@ class LineTableBlock(_QuoteBlock):
     @field_validator("columns")
     @classmethod
     def _columns(cls, columns: List[str]) -> List[str]:
+        missing = [c for c in REQUIRED_COLUMNS if c not in columns]
+        if missing:
+            raise ValueError(f"a line table must show {', '.join(missing)}")
         return _distinct(columns, "column")
 
 
@@ -207,6 +269,16 @@ class TermsBlock(_QuoteBlock):
         return _distinct(_ids(refs, TERM_ID, "T0001"), "term")
 
 
+class NotesBlock(_QuoteBlock):
+    type: Literal["notes"] = "notes"
+    note_refs: List[str] = Field(min_length=1)
+
+    @field_validator("note_refs")
+    @classmethod
+    def _notes(cls, refs: List[str]) -> List[str]:
+        return _distinct(_ids(refs, NOTE_ID, "N801"), "note")
+
+
 class PaymentBlock(_QuoteBlock):
     type: Literal["payment"] = "payment"
     term_ref: str
@@ -225,7 +297,8 @@ class SignatureBlock(_QuoteBlock):
 
 
 QuoteBlock = Annotated[
-    Union[LineTableBlock, TotalsBlock, TermsBlock, PaymentBlock, SignatureBlock],
+    Union[LineTableBlock, TotalsBlock, TermsBlock, NotesBlock, PaymentBlock,
+          SignatureBlock],
     Field(discriminator="type"),
 ]
 
@@ -259,6 +332,8 @@ def unresolved_refs(ast: QuoteAST, pack: QuotePack) -> List[str]:
         elif isinstance(block, TermsBlock):
             missing.update(r for r in block.term_refs
                            if getattr(pack.term(r), "kind", None) != "general")
+        elif isinstance(block, NotesBlock):
+            missing.update(r for r in block.note_refs if pack.note(r) is None)
         elif isinstance(block, PaymentBlock):
             if getattr(pack.term(block.term_ref), "kind", None) != "payment":
                 missing.add(block.term_ref)

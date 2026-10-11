@@ -3,8 +3,9 @@
 Who acted -- created_by, approver, recorded_by -- is the token's subject and
 nothing else; no body here has a field for it. Approving a quote is a transact
 action and issuing one is communicate, so both need a stated permit
-(deploy/sql/2026-09-11_reseller_governance.sql). The customer endpoints go
-through quote_render, which is the control on cost and margin.
+(deploy/sql/2026-09-11_reseller_governance.sql). The customer endpoints are the
+control on cost and margin: the JSON view goes through quote_render, and the page
+and its PDF through rga.quote_pipeline, which returns nothing that failed its gate.
 
 A quote is two reads behind two permissions. GET /quotes/{id} is the customer
 record and has no cost or margin in it; GET /quotes/{id}/internal is what the quote
@@ -21,7 +22,7 @@ from decimal import Decimal
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
 
 # Not src.services.db.get_conn: that opens autocommit connections, under which the
@@ -31,6 +32,8 @@ from src.services.sell_side import (accounts, calibration, opportunities, outcom
                                     quote_render, quotes)
 
 from src.services import agent_actions
+from src.services.rga import quote_pipeline
+from src.services.rga.render.html import PAGE_CSP  # one policy, header and page
 
 from api.auth import require_user
 from api.endpoint_gate import NotPermitted, require as gate
@@ -279,9 +282,21 @@ def customer_view(quote_id: int, principal=Depends(require_user)):
 def customer_html(quote_id: int, principal=Depends(require_user)):
     gate("quote.read", principal, agent=_AGENT, context={"sales_quote_id": quote_id})
     with http_errors(), get_conn() as c:
-        quote, internal = quotes.get_quote(c, quote_id), quotes.get_quote_internal(c, quote_id)
-        return HTMLResponse(quote_render.render_html(
-            quote_render.customer_view(quote, internal), quote=quote, internal=internal))
+        page = quote_pipeline.produce(quotes.get_quote(c, quote_id),
+                                      quotes.get_quote_internal(c, quote_id))
+        return HTMLResponse(page.content.decode("utf-8"),
+                            headers={"Content-Security-Policy": PAGE_CSP})
+
+
+@router.get("/quotes/{quote_id}/customer.pdf")
+def customer_pdf(quote_id: int, principal=Depends(require_user)):
+    """The same page, printed. One document, checked once, two files."""
+    gate("quote.read", principal, agent=_AGENT, context={"sales_quote_id": quote_id})
+    with http_errors(), get_conn() as c:
+        pdf = quote_pipeline.produce(quotes.get_quote(c, quote_id),
+                                     quotes.get_quote_internal(c, quote_id), fmt="pdf")
+        return Response(pdf.content, media_type=pdf.media_type, headers={
+            "Content-Disposition": f'inline; filename="quote-{quote_id}.pdf"'})
 
 
 @router.post("/quotes/{quote_id}/outcome")

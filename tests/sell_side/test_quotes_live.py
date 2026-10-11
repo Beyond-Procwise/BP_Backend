@@ -174,7 +174,13 @@ def test_a_real_approved_quote_renders_with_no_internal_field(live_db):
     view = qr.customer_view(quote, internal)
     flat = repr(view)
     assert not any(f"'{f}'" in flat for f in qr.INTERNAL_FIELDS)
-    assert "10.3700" not in qr.render_html(view, quote=quote, internal=internal)
+    # The page: the same record through the pack, the document and the gate.
+    from src.services.rga import quote_pipeline
+
+    page = quote_pipeline.produce(quote, internal).content.decode("utf-8")
+    assert quote["quote_ref"] in page
+    assert "10.37" not in page
+    assert quote_pipeline.produce(quote, internal, fmt="pdf").content[:5] == b"%PDF-"
 
 
 def test_a_zero_quantity_is_refused(live_db):

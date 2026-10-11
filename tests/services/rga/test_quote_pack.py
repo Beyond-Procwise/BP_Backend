@@ -138,6 +138,11 @@ class TestThePack:
         changed["lines"][0]["item_description"] = "Synthetic bracket, no plate"
         assert build(quote, monkeypatch).hash != build(changed, monkeypatch).hash
 
+    def test_a_reworded_note_changes_the_hash(self, monkeypatch):
+        changed = goods_quote()[0]
+        changed["justifications"][0]["claim"] = "Line 3 replaces a part"
+        assert build(goods_quote()[0], monkeypatch).hash != build(changed, monkeypatch).hash
+
     def test_a_different_customer_changes_the_hash(self, monkeypatch):
         changed = goods_quote()[0]
         changed["account_name"] = "Somebody Else"
@@ -235,6 +240,27 @@ class TestTheDocument:
     def test_an_empty_block_is_refused(self, block):
         with pytest.raises(ValidationError):
             QuoteAST.model_validate({"blocks": [block]})
+
+    @pytest.mark.parametrize("dropped", ["description", "quantity", "unit_price", "line_total"])
+    def test_a_line_table_cannot_leave_out_what_makes_it_an_offer(self, dropped):
+        columns = [c for c in ("description", "quantity", "unit_price", "line_total")
+                   if c != dropped]
+        with pytest.raises(ValidationError, match=dropped):
+            LineTableBlock(line_refs=["L501"], columns=columns)
+
+    def test_a_line_table_may_leave_out_the_rest(self):
+        LineTableBlock(line_refs=["L501"],
+                       columns=["description", "quantity", "unit_price", "line_total"])
+
+    def test_a_note_is_named_by_id_like_everything_else(self, pack):
+        from src.services.rga.quote_models import NotesBlock
+
+        assert [n.note_id for n in pack.notes] == ["N801"]
+        assert pack.note("N801").provenance_id == "proc.bp_sales_justification:801"
+        assert unresolved_refs(QuoteAST(blocks=[NotesBlock(note_refs=["N801", "N9"])]),
+                               pack) == ["N9"]
+        with pytest.raises(ValidationError):
+            NotesBlock(note_refs=["Line 3 replaces a withdrawn part"])
 
     def test_a_line_cannot_be_listed_twice(self):
         with pytest.raises(ValidationError, match="L501"):

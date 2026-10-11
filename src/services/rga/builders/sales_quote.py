@@ -14,6 +14,9 @@ What is NOT in a quote pack yet, and why:
     holds, excluding tax.
   * **Terms.** No terms library exists (B9), and legal wording is never written here.
 
+A caller that has already read the customer record passes it as ``source`` and it is not
+read again.
+
 Scope: ``sales_quote_id``. Pass the quote's own date as ``as_of`` so the same quote always
 builds the same pack.
 """
@@ -27,7 +30,7 @@ from src.services.analytics.formatting import format_money_exact
 from src.services.analytics.models import Confidence
 from src.services.rga.factpack import FactBuilder, register
 from src.services.rga.models import FindingCode, FormatHint, Severity
-from src.services.rga.quote_models import QuoteIdentity, QuoteLine, QuotePack
+from src.services.rga.quote_models import QuoteIdentity, QuoteLine, QuoteNote, QuotePack
 from src.services.sell_side.quote_render import INTERNAL_FIELDS
 
 REPORT_TYPE_ID = "sales_quote"
@@ -51,8 +54,11 @@ def _refuse_internal(row: Dict[str, Any], where: str) -> None:
 
 @register(REPORT_TYPE_ID, pack_class=QuotePack)
 def build(fb: FactBuilder) -> None:
-    quote = _read_quote(int(fb.scope["sales_quote_id"]))
+    quote = fb.source if fb.source is not None else _read_quote(
+        int(fb.scope["sales_quote_id"]))
     quote_id = quote["sales_quote_id"]
+    if quote_id != int(fb.scope["sales_quote_id"]):
+        raise ValueError(f"handed quote {quote_id} for scope {fb.scope['sales_quote_id']}")
     currency = quote["currency"]
     _refuse_internal(quote, f"quote {quote_id}")
 
@@ -89,5 +95,11 @@ def build(fb: FactBuilder) -> None:
             quote_date=quote["quote_date"], valid_until=quote["valid_until"],
             currency=currency, provenance_id=f"proc.bp_sales_quote:{quote_id}"),
         lines=lines,
+        # The reader already keeps only these; an unsafe one that reached here is dropped
+        # again rather than trusted.
+        notes=[QuoteNote(note_id=f"N{j['justification_id']}", kind=j["kind"],
+                         text=j["claim"],
+                         provenance_id=f"proc.bp_sales_justification:{j['justification_id']}")
+               for j in quote.get("justifications") or [] if j.get("customer_safe") is True],
         total_fact_id=total.fact_id,
     )

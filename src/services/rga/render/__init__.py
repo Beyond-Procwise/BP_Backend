@@ -67,7 +67,7 @@ def extract_text_for(artefact: RenderedArtefact) -> List[str]:
     """
     if artefact.renderer == "pptx":
         from src.services.rga.render.pptx import extract_text
-    elif artefact.renderer == "html":
+    elif artefact.renderer in ("html", "quote_html"):
         from src.services.rga.render.html import extract_text
     else:
         raise ValueError(f"no text reader for renderer {artefact.renderer!r}")

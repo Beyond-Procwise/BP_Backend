@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from src.services.analytics.models import Confidence
 from src.services.rga.models import (
@@ -253,6 +253,201 @@ def run(
                       "the artefact record is incomplete: it must carry the "
                       "pack hash, the style version, the AST hash and the "
                       "renderer version or it cannot be regenerated")
+    elif artefact.pack_hash != pack.hash:
+        raise_finding(FindingCode.MISSING_HASH_RECORD,
+                      f"the artefact records pack hash {artefact.pack_hash[:12]} "
+                      f"but the pack hashes to {pack.hash[:12]}")
+
+    result = PostCheckResult(findings)
+    if emit_audit:
+        _audit(result, artefact, pack, writer=writer)
+    return result
+
+
+# --------------------------------------------------------------------------
+# A customer quote.
+# --------------------------------------------------------------------------
+#
+# A quote goes through its own gate rather than ``run`` with switches, because the two
+# readers are owed opposite things. A report's reader is inside the company and every
+# figure must show its marker, its badge and its footnote. A quote's reader is the
+# customer: there are no markers or badges on the page at all (so nothing here asks for
+# one), and the check that matters most is one a report never needs -- that nothing we
+# pay is on it.
+
+_STYLE = re.compile(r"<style\b.*?</style>", re.S | re.I)
+QUOTE_READY = ("approved", "issued")
+
+
+def _customer_record(pack: Any) -> Dict[str, Any]:
+    """The pack's own structured figures, in the shape the leak check counts them in. Free
+    text (descriptions, names, notes, terms) is left out: it accounts for nothing."""
+    who = pack.identity
+    total = pack.fact(pack.total_fact_id)
+    return {
+        "quote_ref": f"{who.quote_ref} {who.number or ''}", "currency": who.currency,
+        "quote_date": who.quote_date, "valid_until": who.valid_until,
+        "total_ex_tax": total.value if total else None,
+        "lines": [{"line_no": l.line_no, "distributor_sku": l.sku, "mpn": l.mpn,
+                   "quantity": l.quantity, "unit_price": l.unit_price,
+                   "line_total": l.line_total, "currency": l.currency}
+                  for l in pack.lines],
+    }
+
+
+def _same(tokens) -> set:
+    return {t.replace(",", "") for t in tokens}
+
+
+def run_quote(
+    artefact: RenderedArtefact,
+    pack: Any,
+    ast: Any,
+    internal: Dict[str, Any],
+    *,
+    emit_audit: bool = True,
+    writer: Any = None,
+) -> PostCheckResult:
+    """The gate for a customer quote, on the page that would be sent.
+
+    ``internal`` is the quote's cost and margin record. It is here for one purpose: so the
+    leak check knows which figures to look for.
+    """
+    from src.services.rga.quote_models import REQUIRED_COLUMNS, long_date, unresolved_refs
+    from src.services.rga.render import extract_text_for
+    from src.services.rga.render.quote_html import NUMBER_LABEL
+    from src.services.sell_side import quote_render
+
+    # What the pack already objected to (lines that do not add up) blocks here too, so one
+    # result says everything that is wrong with the quote.
+    findings: List[Finding] = list(pack.blocking_findings())
+    seq = [0]
+
+    def raise_finding(code: FindingCode, detail: str, *,
+                      location: Optional[str] = None) -> None:
+        seq[0] += 1
+        findings.append(Finding(
+            finding_id=f"{pack.pack_id}-PC{seq[0]:03d}", code=code,
+            severity=Severity.HIGH, detail=detail, location=location))
+
+    who = pack.identity
+    chunks = extract_text_for(artefact)
+    source = artefact.content.decode("utf-8")
+
+    # -- 1. only an approved quote is a customer document -------------------
+    if who.status not in QUOTE_READY:
+        raise_finding(FindingCode.QUOTE_NOT_APPROVED,
+                      f"quote {who.quote_ref} is {who.status}; only an approved or "
+                      f"issued quote may be sent to a customer")
+
+    # -- 2. no number before issue ------------------------------------------
+    if who.number and who.status != "issued":
+        raise_finding(FindingCode.QUOTE_NUMBER_BEFORE_ISSUE,
+                      f"quote {who.quote_ref} carries the number {who.number} but is "
+                      f"{who.status}; a number is minted when the quote is issued")
+    if not who.number and any(NUMBER_LABEL.lower() in c.lower() for c in chunks):
+        raise_finding(FindingCode.QUOTE_NUMBER_BEFORE_ISSUE,
+                      f"the page shows a quote number but quote {who.quote_ref} has none")
+
+    # -- 3. every id the document names is in the pack ----------------------
+    for ref in unresolved_refs(ast, pack):
+        raise_finding(FindingCode.UNKNOWN_FACT_REF,
+                      f"the quote document names {ref}, which is not in pack "
+                      f"{pack.pack_id}")
+
+    # -- 4. every line of the quote is on the page --------------------------
+    #
+    # Checked twice: the document must name the line, and the page must draw it. Each line
+    # claims a row of its own, so two identical lines need two rows -- one row cannot
+    # stand for both.
+    named = set(ast.line_refs())
+    claimed: set = set()
+    for line in pack.lines:
+        where = f"line {line.line_no} ({line.description})"
+        if line.line_id not in named:
+            raise_finding(FindingCode.QUOTE_LINE_OMITTED,
+                          f"{where} is on the quote but not in the document",
+                          location=line.line_id)
+            continue
+        wanted = [line.cell(c) for c in REQUIRED_COLUMNS if c != "description"]
+        row = next((i for i, chunk in enumerate(chunks)
+                    if i not in claimed and line.description in chunk
+                    and all(w in chunk.split() for w in wanted)), None)
+        if row is None:
+            raise_finding(FindingCode.QUOTE_LINE_OMITTED,
+                          f"{where} is in the document but is not drawn on the page "
+                          f"with its quantity, price and total",
+                          location=line.line_id)
+        else:
+            claimed.add(row)
+
+    # -- 5. the total on the page is the total on record --------------------
+    if pack.total_fact_id not in ast.fact_refs():
+        raise_finding(FindingCode.QUOTE_TOTAL_MISMATCH,
+                      "the quote document does not state the quote's total",
+                      location=pack.total_fact_id)
+    for ref in sorted(ast.fact_refs()):
+        entry = pack.fact(ref)
+        if entry is None:
+            continue
+        drawn = [c for c in chunks if entry.label in c]
+        if not drawn:
+            raise_finding(FindingCode.QUOTE_TOTAL_MISMATCH,
+                          f"{entry.label} is in the document but not on the page",
+                          location=ref)
+        for chunk in drawn:
+            shown = _same(m.group(0) for m in NUMBER.finditer(chunk.replace(entry.label, " ")))
+            if shown != _same(entry.tokens()):
+                raise_finding(FindingCode.QUOTE_TOTAL_MISMATCH,
+                              f"{entry.label} reads {entry.display} on record but the "
+                              f"page shows {chunk!r}", location=ref)
+
+    # -- 6. no figure on the page that the pack does not hold ---------------
+    #
+    # Words are removed before the scan, as ``run`` removes labels: a description, a name
+    # or a term is not a figure, and adding its digits to the allowed set would license
+    # them everywhere on the page.
+    words = [who.quote_ref, who.number, who.account_name, who.contact_name]
+    allowed: set = set()
+    for line in pack.lines:
+        words.extend((line.description, line.sku, line.mpn, line.unit_of_measure))
+        for column in ("line_no", "quantity", "unit_price", "line_total"):
+            allowed.update(m.group(0) for m in NUMBER.finditer(line.cell(column)))
+    words.extend(t.text for t in pack.terms)
+    words.extend(n.text for n in pack.notes)
+    for entry in pack.facts:
+        words.append(entry.label)
+        allowed |= entry.tokens()
+    for day in (who.quote_date, who.valid_until):
+        allowed.update(m.group(0) for m in NUMBER.finditer(long_date(day)))
+    allowed = _same(allowed)
+    for chunk in chunks:
+        stripped = chunk
+        for word in sorted((w for w in words if w), key=len, reverse=True):
+            stripped = stripped.replace(word, " ")
+        for match in NUMBER.finditer(stripped):
+            if match.group(0).replace(",", "") not in allowed:
+                raise_finding(FindingCode.REPORT_UNTRACED_FIGURE,
+                              f"{match.group(0)!r} is on the page but is not a figure "
+                              f"the quote holds",
+                              location=chunk.strip()[:120])
+
+    # -- 7. nothing we pay is on the page -----------------------------------
+    #
+    # Figures are searched for in what the customer reads. Names are searched for in the
+    # whole file bar the stylesheet, so one hidden in an attribute or a comment is caught.
+    try:
+        quote_render.assert_no_internal_names(_STYLE.sub(" ", source))
+        quote_render.assert_no_internal_values("\n".join(chunks), _customer_record(pack),
+                                               internal)
+    except quote_render.InternalFieldLeak as leak:
+        raise_finding(FindingCode.INTERNAL_FIELD_LEAK, str(leak))
+
+    # -- 8. the reproducibility record is complete --------------------------
+    if not artefact.recorded():
+        raise_finding(FindingCode.MISSING_HASH_RECORD,
+                      "the artefact record is incomplete: it must carry the pack hash, "
+                      "the style version, the AST hash and the renderer version")
     elif artefact.pack_hash != pack.hash:
         raise_finding(FindingCode.MISSING_HASH_RECORD,
                       f"the artefact records pack hash {artefact.pack_hash[:12]} "

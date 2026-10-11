@@ -149,10 +149,14 @@ class FactBuilder:
     and converts a rejected fact into a Finding instead of an exception.
     """
 
-    def __init__(self, *, pack_id: str, scope: Dict[str, Any], as_of: str) -> None:
+    def __init__(self, *, pack_id: str, scope: Dict[str, Any], as_of: str,
+                 source: Any = None) -> None:
         self.pack_id = pack_id
         self.scope = scope
         self.as_of = as_of
+        # A record the caller has already read, for a builder that would otherwise read
+        # it again. None for every report type.
+        self.source = source
         self.facts: List[FactEntry] = []
         self.findings: List[Finding] = []
         # Fields of a pack class that has more than facts and findings. Empty for a report.
@@ -284,6 +288,7 @@ def build_fact_pack(
     now: Optional[datetime] = None,
     emit_audit: bool = True,
     writer: Any = None,
+    source: Any = None,
 ) -> FactPack:
     """Run the registered query set and return an immutable pack.
 
@@ -300,7 +305,7 @@ def build_fact_pack(
     resolved_as_of = as_of or date.today().isoformat()
     pack_id = pack_id_for(report_type_id, scope, resolved_as_of)
 
-    builder = FactBuilder(pack_id=pack_id, scope=scope, as_of=resolved_as_of)
+    builder = FactBuilder(pack_id=pack_id, scope=scope, as_of=resolved_as_of, source=source)
     _BUILDERS[report_type_id](builder)
 
     pack = _PACK_CLASSES.get(report_type_id, FactPack)(
