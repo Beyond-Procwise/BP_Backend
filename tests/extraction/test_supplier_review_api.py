@@ -93,3 +93,26 @@ def test_reject_creates_distinct_supplier(client):
         assert SR.resolve_or_create_supplier(f"{PFX} Distinctco Ltd", c) == res["supplier_id"]
     # second confirm/reject on same review → 409
     assert client.post(f"/suppliers/reviews/{rid}/reject", json={"reviewer": "t"}).status_code == 409
+
+
+def test_with_sign_in_off_a_decision_is_saved_and_says_nobody_was_identified():
+    """require_user returns None only when auth is explicitly off. That used to
+    reach the alias insert as a NULL author and come back as a 500. The body's
+    'reviewer' still signs nothing."""
+    from api.auth import require_user
+
+    app = FastAPI(); app.include_router(supplier_review.router)
+    app.dependency_overrides[require_user] = lambda: None
+    anonymous = TestClient(app)
+
+    name = f"{PFX} Nobody Signed Ltd"
+    rid = _mk_review("created", f"SUP-{PFX}New", f"SUP-{PFX}Canon", name)
+    res = anonymous.post(f"/suppliers/reviews/{rid}/confirm", json={"reviewer": "t"})
+    assert res.status_code == 200, res.text
+    who = supplier_review.UNIDENTIFIED_REVIEWER
+    assert _recorded(rid, name) == (who, who)
+
+    name2 = f"{PFX} Nobody Split Ltd"
+    rid2 = _mk_review("linked", f"SUP-{PFX}Canon", f"SUP-{PFX}Canon", name2)
+    assert anonymous.post(f"/suppliers/reviews/{rid2}/reject", json={"reviewer": "t"}).status_code == 200
+    assert _recorded(rid2, name2) == (who, who)

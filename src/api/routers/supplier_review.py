@@ -134,11 +134,18 @@ def sweep_duplicates(min_score: float | None = None, principal=Depends(require_u
         return SR.sweep_supplier_duplicates(c, min_score=min_score)
 
 
-def _reviewer(principal) -> str | None:
+# Who is recorded when sign-in is switched off and so nobody is identified. Said
+# plainly rather than left empty: the alias table refuses a merge with no author
+# (created_by is NOT NULL), which used to surface as a 500. Not the column's
+# default 'system' either -- a person decided this, the system did not.
+UNIDENTIFIED_REVIEWER = "unidentified (sign-in off)"
+
+
+def _reviewer(principal) -> str:
     """The token, never `body.reviewer`. A merge into the supplier master is not
     something a caller gets to sign in somebody else's name."""
 
-    return getattr(principal, "subject", None) or None
+    return getattr(principal, "subject", None) or UNIDENTIFIED_REVIEWER
 
 
 @router.post("/reviews/{review_id}/confirm")
