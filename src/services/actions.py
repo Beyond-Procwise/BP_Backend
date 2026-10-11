@@ -76,14 +76,23 @@ ACTIONS: Dict[str, str] = {
     "catalog.write": "write",
     "account.write": "write",
     "sales.write": "write",
+    # Drafting a customer quote and setting its prices. Only the company sees a draft, so
+    # these are writes; what cannot be taken back (approve, issue, send, sell below the
+    # floor) is named further down and refused unless a policy permits it.
+    "sales_quote.create": "write",
+    "sales_quote.price": "write",
     # --- communicating ---------------------------------------------------
     "email.send": "communicate",
     "email.reply": "communicate",
     "sales_quote.issue": "communicate",
+    "sales_quote.send": "communicate",
     # --- transacting -----------------------------------------------------
     "spend.approve": "transact",
     "negotiation.counter": "transact",
     "sales_quote.approve": "transact",
+    # Issuing a quote priced under the configured margin floor. Always a recorded
+    # decision by a named person, never a default.
+    "sales_quote.override_margin_floor": "transact",
     # Signing off a report commits the company to what it says before it leaves;
     # who may is policy (report_signoff_authority), which reports need it too.
     "report.signoff": "transact",

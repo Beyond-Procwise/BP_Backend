@@ -225,7 +225,7 @@ def set_stage(opportunity_id: int, body: StageBody, principal=Depends(require_us
 
 @router.post("/quotes")
 def create_quote(body: QuoteBody, principal=Depends(require_user)):
-    gate("sales.write", principal, agent=_AGENT, context={"account_id": body.account_id})
+    gate("sales_quote.create", principal, agent=_AGENT, context={"account_id": body.account_id})
     data = body.model_dump()
     data["lines"] = [l.model_dump() for l in body.lines]
     with http_errors(), get_conn() as c:
