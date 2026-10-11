@@ -37,8 +37,18 @@ CASES = {
                   "role.attachment", "Master Services Agreement Helix"),
     "schedule":  ("doctype.schedule", "doctype.master_agreement", None, "Schedule 2 Helix Services",
                   "role.attachment", "Master Services Agreement Helix"),
+    # Switched on 2026-10-11. Their behaviour here comes from their ROLE in the
+    # vocabulary alone: a DPA attaches like a schedule, a side letter or renewal
+    # amends like a variation. The guaranty has no parent path (role.supporting).
+    "dpa":       ("doctype.dpa", "doctype.master_agreement", None, "Data Processing Agreement Helix",
+                  "role.attachment", "Master Services Agreement Helix"),
+    "side_letter": ("doctype.side_letter", "doctype.master_agreement", None, "Side Letter",
+                    "role.variation", "Master Services Agreement Helix"),
+    "renewal":   ("doctype.renewal", "doctype.master_agreement", None, "Renewal Agreement",
+                  "role.variation", "Master Services Agreement Helix"),
 }
-AMENDMENT_TYPES = {"variation", "addendum", "ccn"}
+AMENDMENT_TYPES = {"variation", "addendum", "ccn", "side_letter", "renewal"}
+ATTACHMENT_TYPES = {"sla", "schedule", "dpa"}
 
 
 def _insert(made, cid, dtype, title, sup, start, end, role, ref=None, **extra):
@@ -93,7 +103,7 @@ def test_declared_reference_and_same_supplier_finds_the_right_parent(world, name
     row = _proposal(C)
     assert row and row[0] == P, (name, r)
     assert _score(row[1]) >= 65.0, row
-    if name not in AMENDMENT_TYPES and name not in ("sla", "schedule"):
+    if name not in AMENDMENT_TYPES and name not in ATTACHMENT_TYPES:
         assert _score(row[1]) >= 92.0, "an exact reference on a SOW/call-off/order form is auto_link band"
 
 
@@ -206,3 +216,71 @@ def test_the_notes_show_a_matching_buyer_on_a_hierarchy_proposal(world):
     CL.propose_parent_links(contract_id=C)
     notes = _proposal(C)[1]
     assert "buyer: OK" in notes and "structure:" in notes and "title:" in notes, notes
+
+
+def test_a_guaranty_is_never_proposed_a_parent(world):
+    """role.supporting: it stands beside an agreement, it does not sit under one.
+    Named reference, same supplier, overlapping term -- still nothing."""
+    k = uuid.uuid4().hex[:6].upper()
+    sup, P, C = f"S-{k}", f"P-{k}", f"C-{k}"
+    _insert(world, P, "doctype.master_agreement", "Master Services Agreement Helix", sup,
+            "2026-01-01", "2027-12-31", "role.master")
+    _insert(world, C, "doctype.guaranty", "Parent Company Guarantee", sup,
+            "2026-03-01", "2026-09-30", "role.supporting", ref=P)
+    assert CL.is_child({"resolved_doc_type": "doctype.guaranty"}) is False
+    CL.propose_parent_links(contract_id=C)
+    assert _proposal(C) is None
+
+
+def test_a_dpa_does_not_attach_to_an_nda(world):
+    """The attachment rule the SLA and schedule already follow holds for the DPA."""
+    k = uuid.uuid4().hex[:6].upper()
+    sup, P, C = f"S-{k}", f"P-{k}", f"C-{k}"
+    _insert(world, P, "doctype.nda", "Non-Disclosure Agreement Helix", sup,
+            "2026-01-01", "2027-12-31", "role.master")
+    _insert(world, C, "doctype.dpa", "Data Processing Agreement Helix", sup,
+            "2026-03-01", "2026-09-30", "role.attachment", ref=P)
+    CL.propose_parent_links(contract_id=C)
+    assert _proposal(C) is None
+
+
+def test_a_renewal_starting_the_day_after_its_parent_ends_is_proposed(world):
+    """The live case of 2026-10-11 (RN-2026-0313 -> SA-2026-0310, scored 47.2 and
+    refused): a renewal's term FOLLOWS its parent's, which the amendment profile
+    reads as a conflict."""
+    k = uuid.uuid4().hex[:6].upper()
+    sup, P, C = f"S-{k}", f"P-{k}", f"C-{k}"
+    _insert(world, P, "doctype.service_agreement", "Service Agreement", sup,
+            "2026-03-01", "2027-02-28", "role.master")
+    _insert(world, C, "doctype.renewal", "Renewal Agreement", sup,
+            "2027-03-01", "2028-02-29", "role.variation", ref=P)
+    r = CL.propose_parent_links(contract_id=C)
+    row = _proposal(C)
+    assert row and row[0] == P, r
+    assert "amend" in row[1] and "term: OK" in row[1], row
+
+
+def test_a_variation_starting_after_its_parent_ended_is_still_refused(world):
+    """The renewal rule is for renewals. A variation of an expired contract is a
+    conflict, as before."""
+    k = uuid.uuid4().hex[:6].upper()
+    sup, P, C = f"S-{k}", f"P-{k}", f"C-{k}"
+    _insert(world, P, "doctype.service_agreement", "Service Agreement", sup,
+            "2026-03-01", "2027-02-28", "role.master")
+    _insert(world, C, "doctype.variation", "Variation 2", sup,
+            "2027-03-01", "2028-02-29", "role.variation", ref=P)
+    r = CL.propose_parent_links(contract_id=C)
+    assert _proposal(C) is None and r["below_threshold"] == 1, r
+
+
+def test_a_renewal_naming_nothing_is_not_proposed(world):
+    """The amendment gate holds for the renewal profile too."""
+    k = uuid.uuid4().hex[:6].upper()
+    sup, P, C = f"S-{k}", f"P-{k}", f"C-{k}"
+    _insert(world, P, "doctype.service_agreement", "Service Agreement", sup,
+            "2026-03-01", "2027-02-28", "role.master", **_CORROBORATORS)
+    _insert(world, C, "doctype.renewal", "Renewal Agreement", sup,
+            "2027-03-01", "2028-02-29", "role.variation", **_CORROBORATORS)
+    r = CL.propose_parent_links(contract_id=C)
+    assert _proposal(C) is None and r["proposed"] == 0, r
+

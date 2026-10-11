@@ -51,6 +51,10 @@ _TITLE_WORDS = (
     "non-disclosure", "nda", "memorandum", "mou", "service level agreement",
     "sla", "call-off", "call off", "framework", "licence", "license", "lease",
     "deed", "terms of business", "engagement letter", "purchase order",
+    # 2026-10-11: live uploads headed "SIDE LETTER" and "PARENT COMPANY
+    # GUARANTEE" read no title. A numbered clause ("3. NO GUARANTEE") is still
+    # skipped by _read_title before it reaches this list.
+    "side letter", "guarantee", "guaranty",
 )
 
 _HEADING = re.compile(r"(?m)^#{1,6}\s*(?P<text>[^\n]{3,90})\s*$")

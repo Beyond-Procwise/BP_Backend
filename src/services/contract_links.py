@@ -60,6 +60,7 @@ from src.services.governed_limits import limit as _governed_limit
 from src.services.graph_resolution.profiles import contract_amendment as _am
 from src.services.graph_resolution.profiles import contract_attachment as _at
 from src.services.graph_resolution.profiles import contract_hierarchy as _ch
+from src.services.graph_resolution.profiles import contract_renewal as _rn
 
 log = logging.getLogger(__name__)
 
@@ -182,6 +183,7 @@ def _role_of(child: dict):
 #: signal is printed under its own id.
 _NOTE_LABELS = {"declared_reference": "reference", "expected_structure": "structure",
                 "supplier": "supplier", "term_containment": "term",
+                "term_succession": "term",
                 "title_overlap": "title"}
 
 
@@ -201,8 +203,23 @@ def _is_attachment(child: dict) -> bool:
     return _role_of(child) == "role.attachment"
 
 
+def _is_renewal(child: dict) -> bool:
+    """A renewal: a variation whose term follows its parent's instead of sitting
+    inside it. The one child told apart by its TYPE rather than its role -- the
+    vocabulary's role says what it does to the parent (role.variation, so the link
+    is still 'amends'), not when it runs."""
+    return child.get("resolved_doc_type") == "doctype.renewal"
+
+
+#: Profiles for documents identified by what they NAME: without a resolving
+#: reference nothing is proposed, whatever else matches.
+_NAMED_PARENT_PROFILES = (_am, _rn)
+
+
 def _profile_module(child: dict):
     """The scoring profile for this child, chosen by its role in the vocabulary."""
+    if _is_renewal(child):
+        return _rn
     if _is_variation(child):
         return _am
     if _is_attachment(child):
@@ -504,7 +521,7 @@ def propose_parent_links(limit: Optional[int] = None,
                 # the same as never finding one, so it is counted apart.
                 below_threshold += 1
                 continue
-            if module is _am and _reference_status(best) != "OK":
+            if module in _NAMED_PARENT_PROFILES and _reference_status(best) != "OK":
                 # An amendment is identified by what it amends. Buyer, currency,
                 # law and signatory are shared by all of a supplier's contracts
                 # and cannot say WHICH one, so without a resolving reference
