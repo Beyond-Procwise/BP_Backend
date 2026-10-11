@@ -171,10 +171,9 @@ _DOCUMENT_TYPE_CONCEPTS = (
 )
 
 #: Known to the vocabulary, resolved by nothing: only status='active' rows resolve.
-_PROPOSED_TYPES = frozenset({
-    "doctype.policy_document", "doctype.dpa", "doctype.side_letter",
-    "doctype.renewal", "doctype.guaranty",
-})
+#: The DPA, side letter, renewal and guaranty left this set on 2026-10-11
+#: (deploy/sql/2026-10-11_contract_types_activate.sql).
+_PROPOSED_TYPES = frozenset({"doctype.policy_document"})
 
 
 CONCEPTS: Mapping[str, Concept] = {
@@ -407,15 +406,21 @@ DOCUMENT_TYPES: Mapping[str, DocumentType] = {
             ("line items with quantities and a total",),
             "purchase_order",
         ),
+        # Active since 2026-10-11, read through the contract pipeline: each is a
+        # KIND of contract, so a true DPA uploaded as "contract" is a refinement
+        # and not a disagreement (type_resolver._is_refinement). title_only is
+        # what makes that safe -- their names are everyday clause wording, and
+        # without it two body mentions relabelled an untitled contract.
+        # execution_mode stays None: nothing reads it, and none was ever ruled on.
         DocumentType("doctype.dpa", "role.attachment", None, None,
-                     ("dpa", "data processing agreement"), (), (), None, status="proposed",
+                     ("dpa", "data processing agreement"), (), (), "contract",
                      title_only=True),
         DocumentType("doctype.side_letter", "role.variation", None, None,
-                     ("side letter",), (), (), None, status="proposed", title_only=True),
+                     ("side letter",), (), (), "contract", title_only=True),
         DocumentType("doctype.renewal", "role.variation", None, None,
-                     ("renewal agreement",), (), (), None, status="proposed", title_only=True),
+                     ("renewal agreement",), (), (), "contract", title_only=True),
         DocumentType("doctype.guaranty", "role.supporting", None, None,
-                     ("guaranty", "guarantee", "parent company guarantee"), (), (), None,
-                     status="proposed", title_only=True),
+                     ("guaranty", "guarantee", "parent company guarantee"), (), (),
+                     "contract", title_only=True),
     )
 }

@@ -174,6 +174,10 @@ def test_exactly_the_contract_family_structures_can_refine():
         "doctype.master_agreement", "doctype.nda", "doctype.order_form",
         "doctype.schedule", "doctype.service_agreement", "doctype.sla",
         "doctype.sow", "doctype.termination_notice", "doctype.variation",
+        # Added deliberately 2026-10-11 (Nick's ruling): each is a kind of
+        # contract. All four are title_only, so only a page TITLED as one can
+        # refine -- a body mention never does.
+        "doctype.dpa", "doctype.guaranty", "doctype.renewal", "doctype.side_letter",
     }
 
 

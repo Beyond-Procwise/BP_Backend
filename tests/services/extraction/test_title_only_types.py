@@ -20,7 +20,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from src.services.concepts import seed                                          # noqa: E402
-from src.services.concepts.vocabulary import SEED_DOC_TYPE_ROWS, build_vocabulary  # noqa: E402
+from src.services.concepts.vocabulary import (                                  # noqa: E402
+    SEED_DOC_TYPE_ROWS, SEED_VOCABULARY, build_vocabulary)
 from src.services.extraction.type_resolver import resolve_document_type          # noqa: E402
 
 FOUR = ("doctype.dpa", "doctype.side_letter", "doctype.renewal", "doctype.guaranty")
@@ -34,21 +35,26 @@ _CONCEPT_ROWS = [
 
 
 def _vocab(*, activate: bool, title_only: bool | None = None):
-    """The seed vocabulary, optionally with the four proposed types switched on.
+    """The seed vocabulary with the four title-only types switched on or off.
 
+    The seed has them active since 2026-10-11, so ``activate=False`` puts them
+    back to 'proposed': that is the vocabulary as it was before they existed for
+    the resolver, the baseline every "nothing changed" assertion compares with.
     ``title_only=None`` keeps the seed's own flag; True/False overrides it, so a
     test can show what the flag is holding back.
     """
+    status = "active" if activate else "proposed"
+
     def doc(row):
-        if row["concept_code"] not in FOUR or not activate:
+        if row["concept_code"] not in FOUR:
             return row
-        out = dict(row, status="active")
+        out = dict(row, status=status)
         if title_only is not None:
             out["title_only"] = title_only
         return out
 
     def con(row):
-        return dict(row, status="active") if activate and row["concept_code"] in FOUR else row
+        return dict(row, status=status) if row["concept_code"] in FOUR else row
 
     return build_vocabulary([con(c) for c in _CONCEPT_ROWS],
                             [doc(d) for d in SEED_DOC_TYPE_ROWS], source="test")
@@ -113,15 +119,57 @@ def test_a_schedule_heading_after_the_real_title_does_not_name_it():
     assert got.evidence_concept == "doctype.master_agreement"
 
 
-def test_the_four_proposed_types_are_seeded_title_only():
+def test_the_four_types_are_seeded_title_only():
     for code in FOUR:
         assert seed.DOCUMENT_TYPES[code].title_only is True, code
 
 
-def test_no_active_type_is_title_only_yet():
-    """Behaviour of every live type is unchanged by this flag's arrival."""
-    assert [d.concept_code for d in seed.DOCUMENT_TYPES.values()
-            if d.title_only and d.status == "active"] == []
+def test_the_four_are_the_only_title_only_types_and_all_are_active():
+    """Switched on 2026-10-11. Every OTHER live type still reads its body as before."""
+    assert sorted(d.concept_code for d in seed.DOCUMENT_TYPES.values() if d.title_only) \
+        == sorted(FOUR)
+    assert all(seed.DOCUMENT_TYPES[c].status == "active" for c in FOUR)
+
+
+# --- the live vocabulary: the seed as shipped, nothing overridden --------------
+
+@pytest.mark.parametrize("code", FOUR)
+@pytest.mark.parametrize("declared", [None, "doctype.contract_unspecified"])
+def test_live_body_mentions_change_nothing(code, declared):
+    """The shipped vocabulary reads an untitled contract exactly as it did while
+    the four types were proposed."""
+    text = _UNTITLED + "\n".join([_BODY[code]] * 5)
+    before = resolve_document_type(declared_concept=declared, full_text=text,
+                                   vocabulary=_vocab(activate=False))
+    live = resolve_document_type(declared_concept=declared, full_text=text,
+                                 vocabulary=SEED_VOCABULARY)
+    assert _outcome(live) == _outcome(before)
+    assert not any(e.concept_code in FOUR for e in live.evidence)
+
+
+@pytest.mark.parametrize("title, code", [
+    ("DATA PROCESSING AGREEMENT", "doctype.dpa"),
+    ("PARENT COMPANY GUARANTEE", "doctype.guaranty"),
+    ("SIDE LETTER", "doctype.side_letter"),
+    ("RENEWAL AGREEMENT", "doctype.renewal"),
+])
+def test_live_a_titled_document_uploaded_as_a_contract_is_refined_not_disputed(title, code):
+    """The reason they read through the contract pipeline: with no pipeline, a
+    true DPA uploaded to the contract zone read 'disagreed' and raised a review
+    item on a document that was filed correctly."""
+    text = f"{title}\n\nIn relation to the Master Services Agreement MSA-2026-01."
+    got = resolve_document_type(declared_concept="doctype.contract_unspecified",
+                                full_text=text, vocabulary=SEED_VOCABULARY)
+    assert (got.status, got.evidence_concept, got.agreement) == ("matched", code, "refined")
+
+
+@pytest.mark.parametrize("title", ["DATA PROCESSING AGREEMENT", "SIDE LETTER"])
+def test_live_a_titled_document_uploaded_as_an_invoice_is_still_disputed(title):
+    """Refinement stays narrow: only the generic contract declaration is refined."""
+    text = f"{title}\n\nIn relation to the Master Services Agreement MSA-2026-01."
+    got = resolve_document_type(declared_concept="doctype.invoice",
+                                full_text=text, vocabulary=SEED_VOCABULARY)
+    assert got.agreement == "disagreed"
 
 
 def test_the_loader_reads_the_flag_and_a_missing_column_means_false():
