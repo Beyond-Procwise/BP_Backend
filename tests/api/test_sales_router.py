@@ -87,7 +87,7 @@ def test_a_quote_is_created_by_the_token_holder(client, monkeypatch):
         "lines": [{"catalog_item_id": 1, "quantity": "4", "unit_price": "14"}]})
     assert r.status_code == 200, r.text
     assert seen["created_by"] == CALLER
-    assert client.gates == ["sales.write"]
+    assert client.gates == ["sales_quote.create"]
 
 
 def test_approval_asks_the_transact_gate_and_uses_the_token(client, monkeypatch):
