@@ -31,6 +31,18 @@ def clean(cur):
     cur.execute("DELETE FROM proc.bp_catalog_item WHERE distributor_sku LIKE 'LIVETEST-%%'")
     cur.execute("DELETE FROM proc.bp_catalog_source WHERE feed_name LIKE 'LIVETEST%%'")
     cur.execute("DELETE FROM proc.bp_catalog_mapping WHERE mapping_profile LIKE 'livetest%%'")
+    cur.execute("DELETE FROM proc.bp_doc_number_counter WHERE doc_type LIKE 'LIVETEST%%'")
+
+
+@pytest.fixture(autouse=True)
+def _numbers_from_a_test_series(monkeypatch):
+    """A test that issues a quote takes its number from a LIVETEST series, never from the
+    real one: a test run must not use up numbers, or leave a gap in them. `clean` removes
+    the series, so each test starts it again at 1."""
+    from src.services.sell_side import quotes
+
+    monkeypatch.setattr(quotes, "NUMBER_SERIES", f"{SENTINEL}_sales_quote")
+    monkeypatch.setattr(quotes, "NUMBER_PREFIX", f"{SENTINEL}-Q")
 
 
 @pytest.fixture

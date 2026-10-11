@@ -30,7 +30,7 @@ INTERNAL_FIELDS = frozenset({
     "cost_price", "cost_basis", "customer_safe",
 })
 CUSTOMER_HEADER_FIELDS = frozenset({
-    "quote_ref", "account_name", "contact_name", "currency", "quote_date",
+    "quote_ref", "quote_number", "account_name", "contact_name", "currency", "quote_date",
     "valid_until", "total_ex_tax",
 })
 CUSTOMER_LINE_FIELDS = frozenset({

@@ -77,8 +77,8 @@ are named for B7a and B12.
    B8b's territory), not a different class.
 4. **`FactPack.hash` was restructured** so a subclass can add to it. A report pack hashes
    exactly as before; a test pins a value taken before the change.
-5. **The page shows the draft reference (`SQ-…`) labelled "Reference".** Nothing mints a
-   quote number yet (B6), so `identity.number` is always empty and no "Quote number" prints.
+5. **The page shows the draft reference (`SQ-…`) labelled "Reference"**, and "Quote number"
+   above it once the quote has one (B6, below).
 6. **The supplier's own name is not on the page.** No entity profile exists (G2). A supplier
    signature block reads "Signed for the supplier".
 7. **Tax is not on the page.** No rate is configured (Q4). The only total is "Total excluding tax".
@@ -109,8 +109,44 @@ are named for B7a and B12.
 
 | Item | Waiting on |
 |---|---|
-| B6 numbering | a new counter table on both databases — needs Nick's yes |
 | B7a price from cost, margin floor | a floor value, which needs the settings decision (Q4) |
 | B12 send | a ruling: is sending the quote the act that issues it? The UI has one status (`sent`), the backend has `issue` as its own gated step. Also depends on the Email compose backend, which another stream owns |
 | Dropping the seven old cost/margin columns | separate approval (first slice, step 2) |
 | Storing or reloading a quote pack through the report job store | not wired; `job_store` loads `FactPack`, which refuses the quote fields. Needed only if quotes become jobs |
+
+## B6. Numbering — added 2026-10-11, branch `qda-b6-numbering`
+
+Approved by Nick 2026-10-11: the counter table, and a `quote_number` column on the existing
+quote table to hold the number given.
+
+- Migration `deploy/sql/2026-10-11_bp_doc_number_counter.sql` (+ rollback), applied to
+  bp_testdb and bp_sqldb. On bp_testdb it was applied, rolled back, applied and re-run.
+  - `proc.bp_doc_number_counter (doc_type, year)` holds the last number handed out.
+  - `proc.bp_sales_quote.quote_number`, empty until issue, unique when set.
+  - `tenant_id` set to `'default'` on the three bp_testdb quotes that had none (bp_sqldb
+    holds no quotes). New quotes are written with it, so `UNIQUE (tenant_id, quote_ref)`
+    is enforced for the first time.
+- `sell_side/numbering.allocate` takes the next value on the caller's transaction.
+  `quotes.issue` calls it in the same transaction as the status change and the audit event,
+  so a failed issue gives its number back. The issue event carries the number.
+- Format `Q-<year>-<4 digits>` (`Q-2026-0007`), one series per year. The format is two
+  constants in `quotes.py`; review question Q12 (format and ownership) is still open and
+  changing it later does not touch the counter.
+- `quote_ref` (`SQ-…`) is unchanged and stays the internal draft reference.
+
+Not done, on purpose:
+
+- **The two quotes already issued on bp_testdb (496, 529) have no number.** A number is
+  minted at issue, never afterwards. The gate does not refuse an issued quote without one,
+  or those two could no longer be shown.
+- **Deploy order:** the migration must be on a database before code that reads
+  `quote_number` runs against it. It is on both now.
+
+Tests (live database, `tests/sell_side/test_numbering_live.py`, 16): consecutive numbers one
+after another; eight issues released together on eight connections take 1 to 8 with no gap
+or repeat; a second allocation waits for the first; a rolled-back allocation is handed out
+again; an issue whose audit row cannot be written gives its number back; an expired quote
+takes none; a quote is numbered once; two quotes cannot hold one number. Tests draw from a
+`LIVETEST` series that is deleted afterwards, so a run uses no real number. Eleven deliberate
+breaks, including an allocator with no lock and one that commits early: all go red.
+Suites against bp_testdb: 943 passed, the same 3 unrelated failures as above.
