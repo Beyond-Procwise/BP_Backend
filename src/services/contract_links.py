@@ -510,6 +510,10 @@ def propose_parent_links(limit: Optional[int] = None,
             link_type = _link_type(child)
             verb = {"child_of": "sit under", "amends": "amend",
                     "attaches_to": "attach to"}[link_type]
+            if _is_renewal(child):
+                # Wording only: the stored link_type stays 'amends' (a renewal is
+                # a variation by role), but a person reads "renew".
+                verb = "renew"
             scored = sorted(
                 ((module.score(scoring_child, parent), parent)
                  for parent in candidates),
