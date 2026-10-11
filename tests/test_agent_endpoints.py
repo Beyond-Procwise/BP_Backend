@@ -338,6 +338,43 @@ def test_email_workflow_marks_failed_dispatch(monkeypatch):
     assert prs.updated_details["status"] == "failed"
 
 
+def test_a_send_the_guard_refuses_answers_with_the_guards_reason(monkeypatch):
+    """A refusal is a 403 carrying why, not a 500 the person cannot act on.
+
+    The send guard raises ``DispatchDenied``; the route used to let its catch-all turn
+    that into a server error, so "the draft changed since it was approved; it must be
+    approved again" reached nobody.
+    """
+    from src.services import guardrail
+    from src.services.email_dispatch_guard import DispatchDenied
+
+    reason = "the draft changed since it was approved; it must be approved again"
+    app = FastAPI()
+    app.include_router(workflows_router)
+    _authorize_as_approver(app)
+    orchestrator = DummyOrchestrator()
+    app.state.orchestrator = orchestrator
+    app.state.agent_nick = orchestrator.agent_nick
+    client = TestClient(app)
+
+    class StubDispatchRefused:
+        def __init__(self, agent_nick):
+            self.agent_nick = agent_nick
+
+        def resolve_workflow_id(self, identifier):
+            return f"wf-{identifier}" if identifier else None
+
+        def send_draft(self, identifier, **kwargs):
+            raise DispatchDenied(guardrail.Decision(allowed=False, reason=reason))
+
+    monkeypatch.setattr("api.routers.workflows.EmailDispatchService", StubDispatchRefused)
+
+    resp = client.post("/workflows/email", data={"rfq_id": "RFQ-456", "action_id": "workflow-action"})
+
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == reason
+
+
 def test_email_dispatch_without_workflow_is_rejected(monkeypatch):
     app = FastAPI()
     app.include_router(workflows_router)

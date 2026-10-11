@@ -1749,6 +1749,20 @@ async def send_email(
             },
         )
 
+    except PermissionError as exc:
+        # The send guard said no (email_dispatch_guard.DispatchDenied). That is an
+        # answer for the person, with its reason, not a server fault: the catch-all
+        # below turned it into a 500 and the reason reached nobody.
+        prs.log_action(
+            process_id=process_id,
+            agent_type="email_dispatch",
+            action_desc=input_data,
+            status="failed",
+            action_id=action_id,
+        )
+        prs.update_process_status(process_id, -1)
+        raise HTTPException(status_code=403, detail=str(exc))
+
     except Exception as exc:  # pragma: no cover - network/runtime
         prs.log_action(
             process_id=process_id,
