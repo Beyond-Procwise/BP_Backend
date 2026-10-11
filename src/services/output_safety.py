@@ -269,7 +269,23 @@ def _looks_like_route(fragment: str) -> bool:
     return path.startswith("/") and len(segments) >= 2
 
 
+# The token in an email draft's hidden tracking marker. Every stored draft ends with
+# "<!-- PROCWISE_MARKER:TRACKING:..|SUPPLIER:..|TOKEN:<12 hex>|RUN:.. -->" (written by
+# utils.email_markers.attach_hidden_marker), and the credential rule read "TOKEN:..." as a
+# leaked secret, so a person reviewing a draft got the apology sentence instead of the email.
+# The token is sent to the supplier inside the email; it is not a secret. Only that token,
+# in a marker of exactly this shape, is excused: the rest of the marker and the whole email
+# around it are still checked, and a "token:" anywhere else is still a credential.
+_MARKER_ID = r"[A-Za-z0-9_-]{1,120}"
+_EMAIL_MARKER_TOKEN = re.compile(
+    r"(<!-- PROCWISE_MARKER:TRACKING:" + _MARKER_ID + r"(?:\|SUPPLIER:" + _MARKER_ID + r")?)"
+    r"\|TOKEN:[A-F0-9]{12}"
+    r"((?:\|RUN:" + _MARKER_ID + r")? -->)"
+)
+
+
 def _identifier_violations(text: str) -> List[Violation]:
+    text = _EMAIL_MARKER_TOKEN.sub(r"\1\2", text)
     out: List[Violation] = []
     for kind, pattern in _PATTERNS:
         for m in pattern.finditer(text):
