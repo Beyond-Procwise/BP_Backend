@@ -177,8 +177,10 @@ Ruling from Nick, 2026-10-11: **sending is the act that issues the quote.**
   `sent_by_a_person`, `within_daily_limit`.
 - **Permission.** The route asks `sales_quote.send`, and `sales_quote.issue` as well when
   the quote is still only approved. `sales_quote.send` is refused for everyone until
-  `deploy/sql/2026-10-11_sales_quote_send_authority.sql` is applied. **It is not applied**:
-  it switches on real email to customers and waits for Nick's yes.
+  `deploy/sql/2026-10-11_sales_quote_send_authority.sql` is applied. **Applied 2026-10-11 to bp_testdb
+  (policy 2552) and bp_sqldb (policy 463) on Nick's yes**: Approver and Admin are allowed,
+  Buyer, Viewer and an unsigned caller are refused, checked through the gate on both.
+  `POST /sales/quotes/{id}/issue` stays (Nick's ruling): it issues a quote without emailing it.
 - **Record.** `email.send` (allowed) is written on its own connection before the relay is
   called, so an email that cannot be recorded does not go and one that goes counts against
   the sender's daily limit (`email_dispatch_guard.check_daily_volume`, lifted out of
