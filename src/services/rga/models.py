@@ -133,6 +133,10 @@ class FindingCode(str, Enum):
     PARTIAL_CURRENCY_CONVERSION = "PARTIAL_CURRENCY_CONVERSION"
     # A customer quote (services/rga/quote_models). Its lines do not add up to its total.
     QUOTE_TOTAL_MISMATCH = "QUOTE_TOTAL_MISMATCH"
+    QUOTE_LINE_OMITTED = "QUOTE_LINE_OMITTED"
+    INTERNAL_FIELD_LEAK = "INTERNAL_FIELD_LEAK"
+    QUOTE_NUMBER_BEFORE_ISSUE = "QUOTE_NUMBER_BEFORE_ISSUE"
+    QUOTE_NOT_APPROVED = "QUOTE_NOT_APPROVED"
 
 
 class Finding(BaseModel):

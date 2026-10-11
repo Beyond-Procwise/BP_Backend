@@ -48,6 +48,7 @@ def _quote(status="approved"):
             "contact_name": None, "currency": "GBP", "quote_date": dt.date(2026, 9, 11),
             "valid_until": dt.date(2026, 10, 11), "total_ex_tax": D("56.00"),
             "lines": [{"sales_quote_line_id": 91, "line_no": 1, "item_description": "W",
+                       "currency": "GBP",
                        "quantity": D("4"), "unit_price": D("14"), "line_total": D("56.00")}],
             "justifications": []}
 
@@ -124,7 +125,8 @@ def test_a_cost_figure_in_the_customer_record_stops_the_page(client, both_record
     leaky = _quote()
     leaky["lines"][0]["item_description"] = "W, costs us 10.37"
     monkeypatch.setattr(sr.quotes, "get_quote", lambda conn, qid: leaky)
-    for path in ("/sales/quotes/9/customer", "/sales/quotes/9/customer.html"):
+    for path in ("/sales/quotes/9/customer", "/sales/quotes/9/customer.html",
+                 "/sales/quotes/9/customer.pdf"):
         with pytest.raises(qr.InternalFieldLeak, match="unit_cost"):
             client.get(path)
 
@@ -181,7 +183,35 @@ def test_opportunity_reads_carry_margin_so_they_ask_the_margin_gate(client, monk
     assert client.gates == ["margin.read"]
 
 
-@pytest.mark.parametrize("path", ["/sales/quotes/9/customer", "/sales/quotes/9/customer.html"])
+def test_the_customer_pdf_is_the_same_checked_document(client, both_records):
+    r = client.get("/sales/quotes/9/customer.pdf")
+    assert r.status_code == 200 and r.headers["content-type"] == "application/pdf"
+    assert r.content[:5] == b"%PDF-"
+
+
+def test_the_customer_page_bans_scripts_in_its_header_too(client, both_records):
+    r = client.get("/sales/quotes/9/customer.html")
+    assert "default-src 'none'" in r.headers["content-security-policy"]
+
+
+@pytest.mark.parametrize("path", ["/sales/quotes/9/customer.html", "/sales/quotes/9/customer.pdf"])
+def test_a_quote_that_fails_its_gate_has_no_page_and_says_why(client, both_records, monkeypatch, path):
+    wrong = _quote()
+    wrong["total_ex_tax"] = D("50.00")
+    monkeypatch.setattr(sr.quotes, "get_quote", lambda conn, qid: wrong)
+    r = client.get(path)
+    assert r.status_code == 409 and "QUOTE_TOTAL_MISMATCH" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("path", ["/sales/quotes/9/customer.html", "/sales/quotes/9/customer.pdf"])
+def test_a_draft_has_no_page(client, monkeypatch, path):
+    monkeypatch.setattr(sr.quotes, "get_quote", lambda conn, qid: _quote("draft"))
+    monkeypatch.setattr(sr.quotes, "get_quote_internal", lambda conn, qid: _internal())
+    assert client.get(path).status_code == 409
+
+
+@pytest.mark.parametrize("path", ["/sales/quotes/9/customer", "/sales/quotes/9/customer.html",
+                                  "/sales/quotes/9/customer.pdf"])
 def test_the_customer_views_ask_the_quote_read_gate(client, both_records, path):
     assert client.get(path).status_code == 200
     assert client.gates == ["quote.read"]

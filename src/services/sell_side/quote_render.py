@@ -7,7 +7,10 @@ Three layers, deliberately redundant:
      field name, so naming one fails the render instead of shipping it;
   3. a leak guard on VALUES -- the finished output is searched for this quote's
      own cost and margin figures, whatever key or sentence they arrived under.
-render_html re-runs the guards, so a view built by hand cannot bypass them.
+
+This module is the JSON view and the leak guards. The page and its PDF are drawn
+elsewhere, from a QuoteAST (services/rga/quote_pipeline); the gate there runs the
+same guards over the finished page.
 
 The quote handed in here is the customer record (quotes.get_quote), which has no
 cost in it. The internal record (quotes.get_quote_internal) is passed beside it
@@ -124,6 +127,17 @@ def _internal_figures(internal: Dict[str, Any]) -> Dict[Any, str]:
     return found
 
 
+def assert_no_internal_names(text: str) -> None:
+    """Search text for the NAME of an internal field, written with underscores or spaces."""
+    lowered = html.unescape(text).lower()
+    for name in sorted(INTERNAL_FIELDS):
+        for form in (name, name.replace("_", " ")):
+            if re.search(rf"(?<![a-z]){re.escape(form)}(?![a-z])", lowered):
+                raise InternalFieldLeak(
+                    f"INTERNAL_FIELD_LEAK: the internal field name {name!r} appears in "
+                    "what the customer would be sent")
+
+
 def assert_no_internal_values(rendered: str, quote: Dict[str, Any],
                               internal: Dict[str, Any]) -> None:
     """Search what the customer is about to be sent for this quote's cost and margin.
@@ -137,13 +151,7 @@ def assert_no_internal_values(rendered: str, quote: Dict[str, Any],
     too; that is this check failing closed.
     """
     text = html.unescape(rendered)
-    lowered = text.lower()
-    for name in sorted(INTERNAL_FIELDS):
-        for form in (name, name.replace("_", " ")):
-            if re.search(rf"(?<![a-z]){re.escape(form)}(?![a-z])", lowered):
-                raise InternalFieldLeak(
-                    f"INTERNAL_FIELD_LEAK: the internal field name {name!r} appears in "
-                    "what the customer would be sent")
+    assert_no_internal_names(text)
     allowed: Counter = Counter()
     for k in CUSTOMER_HEADER_FIELDS - FREE_TEXT_FIELDS:
         allowed += _numbers(" ".join(_flat(quote.get(k))))
@@ -171,35 +179,3 @@ def customer_view(quote: Dict[str, Any], internal: Dict[str, Any]) -> Dict[str, 
     _assert_no_internal(view)
     assert_no_internal_values(" ".join(_flat(view)), quote, internal)
     return view
-
-
-def _e(value: Any) -> str:
-    return "" if value is None else html.escape(str(value))
-
-
-def render_html(view: Dict[str, Any], *, quote: Dict[str, Any],
-                internal: Dict[str, Any]) -> str:
-    """The page, checked. `quote` and `internal` are required: there is no way to ask for
-    the HTML without the value check running over it."""
-    _assert_no_internal(view)
-    rows = "".join(
-        f"<tr><td>{_e(l.get('line_no'))}</td><td>{_e(l.get('distributor_sku'))}</td>"
-        f"<td>{_e(l.get('item_description'))}</td><td>{_e(l.get('quantity'))}</td>"
-        f"<td>{_e(l.get('unit_of_measure'))}</td><td>{_e(l.get('unit_price'))}</td>"
-        f"<td>{_e(l.get('line_total'))}</td></tr>"
-        for l in view.get("lines") or [])
-    notes = "".join(f"<li>{_e(j.get('claim'))}</li>" for j in view.get("justifications") or [])
-    page = (
-        f"<article class=\"sales-quote\"><h1>Quote {_e(view.get('quote_ref'))}</h1>"
-        f"<p>For {_e(view.get('account_name'))}"
-        f"{(' — ' + _e(view.get('contact_name'))) if view.get('contact_name') else ''}</p>"
-        f"<p>Dated {_e(view.get('quote_date'))}, valid until {_e(view.get('valid_until'))}. "
-        f"Prices in {_e(view.get('currency'))}, excluding tax.</p>"
-        "<table><thead><tr><th>#</th><th>SKU</th><th>Description</th><th>Qty</th>"
-        "<th>Unit</th><th>Unit price</th><th>Line total</th></tr></thead>"
-        f"<tbody>{rows}</tbody></table>"
-        f"<p><strong>Total ex tax: {_e(view.get('total_ex_tax'))} {_e(view.get('currency'))}</strong></p>"
-        f"{('<ul>' + notes + '</ul>') if notes else ''}</article>"
-    )
-    assert_no_internal_values(page, quote, internal)
-    return page

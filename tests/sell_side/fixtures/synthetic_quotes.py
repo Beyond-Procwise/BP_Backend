@@ -43,7 +43,8 @@ def goods_quote(status="approved"):
         _line(502, 2, "SYN-B", "Synthetic fastener kit", "5", "45.0000", "41.2000", "206.00", "0.0844"),
         _line(503, 3, "SYN-C", "Synthetic enclosure", "3", "180.0000", "173.6667", "521.00", "0.0352"),
     ]
-    quote["justifications"] = [{"kind": "end_of_life", "claim": "Line 3 replaces a withdrawn part",
+    quote["justifications"] = [{"justification_id": 801, "kind": "end_of_life",
+                                "claim": "Line 3 replaces a withdrawn part",
                                 "customer_safe": True}]
     internal = {
         "sales_quote_id": 9001, "total_cost": D("1543.75"), "total_margin": D("633.25"),
@@ -57,7 +58,8 @@ def goods_quote(status="approved"):
              "cost_tier_applied": None, "line_margin": D("144.00"), "line_margin_pct": D("0.2764")},
         ],
         "justifications": quote["justifications"] + [
-            {"kind": "price_gap", "claim": "We clear 633.25 on this one", "customer_safe": False}],
+            {"justification_id": 802, "kind": "price_gap",
+             "claim": "We clear 633.25 on this one", "customer_safe": False}],
     }
     return quote, internal
 
