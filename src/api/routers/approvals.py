@@ -56,6 +56,10 @@ class ApproveRequest(BaseModel):
     """What is being approved. Deliberately carries no actor field."""
 
     reason: Optional[str] = None
+    # The version the approver read (``content_hash`` from GET /approvals/drafts/...).
+    # When given, an approval of a draft that has changed since is refused, so nobody
+    # approves words they did not see. Absent, the draft as it stands is approved.
+    content_hash: Optional[str] = None
 
 
 class RevokeRequest(BaseModel):
@@ -403,6 +407,11 @@ def approve_dispatch(
     # right now -- the same computation the send path uses (see C1), so an
     # unedited draft's approval and its eventual send agree (see C2).
     digest = content_hash(resolve_effective_content(draft))
+    if body.content_hash and body.content_hash != digest:
+        raise HTTPException(
+            status_code=409,
+            detail="this email changed after you opened it; read it again before approving",
+        )
     approval_id = approval_store.record_approval(
         rfq_id=draft.get("rfq_id"),
         workflow_id=draft.get("workflow_id"),

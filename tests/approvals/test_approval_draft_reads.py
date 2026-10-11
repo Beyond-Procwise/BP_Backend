@@ -251,3 +251,48 @@ def test_one_draft_an_unauthenticated_caller_reads_nothing(monkeypatch):
 
     assert response.status_code in (401, 403)
     assert called["loaded"] is False
+
+
+# --- POST /approvals/dispatch/{unique_id}: approving the version that was read ---------
+
+
+def _approving(monkeypatch, draft):
+    recorded = []
+    monkeypatch.setattr(approvals_router.guardrail, "authorize", _allow)
+    monkeypatch.setattr(approvals_router, "_load_draft", lambda uid, conn=None: draft)
+    monkeypatch.setattr(
+        approvals_router.approval_store, "record_approval",
+        lambda **kwargs: recorded.append(kwargs) or 99,
+    )
+    return recorded
+
+
+def test_approving_the_version_that_was_read_is_recorded(monkeypatch):
+    draft = _draft()
+    recorded = _approving(monkeypatch, draft)
+    seen = content_hash(resolve_effective_content(draft))
+
+    response = _client().post("/approvals/dispatch/PROC-WF-AAAA11112222", json={"content_hash": seen})
+
+    assert response.status_code == 200
+    assert recorded and recorded[0]["grounding_extra"]["content_hash"] == seen
+
+
+def test_approving_a_draft_that_changed_since_it_was_read_is_refused(monkeypatch):
+    read = _draft()
+    now = _draft(body=BODY.replace("455.00", "405.00"))
+    recorded = _approving(monkeypatch, now)
+    seen = content_hash(resolve_effective_content(read))
+
+    response = _client().post("/approvals/dispatch/PROC-WF-AAAA11112222", json={"content_hash": seen})
+
+    assert response.status_code == 409
+    assert "changed after you opened it" in response.json()["detail"]
+    assert recorded == [], "an approval was written for words the approver did not read"
+
+
+def test_an_approval_that_names_no_version_still_approves_the_draft_as_it_stands(monkeypatch):
+    recorded = _approving(monkeypatch, _draft())
+
+    assert _client().post("/approvals/dispatch/PROC-WF-AAAA11112222", json={}).status_code == 200
+    assert len(recorded) == 1
