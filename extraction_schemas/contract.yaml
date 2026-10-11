@@ -52,6 +52,28 @@ fields:
         value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
         max_span_after_anchor_chars: 60
         prior_confidence: 0.90
+      # A side letter's and a guarantee's own number. Added 2026-10-11, the day
+      # those types were switched on: a live side letter and a live guarantee
+      # printed "Side Letter No. SL-2026-0302" / "Guarantee No. PCG-2026-0304",
+      # nothing here knew either caption, and the only number recognised on the
+      # page was the framework's -- so both were held as missing_required.
+      #
+      # Unlike the order form's pattern these demand the START OF A LINE (after
+      # table or heading markup). An agreement CITES its guarantee and its side
+      # letters in prose ("secured by Guarantee No. PCG-9"), and at 0.90 an
+      # unanchored match would outrank the agreement's own "Agreement No" and
+      # hand it another document's key. A caption begins its line; a citation
+      # sits inside a sentence.
+      - name: anchored_side_letter_no
+        anchor: '(?im)^[ \t|#*>]*side\s+letter\s*(?:(?:number|no)(?![A-Za-z0-9])\.?|reference|ref\.?|#)[ \t|]*[:\-\.]?[ \t|]*'
+        value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
+        max_span_after_anchor_chars: 60
+        prior_confidence: 0.90
+      - name: anchored_guarantee_no
+        anchor: '(?im)^[ \t|#*>]*(?:(?:parent\s+company|deed\s+of)\s+)?guarant(?:ee|y)\s*(?:(?:number|no)(?![A-Za-z0-9])\.?|reference|ref\.?|#)[ \t|]*[:\-\.]?[ \t|]*'
+        value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
+        max_span_after_anchor_chars: 60
+        prior_confidence: 0.90
       - name: anchored_agreement_no
         anchor: '(?i)(?<!parent )(?<!master )(?<!principal )(?<!amends )(?<!amendment to )(?<!supplements )(?<!varies )\bagreement\s*(?:number|no\.?|reference|ref\.?|#)\s*[:\-\.]\s*'
         value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
@@ -504,6 +526,18 @@ fields:
         prior_confidence: 0.90
       - name: issued_under_agreement
         anchor: '(?i)\b(?:issued|made|entered\s+into|executed)\s+(?:under|pursuant\s+to)\s+(?:the\s+)?(?:master\s+(?:services?\s+)?)?agreement\s*(?:(?:number|no)(?![A-Za-z0-9])\.?|#)?\s*[:\-]?\s*'
+        value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
+        max_span_after_anchor_chars: 60
+        prior_confidence: 0.84
+      # "This Renewal Agreement renews Service Agreement No. SA-2026-0310".
+      # Added 2026-10-11: a live renewal named the agreement it renews in exactly
+      # these words and read no parent, so no link could be proposed. Up to three
+      # words may qualify the agreement ("Master Services", "the Service"). The
+      # value regex does the rejecting: "renewal of this Agreement the charges"
+      # and "renews Service Agreement dated" name no number and read nothing.
+      # This fills the REFERENCE a person confirms, never parent_contract_id.
+      - name: renews_agreement
+        anchor: '(?i)\b(?:renews|renewal\s+of)\s+(?:the\s+)?(?:[A-Za-z][A-Za-z\-]*\s+){0,3}?(?:agreement|contract)\s*(?:(?:number|no)(?![A-Za-z0-9])\.?|#)?\s*[:\-]?\s*'
         value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
         max_span_after_anchor_chars: 60
         prior_confidence: 0.84
