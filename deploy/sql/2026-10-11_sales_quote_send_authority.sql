@@ -10,8 +10,8 @@
 -- row uses the same role, Approver, so the two permits cannot disagree about who
 -- may put a quote in front of a customer.
 --
--- NOT APPLIED when written (2026-10-11): it switches on real email to customers and
--- waits for a yes. Rolling it back stops sending; it sends nothing and unsends nothing.
+-- It switches on real email to customers. Applied 2026-10-11 to bp_testdb and bp_sqldb
+-- on Nick's yes. Rolling it back stops sending; it sends nothing and unsends nothing.
 BEGIN;
 
 INSERT INTO proc.bp_policy (
