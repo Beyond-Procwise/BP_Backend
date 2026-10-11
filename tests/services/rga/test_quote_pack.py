@@ -98,9 +98,16 @@ class TestThePack:
         assert (who.quote_date.isoformat(), who.valid_until.isoformat()) == (
             "2026-09-14", "2026-11-13")
 
-    def test_it_has_no_number_because_nothing_mints_one_yet(self, pack):
-        """The draft reference is not the quote's number. The allocator is B6."""
+    def test_it_has_no_number_until_it_is_given_one(self, pack):
+        """The draft reference is not the quote's number."""
         assert pack.identity.number is None
+
+    def test_its_number_is_the_one_on_the_record(self, monkeypatch):
+        quote = goods_quote("issued")[0]
+        quote["quote_number"] = "Q-2026-0007"
+        numbered = build(quote, monkeypatch)
+        assert numbered.identity.number == "Q-2026-0007"
+        assert numbered.hash != build(goods_quote("issued")[0], monkeypatch).hash
 
     def test_it_carries_no_terms_because_no_library_exists(self, pack):
         assert pack.terms == []

@@ -28,7 +28,8 @@ def _line(line_id, no, sku, description, qty, list_price, unit_price, total, dis
 
 
 def _header(status, total):
-    return {"sales_quote_id": 9001, "tenant_id": None, "quote_ref": "SQ-SYNTHETIC-A",
+    return {"sales_quote_id": 9001, "tenant_id": "default", "quote_ref": "SQ-SYNTHETIC-A",
+            "quote_number": None,
             "status": status, "account_id": "SYNTHETIC-ACC", "contact_id": None,
             "account_name": "Synthetic Fixture Co <Ltd>", "contact_name": "Sam Sample",
             "currency": "GBP", "quote_date": dt.date(2026, 9, 14),

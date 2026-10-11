@@ -8,8 +8,9 @@ rather than filtered: it means the wrong reader was used.
 
 What is NOT in a quote pack yet, and why:
 
-  * **A quote number.** Nothing mints one (the allocator is B6). ``quote_ref`` is an
-    internal draft reference and is carried as that, never as the number.
+  * **A quote number, until the quote is issued.** It is minted at issue
+    (``sell_side.numbering``). ``quote_ref`` is an internal draft reference and is carried
+    as that, never as the number.
   * **Tax.** No tax rate is configured anywhere; the only total is the one the quote row
     holds, excluding tax.
   * **Terms.** No terms library exists (B9), and legal wording is never written here.
@@ -90,7 +91,8 @@ def build(fb: FactBuilder) -> None:
 
     fb.extras.update(
         identity=QuoteIdentity(
-            quote_ref=quote["quote_ref"], status=quote["status"],
+            quote_ref=quote["quote_ref"], number=quote.get("quote_number"),
+            status=quote["status"],
             account_name=quote["account_name"], contact_name=quote.get("contact_name"),
             quote_date=quote["quote_date"], valid_until=quote["valid_until"],
             currency=currency, provenance_id=f"proc.bp_sales_quote:{quote_id}"),

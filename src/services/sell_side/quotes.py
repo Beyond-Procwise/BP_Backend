@@ -16,6 +16,7 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional, Sequence
 
 from src.services import agent_actions
+from src.services.sell_side import numbering
 from src.services.sell_side._db import NotFound, StateConflict, dict_cursor
 from src.services.sell_side.costing import cost_at
 from src.services.sell_side.ladder import QUOTE_RUNG
@@ -27,10 +28,17 @@ _SUPERSEDABLE = ("draft", "in_review", "approved", "issued")
 
 # The customer record. A column is readable through get_quote only if it is named here,
 # so one added to the table later stays invisible until someone names it.
-_QUOTE_COLS = ("sales_quote_id", "tenant_id", "quote_ref", "account_id", "contact_id",
+_QUOTE_COLS = ("sales_quote_id", "tenant_id", "quote_ref", "quote_number", "account_id",
+               "contact_id",
                "currency", "quote_date", "valid_until", "total_ex_tax", "phase_id",
                "subprocess_id", "status", "supersedes_id", "approved_by", "approved_at",
                "issued_at", "created_by", "created_date", "last_modified_date")
+# There is one tenant. Named, not NULL, so UNIQUE (tenant_id, quote_ref) is enforced.
+TENANT = "default"
+# The series a quote's number is taken from, and how the number is written. quote_ref
+# (SQ-...) is the internal draft reference and is not this.
+NUMBER_SERIES = "sales_quote"
+NUMBER_PREFIX = "Q"
 _LINE_COLS = ("sales_quote_id", "line_no", "sales_opportunity_id", "catalog_item_id",
               "distributor_sku", "mpn", "item_description", "quantity", "unit_of_measure",
               "currency", "list_price_at_quote", "unit_price", "discount_pct", "line_total",
@@ -171,11 +179,11 @@ def create_draft(conn: Any, *, account_id: str, currency: str, valid_until: dt.d
         phase, sub = QUOTE_RUNG["draft"]
         quote_ref = f"SQ-{quote_date:%Y%m%d}-{quote_id:06d}"
         cur.execute(
-            "INSERT INTO proc.bp_sales_quote (sales_quote_id, quote_ref, account_id, contact_id, "
-            "currency, quote_date, valid_until, total_ex_tax, phase_id, subprocess_id, status, "
-            "supersedes_id, created_by) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'draft', %s, %s)",
-            (quote_id, quote_ref, account_id, contact_id, currency, quote_date, valid_until,
+            "INSERT INTO proc.bp_sales_quote (sales_quote_id, tenant_id, quote_ref, account_id, "
+            "contact_id, currency, quote_date, valid_until, total_ex_tax, phase_id, "
+            "subprocess_id, status, supersedes_id, created_by) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'draft', %s, %s)",
+            (quote_id, TENANT, quote_ref, account_id, contact_id, currency, quote_date, valid_until,
              totals.total_ex_tax, phase, sub, supersedes_id, created_by))
         cur.execute(
             "INSERT INTO proc.bp_sales_quote_internal (sales_quote_id, total_cost, "
@@ -273,14 +281,14 @@ def _transition(conn: Any, sales_quote_id: int, *, frm: str, to: str, event: str
             raise NotFound(f"quote {sales_quote_id} does not exist")
         if row["status"] != frm:
             raise StateConflict(f"quote {sales_quote_id} is {row['status']}, not {frm}")
-        if check:
-            check(row, cur)
+        # A check may return details for the event it is about to cause.
+        extra = (check(row, cur) if check else None) or {}
         phase, sub = QUOTE_RUNG[to]
         cur.execute(
             f"UPDATE proc.bp_sales_quote SET status = %s, phase_id = %s, subprocess_id = %s, "
             f"last_modified_date = now(){sets} WHERE sales_quote_id = %s",
             (to, phase, sub, *params, sales_quote_id))
-        record_event(conn, event, row, actor=actor, from_status=frm, to_status=to)
+        record_event(conn, event, row, actor=actor, from_status=frm, to_status=to, **extra)
     except Exception:
         conn.rollback()
         raise
@@ -314,9 +322,18 @@ def approve(conn: Any, sales_quote_id: int, *, approver: Optional[str]) -> Dict[
 
 
 def issue(conn: Any, sales_quote_id: int, *, actor: Optional[str]) -> Dict[str, Any]:
+    """Issue the quote and give it its number, in one transaction: the number is the next
+    in the series with none missing, and an issue that fails gives it back."""
     def _check(row, cur):
         if row["valid_until"] < dt.date.today():
             raise StateConflict(f"quote {sales_quote_id} has expired ({row['valid_until']})")
+        if row["quote_number"]:
+            raise StateConflict(f"quote {sales_quote_id} already has the number "
+                                f"{row['quote_number']}")
+        number = numbering.formatted(NUMBER_PREFIX, *numbering.allocate(cur, NUMBER_SERIES))
+        cur.execute("UPDATE proc.bp_sales_quote SET quote_number = %s "
+                    "WHERE sales_quote_id = %s", (number, sales_quote_id))
+        return {"quote_number": number}
     return _transition(conn, sales_quote_id, frm="approved", to="issued", check=_check,
                        event="sales_quote.issued", actor=actor,
                        sets=", issued_at = now()")
