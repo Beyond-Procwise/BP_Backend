@@ -1278,3 +1278,16 @@ gateway checks, clean-up); `b*.js` (the 14 browser sessions); `out/` (every scri
 with every click, request and console line, `requests.jsonl` with the 162 requests the driver sent, the
 backend and gateway logs); `shots/` (58 screenshots; I looked at two of them myself, `04c` and `41f`, the rest
 are backed by the text captured in the same step).
+
+### D6 and D7 fixed after the run (2026-10-11)
+
+Both are fixed in the UI at `a63104a`. Neither fix has been seen in a browser: they are covered by three new
+contract tests that were watched failing first, and by the whole UI suite (the 7 known failures only,
+3670 passed).
+
+- **D6.** The "Second review" row is redrawn as soon as the open form stops, or starts again, being the
+  version that was reviewed, so "This is not the version that was reviewed…" appears while the person types.
+  Ticking the confirmation box or writing a change note does not count as an edit, because the server does
+  not count them either. Before this fix a redraw after ticking the box would have shown the warning wrongly.
+- **D7.** A refused read of the learning thresholds now reads "Could not load the learning thresholds: You do
+  not have permission to do this."
