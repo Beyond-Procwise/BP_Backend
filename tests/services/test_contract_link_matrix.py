@@ -257,7 +257,7 @@ def test_a_renewal_starting_the_day_after_its_parent_ends_is_proposed(world):
     r = CL.propose_parent_links(contract_id=C)
     row = _proposal(C)
     assert row and row[0] == P, r
-    assert "amend" in row[1] and "term: OK" in row[1], row
+    assert "appears to renew" in row[1] and "term: OK" in row[1], row
 
 
 def test_a_variation_starting_after_its_parent_ended_is_still_refused(world):

@@ -1048,6 +1048,38 @@ def test_a_proposal_for_an_addendum_says_amend_and_reports_its_link_type():
             cur.execute("DELETE FROM proc.bp_contracts WHERE contract_id = ANY(%s)", ([add, sow],))
 
 
+def test_a_proposal_for_a_renewal_says_renew_but_its_link_type_is_still_amends():
+    """The wording a person reads, not the stored kind: a renewal is a variation
+    by role, so link_type stays 'amends' for everything that reads it."""
+    from src.services.db import get_conn
+    tag = uuid.uuid4().hex[:6].upper()
+    sup, agr, ren = f"S-{tag}", f"SA-{tag}", f"RN-{tag}"
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""INSERT INTO proc.bp_contracts (contract_id, contract_title, supplier_id,
+                contract_start_date, contract_end_date, resolved_doc_type, resolved_role, type_agreement)
+            VALUES (%s,'Service Agreement Helix',%s,'2025-01-01','2025-12-31','doctype.service_agreement','role.master','refined')""",
+                    (agr, sup))
+        cur.execute("""INSERT INTO proc.bp_contracts (contract_id, contract_title, supplier_id,
+                contract_start_date, contract_end_date, resolved_doc_type, resolved_role, type_agreement,
+                parent_agreement_ref)
+            VALUES (%s,'Renewal Agreement',%s,'2026-01-01','2026-12-31','doctype.renewal','role.variation','refined',%s)""",
+                    (ren, sup, agr))
+    try:
+        result = CL.propose_parent_links(contract_id=ren)
+        assert result["details"][0]["link_type"] == "amends"
+        assert result["details"][0]["profile"] == "contract_renewal"
+        row = _open_proposals(ren)[0]
+        assert row["expected_value"] == agr
+        assert "this renewal appears to renew contract" in row["notes"]
+        assert "amend" not in row["notes"]
+    finally:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM proc.bp_extraction_discrepancy WHERE doc_pk_candidate = ANY(%s)", ([ren, agr],))
+            cur.execute("DELETE FROM proc.bp_contracts WHERE contract_id = ANY(%s)", ([ren, agr],))
+
+
 def test_link_type_of_reads_the_stored_kind_of_a_contract():
     from src.services.db import get_conn
     add = f"ADD-{uuid.uuid4().hex[:6].upper()}"
