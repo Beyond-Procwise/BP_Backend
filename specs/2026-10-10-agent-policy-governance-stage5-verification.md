@@ -884,3 +884,397 @@ What changed relative to the note above:
   `test_conflict_scan_has_its_own_lane`); gateway 395 passed; UI agentPolicy 391/391, whole suite the known 7.
   One stage 4 test (`test_conflict_export_live.py::test_the_policy_export_masks_per_caller`) failed once in one
   of three full live runs and passed otherwise; unexplained, in code this branch does not touch.
+
+## Stage 5b browser run
+
+Date: 2026-10-11, 08:05 to 08:47 UTC. Commits: BP `f54ea780`, gateway `a7a7651`, UI `b4101c6` (branch
+`agent-policy-stage5` in all three worktrees). Database: `bp_testdb`, checked with `select current_database()`
+before every write. Nothing was merged, pushed, committed or deployed. No product code or test was changed.
+This section is uncommitted.
+
+### In plain English
+
+**Read this first: two things went wrong around the run, and neither is a fault in the learning screens.**
+
+1. **My private backend picked up somebody else's document.** Starting the backend the way the stage 5 note
+   describes also starts its document watcher. At 08:07:48 another session registered five contract files from
+   `~/Downloads/SpendIQDocs/verification-2026-10-11/`. My backend, which has no model (its model address is a
+   dead port on purpose), took one of them, **record 2708 `side_letter.pdf`**, and read it: raw row 1125, status
+   "discrepancy", confidence 0.0, `contract_id` missing, and its obligations run recorded as **failed**
+   ("AgentNick returned no response"). The other four (2707, 2709, 2710, 2711) were read by the real service.
+   I did not repair 2708: it is not mine and I cannot know what its owner expects. **Whoever ran that
+   verification should re-read record 2708.** The same exposure existed in yesterday's stage 5 run. See F1.
+2. **A previous attempt at this task did happen, and it left a report.** I was told last night's attempt left
+   nothing. It left `task-V-report.md` beside the ledger, and the database shows it ran from 20:59 to 21:22 UTC
+   and cleaned up after itself. What it did not leave is the note and the commit its report claims (no such
+   commit is in the reflog) or its scratch folder (`/tmp` was emptied since). See "What was left from last
+   night".
+
+**The evidence in this run is made up, as in stage 5.** The rules need 30 decisions over 30 days by 3 people.
+My script inserted backdated "approved" rows for demo policies named "DEMO stage 5b …". The requests an agent
+"made" were a scripted stand-in for the model. Everything else is real: backend, gateway, screens in headless
+Chrome, database.
+
+**What a person now sees (all seen on the rendered page in this run)**
+
+- **People are shown by name.** "Reviewed by p2@demo-s5b.example on 2026-10-11.", "Approved by
+  p1@demo-s5b.example", "Reversed on 2026-10-11 by p1@demo-s5b.example: …", and on the approval card
+  "Approved by p1@demo-s5b.example". The name is the person's sign-in email. A person the system has never seen
+  act (`demo-s5b-approver-c`), and a sign-in with no email (`demo-s5b-p3-noemail`), are shown by their sign-in
+  id, as designed.
+- **An administrator can change the learning thresholds.** The Business areas screen now starts with "Learning
+  thresholds": seven boxes, each with "default 30" (or 3, or 0.85) beside it, the line "On this server the
+  hourly scan is off.", Save and Reset to defaults. Saving asks twice. Letters in a box give "Enter a number."
+  and nothing is sent. A huge number gives "Enter a whole number from 10 to 1000." beside the box. When a second
+  administrator saved first, the page said "These settings have changed. Check them and try again.", kept what
+  was typed, and showed "Now saved as 45." beside the changed box; the next Save went through.
+- **The owner has their own view.** The owner of three of the seven open cards saw "Mine / All", starting on
+  Mine with three cards. Only the owner's own cards had Not yet and Dismiss. A Buyer who owns nothing saw
+  "Draft this change" only, and a direct attempt answered "Only the policy's owner or an approver can hide a
+  suggestion."
+- **The owner is told.** The scan wrote one notification per card: "Learning suggests a change to OPS-1125:
+  Raise the limit on Refund amount from 500 USD to 800 USD?". Opening it went to the Suggestions view with
+  "Opened from a notification" above that card. Opening one whose card had already been saved gave the toast
+  "That suggestion is no longer open."
+- **A card that cannot be drafted says why.** After the owner saved a tighter draft by hand, the card read "The
+  latest draft of this policy already changes this. Activate or discard that draft first." and its Draft
+  button was off with the same sentence as its hint.
+- **The second review says who may give it.** "An approver who is not this policy's owner and has not saved
+  this draft."
+- **A repeat proposal reports its history.** "Decided the same way 5 times: make it a standing rule?" …
+  "Previous decisions / Decided 5 times before; last: approved". An ordinary conflict beside it still read
+  "First time".
+- **A refused action reads plainly.** "You do not have permission to do this." (two cases) and the owner rule
+  above. One exception: D7.
+- **The stage 5 fixes are now seen in a browser.** After Save draft the card left the queue behind the form and
+  the tab went from "Suggestions8" to "Suggestions7" with no Refresh. Recent decisions read "Refund amount 680",
+  not a field name. A stale Business areas page did not switch the other safeguard back. The suggestion card sat
+  directly above the Conflicts section. "Second review" no longer runs into its sentence. A weakened card said
+  "1 of them was later marked as reversed."
+- **Screens:** 14 browser sessions, 7 identities in the browser (9 with the two used only through the gateway), 1,187 requests seen by the browser. **0 `console.error`
+  calls, 0 uncaught exceptions.** The browser made no request to a model.
+
+**Faults found (recorded, not patched)**
+
+- **D6.** A reviewed draft that is then edited still reads "Reviewed by …" with no warning. The sentence "This
+  is not the version that was reviewed. Save it as a draft and ask for a new review." appears only after
+  Activate has been refused. Seen twice.
+- **D7.** When the thresholds cannot be read because the person is not an administrator, the screen shows the
+  gateway's own sentence: "Could not load the learning thresholds: needs the Admin role or higher". It is not an
+  internal name, but it is not the plain sentence the other refusals use. Only reachable when the screen believes
+  the person is an administrator and the gateway does not.
+
+**Findings about the method, not the product**
+
+- **F1.** The private backend runs every background service the product has, not only the three agent-policy
+  jobs the note switches off. See above and the section below.
+- **F2.** `OLLAMA_CLOUD_*` cannot be unset the way the note says. The worktree has its own ignored `.env`, and
+  the app reads it back in. No call to the cloud address was made: the backend's own egress log shows model
+  calls only to `127.0.0.1` (the dead port), all failed.
+- **F3.** When a background job fails, the backend's error log prints its settings, including the first
+  characters of the cloud model key. That is in my scratch `out/backend.log`, and 22 characters of it were
+  shown once in my own tool output while I was searching the log. I have not repeated it anywhere. Rotate the
+  key if that matters.
+
+**What was not shown** is listed in its own section. The largest items: the "Never suggest changes" switch
+closing cards, the unscoped scan, translations, and the two server faults that need a broken record.
+
+### What was left from last night
+
+Checked before any write (`out/s01_leftovers.txt`):
+
+- 10 policies named "DEMO stage 5b … 3d60c0", all **retired**: FIN-1317, OPS-1075 to OPS-1083. 35 versions saved
+  by `demo-s5b-*` between 20:59:40 and 21:22:10 UTC.
+- 210 decision-log rows (firings 199816 to 200025), 1 reversal (firing 199893 by `demo-s5b-p1`), 7 closed
+  conflict rows.
+- **0** suggestion rows, **0** second-review rows, **0** person rows, **0** demo registry rows, decider map
+  holding only stage 3's three rows, no demo notification. Procurement's `last_modified_by` read
+  `demo-s5b-admin2`. The settings row held the defaults.
+- So there was nothing to retire or delete. This matches `task-V-report.md` exactly. That report's table of
+  suites holds the placeholder text "SUITES_TABLE", and the commit and note it names do not exist.
+
+### How the stack was run
+
+As the stage 5 section, with these differences.
+
+| Part | Port | PGID | Note |
+|---|---|---|---|
+| Backend | 127.0.0.1:8010 | 35144 | Started through a small loader that reads the main checkout's `.env` line by line (sourcing it in a shell fails on line 27). Its log says "agent policy approval sweep not registered", "agent policy conflict scan not registered" and "agent policy learning scan is off, not registered (set AGENT_POLICY_LEARNING_SCAN=on to turn it on)". Two earlier starts of mine within the first minute were stopped by PGID (34063, 34393): the first had been started with a half-read `.env`. Neither served a request. |
+| Gateway | :3011 | last 80173 | `npm run build`, then started 21 times, once per change of identity. |
+| UI | 127.0.0.1:3010 | 35188 | `mockPipelineDeals.js` copied in and deleted afterwards. |
+| Headless Chrome | :9223 | 35187 | Chrome 150, 1440×900, real mouse events on element centres. |
+
+Identities (the gateway's bypass supplies them; no user rows):
+
+| Persona | Subject | Email | Group | Linked to |
+|---|---|---|---|---|
+| admin | `demo-s5b-admin` | admin@demo-s5b.example | PROCWISE_ADMIN | |
+| admin2 | `demo-s5b-admin2` | admin2@demo-s5b.example | PROCWISE_ADMIN | |
+| p1 | `demo-s5b-p1` | p1@demo-s5b.example | PROCWISE_FINANCE_REVIEWER_APPROVER | "Demo S5b Decider", later also "Demo S5b Decider B" |
+| p2 | `demo-s5b-p2` | p2@demo-s5b.example | PROCWISE_FINANCE_REVIEWER_APPROVER | "Demo S5b Decider B" |
+| p3 | `demo-s5b-p3-noemail` | (none) | PROCWISE_FINANCE_REVIEWER_APPROVER | |
+| owner | `demo-s5b-owner` | owner@demo-s5b.example | PROCWISE_FINANCE_REVIEWER_APPROVER | "Demo S5b Finance Owner" |
+| opsowner | `demo-s5b-opsowner` | opsowner@demo-s5b.example | PROCWISE_PROCUMENT_BUYER_ANALYST | "Demo S5b Ops Owner" |
+| buyer | `demo-s5b-buyer` | buyer@demo-s5b.example | PROCWISE_PROCUMENT_BUYER_ANALYST | |
+| viewer | `demo-s5b-viewer` | viewer@demo-s5b.example | PROCWISE_VIEWER | |
+
+"Demo S5b Other Owner" is linked to an address nobody signs in with. The screen's role was set after every
+page load, as in stage 5.
+
+**Set-up that goes around a real check, said plainly**
+
+- The 439 decision rows are inserted by SQL and backdated (the layout of `test_learning_scan_live.py::fire`).
+  Deciders rotate over `demo-s5b-p1`, `demo-s5b-p2`, `demo-s5b-approver-c`.
+- 12 registry rows (11 demo tools and the input `args.demo_s5b_amount`) were inserted by SQL so the demo
+  policies meet nobody else's.
+- Every scan was `learning.scan(conn, now, only=[…])` on demo policies. The unscoped scan was never run.
+- The "agent" in the approval steps is `tool_runtime.run_tools` with `_chat` replaced by a two-line script. The
+  real gate read the live policies. Only the three demo policies on `get_policy` matched; I checked that first.
+- To get five identical conflict decisions quickly, p1 was also linked to "Demo S5b Decider B" and approved
+  both member cases through the gateway, not on screen.
+- The two refusals in step g2 and D7 were reached by giving the page a higher role than the gateway held, and
+  the one in g1 by restarting the gateway as another person under a loaded page. A stale session does the same.
+
+### The demo policies
+
+All "tool is `demo_s5b_b7e2f4_<letter>` and Refund amount (`args.demo_s5b_amount`) is greater than 500", decider
+"Demo S5b Decider", source "DEMO stage 5b policy b7e2f4", created and activated by the Admin through the
+gateway, unless said.
+
+| Letter | Key | Area | Owner | Backdated approvals | Used for |
+|---|---|---|---|---|---|
+| F | FIN-1322 | Finance | Finance Owner | 33 | steps 4, 7 to 10, names |
+| O | OPS-1122 | Operations | Ops Owner | 33, then 40 more | steps 5, 6 |
+| B | OPS-1123 | Operations, **block** | Ops Owner | 33 | no card |
+| L | LEG-0024 | Legal and compliance | Ops Owner | 33 | no card |
+| T | OPS-1124 | Operations | Ops Owner | 29 | no card |
+| H | FIN-1323 | Finance | Finance Owner | 33 | steps 11, 11b, D6 |
+| N | OPS-1125 | Operations | Ops Owner | 33, then 26, then 1 | step 12, the notification |
+| R | OPS-1126 | Operations | Ops Owner | 33 | step 13, names |
+| S | OPS-1127 | Operations | Other Owner | 33 | step 6b |
+| C | OPS-1128 | Operations | Other Owner | 33 | the card above Conflicts |
+| D | OPS-1133 | Operations, block, **draft only**, on C's tool, another document | Ops Owner | 0 | conflicts with C |
+| M | OPS-1129 | Operations | Ops Owner | 33 | the blocked card |
+| A | OPS-1130 | Operations, `get_policy` with one query | Other Owner | 0 | the approval card |
+| P1 | OPS-1131 | Operations, `get_policy`, another query | Other Owner | 0 | the repeat proposal |
+| P2 | OPS-1132 | as P1, decider "Demo S5b Decider B", from another document | Other Owner | 0 | the repeat proposal |
+
+The first scan: 115 targets in the database, 9 of them mine and scanned, `raised 8` (F, O, H, N, R, S, C, M;
+none for T; B and L are not targets). Suggestion ids 4687 to 4694. It also wrote 8 notifications, one per
+card, to the owner's name.
+
+### The steps
+
+PASS means seen on the rendered page in this run. "(gateway)" means the request was sent by my driver through
+the gateway and the screen part was not exercised. Screenshots are in the scratch folder, `shots/`.
+
+**A. The stage 5 walkthrough again**
+
+| Step | As | What was done | What the screen showed | Calls | Result |
+|---|---|---|---|---|---|
+| 1 | admin | Opened F, B, L, T from the List; opened Technical view | F and T `"learning": { "eligible": true }`; B and L `false`. Heading "FIN-1322 · Version 2 · Active · Extraction confidence: Medium" | `GET /agent-policies/<key>` 200, `GET …/firings` 200 | PASS |
+| 2, 3 | driver | Backdated rows, scoped scan | (database) 8 cards raised, none for T, B, L | none through the gateway | PASS (set-up, not a screen) |
+| 4 | admin | Suggestions tab; F's form | Tab "Suggestions8". Card: "FIN-1322 · DEMO stage 5b F b7e2f4 / Raise the limit on Refund amount from 500 USD to 800 USD? / 30 of 30 requests between 500 USD and 800 USD were approved, by 3 different people over 40 days. / 30 decisions · 3 approvers · 40 days · typical decision time 1 min / Suggestion confidence: High". Same card on F's form under "SUGGESTED CHANGE". B, L, T forms have no such section | `GET …/suggestions?status=open` 200 | PASS |
+| 4c | admin | Opened C (conflicts with draft D) | Sections in order: … GOVERNANCE, **SUGGESTED CHANGE**, the card, **CONFLICTS** "pc_79234 with OPS-1133 · Between policies · Waiting for a decision" | `GET /agent-policies/OPS-1128` 200 | PASS (stage 5 could not show this) |
+| 5 | buyer | Opened O, typed in the change note, pressed Draft this change | Toast "Save or cancel your edits first."; limit still 500; note kept | none | PASS |
+| 5 | buyer | Cancel ("Edits discarded"), closed, Draft this change on O's card in the queue | Limit 800; "The agent is about to issue a demo refund above 800 USD."; examples 799 Nothing happens, 800 Nothing happens, 801 A person decides; confirmation unticked; "Opened as a draft from a suggestion. Nothing is saved until you press Save draft." / "The number was updated in: the situation, the message to the agent. Read it before you save." / "Check the wording of: the message to the person." Database still at version 2 | `GET …/suggestions/4688/draft` 200, `GET /agent-policies/OPS-1122` 200, `POST …/preview` 201 | PASS |
+| 6 | buyer | Save draft | Toast "Saved as version 3". **Without Refresh** the tab read "Suggestions7" and O was gone from the queue behind the form | `POST …/OPS-1122/versions` 201, `GET …/OPS-1122` 200, `GET …/suggestions?status=open` 200 | PASS (stage 5 D2 fixed) |
+| 6 | p1 | Opened O (draft v3), ticked, Activate…, two confirms | No Second review section. "Make this policy Active? / Agents will be held to it from now on." then "Confirm: activate OPS-1122?". Toast "Active. Saved as version 4" | `POST …/versions` 201 | PASS |
+| 6 | driver | 40 more approvals above 800, scoped scan | (database) `raised 1`: a new row 4695, 800 → 1100; the old row still `saved` | | Seen in the database. Card text on screen NOT captured |
+| 6b | buyer (gateway) | S: save the draft at 800, scan, save a draft back at 500, scan | 201; row `saved`; draft read again → 409 "This policy has changed since the suggestion was made."; scan changes nothing; second save 201; scan `reopened 1` | as listed | PASS (gateway, as in stage 5) |
+| 7 | p1 | F: Draft this change from the queue, Save draft, tick, Activate…, two confirms | "Second review / A second reviewer must review this change before it goes Active. / Version 3 / An approver who is not this policy's owner and has not saved this draft. / Record my review…". Label and sentence on separate lines. After Activate: the sentence in the error box, focus in the Second review section, still "Version 3 · Draft · Active: v2" | `POST …/FIN-1322/versions` 201 (draft), then **422** | PASS (stage 5 D1 fixed). The save took 3.4 s and my script read the page too early the first time; the session was resumed from the saved draft, so the queue-refresh check for F was not repeated (step 6 is the proof) |
+| 8 | p1 | Record my review…, two confirms | "You saved this change, so someone else must review it." | `POST …/second-review` **409** | PASS |
+| 9 | owner | The same on F | "The policy's owner cannot be its second reviewer." | 409 | PASS |
+| 10 | p2 | The same on F | "Reviewed by p2@demo-s5b.example on 2026-10-11. / Version 3"; button gone | 201, then `GET …/FIN-1322` 200 | PASS |
+| 10 | p1 | Opened F; ticked; Activate…, two confirms | The "Reviewed by p2@demo-s5b.example…" line before anything was pressed. Toast "Active. Saved as version 4" | `POST …/versions` 201 | PASS |
+| 11 | p1 | Dismiss on H's card (an Approver who is not its owner) | "Dismiss this suggestion? / It is not suggested again unless the evidence becomes much stronger." then "Confirm: dismiss this suggestion?"; nothing sent before the second yes; tab "Suggestions4"; no toast | `POST …/suggestions/4689/act` 201 | PASS |
+| 11 | p1, p2, p3 (gateway) | H by hand: draft 400; activate; draft 800; activate; own review; p2 reviews v4; activate a different form (900); activate the reviewed form | 201; **422**; 201; **422**; 409 `own_change`; 201; **422**; 201 (version 5). p3 (no email): 409 "Your sign-in carries no email address, so we cannot tell whether you are this policy's owner." | as listed | PASS (gateway: the form has no control for the limit) |
+| 11b | p1 | H: changed the situation wording, Save draft, tick, Activate… | "Saved as version 6"; no Second review section; "Active. Saved as version 7" | 201, 201 | PASS |
+| 12 | opsowner | Not yet on N | No confirm. Toast "Hidden until more decisions arrive."; tab "Suggestions2" | `POST …/suggestions/4690/act` 201 | PASS |
+| 12 | driver | 26 more (59), scan; 1 more (60), scan | (database) nothing; then `reopened 1`, now 500 → 1100 on 60 decisions | | Seen in the database. The returned card on screen NOT captured |
+| 13 | p1 | R: Recent decisions (20); "Mark as reversed…" on the 680 row; typed a reason; two confirms | Button off until a reason was typed. "Mark this approval as reversed? / This cannot be undone. Learning will not suggest loosening the policy on the strength of it." Row: "2026-10-06 · Approved by demo-s5b-approver-c · Refund amount 680 · Reversed on 2026-10-11 by p1@demo-s5b.example: Demo: the refund was clawed back on 02/10/2026." The list stayed open through two redraws | `POST …/firings/205047/reversal` 201, `GET …/firings` 200 | PASS |
+| 13 | p1 | Scoped scan (`weakened 1`), Refresh | "…by 3 different people over 40 days. **1 of them was later marked as reversed.** … Suggestion confidence: Not enough yet"; Draft off, hint "There is not enough evidence yet"; a click sends nothing | | PASS (stage 5 D4 fixed). A second reversal of the same row was NOT tried |
+| 14 | viewer | Queue; R's form; H's form | Tabs without Deciders and Business areas. 6 cards, 0 buttons. R: "Cancel" only, 20 rows, 0 "Mark as reversed…", no Technical view. H (a reviewed draft): "Cancel" only, the review line, no button | reads 200 | PASS |
+| 14 | viewer (gateway) | Nine requests a Viewer may not make | 403 each: "needs the Buyer role or higher", "needs the Approver role or higher", "needs the Admin role or higher" | | PASS |
+| 15 | admin | Procurement's "Never suggest changes" (see e below) | Two confirms, saved, audited | | PASS for the switch. **Its effect was NOT shown**: no demo policy is in Procurement, and Operations was left alone this time |
+| 16 | | | Start-up log line only | | PASS for "off". Registration when on NOT shown |
+| 17 | all | | 0 `console.error`, 0 uncaught exceptions | | PASS |
+| 18 | driver | Every version of every demo policy | (database) all 43 versions saved by a demo person through the gateway, 0 by anything else; N, R and C had a card open for most of the run and stayed at version 2 | | PASS |
+
+**B. The 5b items**
+
+| Step | As | What was done | What the screen showed | Calls | Result |
+|---|---|---|---|---|---|
+| a1 | p2, p1, viewer, admin | Second review | "Reviewed by p2@demo-s5b.example on 2026-10-11." (F); "Reviewed by admin@demo-s5b.example on 2026-10-11." (H v8) | | PASS |
+| a2 | p1, viewer | Recent decisions on R | "Approved by p1@demo-s5b.example"; "Approved by demo-s5b-p2" until p2 had acted through the gateway, then "Approved by p2@demo-s5b.example"; "Approved by demo-s5b-approver-c" throughout (never seen) | | PASS |
+| a3 | p1 | Reversals on R | "…by p1@demo-s5b.example: …" and "…by demo-s5b-p3-noemail: Demo: reversed by a sign-in that carries no email." | | PASS |
+| a4 | p1 | The approval card and its history | "OPS-1130 · Level 1 of 1: Demo S5b Decider · Approved by p1@demo-s5b.example" | `GET …/approvals/79246` 200 | PASS |
+| b1 | admin | Business areas | Headings "LEARNING THRESHOLDS", "BUSINESS AREAS". "Decisions needed 30 default 30", "Days the decisions must span 30 default 30", "Different approvers needed 3 default 3", "Confidence needed (0.85 = 85%) 0.85 default 0.85", "Shortest typical decision time (seconds) 30 default 30", "More decisions before a 'Not yet' card returns 30 default 30", "More decisions before a dismissed card returns 30 default 30". "On this server the hourly scan is off." Save, Reset to defaults | `GET …/settings/learning` 200 | PASS |
+| b2 | admin | Typed `abc` into Days, Save | The box stays empty; "Enter a number."; no confirm | none | PASS |
+| b3 | admin | Typed 999999999999999999999999999999 into Decisions needed, Save, two confirms | "Enter a whole number from 10 to 1000." beside the box; the typed number kept | `GET` 200, `PUT …/settings/learning` **422** | PASS |
+| b4 | admin | 5 decisions and confidence 1.5 | Both messages, each beside its box ("Enter a number from 0.5 to 0.99.") | **422** | PASS |
+| b5 | admin | Reset to defaults | Boxes filled; nothing sent | none | PASS |
+| b6 | admin | 'Not yet' return 31, Save | "Change the learning thresholds? / This changes when learning suggests loosening a policy, for every policy." then "Confirm: change the learning thresholds?"; nothing sent before the second yes; toast "Saved." Audit row 96694 with before and after | `GET` 200, `PUT` 200, `GET` 200 | PASS |
+| b7 | admin, admin2 | admin2 saved (dismissed-return 45, 'Not yet' back to 30) through the gateway; the loaded page typed Days 40 and saved | Toast "These settings have changed. Check them and try again." Days still 40; "Now saved as 30." and "Now saved as 45." beside the two boxes that had changed. Nothing written. Save again: "Saved." (days 40, dismissed-return 45 kept) | first Save: `GET` 200 only. Second: `PUT` 200 | PASS |
+| b8 | viewer, buyer, opsowner, p1 | Tabs | No Business areas tab for any of them | | PASS |
+| b9 | admin, viewer (gateway) | 12 bad bodies as Admin; read and write as Viewer | 400 for a huge integer, 1e999, a string, a boolean, null, a missing key, an extra key, a list, a NUL in a string; 422 for out-of-range values. Highest status 422. Viewer: 403, 403 | | PASS (never 5xx) |
+| c1 | opsowner | Suggestions | Tab "Suggestions3". "Mine" on, "All" beside it. Mine: M, R, N, each with Draft this change, Not yet, Dismiss. All: seven cards; S, C, H, F with Draft this change only | | PASS. In All the tab still read "Suggestions3": known, deferred |
+| c2 | buyer | Suggestions | No switch. Eight cards, Draft this change only | | PASS |
+| c3 | buyer (gateway) | Not yet and Dismiss on N | 403 "Only the policy's owner or an approver can hide a suggestion." twice. `mine=1` → empty list; `mine=yes` → 400 "mine must be 1" | | PASS |
+| c4 | p1, p2, owner | Suggestions | An Approver sees Not yet and Dismiss on every card, no switch | | PASS |
+| d1 | opsowner | Notifications | Four "New … Learning suggests a change to OPS-11xx: Raise the limit on Refund amount from 500 USD to 800 USD?" rows, each with Open | `GET …/notifications?mine=1` 200 | PASS |
+| d2 | opsowner | Open on N's row | Suggestions view; "Opened from a notification" directly above N's card. After leaving the view and coming back the line was gone | `POST …/notifications/42871/read` 201, `GET …/suggestions` 200 | PASS |
+| d3 | opsowner | Open on O's row (already saved) | Toast "That suggestion is no longer open."; stayed on Notifications | 201, 200 | PASS |
+| d4 | driver | S put back, N returned, O's new card | (database) one more notification for S's return (42878) and for O's new card (42879). N's return was not checked before clean-up | | Seen in the database only |
+| e1 | opsowner | Saved a draft of M at 400 through the gateway; Refresh | "The latest draft of this policy already changes this. Activate or discard that draft first." on the card in the queue and on M's form; Draft off with that sentence as its hint; a click sends nothing | `GET …/suggestions/4694/draft` 409 (driver) | PASS |
+| e2 | p1, owner, p2 | The Second review section before a review | "An approver who is not this policy's owner and has not saved this draft." | | PASS |
+| f | p1 | Six scripted requests, the last five as conflicts, each approved by p1 (gateway); Conflicts tab | "pc_79288 · OPS-1131 and OPS-1132 · Waiting for a decision / Decided the same way 5 times: make it a standing rule? … Previous decisions / Decided 5 times before; last: approved". The C and D case: "Previous decisions / First time" | `GET …/conflicts?status=open` 200 | PASS |
+| g1 | opsowner's page, gateway restarted as buyer | Not yet on R | Toast "Only the policy's owner or an approver can hide a suggestion."; the queue re-read and the buttons went | `POST …/suggestions/4691/act` **403** | PASS |
+| g2 | viewer at the gateway, page told it is an Admin | Draft this change on C; Mark as reversed on R | Toast "You do not have permission to do this."; the same sentence under the row | `GET …/draft` **403**; `POST …/reversal` **403** | PASS |
+| g3 | the same | Business areas | "Could not load the learning thresholds: needs the Admin role or higher / Try again" | `GET …/settings/learning` **403** | **FAIL (D7)** |
+| h1 | p1 | One scripted request matched A; Approvals tab; Approve…, two confirms | "Approve this request? / The action goes ahead as the agent asked. Your name is recorded with the decision." then "Confirm: approve request 79246?". Then "You approved this request. / What happened next / **Approved. The action will run shortly.**" | `POST …/approvals/79246/decide` 201, `GET …/approvals/79246` 200 | PASS |
+| h2 | p1 | Fresh load, Notifications, Open on the request's row | The closed card: "… · Approved by p1@demo-s5b.example". The word "actioned" is nowhere on it | | PASS |
+| h3 | p1 | The repeat card | as f | | PASS |
+
+### Defects found (recorded, not patched)
+
+**D6. An edited reviewed draft does not say it is no longer the reviewed version until activation is refused.**
+- Where: `apLnReviewSection` in `engine.js` (the hint from `secondReviewHint`).
+- To reproduce: in a second-reviewer area, take a policy that has had a suggestion; save a draft that changes
+  its limit as one Approver; record the review as another. Open the form as an Approver. It reads "Reviewed by
+  … on …. Version N". Type any change into "Message to the person". The section does not change. Tick the
+  confirmation box. It still does not change. Press Activate… and confirm twice: `POST …/versions` answers 422
+  and only now the section adds "This is not the version that was reviewed. Save it as a draft and ask for a
+  new review."
+- Seen on F as p1 (typing only) and on H version 8 as admin (typing, ticking, then the refusal).
+  `40a…png`, `40b…png`, `40c…png`.
+- The server is right: it refused the edited form. Nothing wrong is written.
+- Impact: a person edits a reviewed draft believing the review still stands, and learns otherwise only at the
+  last step. Last night's report recorded the same fault as "V1".
+
+**D7. A refused read of the thresholds shows the gateway's sentence.**
+- To reproduce: with the gateway answering as a Viewer, make the page believe it is an administrator (in this
+  run `window.__SPENDIQ_RBAC__.role = 'PROCWISE_ADMIN'`), open Business areas.
+- Seen: "Could not load the learning thresholds: needs the Admin role or higher" with a Try again button. The
+  business areas below it loaded (that read is open to a Viewer). `24d…png`.
+- The other refusals on these screens are turned into "You do not have permission to do this."; this path
+  (`apLnSetLoad`, through `apErrText`) is not.
+- Impact: wording only, and only for a person whose screen and sign-in disagree about their role.
+
+### Findings about the private stack (not product defects of this stage)
+
+**F1. The private backend is a whole second product server on the shared database.**
+- Its start-up log shows these started: `ProcessMonitorWatcher` (LISTEN on `process_monitor_ready`),
+  `PromotionListenerService`, `UicanvasBridge`, `EmailWatcherService` (one poll logged), the summary
+  precompute and the obligations job.
+- What they did in this run:
+  - 08:07:48 "Starting extraction for record 2708: …/verification-2026-10-11/side_letter.pdf category=contract";
+    08:07:54 "dispatch end {'status': 'discrepancy', 'raw_id': 1125, … 'missing_required': ['contract_id']"; 08:07:55
+    "Extraction completed for record 2708: contract pk= fields=8 lines=0 discrep=1 conf=0.0"; 08:08:27 "2708:
+    obligation extraction FAILED" and `proc.bp_contract_obligation_run` for 2708 set to `failed`.
+  - 08:36 "summary precompute stopped early (failures) after 31s: 0 generated, 3 failed" (negotiation summaries).
+  - Four failure-capture files were written to `artifacts/llm_failures/` in the BP worktree (an ignored folder
+    my backend created). I moved them to the scratch folder (`out/llm_failures_from_worktree/`) and removed the
+    empty folder. The backend also appended about 215 lines to the worktree's ignored `src/logs/procwise.log`,
+    which was already there from 2026-10-10; I left it.
+- Every model call went to `127.0.0.1` (the dead port) and failed: one preload at start-up, the obligations
+  read of 2708, three summaries. None came from an agent-policy request.
+- Nothing in the task or in the stage 5 section switches these services off. A private run on a shared
+  database needs them off, or it will keep taking other people's documents.
+
+**F2 and F3** are in the plain-English part above.
+
+### Observations (not defects)
+
+- **P1.** In "All", the tab counts my cards (3) while the list shows seven. Known, deferred.
+- **P2.** After an approved action has run, the card's "What happened next" shows the tool's raw answer: "Action
+  run: {"found": false, "note": "No governed policy matches 'DEMO-S5B-b7e2f4-LONE'. …", "available":
+  ["weight_allocation_policy", …". Stage 3 behaviour, not touched by 5b.
+- **P3.** A person is shown by email only after they have made a write through the gateway. Until then their
+  decisions show their sign-in id (p2 in step a2).
+- **P4.** A sign-in with no email cannot record a second review (409, see step 11) but can record a reversal.
+- **P5.** Two approve policies with different deciders are a conflict only when they come from different
+  documents. From one document they are two approvals in a group (my first scripted request).
+- **P6.** A successful business-area switch and a Dismiss give no toast (stage 5 O3).
+- **P7.** Saving a draft in Finance took 3.4 s; in Operations well under a second.
+- **P8.** A screenshot of C's form shows a "Ledger line" panel open at the right edge behind it. I did not
+  open it on purpose and did not look into it.
+- **P9.** The health line still counts approvals as "paused" (stage 5 O8).
+
+### What was NOT shown, and why
+
+| Item | Why | Covered by |
+|---|---|---|
+| The unscoped scan | 103 other "live" test policies are targets in `bp_testdb` | never run |
+| "Never suggest changes" removing policies from learning and closing their cards (step 15) | Needs a real area with demo policies switched, then the whole-database path; I would not switch Operations on a shared database again | stage 5's run; the live test added in the fix wave |
+| O's new card (800 → 1100) and N's returned card (500 → 1100) on screen | I captured counts, not their text | database rows 4695 and 4690 |
+| A second reversal of the same row; the output filter on a POST answer | Not repeated | stage 5's run |
+| "Waiting for the other approvals before the action runs." | The grouped cases were approved through the gateway | UI tests |
+| "Rejected by …", "Rejected: nobody decided in time" on a closed case | No rejection or timeout was made (the sweep is off) | UI tests |
+| `blocked: "This policy is no longer Active."` | Not set up | backend tests |
+| `second_review_unreadable`; "Could not tell which policies are yours; showing all." | Each needs a broken stored record or an unreadable decider map on a shared database | backend and UI tests |
+| A learning failure leaving the policy page open without suggestions; a sensitive field never proposed | Same | tests |
+| The new phrases in other languages (U3) | The other languages were never produced | the contract test; English only on screen |
+| The hourly job registering when switched on | The backend was started with it off | stage 5 step 16 |
+| The queue refreshing after a save for F | My script read the page too early and the session was resumed after the save | step 6 on O |
+
+### Clean-up, and what stays
+
+Done through the gateway as the Admin, then SQL, at 08:46 UTC (`out/s90_cleanup.txt`).
+
+- **Retired:** all 15 demo policies (`live_version` NULL). Retiring closed the two open conflict cases as moot
+  (`system:retired`). No case is open.
+- **Deleted:** 9 suggestion rows, 3 second-review rows, 30 notifications, 5 decider-map rows, 12 registry
+  rows, 7 person rows. Afterwards: suggestions 0, second reviews 0, person 0, registry 35 (all `seed_registry`),
+  decider map stage 3's three rows, 103 learning targets and none of them mine.
+- **Settings row:** the thresholds were 31 / 45 / 40 in turn between 08:41:38 and 08:42:01 UTC and are the
+  defaults again (restored on screen with Reset to defaults and Save). Its who and when now read
+  `demo-s5b-admin`, 08:42:01: the true record, left as it is. The other keys in the row were never touched.
+- **Procurement:** switches changed between 08:42:07 and 08:42:34 UTC, both off again; `last_modified_by
+  demo-s5b-admin`. Audit rows 96702 to 96712. Operations, Finance and Legal were not switched.
+- **Stays in `bp_testdb` (append-only by design, or never deleted):**
+  - the 15 retired policies and their 58 versions: FIN-1322, FIN-1323, LEG-0024, OPS-1122 to OPS-1133;
+  - 439 decision-log rows, firings 204832 to 205270;
+  - 2 reversal rows: firings 205047 (`demo-s5b-p1`) and 205034 (`demo-s5b-p3-noemail`);
+  - 20 closed cases in `proc.bp_decision` (13 approvals, 5 live conflicts, 2 policy conflicts; ids 79234 to
+    79288) and their action rows, 47 rows in all; 7 closed conflict index rows;
+  - 168 audit rows (ids 96348 to 96735);
+  - policy numbers consumed: Finance 1321 → 1323, Operations 1121 → 1133, Legal and compliance 23 → 24;
+  - **not mine to clean:** record 2708's raw row 1125 and its failed obligations run (F1).
+- **Processes:** only my process groups were stopped (`kill -TERM -<pgid>`). Ports 8010, 3011, 3010 and 9223
+  are closed. `procwise.service` is `active`; 8000, 3000, 3001 and 11434 were never touched.
+- **Worktrees:** gateway and UI clean. BP clean apart from this section.
+
+### Test suites at the final commits
+
+Run after clean-up, one after another, 08:48 to 09:05 UTC. Backend with `venv/bin/python`, the `.env`,
+`CUDA_VISIBLE_DEVICES=""` and the model address on a dead port (`bptest` from the ledger's common context).
+
+| Repo | Suite | Ledger (final commits) | This run |
+|---|---|---|---|
+| BP | `bptest tests/agent_policy -q` (no database) | 1 failed, 1076 passed | **1 failed, 1076 passed**, 451 skipped (22 s) |
+| BP | `bptest tests/agent_policy tests/engines/test_decide_live_conflict.py -q` (no database) | not quoted | 1 failed, 1131 passed, 451 skipped (28 s) |
+| BP | the same with `LIVE=1` (`bp_testdb`) | 1 failed, 1577 passed | **1 failed, 1577 passed**, 5 skipped (13 min 17 s) |
+| Gateway | `npm test` | 401 passed | 17 suites, **401 passed** |
+| UI | `npx vitest run src/modules/SpendIQ/agentPolicy` | 486 / 486 | 12 files, **486 passed** |
+| UI | `npx vitest run` | the known 7 | 2 files failed, 164 passed; **7 failed, 3667 passed** |
+
+- BP: the one failure in all three runs is the known
+  `tests/agent_policy/test_approvals_job.py::test_conflict_scan_has_its_own_lane`.
+- `test_conflict_export_live.py::test_the_policy_export_masks_per_caller` **passed** in this live run. No other
+  live run of mine overlapped it.
+- UI: the 7 are the known ones, 3 in `src/lib/i18n/language.contract.test.js` ("keys every phrase to text that
+  actually appears in engine.js", "takes a variable only at the label choke points that were reviewed for it",
+  "pre-translates all but the known call-site keys") and 4 in
+  `src/modules/SpendIQ/atb/composedPages.contract.test.js`.
+- The live run issues policy numbers, so Finance and Operations' `last_number` are higher now than the values in
+  the clean-up section.
+
+### Scratch folder (not committed)
+
+`/tmp/claude-1001/-home-muthu-PycharmProjects-BP-Backend/b8fa8db7-3bb0-4104-b204-3d9c5f3badfe/scratchpad/stage5b-demo/`:
+start scripts and `envrun.py`; `cdp.js` and `h.js` (the browser driver); `lib.py`; `s*.py` (set-up, scans,
+gateway checks, clean-up); `b*.js` (the 14 browser sessions); `out/` (every script's output, `browser.jsonl`
+with every click, request and console line, `requests.jsonl` with the 162 requests the driver sent, the
+backend and gateway logs); `shots/` (58 screenshots; I looked at two of them myself, `04c` and `41f`, the rest
+are backed by the text captured in the same step).
