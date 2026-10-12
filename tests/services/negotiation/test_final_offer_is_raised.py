@@ -18,9 +18,18 @@ from tests.test_negotiation_agent import DummyNick
 class _EmailAgent:
     """Stands in for the draft store: gives the draft its own reference, as the real one does."""
 
-    def __init__(self, fail=False):
+    def __init__(self, fail=False, blocked=None):
         self.stored = []
         self.fail = fail
+        self.blocked = blocked
+        self.assured = []
+
+    def assure_final_offer_reply(self, data, *, text, recipients, supplier_id, workflow_id):
+        self.assured.append({"data": dict(data), "text": text, "recipients": list(recipients),
+                             "supplier_id": supplier_id, "workflow_id": workflow_id})
+        if self.blocked:
+            return self.blocked, {}
+        return None, {"family_id": "final_offer_reply", "status": "ok", "violations": [], "ready": True}
 
     def _store_draft(self, draft):
         if self.fail:
@@ -100,3 +109,37 @@ def test_a_failing_draft_store_still_returns_the_advice(agent):
 def test_the_supplier_name_is_not_used_as_a_persons_name(agent):
     _raise(agent, context=SimpleNamespace(input_data={}))
     assert agent.stub_email.stored[0]["body"].startswith("<p>Hello,</p>")
+
+
+class TestItIsOneOfTheAgentsGovernedEmails:
+    """The reply takes the same assurance and the same mandate as everything else the agent writes."""
+
+    def test_the_draft_carries_its_assurance_record(self, agent):
+        _raise(agent)
+        assert agent.stub_email.stored[0]["assurance"]["family_id"] == "final_offer_reply"
+
+    def test_assurance_is_told_our_limits_so_it_can_check_they_are_not_stated(self, agent):
+        _raise(agent, walkaway=480.0)
+        (call,) = agent.stub_email.assured
+        assert call["data"]["target_price"] == 455.0 and call["data"]["walkaway_price"] == 480.0
+        assert call["data"]["current_offer"] == 470.0 and call["data"]["currency"] == "GBP"
+        assert (call["supplier_id"], call["workflow_id"]) == ("SUP-1", "wf-1")
+        assert call["text"] == agent.stub_email.stored[0]["body"]
+
+    def test_a_thread_with_an_unreviewed_flagged_reply_gets_no_draft(self, agent):
+        """A suspected payment-detail or injection reply stops an agent writing on the thread."""
+        agent.stub_email.blocked = "a reply from this supplier has been flagged and has not been reviewed by a person"
+        advice, draft = _raise(agent)
+        assert draft is None and agent.stub_email.stored == []
+        assert advice["recommendation"] == ESCALATE
+        assert "flagged" in advice["reply_not_drafted"]
+
+    def test_a_good_price_the_agent_has_no_mandate_for_is_escalated(self, agent):
+        advice, _ = _raise(agent, offer=450.0, hold_reason="this counter commits GBP 450.00, above the governed GBP 100 limit")
+        assert advice["recommendation"] == ESCALATE
+        assert "above the governed GBP 100 limit" in advice["reason"]
+        assert "accept" not in agent.stub_email.stored[0]["body"].lower()
+
+    def test_no_hold_leaves_a_good_price_accepted(self, agent):
+        advice, _ = _raise(agent, offer=450.0, hold_reason=None)
+        assert advice["recommendation"] == ACCEPT
