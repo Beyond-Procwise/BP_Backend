@@ -301,6 +301,7 @@ class SupplierInteractionAgent(BaseAgent):
                 "workflow_id": workflow_id,
                 "unique_id": unique_id,
                 "price": row.get("price"),
+                "currency": row.get("currency"),
                 "lead_time": row.get("lead_time"),
                 "received_time": received_at,
             },
@@ -338,6 +339,7 @@ class SupplierInteractionAgent(BaseAgent):
             "from_addr": row.get("from_addr"),
             "received_at": row.get("received_time"),
             "price": row.get("price"),
+            "currency": row.get("currency"),
             "lead_time": row.get("lead_time"),
         }
 
