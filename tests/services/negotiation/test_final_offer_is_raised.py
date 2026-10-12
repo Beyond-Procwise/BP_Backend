@@ -160,3 +160,43 @@ class TestItIsOneOfTheAgentsGovernedEmails:
     def test_no_hold_leaves_a_good_price_accepted(self, agent):
         advice, _ = _raise(agent, offer=450.0, hold_reason=None)
         assert advice["recommendation"] == ACCEPT
+
+
+class TestItArrivesInTheSuppliersConversation:
+    """Threaded exactly as a person's reply from the Action Centre is."""
+
+    def test_the_reply_carries_the_threads_headers(self, agent, monkeypatch):
+        headers = {"In-Reply-To": ["<their-reply@mail>"], "References": ["<ours@procwise>", "<their-reply@mail>"]}
+        monkeypatch.setattr(NegotiationAgent, "_final_offer_thread_headers", staticmethod(lambda ref: headers))
+        _raise(agent)
+        assert agent.stub_email.stored[0]["thread_headers"] == headers
+
+    def test_a_thread_with_nothing_recorded_sets_no_headers(self, agent, monkeypatch):
+        monkeypatch.setattr(NegotiationAgent, "_final_offer_thread_headers", staticmethod(lambda ref: {}))
+        _raise(agent)
+        assert "thread_headers" not in agent.stub_email.stored[0]
+
+    def test_the_headers_come_from_the_email_being_answered(self, monkeypatch):
+        from repositories import draft_rfq_emails_repo
+        from src.services import reply_threading
+
+        asked = {}
+        monkeypatch.setattr(draft_rfq_emails_repo, "load_by_unique_id",
+                            lambda uid: asked.setdefault("loaded", uid) and {"unique_id": uid, "workflow_id": "wf-1"})
+        monkeypatch.setattr(reply_threading, "reply_thread_headers",
+                            lambda *, source_draft, source_payload: {"In-Reply-To": [f"<reply-to-{source_draft['unique_id']}>"]})
+        assert NegotiationAgent._final_offer_thread_headers("PROC-WF-SENT") == {"In-Reply-To": ["<reply-to-PROC-WF-SENT>"]}
+        assert asked["loaded"] == "PROC-WF-SENT"
+
+    def test_an_unknown_email_or_a_failing_lookup_threads_nothing(self, monkeypatch):
+        from repositories import draft_rfq_emails_repo
+
+        monkeypatch.setattr(draft_rfq_emails_repo, "load_by_unique_id", lambda uid: None)
+        assert NegotiationAgent._final_offer_thread_headers("PROC-WF-SENT") == {}
+        assert NegotiationAgent._final_offer_thread_headers(None) == {}
+
+        def boom(uid):
+            raise RuntimeError("database unreachable")
+
+        monkeypatch.setattr(draft_rfq_emails_repo, "load_by_unique_id", boom)
+        assert NegotiationAgent._final_offer_thread_headers("PROC-WF-SENT") == {}

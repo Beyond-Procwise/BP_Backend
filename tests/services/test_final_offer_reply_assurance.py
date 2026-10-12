@@ -26,7 +26,7 @@ def agent(monkeypatch):
     agent.calls = SimpleNamespace(prepared=[], finalized=[])
 
     def prepare(data, *, workflow_id, slug=None, **kw):
-        agent.calls.prepared.append({"data": data, "workflow_id": workflow_id, "slug": slug})
+        agent.calls.prepared.append({"data": data, "workflow_id": workflow_id, "slug": slug, "user_id": kw.get("user_id")})
         return agent.run
 
     def finalize(run, composed, recipients, supplier_id, *, repaired):
@@ -79,3 +79,13 @@ def test_a_failure_is_carried_as_unassured_and_never_raised(agent, monkeypatch):
     assert blocked is None
     assert record["status"] == "unassured" and record["family_id"] == "final_offer_reply"
     assert "policy store unreachable" in record["reason"] and record["ready"] is False
+
+
+def test_the_agents_own_reply_is_accounted_to_the_agent(agent):
+    _assure(agent)
+    assert agent.calls.prepared[0]["user_id"] is None
+
+
+def test_a_persons_decision_is_accounted_to_that_person(agent):
+    _assure(agent, requested_by="sub-buyer-007")
+    assert agent.calls.prepared[0]["user_id"] == "sub-buyer-007"

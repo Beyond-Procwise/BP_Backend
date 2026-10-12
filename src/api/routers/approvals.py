@@ -13,10 +13,11 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from api.auth import require_user
+from api.endpoint_gate import require as gate
 from src.services import approval_store, guardrail, rbac
 from src.services.agent_actions import record_action_or_fail
 from src.services.approval_content import content_hash
@@ -64,6 +65,14 @@ class ApproveRequest(BaseModel):
 
 class RevokeRequest(BaseModel):
     reason: Optional[str] = None
+
+
+class FinalOfferDecisionRequest(BaseModel):
+    # "accept" or "decline": what the person has decided about the supplier's final offer.
+    decision: str
+    # The version of the email the person was looking at. When given, a draft that has
+    # changed since is refused, so a decision is never applied to words they did not see.
+    content_hash: Optional[str] = None
 
 
 def _load_draft(unique_id: str, conn: Any = None) -> Optional[Dict[str, Any]]:
@@ -376,6 +385,109 @@ def read_draft(unique_id: str, principal=Depends(require_user)) -> Dict[str, Any
         unique_id=draft.get("unique_id"),
     )
     return _describe_draft(draft, approval, viewer=viewer, with_text=True)
+
+
+def _drafting_agent(request: Request) -> Any:
+    """The email drafting agent, which owns how a draft is assured and stored."""
+
+    agent_nick = getattr(request.app.state, "agent_nick", None)
+    if not agent_nick:
+        raise HTTPException(status_code=503, detail="the drafting service is not available")
+    from agents.email_drafting_agent import EmailDraftingAgent
+
+    return EmailDraftingAgent(agent_nick)
+
+
+@router.post("/drafts/{unique_id}/final-offer")
+def decide_final_offer(
+    unique_id: str,
+    body: FinalOfferDecisionRequest,
+    request: Request,
+    principal=Depends(require_user),
+) -> Dict[str, Any]:
+    """A person accepts or declines a supplier's final offer; the waiting reply becomes their answer.
+
+    When the agent escalates a final offer it leaves a holding reply that commits to
+    nothing. This turns that same draft into the acceptance or the decline, in fixed
+    wording, and sends NOTHING: the email still has to be approved and sent like any
+    other. The person deciding is recorded as the one who asked for it, taken from
+    their sign-in, so the existing rule on approving your own request applies to it.
+    """
+
+    from src.services.negotiation import final_offer
+
+    decided_by = _subject(principal)
+    decision = str(body.decision or "").strip().lower()
+    if decision not in final_offer.DECISIONS:
+        raise HTTPException(status_code=422, detail="the decision must be accept or decline")
+
+    gate("email.draft", principal, agent="approvals_api",
+         context={"unique_id": unique_id, "final_offer_decision": decision})
+
+    draft = _load_draft(unique_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail=f"no unsent draft with unique_id {unique_id}")
+    advice = draft.get("final_offer")
+    if not isinstance(advice, dict):
+        raise HTTPException(
+            status_code=409,
+            detail="this email is not a reply to a supplier's final offer, so there is nothing to decide here",
+        )
+    if body.content_hash and body.content_hash != content_hash(resolve_effective_content(draft)):
+        raise HTTPException(
+            status_code=409,
+            detail="this email changed after you opened it; read it again before deciding",
+        )
+
+    agent = _drafting_agent(request)
+    supplier_id = draft.get("supplier_id")
+    contact = agent._master_contact(supplier_id)
+    try:
+        html = final_offer.decision_html(
+            decision, offer=advice.get("offer"), currency=advice.get("currency"),
+            contact_name=getattr(contact, "name", None),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    recipients = list(draft.get("recipients") or [])
+    blocked, assurance = agent.assure_final_offer_reply(
+        {"current_offer": advice.get("offer"), "currency": advice.get("currency"),
+         "target_price": advice.get("limit") if advice.get("limit_kind") == "target" else None,
+         "walkaway_price": advice.get("limit") if advice.get("limit_kind") == "walk-away" else None,
+         "contact_name": getattr(contact, "name", None)},
+        text=html, recipients=recipients, supplier_id=supplier_id, workflow_id=draft.get("workflow_id"),
+        requested_by=decided_by,
+    )
+    if blocked:
+        raise HTTPException(status_code=409, detail=blocked)
+
+    from datetime import datetime, timezone
+
+    decided = dict(draft)
+    decided["body"] = html
+    decided["requested_by"] = decided_by
+    decided["assurance"] = assurance
+    decided["final_offer"] = {
+        **advice,
+        "decision": {"decision": decision, "decided_by": decided_by,
+                     "decided_at": datetime.now(timezone.utc).isoformat()},
+    }
+    decided.pop("draft_record_id", None)
+    try:
+        agent._store_draft(decided)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if decided.get("draft_record_id") is None:
+        # _store_draft logs and swallows database errors; the id is stamped only on a commit.
+        raise HTTPException(status_code=500, detail="the decision could not be saved; the email is unchanged")
+
+    logger.info("final offer decided: unique_id=%s decision=%s by=%s", unique_id, decision, decided_by)
+    stored = _load_draft(unique_id) or decided
+    approval = approval_store.find_dispatch_approval(
+        rfq_id=stored.get("rfq_id"), workflow_id=stored.get("workflow_id"), unique_id=stored.get("unique_id"),
+    )
+    return _describe_draft(stored, approval, viewer=decided_by, with_text=True)
 
 
 @router.post("/dispatch/{unique_id}")
