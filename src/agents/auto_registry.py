@@ -115,6 +115,12 @@ class AutoRegistry:
                 "agent_definitions.json must be either a JSON array or an object "
                 "with an 'agents' key."
             )
+        if path is None:
+            # The catalogue, not just the file: the agents people created live
+            # in the database and are joined on by the one loader.
+            from agents.definitions import with_created_agents
+
+            agent_list = with_created_agents([e for e in agent_list if isinstance(e, dict)])
 
         contracts: Dict[str, AgentContract] = {}
         for entry in agent_list:

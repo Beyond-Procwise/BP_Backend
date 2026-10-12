@@ -755,17 +755,11 @@ class Orchestrator:
         policies, which can occur many times within a single workflow.
         """
 
-        from agents.definitions import DEFINITIONS_PATH
+        # Through the one loader, so the agents people created (which live in
+        # the database, not the file) are in this view too.
+        from agents.definitions import load_agent_definitions
 
-        path = DEFINITIONS_PATH
-        with path.open() as f:
-            data = json.load(f)
-
-        # The catalogue is stored as {"agents": [...]} but historically was a bare
-        # list — accept either shape so a schema tweak can't silently blank the
-        # whole agent registry.
-        if isinstance(data, dict):
-            data = data.get("agents") or data.get("definitions") or []
+        data = load_agent_definitions()
 
         defs: Dict[str, str] = {}
         for item in data:

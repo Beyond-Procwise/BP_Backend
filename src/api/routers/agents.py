@@ -15,6 +15,7 @@ os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
 os.environ.setdefault("OMP_NUM_THREADS", "8")
 
 from api.auth import require_user
+from repositories import agent_definition_repo
 from api.endpoint_gate import require as gate
 
 logger = logging.getLogger(__name__)
@@ -391,7 +392,7 @@ async def create_agent(
     gate("agent.create", principal, agent="AgentsRouter",
          context={"name": (body.name or "").strip()})
 
-    from agents.definitions import DEFINITIONS_PATH, load_agent_definitions
+    from agents.definitions import load_agent_definitions
 
     name = (body.name or "").strip()
     if not name:
@@ -467,7 +468,11 @@ async def create_agent(
     if body.capabilities is not None:
         entry["capabilities"] = list(body.capabilities)
     entry["derived_from"] = body.backing_slug
-    entry["created_by"] = "workspace"
+    # Who made it. "workspace" was written here for every agent ever created,
+    # which named a screen, not a person; it remains only for a server running
+    # with sign-in off, where there is nobody to name.
+    created_by = getattr(principal, "subject", None) or None
+    entry["created_by"] = created_by or "workspace"
     # A base's own list is never inherited: the base is not narrowed by one, and
     # a copy must not start life narrowed by a list nobody chose for it.
     entry.pop("tools", None)
@@ -505,17 +510,13 @@ async def create_agent(
         logger.exception("create_agent: bp_prompt insert failed")
         raise HTTPException(status_code=500, detail=f"could not store instructions: {exc}")
 
-    # 2) Append to agent_definitions.json atomically (tmp file + rename).
+    # 2) Store the agent. In the database, not the catalogue file: the file is
+    #    tracked in git and a redeploy replaces it, taking with it every agent a
+    #    person had made. The store records who made it and keeps each version.
     try:
-        with DEFINITIONS_PATH.open(encoding="utf-8") as fh:
-            data = json.load(fh)
-        if isinstance(data, dict):
-            data.setdefault("agents", []).append(entry)
-        else:
-            data.append(entry)
-        tmp = DEFINITIONS_PATH.with_name(DEFINITIONS_PATH.name + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp, DEFINITIONS_PATH)
+        agent_definition_repo.create(
+            slug, entry, derived_from=body.backing_slug, by=created_by
+        )
     except Exception as exc:
         # A failed create must leave no trace: deactivate the prompt row.
         try:
@@ -533,6 +534,10 @@ async def create_agent(
             logger.exception(
                 "create_agent: could not deactivate prompt %s after catalogue failure",
                 prompt_id,
+            )
+        if isinstance(exc, agent_definition_repo.AgentExists):
+            raise HTTPException(
+                status_code=422, detail=f"slug {slug!r} already exists in the agent catalogue"
             )
         logger.exception("create_agent: catalogue write failed")
         raise HTTPException(status_code=500, detail=f"could not update agent catalogue: {exc}")
@@ -626,7 +631,7 @@ async def delete_agent(
     cascade-deleting the workflow — workflows are never silently destroyed.
     """
     gate("agent.delete", principal, agent="AgentsRouter", context={"slug": slug})
-    from agents.definitions import DEFINITIONS_PATH, load_agent_definitions
+    from agents.definitions import load_agent_definitions
 
     definitions = load_agent_definitions()
     entry = next((a for a in definitions if a.get("slug") == slug), None)
@@ -693,19 +698,13 @@ async def delete_agent(
         logger.exception("delete_agent: bp_prompt delete failed")
         raise HTTPException(status_code=500, detail=f"could not remove instructions: {exc}")
 
-    # 2) Remove from agent_definitions.json atomically (tmp file + rename),
-    #    same shape create's step 2 writes (indent=2 + trailing newline).
+    # 2) Mark it deleted in the store. The row and its history stay; a copy an
+    #    older version left in the catalogue file stays hidden behind it.
     try:
-        with DEFINITIONS_PATH.open(encoding="utf-8") as fh:
-            data = json.load(fh)
-        if isinstance(data, dict):
-            remaining = [a for a in data.get("agents", []) if a.get("slug") != slug]
-            data["agents"] = remaining
-        else:
-            data = [a for a in data if a.get("slug") != slug]
-        tmp = DEFINITIONS_PATH.with_name(DEFINITIONS_PATH.name + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp, DEFINITIONS_PATH)
+        agent_definition_repo.delete(
+            slug, entry, derived_from=entry["derived_from"],
+            by=getattr(principal, "subject", None) or None,
+        )
     except Exception as exc:
         logger.exception("delete_agent: catalogue write failed")
         raise HTTPException(status_code=500, detail=f"could not update agent catalogue: {exc}")
@@ -761,6 +760,20 @@ async def delete_agent(
         "governance_unlinked": unlinked,
         "governance": reload_report,
     }
+
+
+@router.get("/{slug}/history")
+async def agent_history(slug: str, principal=Depends(require_user)):
+    """Every recorded change to one created agent, newest first: what changed,
+    who changed it and when, and what the agent looked like afterwards.
+
+    A built-in agent has no history here — a release changes it, not a person —
+    and answers 404 like a slug that was never created.
+    """
+    versions = agent_definition_repo.history(slug)
+    if not versions:
+        raise HTTPException(status_code=404, detail=f"no created agent {slug!r}")
+    return {"slug": slug, "versions": versions}
 
 
 class AgentExecutionRequest(BaseModel):

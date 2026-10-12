@@ -25,6 +25,8 @@ from api.routers.agents import router as agents_router
 class _FakeCursor:
     """Records executed SQL; answers RETURNING prompt_id."""
 
+    rowcount = 1
+
     def __init__(self, log):
         self._log = log
 
@@ -74,6 +76,41 @@ def _agent_nick(sql_log):
     )
 
 
+class _FakeStore:
+    """Stands in for repositories.agent_definition_repo: created agents by slug."""
+
+    class AgentExists(Exception):
+        pass
+
+    class AgentNotFound(Exception):
+        pass
+
+    def __init__(self):
+        self.live = {}
+        self.deleted = set()
+        self.versions = []
+
+    def create(self, slug, definition, *, derived_from, by):
+        if slug in self.live:
+            raise self.AgentExists(slug)
+        self.live[slug] = dict(definition)
+        self.deleted.discard(slug)
+        self.versions.append({"slug": slug, "change": "created", "changed_by": by})
+        return 1
+
+    def delete(self, slug, definition, *, derived_from, by):
+        self.live.pop(slug, None)
+        self.deleted.add(slug)
+        self.versions.append({"slug": slug, "change": "deleted", "changed_by": by})
+        return 2
+
+    def history(self, slug):
+        return [v for v in reversed(self.versions) if v["slug"] == slug]
+
+    def snapshot(self):
+        return list(self.live.values()), set(self.deleted)
+
+
 @pytest.fixture()
 def create_app(tmp_path, monkeypatch):
     """An app whose catalogue is a scratch file with one creatable base."""
@@ -93,11 +130,19 @@ def create_app(tmp_path, monkeypatch):
     # these tests are about what a create that is allowed then does.
     import api.routers.agents as agents_mod
     monkeypatch.setattr(agents_mod, "gate", lambda *a, **k: None)
+    # Created agents are stored, not written to the catalogue file.
+    store = _FakeStore()
+    monkeypatch.setattr(agents_mod, "agent_definition_repo", store)
+    monkeypatch.setattr(agent_defs, "_created_source", store.snapshot)
+    monkeypatch.setattr(
+        "repositories.agent_workflow_repo.list_active", lambda: [], raising=False
+    )
 
     sql_log = []
     app = FastAPI()
     app.include_router(agents_router)
     app.state.agent_nick = _agent_nick(sql_log)
+    app.state.store = store
     return app, sql_log, defs
 
 
@@ -123,8 +168,9 @@ def test_console_payload_without_instructions_creates_the_agent(create_app):
     _, params = inserts[0]
     assert "Negotiates renewal terms for EU tail-spend suppliers." in params
 
-    catalogue = json.loads(defs.read_text())["agents"]
-    assert any(a["slug"] == "eu-tail-spend-negotiator" for a in catalogue)
+    assert "eu-tail-spend-negotiator" in app.state.store.live
+    # The catalogue FILE is the built-in agents; a created agent is never written to it.
+    assert [a["slug"] for a in json.loads(defs.read_text())["agents"]] == ["negotiation"]
 
 
 def test_explicit_instructions_still_win_over_description(create_app):
@@ -175,9 +221,8 @@ def _create(client, **extra):
     })
 
 
-def _entry(defs):
-    return next(a for a in json.loads(defs.read_text())["agents"]
-                if a["slug"] == "eu-tail-spend-negotiator")
+def _entry(app):
+    return app.state.store.live["eu-tail-spend-negotiator"]
 
 
 def test_a_tool_list_given_at_creation_is_stored_on_the_agent(create_app):
@@ -186,7 +231,7 @@ def test_a_tool_list_given_at_creation_is_stored_on_the_agent(create_app):
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["tools"] == ["get_policy", "get_corpus_facts"]
-    assert _entry(defs)["tools"] == ["get_policy", "get_corpus_facts"]
+    assert _entry(app)["tools"] == ["get_policy", "get_corpus_facts"]
 
 
 def test_an_empty_tool_list_is_stored_as_no_tools(create_app):
@@ -194,7 +239,7 @@ def test_an_empty_tool_list_is_stored_as_no_tools(create_app):
     resp = _create(TestClient(app), tools=[])
 
     assert resp.status_code == 200, resp.text
-    assert _entry(defs)["tools"] == []
+    assert _entry(app)["tools"] == []
 
 
 def test_no_tool_list_stores_no_list(create_app):
@@ -203,7 +248,7 @@ def test_no_tool_list_stores_no_list(create_app):
     resp = _create(TestClient(app))
 
     assert resp.status_code == 200, resp.text
-    assert "tools" not in _entry(defs)
+    assert "tools" not in _entry(app)
     assert resp.json()["tools"] is None
 
 
@@ -214,7 +259,7 @@ def test_a_tool_that_does_not_exist_is_refused_and_nothing_is_created(create_app
     assert resp.status_code == 422
     assert "launch_rocket" in resp.json()["detail"]
     assert not any("INSERT INTO proc.bp_prompt" in sql for sql, _ in sql_log)
-    assert len(json.loads(defs.read_text())["agents"]) == 1
+    assert app.state.store.live == {}
 
 
 def test_the_tool_that_sends_email_cannot_be_given(create_app):
@@ -224,4 +269,66 @@ def test_the_tool_that_sends_email_cannot_be_given(create_app):
 
     assert resp.status_code == 422
     assert "run_email_dispatch" in resp.json()["detail"]
-    assert len(json.loads(defs.read_text())["agents"]) == 1
+    assert app.state.store.live == {}
+
+
+# --- where a created agent is kept, and what is remembered about it ----------
+
+def test_a_second_agent_with_the_same_name_is_refused(create_app):
+    app, _, _ = create_app
+    client = TestClient(app)
+    assert _create(client).status_code == 200
+
+    again = _create(client)
+    assert again.status_code == 422
+    assert "already exists" in again.json()["detail"]
+
+
+def test_with_sign_in_off_nobody_is_named_as_the_creator(create_app):
+    app, _, _ = create_app
+    _create(TestClient(app))
+    assert app.state.store.versions[-1] == {
+        "slug": "eu-tail-spend-negotiator", "change": "created", "changed_by": None,
+    }
+
+
+def test_the_person_who_created_it_is_recorded(create_app):
+    from api.auth import require_user
+
+    app, _, _ = create_app
+    app.dependency_overrides[require_user] = lambda: SimpleNamespace(subject="sub-123")
+    _create(TestClient(app))
+
+    assert app.state.store.versions[-1]["changed_by"] == "sub-123"
+    assert _entry(app)["created_by"] == "sub-123"
+
+
+def test_deleting_a_created_agent_marks_it_deleted_and_it_leaves_the_catalogue(create_app):
+    import agents.definitions as agent_defs
+
+    app, _, _ = create_app
+    client = TestClient(app)
+    _create(client)
+
+    resp = client.delete("/agents/eu-tail-spend-negotiator")
+
+    assert resp.status_code == 200, resp.text
+    assert "eu-tail-spend-negotiator" in app.state.store.deleted
+    assert [a["slug"] for a in agent_defs.load_agent_definitions()] == ["negotiation"]
+
+
+def test_the_history_of_a_created_agent_can_be_read(create_app):
+    app, _, _ = create_app
+    client = TestClient(app)
+    _create(client)
+    client.delete("/agents/eu-tail-spend-negotiator")
+
+    resp = client.get("/agents/eu-tail-spend-negotiator/history")
+
+    assert resp.status_code == 200, resp.text
+    assert [v["change"] for v in resp.json()["versions"]] == ["deleted", "created"]
+
+
+def test_a_built_in_agent_has_no_history(create_app):
+    app, _, _ = create_app
+    assert TestClient(app).get("/agents/negotiation/history").status_code == 404

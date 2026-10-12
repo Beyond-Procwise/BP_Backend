@@ -183,6 +183,21 @@ async def lifespan(app: FastAPI):
     try:
         agent_nick = AgentNick()
 
+        # The agents people created live in the database. Join them onto the
+        # catalogue BEFORE the registry is built from it, or they would not be
+        # registered until something asked for a reload. A server that cannot
+        # reach its database starts with the built-in agents alone, and says so.
+        try:
+            from repositories import agent_definition_repo as _agent_definition_repo
+
+            _taken = _agent_definition_repo.install_as_source()
+            if _taken:
+                logger.info("Created agents taken in from the catalogue file: %s", _taken)
+        except Exception:
+            logger.exception(
+                "Created agents are unavailable: the catalogue is the built-in agents only"
+            )
+
         # Auto-discover agents from agent_definitions.json (replaces manual registration)
         from agents.auto_registry import AutoRegistry
         auto_registry = AutoRegistry.from_json()
