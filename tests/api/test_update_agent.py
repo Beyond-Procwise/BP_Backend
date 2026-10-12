@@ -101,7 +101,7 @@ def app(tmp_path, monkeypatch):
     app.include_router(agents_mod.router)
     app.state.agent_nick = SimpleNamespace(
         get_db_connection=lambda: _Conn(), agents={}, auto_registry=None,
-        tools=lambda: [SimpleNamespace(name=n) for n in (
+        tools=lambda: [SimpleNamespace(name=n, description=n) for n in (
             "get_corpus_facts", "get_policy", "run_email_dispatch")],
     )
     app.state.store = store
@@ -216,3 +216,10 @@ def test_a_built_in_agent_cannot_be_edited(app):
 
 def test_an_agent_that_does_not_exist_is_a_404(app):
     assert _as(app, "sub-editor").patch("/agents/nope", json={"description": "x"}).status_code == 404
+
+
+def test_the_tool_that_sends_email_is_not_offered_to_pick(app):
+    """Offering it would invite a pick that the create and edit calls refuse."""
+    resp = _as(app, "sub-editor").get("/agents/tool-options")
+    assert resp.status_code == 200, resp.text
+    assert [t["key"] for t in resp.json()["tools"]] == ["get_corpus_facts", "get_policy"]

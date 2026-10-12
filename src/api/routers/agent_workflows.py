@@ -454,6 +454,10 @@ _INTERNAL_RESULT_KEYS = {
     "raw_response", "trace", "messages", "prompt",
 }
 
+# What a reasoning run reports about itself. The record's id is carried on the
+# card as its own field; none of it is a fact about the work.
+_RUN_BOOKKEEPING_KEYS = {"run_id", "recorded", "usage", "outputs", "outputs_error"}
+
 # Prose keys, in the order a human would want them as the card's one-line answer.
 _HEADLINE_KEYS = ("summary", "message", "answer", "recommendation", "status_message")
 
@@ -503,6 +507,10 @@ def _summarise_node_results(
                 headline = _plain(value.strip())[:200]
                 break
 
+        # A created agent's named outputs get their own place on the card
+        # (below), so they are not repeated among the facts.
+        named = data.get("outputs") if isinstance(data.get("outputs"), dict) else {}
+
         facts: List[Dict[str, str]] = []
         for key, value in data.items():
             if len(facts) >= _MAX_FACTS:
@@ -510,6 +518,8 @@ def _summarise_node_results(
             if not isinstance(key, str) or key.startswith("_"):
                 continue
             if key in _INTERNAL_RESULT_KEYS or key in _HEADLINE_KEYS:
+                continue
+            if key in _RUN_BOOKKEEPING_KEYS or key in named:
                 continue
             if isinstance(value, bool):
                 shown = "yes" if value else "no"
@@ -547,6 +557,31 @@ def _summarise_node_results(
         if isinstance(answer, str) and answer.strip():
             card["answer"] = osafe.enforce(
                 _plain(answer.strip())[:_MAX_ANSWER_CHARS], where="workflow result answer"
+            )
+        # The record that can explain this run, named only when it was written:
+        # a link to a record that does not exist is worse than no link.
+        run_id = data.get("run_id")
+        if isinstance(run_id, str) and run_id and data.get("recorded") is True:
+            card["run_id"] = run_id
+        if named:
+            # Value and standing only. The words each output rests on stay in
+            # the record of the run, which is asked for separately and gated.
+            card["outputs"] = osafe.scrub_payload(
+                [
+                    {
+                        "name": str(name),
+                        "label": _fact_label(str(name)),
+                        "value": (
+                            str(filled.get("value"))[:_MAX_ANSWER_CHARS]
+                            if isinstance(filled, dict) and filled.get("value") is not None
+                            else None
+                        ),
+                        "status": str((filled or {}).get("status") or "missing")
+                        if isinstance(filled, dict) else "missing",
+                    }
+                    for name, filled in named.items()
+                ],
+                where="workflow result outputs",
             )
         cards[node_id] = card
     return cards
