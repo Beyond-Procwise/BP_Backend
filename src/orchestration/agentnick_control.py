@@ -336,8 +336,13 @@ def reason(
     workflow_id: Optional[str] = None,
     user_id: Optional[str] = None,
     agent: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> ToolRunResult:
     """Let AgentNick plan and act on ``task`` by calling tools.
+
+    ``model`` is the model the calling agent was given, if it was given one.
+    ``None`` is the standard model. It used to be impossible to pass: an agent's
+    model was validated and stored at creation and then ignored here.
 
     ``agent`` names the calling agent (its slug) for the agent-policy gate, which sees every
     tool call with the agent, workflow and user it belongs to.
@@ -360,6 +365,7 @@ def reason(
         system,
         max_rounds=max_rounds,
         require_tool_use=require_tool_use,
+        model=model,
         agent=agent,
         workflow_id=workflow_id,
         user_id=user_id,

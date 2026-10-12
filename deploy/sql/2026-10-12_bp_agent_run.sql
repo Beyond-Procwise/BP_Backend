@@ -19,6 +19,9 @@ CREATE TABLE IF NOT EXISTS proc.bp_agent_run (
     answer         TEXT,
     outputs        JSONB,
     rounds         INTEGER NOT NULL DEFAULT 0,
+    prompt_tokens      BIGINT NOT NULL DEFAULT 0,
+    completion_tokens  BIGINT NOT NULL DEFAULT 0,
+    model_calls        INTEGER NOT NULL DEFAULT 0,
     error          TEXT,
     started_at     TIMESTAMPTZ NOT NULL,
     finished_at    TIMESTAMPTZ NOT NULL

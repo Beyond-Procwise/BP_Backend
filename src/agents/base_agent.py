@@ -367,6 +367,18 @@ class BaseAgent:
         allowed = getattr(self, "allowed_tools", None)
         if allowed is not None:
             kwargs.setdefault("only", list(allowed))
+        # The model this agent was given, if it was given one. Strict: an agent
+        # with no model of its own gets None — the standard model — not some
+        # other agent's fallback.
+        resolver = getattr(self.agent_nick, "get_agent_model", None)
+        if own_slug and callable(resolver):
+            try:
+                own_model = resolver(own_slug, strict=True)
+            except Exception:  # pragma: no cover - defensive
+                logger.warning("model of %s could not be resolved", own_slug, exc_info=True)
+                own_model = None
+            if own_model:
+                kwargs.setdefault("model", own_model)
         kwargs.setdefault("agent", self._governance_slug())   # who is calling, for the policy gate
         return _reason(
             self.agent_nick,
@@ -465,8 +477,20 @@ class BaseAgent:
         is a normal node result: the answer, which tools were used, and a trace
         of what each was asked — never what it returned, which can be raw rows.
         """
+        from services.tool_runtime import count_tokens
+
         task = _render_node_task(context.input_data)
         started_at = datetime.utcnow()
+        with count_tokens() as usage:
+            result, outputs, outputs_error = self._reason_and_fill(context, task)
+        run_id, recorded = self._record_reasoning_run(
+            context, task, result, started_at, outputs=outputs, usage=usage
+        )
+        return self._tool_loop_output(result, outputs, outputs_error, run_id, recorded, usage)
+
+    def _reason_and_fill(self, context: "AgentContext", task: str):
+        """The run itself: reason with tools, then fill the named outputs.
+        Returns ``(result, outputs, outputs_error)``."""
         result = self.reason(
             task, workflow_id=context.workflow_id, user_id=context.user_id
         )
@@ -491,9 +515,12 @@ class BaseAgent:
                 )
                 outputs = {s["name"]: named_outputs.missing() for s in spec}
                 outputs_error = str(exc)
-        run_id, recorded = self._record_reasoning_run(
-            context, task, result, started_at, outputs=outputs
-        )
+        return result, outputs, outputs_error
+
+    def _tool_loop_output(
+        self, result: Any, outputs: Optional[Dict[str, Dict[str, Any]]],
+        outputs_error: Optional[str], run_id: str, recorded: bool, usage: Dict[str, int],
+    ) -> "AgentOutput":
         data: Dict[str, Any] = {
             # The record that can explain this run later — what the agent was
             # told, which model answered, what each tool returned. ``recorded``
@@ -501,6 +528,9 @@ class BaseAgent:
             # explained never looks like one that can.
             "run_id": run_id,
             "recorded": recorded,
+            # What the run cost: every model call it made, the named outputs
+            # and any agent it called included.
+            "usage": dict(usage),
             "tools_used": list(result.tools_used),
             "rounds": result.rounds,
             "trace": [
@@ -525,6 +555,7 @@ class BaseAgent:
     def _record_reasoning_run(
         self, context: "AgentContext", task: str, result: Any, started_at: datetime,
         *, outputs: Optional[Dict[str, Dict[str, Any]]] = None,
+        usage: Optional[Dict[str, int]] = None,
     ) -> Tuple[str, bool]:
         """Store the run. Returns its id and whether it was written.
 
@@ -549,6 +580,9 @@ class BaseAgent:
                 rounds=result.rounds,
                 error=result.error,
                 outputs=outputs,
+                prompt_tokens=(usage or {}).get("prompt_tokens", 0),
+                completion_tokens=(usage or {}).get("completion_tokens", 0),
+                model_calls=(usage or {}).get("model_calls", 0),
                 started_at=started_at,
                 finished_at=datetime.utcnow(),
             )

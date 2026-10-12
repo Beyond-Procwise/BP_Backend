@@ -22,6 +22,8 @@ the facts that produced it instead of being taken on trust.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import json
 import logging
 from src.services.governed_limits import limit as _governed_limit
@@ -129,6 +131,37 @@ class ToolRunResult:
             # out. Do not surface it to a user path that bypasses that gate.
             "trace": [c.to_dict() for c in self.calls],
         }
+
+
+# Token counting. Whoever wants to know what a piece of work cost opens a count
+# around it; every model call made inside notes what the model server reported.
+# Counts opened inside another add to both, so a run that starts another run
+# carries the whole cost. A call made outside any count is simply not counted.
+_COUNTS: contextvars.ContextVar[tuple] = contextvars.ContextVar("token_counts", default=())
+
+
+@contextlib.contextmanager
+def count_tokens():
+    usage = {"prompt_tokens": 0, "completion_tokens": 0, "model_calls": 0}
+    token = _COUNTS.set(_COUNTS.get() + (usage,))
+    try:
+        yield usage
+    finally:
+        _COUNTS.reset(token)
+
+
+def note_usage(body: Any) -> None:
+    """Add one model reply's token counts to every count that is open."""
+    counts = _COUNTS.get()
+    if not counts:
+        return
+    body = body if isinstance(body, dict) else {}
+    prompt = int(body.get("prompt_eval_count") or 0)
+    completion = int(body.get("eval_count") or 0)
+    for usage in counts:
+        usage["prompt_tokens"] += prompt
+        usage["completion_tokens"] += completion
+        usage["model_calls"] += 1
 
 
 def _coerce_args(raw: Any) -> Dict[str, Any]:
@@ -241,7 +274,9 @@ def _chat(
     if response is None:
         return {}
     response.raise_for_status()
-    return response.json().get("message", {}) or {}
+    body = response.json()
+    note_usage(body)
+    return body.get("message", {}) or {}
 
 
 def structured(
@@ -298,7 +333,9 @@ def structured(
     if response is None:
         raise RuntimeError("the model could not be reached")
     response.raise_for_status()
-    content = (response.json().get("message") or {}).get("content") or ""
+    body = response.json()
+    note_usage(body)
+    content = (body.get("message") or {}).get("content") or ""
     if not content.strip():
         raise RuntimeError("the model answered nothing")
     parsed = json.loads(content)
