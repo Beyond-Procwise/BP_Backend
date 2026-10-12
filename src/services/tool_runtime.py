@@ -258,26 +258,43 @@ def structured(
     constrained to it as it is generated rather than parsed out of prose
     afterwards. Raises when the model cannot be reached or answers nothing.
     """
-    payload: Dict[str, Any] = {
-        "model": model or _DEFAULT_MODEL,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        "stream": False,
-        "think": False,
-        "keep_alive": -1,
-        "format": schema,
-        "options": {"temperature": 0, "num_predict": 2048},
-    }
-    response = egress.post(
-        _OLLAMA_CHAT,
-        purpose=egress.Purpose.MODEL_INFERENCE,
-        json=payload,
-        timeout=timeout_s or _DEFAULT_TIMEOUT_S,
-        require_global=False,   # the model daemon is on localhost by design
-        raise_transport_errors=True,
-    )
+    from src.services import ollama_client
+
+    def _send() -> Any:
+        payload: Dict[str, Any] = {
+            "model": model or _DEFAULT_MODEL,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "stream": False,
+            "think": False,
+            "keep_alive": -1,
+            "format": schema,
+            # Every load-affecting option, as every other caller sends them. The
+            # model server keys a loaded model on these: a request that named
+            # none would ask for a runner of its own and evict the one everyone
+            # shares. Read afresh on each send, so a refusal just noted is honoured.
+            "options": {**ollama_client.load_options(), "temperature": 0, "num_predict": 2048},
+        }
+        return payload, egress.post(
+            _OLLAMA_CHAT,
+            purpose=egress.Purpose.MODEL_INFERENCE,
+            json=payload,
+            timeout=timeout_s or _DEFAULT_TIMEOUT_S,
+            require_global=False,   # the model daemon is on localhost by design
+            raise_transport_errors=True,
+        )
+
+    payload, response = _send()
+    asked = payload["options"].get("num_gpu")
+    if (response is not None and asked is not None
+            and getattr(response, "status_code", 200) >= 500
+            and ollama_client.is_layout_rejection(getattr(response, "text", ""))):
+        # The card will not take the whole model just now. Say so once, for
+        # every caller, and go again on the server's own split.
+        ollama_client.note_layout_rejection(asked)
+        payload, response = _send()
     if response is None:
         raise RuntimeError("the model could not be reached")
     response.raise_for_status()
