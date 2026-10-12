@@ -52,6 +52,7 @@ from pathlib import Path
 
 from services.redis_client import get_workflow_redis_client
 from src.services.formulas import ensure_registered, evaluate
+from src.services.negotiation import final_offer as _final_offer
 # Play ranking lives in negotiation_advice: it is pure scoring and the advisor needs
 # it without instantiating an agent. TRADE_OFF_HINTS is imported rather than
 # redefined so the hints cannot drift between the two callers.
@@ -5010,6 +5011,27 @@ class NegotiationAgent(BaseAgent):
             state["awaiting_response"] = halt_reason == "Awaiting supplier response."
             stop_message = self._build_stop_message(new_status, halt_reason, round_no)
             decision.setdefault("status_reason", halt_reason)
+            # Only the run that meets the final offer raises it: a session already
+            # completed halts for that reason instead and must not draft again.
+            if final_offer_reason and halt_reason == final_offer_reason:
+                final_offer_record, final_offer_draft = self._raise_final_offer(
+                    context=context,
+                    workflow_id=identifier.workflow_id,
+                    supplier=supplier,
+                    supplier_name=supplier_name,
+                    sent_reference=session_reference,
+                    round_no=round_no,
+                    state=state,
+                    offer=price,
+                    target=target_price,
+                    walkaway=walkaway_price,
+                    currency=currency,
+                )
+                decision["final_offer"] = final_offer_record
+                decision["recommendation"] = final_offer_record["recommendation"]
+                stop_message = f"{stop_message} {final_offer_record['reason']}"
+                if final_offer_draft is not None:
+                    draft_records.append(final_offer_draft)
             self._persist_thread_state(state, thread_state)
             email_thread_history = self._get_email_thread_history(
                 identifier.workflow_id, supplier
@@ -5125,7 +5147,8 @@ class NegotiationAgent(BaseAgent):
                 supplier_name=supplier_name,
                 round_number=round_no,
                 subject=subject_hint,
-                body=stop_message,
+                # The stop message is an internal note; a saved reply is logged with its own words.
+                body=None if draft_records else stop_message,
                 drafts=draft_records,
                 decision=decision,
                 negotiation_message=stop_message,
@@ -6435,6 +6458,11 @@ class NegotiationAgent(BaseAgent):
                     cur.execute(
                         "ALTER TABLE proc.negotiation_session_state ADD COLUMN IF NOT EXISTS rfq_id TEXT"
                     )
+                    # The target and walk-away were only ever in the in-memory cache, so a
+                    # reply arriving after a restart was judged against nothing.
+                    cur.execute(
+                        "ALTER TABLE proc.negotiation_session_state ADD COLUMN IF NOT EXISTS positions JSONB"
+                    )
                     cur.execute(
                         "ALTER TABLE proc.negotiation_session_state ADD COLUMN IF NOT EXISTS email_history JSONB"
                     )
@@ -6962,6 +6990,11 @@ class NegotiationAgent(BaseAgent):
                         exists = True
         except Exception:  # pragma: no cover - best effort
             logger.exception("failed to load negotiation session state")
+        # A fresh state carries an empty placeholder, so "is it a dict" says nothing.
+        if exists and not state.get("positions"):
+            saved_positions = self._load_saved_positions(workflow_id, supplier_id)
+            if saved_positions is not None:
+                state["positions"] = saved_positions
         state.setdefault("workflow_id", workflow_id)
         self._rehydrate_email_history(
             workflow_id=workflow_id,
@@ -6971,6 +7004,47 @@ class NegotiationAgent(BaseAgent):
         with self._state_lock:
             self._state_cache[key] = dict(state)
         return dict(state), exists
+
+    @staticmethod
+    def _positions_for_record(
+        state: Dict[str, Any], column_metadata: Dict[str, Dict[str, Any]]
+    ) -> Optional[str]:
+        """The negotiation's positions as a value for the saved row, when there is somewhere to put them."""
+
+        positions = state.get("positions")
+        if "positions" not in column_metadata or not isinstance(positions, dict) or not positions:
+            return None
+        try:
+            return json.dumps(positions, ensure_ascii=False, default=str)
+        except Exception:
+            return None
+
+    def _load_saved_positions(self, workflow_id: str, supplier_id: str) -> Optional[Dict[str, Any]]:
+        """The positions saved with this session, or ``None``.
+
+        Read on its own so the main load is untouched: a database that does not
+        have the column yet reads as nothing saved.
+        """
+
+        try:
+            with self.agent_nick.get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT positions FROM proc.negotiation_session_state "
+                        "WHERE workflow_id = %s AND supplier_id = %s",
+                        (workflow_id, supplier_id),
+                    )
+                    row = cur.fetchone()
+        except Exception:
+            logger.debug("no saved negotiation positions could be read", exc_info=True)
+            return None
+        raw = row[0] if row else None
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                return None
+        return dict(raw) if isinstance(raw, dict) and raw else None
 
     def _save_session_state(
         self, session_id: Optional[str], supplier: Optional[str], state: Dict[str, Any]
@@ -7031,6 +7105,10 @@ class NegotiationAgent(BaseAgent):
                             )
                         except Exception:
                             record["email_history"] = None
+
+                    positions_value = self._positions_for_record(state, column_metadata)
+                    if positions_value is not None:
+                        record["positions"] = positions_value
 
                     workflow_value = self._coerce_text(state.get("workflow_id"))
                     if workflow_value:
@@ -8845,6 +8923,95 @@ class NegotiationAgent(BaseAgent):
 
                     self._supplier_agent = SupplierInteractionAgent(self.agent_nick)
         return self._supplier_agent
+
+    def _final_offer_recipients(
+        self, workflow_id: Optional[str], sent_reference: Optional[str], context: AgentContext
+    ) -> List[str]:
+        """Who the reply goes to: the address our own email was sent to."""
+
+        if workflow_id and sent_reference:
+            try:
+                from repositories import workflow_email_tracking_repo
+
+                for row in workflow_email_tracking_repo.load_workflow_rows(workflow_id=workflow_id):
+                    if (row.unique_id or "").strip() != sent_reference:
+                        continue
+                    sent_to = [str(a).strip() for a in (row.recipient_emails or []) if str(a).strip()]
+                    if not sent_to and row.supplier_email:
+                        sent_to = [row.supplier_email.strip()]
+                    if sent_to:
+                        return sent_to
+            except Exception:
+                logger.debug("could not load the dispatch record for the final-offer reply", exc_info=True)
+        return self._collect_recipient_candidates(context)
+
+    def _raise_final_offer(
+        self,
+        *,
+        context: AgentContext,
+        workflow_id: Optional[str],
+        supplier: Optional[str],
+        supplier_name: Optional[str],
+        sent_reference: Optional[str],
+        round_no: int,
+        state: Dict[str, Any],
+        offer: Optional[float],
+        target: Optional[float],
+        walkaway: Optional[float],
+        currency: Optional[str],
+    ) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+        """Recommend what to do with a supplier's final offer and save a reply for approval.
+
+        Final-offer wording used to end the negotiation with no email and nothing
+        raised, so the supplier's last word went unanswered. The reply is saved
+        unsent, under a reference of its own, and is sent only if a person
+        approves it. Failing to save it never loses the recommendation.
+        """
+
+        advice = _final_offer.advise(offer=offer, target=target, walkaway=walkaway, currency=currency)
+        record = advice.as_dict()
+
+        recipients = self._final_offer_recipients(workflow_id, sent_reference, context)
+        if not (workflow_id and supplier and recipients):
+            logger.warning(
+                "Final offer from supplier=%s workflow=%s: recommendation=%s, but no reply was drafted "
+                "(no known recipient or workflow)", supplier, workflow_id, advice.recommendation,
+            )
+            return record, None
+
+        payload = context.input_data if isinstance(context.input_data, dict) else {}
+        draft: Dict[str, Any] = {
+            "intent": "NEGOTIATION_FINAL_OFFER_REPLY",
+            "workflow_id": workflow_id,
+            "supplier_id": supplier,
+            "supplier_name": supplier_name,
+            "subject": self._format_negotiation_subject(state),
+            # No fallback to the supplier's name: a company is not greeted as a person.
+            "body": _final_offer.reply_html(advice, contact_name=self._resolve_contact_name(payload)),
+            "recipients": recipients,
+            "sender": getattr(self.agent_nick.settings, "ses_default_sender", None),
+            "round": round_no,
+            "sent_status": False,
+            "final_offer": record,
+            "in_reply_to_unique_id": sent_reference,
+        }
+        try:
+            email_agent = self._ensure_email_agent()
+            if email_agent is None:
+                raise RuntimeError("email drafting agent unavailable")
+            email_agent._store_draft(draft)
+        except Exception:
+            logger.exception(
+                "Final offer from supplier=%s workflow=%s: recommendation=%s, but the reply could not be saved",
+                supplier, workflow_id, advice.recommendation,
+            )
+            return record, None
+
+        logger.info(
+            "Final offer from supplier=%s workflow=%s: recommendation=%s; reply saved for approval as %s",
+            supplier, workflow_id, advice.recommendation, draft.get("unique_id"),
+        )
+        return record, draft
 
     def _build_stop_message(self, status: str, reason: str, round_no: int):
         return _rounds.build_stop_message(status, reason, round_no)

@@ -320,6 +320,10 @@ def _describe_draft(
         "requested_by_you": bool(requested_by) and requested_by == viewer,
         "content_hash": digest,
         "approval": state,
+        # A reply to a supplier's final offer: whether the price is within the
+        # limit on record, and why, so the approver is not shown a holding email
+        # with no reason for it.
+        "final_offer": draft.get("final_offer") if isinstance(draft.get("final_offer"), dict) else None,
     }
     if with_text:
         attachments = effective.get("attachments")
