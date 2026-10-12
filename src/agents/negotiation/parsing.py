@@ -12,6 +12,7 @@ from __future__ import annotations
 import math
 import re
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, List, Optional
 
 
@@ -23,6 +24,10 @@ def parse_money(value: Any) -> Optional[float]:
             return float(value)
         except (TypeError, ValueError):
             return None
+    # A NUMERIC column arrives as Decimal. It was neither int, float nor str, so a
+    # price stored on a supplier's reply was read as no price at all.
+    if isinstance(value, Decimal):
+        return float(value) if value.is_finite() else None
     if isinstance(value, str):
         text = value.strip()
         if not text:

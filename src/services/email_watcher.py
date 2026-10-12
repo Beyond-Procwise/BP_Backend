@@ -41,6 +41,7 @@ except Exception:  # pragma: no cover - fallback when settings unavailable
     app_settings = None
 from repositories.supplier_interaction_repo import SupplierInteractionRow
 from repositories.supplier_response_repo import SupplierResponseRow
+from src.services.negotiation.reply_offer import read_offer
 from repositories.workflow_email_tracking_repo import WorkflowDispatchRow
 from utils import email_tracking
 from utils.email_tracking import (
@@ -1116,7 +1117,7 @@ class EmailWatcher:
                     processed=False,
                     round_number=best_dispatch.round_number,
                 )
-                supplier_response_repo.insert_response(response_row)
+                _store_matched_response(response_row)
                 if tracker.workflow_id:
                     responded_at = email_response.received_at or datetime.now(timezone.utc)
                     try:
@@ -1210,7 +1211,7 @@ class EmailWatcher:
                         processed=False,
                         round_number=best_dispatch.round_number,
                     )
-                    supplier_response_repo.insert_response(response_row)
+                    _store_matched_response(response_row)
                     if tracker.workflow_id:
                         responded_at = email_response.received_at or datetime.now(timezone.utc)
                         try:
@@ -2922,6 +2923,36 @@ class EmailWatcherService:
                 break
 
         logger.debug("EmailWatcherService loop terminated")
+
+def _store_matched_response(row: SupplierResponseRow) -> None:
+    """Store a matched reply together with the price its own words state.
+
+    Nothing on this route read the email, so the row was stored with no price
+    and the negotiation that followed ran with "supplier offer missing". The
+    figure is stamped as read-by-rule and unverified, never as confirmed; a
+    reply that states no single amount is stored exactly as before.
+    """
+
+    offer = None
+    if row.price is None:
+        try:
+            offer = read_offer(row.response_text)
+        except Exception:  # pragma: no cover - reading a figure never costs the reply
+            logger.debug("could not read an offer from the reply", exc_info=True)
+        if offer is not None:
+            row.price = offer.price
+            row.currency = row.currency or offer.currency
+    supplier_response_repo.insert_response(row)
+    if offer is not None:
+        supplier_response_repo.record_extraction(
+            workflow_id=row.workflow_id,
+            unique_id=row.unique_id,
+            response_message_id=row.response_message_id,
+            method=offer.method,
+            model=None,
+            prompt_version=None,
+        )
+
 
 def _parse_email(raw: bytes) -> EmailResponse:
     """Backwards-compatible helper for tests importing the private parser."""

@@ -64,6 +64,9 @@ from services.negotiation_advice.ranking import (
 
 logger = logging.getLogger(__name__)
 
+#: Advisory-lock ids the current thread already holds (see ``_session_lock``).
+_SESSION_LOCKS_HELD = threading.local()
+
 # Tunables, feature toggles and the governed bounds now live beside the helpers
 # that read them. Re-exported here because callers -- and the P9 governance tests --
 # reach for them on this module by name.
@@ -1374,6 +1377,34 @@ class NegotiationAgent(BaseAgent):
         token = ":".join(part or "" for part in key_parts)
         lock_id = binascii.crc32(token.encode("utf-8", "ignore")) & 0x7FFFFFFF
 
+        # A round takes this lock and then runs the supplier's negotiation, which
+        # takes it again. Each use opens its own connection and Postgres advisory
+        # locks belong to the connection, so the second attempt was refused by
+        # the first: the round locked itself out. The thread that holds a round's
+        # lock already has it; only another thread or process is a rival.
+        held = getattr(_SESSION_LOCKS_HELD, "ids", None)
+        if held is None:
+            held = _SESSION_LOCKS_HELD.ids = set()
+        if lock_id in held:
+            yield True
+            return
+
+        with self._session_lock_on_connection(
+            lock_id, workflow_id, supplier_id, round_no
+        ) as acquired:
+            if not acquired:
+                yield False
+                return
+            held.add(lock_id)
+            try:
+                yield True
+            finally:
+                held.discard(lock_id)
+
+    @contextmanager
+    def _session_lock_on_connection(
+        self, lock_id: int, workflow_id: str, supplier_id: str, round_no: int
+    ):
         get_conn = getattr(self.agent_nick, "get_db_connection", None)
         if not callable(get_conn):
             yield True
@@ -1632,6 +1663,7 @@ class NegotiationAgent(BaseAgent):
             response_batch = []
 
         if response_batch:
+            response_batch = [self._with_stated_offer(entry) for entry in response_batch]
             shared: Dict[str, Any] = {"negotiation_batch": True}
             for key in BATCH_SHARED_KEYS:
                 candidate = payload.get(key)
@@ -1657,6 +1689,26 @@ class NegotiationAgent(BaseAgent):
                 shared.update(candidate)
 
         return batch, shared
+
+    @staticmethod
+    def _with_stated_offer(response: Dict[str, Any]) -> Dict[str, Any]:
+        """A reply with the price stored on it lifted to where the offer is read.
+
+        The supplier agent hands a reply over with its figures nested under
+        ``supplier_output``; the offer is read from the top level, so a stored
+        price never reached it. A figure already at the top level is kept.
+        """
+
+        stored = response.get("supplier_output")
+        if not isinstance(stored, dict) or stored.get("price") is None:
+            return response
+        if response.get("price") is not None or response.get("current_offer") is not None:
+            return response
+        lifted = dict(response)
+        lifted["price"] = stored["price"]
+        if stored.get("currency") and not lifted.get("currency"):
+            lifted["currency"] = stored["currency"]
+        return lifted
 
     def _coerce_batch_defaults(
         self, base_payload: Dict[str, Any], shared_context: Dict[str, Any]
@@ -3038,7 +3090,9 @@ class NegotiationAgent(BaseAgent):
             final_output.data["hitl_pending_rounds"] = []
 
         override_status = negotiation_state.get("override_status")
-        if override_status:
+        # Nothing was drafted when every supplier failed, so there is nothing
+        # awaiting anyone's approval: the failure is the status.
+        if override_status and final_output.data.get("final_status") != "ALL_FAILED":
             final_output.data["final_status"] = override_status
 
         final_output.data["final_round_all_responses_received"] = negotiation_state.get(
@@ -4512,12 +4566,18 @@ class NegotiationAgent(BaseAgent):
 
         self._log_final_negotiation_outcome(context, data)
 
+        # The mailbox watcher clears a supplier's reply down, and stops watching,
+        # on SUCCESS. A run in which every supplier failed has dealt with nothing,
+        # so it must not say otherwise.
+        all_failed = data["final_status"] == "ALL_FAILED"
+
         return self._with_plan(
             context,
             AgentOutput(
-                status=AgentStatus.SUCCESS,
+                status=AgentStatus.FAILED if all_failed else AgentStatus.SUCCESS,
                 data=data,
                 pass_fields=data,
+                error="negotiation_all_suppliers_failed" if all_failed else None,
             ),
         )
 

@@ -83,6 +83,7 @@ class SupplierResponseRow:
     received_time: datetime
     response_time: Optional[Decimal] = None
     price: Optional[Decimal] = None
+    currency: Optional[str] = None
     lead_time: Optional[int] = None
     supplier_email: Optional[str] = None
     rfq_id: Optional[str] = None
@@ -845,7 +846,7 @@ def fetch_all(*, workflow_id: str) -> List[Dict[str, Any]]:
         q = (
             "SELECT workflow_id, supplier_id, supplier_email, rfq_id, unique_id, response_text, response_body, body_html, "
             "response_message_id, response_subject, response_from, response_date, original_message_id, "
-            "original_subject, match_confidence, match_score, price, lead_time, received_time, processed, "
+            "original_subject, match_confidence, match_score, price, currency, lead_time, received_time, processed, "
             "dispatch_id, matched_on, raw_headers "
             "FROM proc.supplier_response WHERE workflow_id=%s"
         )
