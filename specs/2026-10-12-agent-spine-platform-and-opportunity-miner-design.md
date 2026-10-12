@@ -19,7 +19,7 @@ This document designs the shared parts once, and puts the Opportunity Miner on t
 
 | Decision | Ruling |
 |---|---|
-| Who owns the fixed list | Category Manager or SuperAdmin |
+| Who owns the fixed list | The existing user types Category Manager (`PROCWISE_CATEGORY_MANAGER`) and tenant super admin (`PROCWISE_TENANT_SUPER_ADMIN`). No new role is created. |
 | Agent order | Opportunity Miner, discrepancy triage, negotiation, quote comparison and award, contract review and renewals, sell-side quotes, sourcing (placeholder only) |
 | Budget, ESG, supplier performance | Reported as "insufficient evidence". That status is carried into the negotiation report. |
 | Opportunity validation | Needs its own checker, with a different angle from the negotiation plan reviewer |
@@ -27,7 +27,9 @@ This document designs the shared parts once, and puts the Opportunity Miner on t
 | Accepting a supplier's offer | Always needs a person. The rule is a policy, changeable through the learning loop. |
 | Negotiation rounds | Multi-round stays on. The number of rounds is to be learned, so the cap must be a policy value. |
 | Authority | Whatever the user's policy sets. The agent may ask a supplier for options. |
-| Data | Dummy data now; real production documents later, volume unknown |
+| Data | Dummy data now, kept out of production tables; real production documents later, volume unknown |
+| Existing findings | All 308 on `bp_testdb` are re-checked and the result shown before anything is hidden |
+| Detectors from the original requirements that were never built | Re-checked (7.1) and listed as insufficient evidence |
 
 ## 3. How this fits the orchestrator brief
 
@@ -81,7 +83,7 @@ Stage 1 is one coherent slice and is planned in two parts: A (sections 5, 6, 7) 
 **Rules.**
 - A missing or malformed spine raises. The agent does not run on a default list. This copies `load_family`, which was written for the same reason.
 - `mode` is `shadow` (record only) or `enforce` (the gate may refuse). It starts as `shadow`.
-- Only a Category Manager or SuperAdmin may change a spine row. This is a new policy row, `AgentSpineAuthorityPolicy`, read through the existing endpoint gate (`src/api/endpoint_gate.py`). **To confirm during build:** that "Category Manager" exists in the product's role mapping; the comparable rule today (`PlaybookAuthorityPolicy`) is Admin-only.
+- Only a Category Manager or a tenant super admin may change a spine row. Both already exist as user types in the admin area (`deploy/sql/2026-09-18_admin_area_role_mapping.sql`); nothing new is created. The product has four roles (Admin, Approver, Buyer, Viewer), and Category Manager maps to Buyer together with Buyer Analyst, so a role check alone would let every Buyer change a spine. The rule is therefore a new policy row, `AgentSpineAuthorityPolicy`, that names the two user types, checked against the user-type claim that `src/services/rbac.py` already reads from the sign-in token. **To confirm during build:** that the endpoint gate (`src/api/endpoint_gate.py`) can be given the user type as well as the role.
 - Every change is a new version. Reports record the version they ran under.
 
 **Code.** New package `src/services/agent_spine/`: `spine.py` (load, parse, raise), no other responsibilities.
@@ -129,10 +131,20 @@ The miner stays what it is: detectors written as code over documents, switched o
 | Supplier | Risk, performance | Insufficient evidence: no performance source |
 | Budget | Category overspend | Insufficient evidence: no budgets supplied |
 | ESG | ESG switch | Insufficient evidence: no ESG inputs |
-| Benchmark and index | Unit price against a real benchmark; contract price drift against an index | Insufficient evidence: no benchmark or index tables |
-| Payment and logistics | Early-payment discount missed; logistics cost outliers | Insufficient evidence: no discount-terms or shipment data |
+| Benchmark | Unit price against a benchmark | Insufficient evidence: the detector is not connected to the benchmark engine |
+| Index | Contract price drift against an index | Insufficient evidence: no index data held |
+| Payment and logistics | Early-payment discount missed; logistics cost outliers | Insufficient evidence: no discount terms or shipment data held |
 
-The last two items come from the original requirements (`procwise_agents/business_requirements/Agents/Opportunity Finder Agent/Opportunity_Agent_MVP_Engineering_Requirements_v1.4.docx`), which asked for seven detectors of which four were never built. They are listed so the report says so on every run. Building them is not part of this stage.
+The last three items come from the original requirements (`procwise_agents/business_requirements/Agents/Opportunity Finder Agent/Opportunity_Agent_MVP_Engineering_Requirements_v1.4.docx`), which asked for seven detectors of which four were never built. They are listed so the report says so on every run. Building them is not part of this stage.
+
+Re-checked on 2026-10-12, at the product owner's request:
+
+| Detector | What the re-check found |
+|---|---|
+| Unit price against a benchmark | A benchmark engine exists (`src/services/benchmark/engine.py`, fed from past PO and invoice lines by `src/services/benchmark_live.py`) and is tested. The miner does not call it: its "benchmark" is the cheapest other supplier's average for the same item (`opportunity_miner_agent.py:5478`). The evidence is there; the connection is not. Open decision 1 in section 13. |
+| Contract price drift against an index | No index table in either database. The benchmark engine takes an index table as an input and nothing in the product supplies one. |
+| Early-payment discount missed | Invoices have a payment-terms field, filled on 10 of 12,408 invoices on `bp_testdb` and 35 of 51 on `bp_sqldb`. No field records discount terms. |
+| Logistics cost outliers | No shipment table in either database; the miner's shipment loading is commented out (`opportunity_miner_agent.py:2335`). |
 
 ### 7.2 Assertions for the miner
 
@@ -241,9 +253,7 @@ Scored on: correct verdict, correct item status, no unsupported figure, no chang
 
 ### 10.2 Where dummy data lives
 
-**Recommendation:** dummy rows live only in the scenario set's own database, never in `bp_sqldb` business tables. Production is proven by running the platform in `shadow` mode over whatever real rows exist. This keeps invented invoices out of real totals, which matters because production already has 51 real invoices and a known canonical spend figure.
-
-This is open decision 1 in section 13.
+**Decided 2026-10-12:** dummy rows live only in the scenario set's own database, never in `bp_sqldb` business tables. Production is proven by running the platform in `shadow` mode over whatever real rows exist. This keeps invented invoices out of real totals, which matters because production already has 51 real invoices and a known canonical spend figure.
 
 ### 10.3 Switch-on order
 
@@ -286,10 +296,9 @@ Each gets a failing test first, and a deliberate break to prove the test goes re
 
 ## 13. Open decisions for the product owner
 
-1. **Dummy data in production.** Recommended: none in production tables; use the scenario set's own database and run production in shadow (10.2). The alternative is tagged dummy rows inside `bp_sqldb`.
-2. **The four never-built detectors.** Recommended: list them as insufficient evidence now and decide later whether to build them, since each needs data the product does not hold (benchmarks, indices, discount terms, shipments).
-3. **Existing findings.** Recommended: re-validate the 308 on `bp_testdb` and show the result before anything is hidden or retired.
-4. **Category Manager role.** Confirm it should be created if the role mapping does not have it.
+Four earlier decisions were answered on 2026-10-12 and are recorded in section 2. One remains, raised by the re-check in 7.1:
+
+1. **Connect the price-variance detector to the existing benchmark engine in this stage?** Recommended: yes. It replaces "cheapest other supplier" with a like-for-like benchmark that is already built and tested, and turns the Benchmark item from insufficient evidence into investigated. If no, the item stays insufficient evidence as listed.
 
 ## 14. Risks
 
