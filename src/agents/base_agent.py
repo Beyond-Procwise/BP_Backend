@@ -756,6 +756,20 @@ class BaseAgent:
                     error=f"Workflow ID mismatch for process {context.process_id}",
                 )
 
+        # A draft agent runs for the person who created it and nobody else,
+        # however the run was started. ``draft_owner`` is None for a published
+        # agent; an empty owner (a draft nobody is named for) runs for no one.
+        draft_owner = getattr(self, "draft_owner", None)
+        if draft_owner is not None and (not context.user_id or context.user_id != draft_owner):
+            return AgentOutput(
+                status=AgentStatus.FAILED,
+                data={},
+                error=(
+                    "This agent is a draft. Only the person who created it can run it "
+                    "until someone else publishes it."
+                ),
+            )
+
         logger.info("%s: starting", self.__class__.__name__)
         start_ts = datetime.utcnow()
         try:

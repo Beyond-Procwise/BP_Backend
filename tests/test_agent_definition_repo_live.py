@@ -152,3 +152,19 @@ def test_with_no_good_read_to_fall_back_on_the_failure_is_raised(slug, monkeypat
     monkeypatch.setattr(repo, "_read", broken)
     with pytest.raises(RuntimeError):
         repo.snapshot()
+
+
+def test_publishing_is_recorded_as_a_publication_by_the_person_who_did_it(slug):
+    repo.create(slug, _entry(slug, stage="draft"), derived_from="negotiation", by="sub-maker")
+    assert repo.publish(slug, _entry(slug, stage="published"), by="sub-approver") == 2
+
+    assert _live(slug)["stage"] == "published"
+    assert [(v["change"], v["changed_by"]) for v in repo.history(slug)] == [
+        ("published", "sub-approver"), ("created", "sub-maker")]
+
+
+def test_a_deleted_agent_cannot_be_published(slug):
+    repo.create(slug, _entry(slug), derived_from="negotiation", by="sub-maker")
+    repo.delete(slug, _entry(slug), derived_from="negotiation", by="sub-maker")
+    with pytest.raises(repo.AgentNotFound):
+        repo.publish(slug, _entry(slug, stage="published"), by="sub-approver")

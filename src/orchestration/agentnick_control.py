@@ -94,6 +94,10 @@ def _agent_tools(
     for schema in registry.tool_schemas():
         fn = schema["function"]
         slug = fn["name"][len("run_") :]
+        # A draft agent is not on offer to anyone but the person who created it.
+        owner = getattr(agents.get(slug), "draft_owner", None)
+        if owner is not None and (not user_id or user_id != owner):
+            continue
 
         def _make(slug: str):
             def _run(**kwargs: Any) -> Dict[str, Any]:

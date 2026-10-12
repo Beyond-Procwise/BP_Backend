@@ -214,6 +214,11 @@ class AgentType(BaseModel):
     # decide which agent cards get a delete control -- built-ins can't be
     # deleted via DELETE /agents/{slug} and shouldn't invite the attempt.
     derived_from: Optional[str] = None
+    # "draft" while a created agent can be run only by the person who made it;
+    # "published" once someone else has released it. None for built-in agents
+    # and for agents created before drafts existed, which are all published.
+    stage: Optional[str] = None
+    created_by: Optional[str] = None
 
 
 class OpportunityRejectionRequest(BaseModel):

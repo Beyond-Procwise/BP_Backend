@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS proc.bp_agent_definition_version (
     slug        TEXT NOT NULL,
     version     INTEGER NOT NULL,
     change      TEXT NOT NULL
-                CHECK (change IN ('created', 'updated', 'deleted', 'imported')),
+                CHECK (change IN ('created', 'updated', 'published', 'deleted', 'imported')),
     definition  JSONB NOT NULL,
     changed_by  TEXT,
     changed_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -197,6 +197,25 @@ def update(slug: str, definition: Dict[str, Any], *, by: Optional[str]) -> int:
             RETURNING slug, version, definition
         )""" + _RECORD,
         (json.dumps(definition), by, slug, "updated", by),
+    )
+    if version is None:
+        raise AgentNotFound(slug)
+    return version
+
+
+def publish(slug: str, definition: Dict[str, Any], *, by: Optional[str]) -> int:
+    """Store the published form of a draft, recorded as a publication and not
+    as an ordinary change, so the history shows who released the agent."""
+    version = _write(
+        """
+        WITH changed AS (
+            UPDATE proc.bp_agent_definition
+               SET definition = %s::jsonb, version = version + 1,
+                   updated_by = %s, updated_at = now()
+             WHERE slug = %s AND status = 1
+            RETURNING slug, version, definition
+        )""" + _RECORD,
+        (json.dumps(definition), by, slug, "published", by),
     )
     if version is None:
         raise AgentNotFound(slug)

@@ -16,6 +16,7 @@ os.environ.setdefault("OMP_NUM_THREADS", "8")
 
 from api.auth import require_user
 from repositories import agent_definition_repo
+from services import rbac
 from api.endpoint_gate import require as gate
 
 logger = logging.getLogger(__name__)
@@ -486,6 +487,12 @@ async def create_agent(
     # with sign-in off, where there is nobody to name.
     created_by = getattr(principal, "subject", None) or None
     entry["created_by"] = created_by or "workspace"
+    # A new agent is a draft: its creator can run it, nobody else can, until a
+    # second person publishes it (POST /agents/{slug}/publish). With sign-in
+    # off there is no creator to keep it to and no second person to release
+    # it, so it is published at once, as every agent was before drafts existed.
+    entry["stage"] = "draft" if created_by else "published"
+    entry.pop("published_by", None)
     # A base's own list is never inherited: the base is not narrowed by one, and
     # a copy must not start life narrowed by a list nobody chose for it.
     entry.pop("tools", None)
@@ -630,6 +637,7 @@ async def create_agent(
         "model_key": body.model_key or None,
         "tools": tools,
         "outputs": output_spec,
+        "stage": entry["stage"],
         "registered": slug in agent_nick.agents,
         "governance": reload_report,
         "linked": linked,
@@ -795,6 +803,91 @@ async def agent_history(slug: str, principal=Depends(require_user)):
     if not versions:
         raise HTTPException(status_code=404, detail=f"no created agent {slug!r}")
     return {"slug": slug, "versions": versions}
+
+
+def _require_role(principal, minimum: str, what: str) -> str:
+    """The caller's role, or a 403 naming the role ``what`` needs. Nobody
+    signed in is a Viewer, so this refuses rather than waves through."""
+    role = rbac.effective_role(principal)
+    if rbac.role_rank(role) < rbac.role_rank(minimum):
+        raise HTTPException(status_code=403, detail=f"{what} needs the {minimum} role or higher")
+    return role
+
+
+@router.post("/{slug}/publish")
+async def publish_agent(
+    slug: str,
+    request: Request,
+    agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
+):
+    """Release a draft agent to everyone.
+
+    Two conditions, and both are the point: the caller has approval rights, and
+    the caller is not the person who created the agent. One person cannot both
+    write an agent's task and decide it is fit for everyone else to run.
+    """
+    from agents.definitions import load_agent_definitions
+
+    entry = next((a for a in load_agent_definitions() if a.get("slug") == slug), None)
+    if entry is None or not entry.get("derived_from"):
+        raise HTTPException(status_code=404, detail=f"no created agent {slug!r}")
+    if entry.get("stage") != "draft":
+        raise HTTPException(status_code=409, detail=f"agent {slug!r} is not a draft")
+
+    _require_role(principal, "Approver", "publishing an agent")
+    subject = getattr(principal, "subject", None) or None
+    if not subject or subject == entry.get("created_by"):
+        raise HTTPException(
+            status_code=403,
+            detail="an agent cannot be published by the person who created it",
+        )
+
+    published = {**entry, "stage": "published", "published_by": subject}
+    try:
+        version = agent_definition_repo.publish(slug, published, by=subject)
+    except agent_definition_repo.AgentNotFound:
+        raise HTTPException(status_code=404, detail=f"no created agent {slug!r}")
+
+    # The agent that is already running must stop being a draft NOW.
+    try:
+        registry = getattr(agent_nick, "auto_registry", None)
+        if registry is not None:
+            registry.refresh_from_json()
+        Orchestrator._load_agent_definitions.cache_clear()
+    except Exception:
+        logger.exception("publish_agent: in-process reload failed; a restart picks it up")
+
+    return {"status": "published", "slug": slug, "stage": "published",
+            "published_by": subject, "version": version}
+
+
+@router.get("/usage")
+async def agent_usage(since: str, until: str, principal=Depends(require_user)):
+    """Tokens used by created agents in a period, by agent, model and person.
+
+    ``since`` is included and ``until`` is not (ISO dates or date-times), so
+    one month's report ends where the next begins. Admin only: this is what a
+    customer is charged from, and it names who ran what.
+    """
+    _require_role(principal, "Admin", "reading agent usage")
+    from datetime import datetime as _dt
+
+    from repositories import agent_run_repo
+
+    try:
+        start, end = _dt.fromisoformat(since), _dt.fromisoformat(until)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="since and until must be ISO dates")
+    if end <= start:
+        raise HTTPException(status_code=422, detail="until must be after since")
+
+    rows = agent_run_repo.usage_summary(start, end)
+    totals = {
+        key: sum(r[key] for r in rows)
+        for key in ("runs", "model_calls", "prompt_tokens", "completion_tokens")
+    }
+    return {"since": since, "until": until, "rows": rows, "totals": totals}
 
 
 @router.get("/runs/{run_id}")
