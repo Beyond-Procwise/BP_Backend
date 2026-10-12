@@ -1,4 +1,4 @@
-# Agent spine platform, and the Opportunity Miner as its first agent: design
+I dd# Agent spine platform, and the Opportunity Miner as its first agent: design
 
 **Date:** 2026-10-12
 **Status:** Proposed. Awaiting the product owner's review. No code has been changed.
@@ -296,9 +296,9 @@ Each gets a failing test first, and a deliberate break to prove the test goes re
 
 ## 13. Open decisions for the product owner
 
-Four earlier decisions were answered on 2026-10-12 and are recorded in section 2. One remains, raised by the re-check in 7.1:
+All decisions raised so far were answered on 2026-10-12 and are recorded in section 2. The last one, raised by the re-check in 7.1: the price-variance detector **is** connected to the existing benchmark engine in this stage, replacing "cheapest other supplier" with a like-for-like benchmark, so the Benchmark item becomes investigated.
 
-1. **Connect the price-variance detector to the existing benchmark engine in this stage?** Recommended: yes. It replaces "cheapest other supplier" with a like-for-like benchmark that is already built and tested, and turns the Benchmark item from insufficient evidence into investigated. If no, the item stays insufficient evidence as listed.
+**The spec as a whole is not yet approved.** The product owner has asked for parts to be explained and for its fit with the wider architecture to be made clear first.
 
 ## 14. Risks
 
