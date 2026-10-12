@@ -297,6 +297,9 @@ async def lifespan(app: FastAPI):
             # Seeded once, from what this machine already runs, so the offered-model
             # list agrees with reality rather than announcing a model nothing uses.
             _model_catalogue_repo.ensure_schema()
+            # Where each reasoning run of a created agent is recorded.
+            from repositories import agent_run_repo as _agent_run_repo
+            _agent_run_repo.ensure_schema()
             logger.info("Agent-workflows schema ensured")
         except Exception:
             logger.exception("Agent-workflows schema init failed (non-critical)")

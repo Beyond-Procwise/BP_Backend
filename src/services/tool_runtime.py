@@ -100,6 +100,12 @@ class ToolRunResult:
     calls: List[ToolCall] = field(default_factory=list)
     rounds: int = 0
     error: Optional[str] = None
+    # What the run was actually given, for the record of it: the model that
+    # answered, the system prompt as sent, and the tools that were on offer.
+    # Never part of ``to_dict`` — that is what a caller is shown.
+    model: str = ""
+    system: str = ""
+    tools_offered: List[str] = field(default_factory=list)
     # The answer tried to describe the machine and was sent back to be re-framed.
     safety_retry: bool = False
     # …and the second attempt did it too, so the user got the safe reply instead.
@@ -320,7 +326,7 @@ def run_tools_stream(
         {"role": "system", "content": system},
         {"role": "user", "content": task},
     ]
-    result = ToolRunResult()
+    result = ToolRunResult(model=model, system=system, tools_offered=[t.name for t in tools])
 
     for _ in range(max_rounds):
         result.rounds += 1
@@ -465,7 +471,7 @@ def run_tools(
         {"role": "user", "content": task},
     ]
 
-    result = ToolRunResult()
+    result = ToolRunResult(model=model, system=system, tools_offered=[t.name for t in tools])
     nudged = False
     any_tool_call = False
 

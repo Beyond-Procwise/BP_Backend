@@ -364,6 +364,12 @@ def reason(
         workflow_id=workflow_id,
         user_id=user_id,
     )
+    # The record of a run needs what it was actually given. The loop fills
+    # these; anything that stands in for the loop may not.
+    if not result.system:
+        result.system = system
+    if not result.tools_offered:
+        result.tools_offered = [t.name for t in tools]
     log.info(
         "AgentNick.reason rounds=%s tools=%s error=%s",
         result.rounds,
