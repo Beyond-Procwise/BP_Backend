@@ -856,6 +856,16 @@ async def build_email_dispatch_request(request: Request) -> EmailDispatchRequest
 # Endpoints
 # ---------------------------------------------------------------------------
 
+def _asker(principal: Any, typed: Optional[str]) -> Optional[str]:
+    """Whose question this is: the token's subject, and the typed name only with sign-in off.
+
+    The history a question is filed under is keyed by this. The UI's default for
+    the typed field is the constant ``ui``, so keyed by that every signed-in
+    person shared one history, and each one's questions were the next one's context.
+    """
+    return getattr(principal, "subject", None) or typed
+
+
 @router.post("/ask")
 async def ask_question(
     req: AskRequest,
@@ -887,13 +897,14 @@ async def ask_question(
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Could not read file: {exc}")
 
+    asker = _asker(principal, req.user_id)
     header_session = _clean(request.headers.get("x-session-id"))
-    resolved_session = _clean(req.session_id) or header_session or _clean(req.user_id)
+    resolved_session = _clean(req.session_id) or header_session or _clean(asker)
 
     result = await run_in_threadpool(
         pipeline.answer_question,
         query=req.query,
-        user_id=req.user_id,
+        user_id=asker,
         session_id=resolved_session,
         model_name=req.model_name,
         files=file_data or None,
@@ -939,7 +950,8 @@ async def ask_question_stream(
     _DONE = object()
 
     header_session = (request.headers.get("x-session-id") or "").strip() or None
-    resolved_session = req.session_id or header_session or req.user_id
+    asker = _asker(principal, req.user_id)
+    resolved_session = req.session_id or header_session or asker
 
     def _on_event(kind: str, payload: Dict[str, Any]) -> None:
         events.put({"type": kind, **payload})
@@ -948,7 +960,7 @@ async def ask_question_stream(
         try:
             result = pipeline.answer_question(
                 query=req.query,
-                user_id=req.user_id,
+                user_id=asker,
                 session_id=resolved_session,
                 model_name=req.model_name,
                 doc_type=req.doc_type,
