@@ -41,6 +41,9 @@ CREATE TABLE IF NOT EXISTS proc.bp_agent_run (
     answer         TEXT,
     outputs        JSONB,
     rounds         INTEGER NOT NULL DEFAULT 0,
+    prompt_tokens      BIGINT NOT NULL DEFAULT 0,
+    completion_tokens  BIGINT NOT NULL DEFAULT 0,
+    model_calls        INTEGER NOT NULL DEFAULT 0,
     error          TEXT,
     started_at     TIMESTAMPTZ NOT NULL,
     finished_at    TIMESTAMPTZ NOT NULL
@@ -102,6 +105,9 @@ def record(
     started_at: datetime,
     finished_at: datetime,
     outputs: Optional[Dict[str, Any]] = None,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+    model_calls: int = 0,
 ) -> None:
     with get_conn() as conn:
         cur = conn.cursor()
@@ -109,9 +115,10 @@ def record(
             """INSERT INTO proc.bp_agent_run
                    (run_id, agent_slug, workflow_id, user_id, model, system_prompt,
                     system_sha256, task, tools_offered, calls, answer, outputs, rounds,
-                    error, started_at, finished_at)
+                    error, started_at, finished_at, prompt_tokens, completion_tokens,
+                    model_calls)
                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb,
-                       %s, %s, %s, %s)""",
+                       %s, %s, %s, %s, %s, %s, %s)""",
             (
                 run_id, agent_slug, workflow_id, user_id, model or None, system_prompt,
                 hashlib.sha256(system_prompt.encode("utf-8")).hexdigest(), task,
@@ -120,6 +127,7 @@ def record(
                 answer or None,
                 json.dumps(outputs, default=str) if outputs is not None else None,
                 int(rounds or 0), error or None, started_at, finished_at,
+                int(prompt_tokens or 0), int(completion_tokens or 0), int(model_calls or 0),
             ),
         )
         cur.close()
@@ -128,7 +136,7 @@ def record(
 _COLUMNS = (
     "run_id", "agent_slug", "workflow_id", "user_id", "model", "system_prompt",
     "system_sha256", "task", "tools_offered", "calls", "answer", "outputs", "rounds",
-    "error", "started_at", "finished_at",
+    "error", "started_at", "finished_at", "prompt_tokens", "completion_tokens", "model_calls",
 )
 
 
@@ -156,7 +164,7 @@ def get(run_id: str) -> Optional[Dict[str, Any]]:
 
 _LIST_COLUMNS = (
     "run_id", "agent_slug", "workflow_id", "user_id", "model", "rounds", "error",
-    "started_at", "finished_at",
+    "started_at", "finished_at", "prompt_tokens", "completion_tokens", "model_calls",
 )
 
 
@@ -172,3 +180,33 @@ def list_for_agent(agent_slug: str, limit: int = 50) -> List[Dict[str, Any]]:
         rows = cur.fetchall()
         cur.close()
     return [_row(r, _LIST_COLUMNS) for r in rows]
+
+
+def usage_summary(since: datetime, until: datetime) -> List[Dict[str, Any]]:
+    """Tokens used in a period, by agent, model and person — what a customer is
+    charged from. The product counts; it does not price.
+
+    ``since`` is included and ``until`` is not, so consecutive periods neither
+    overlap nor leave a gap. A run belongs to the period it started in.
+    """
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT agent_slug, model, user_id, count(*) AS runs,
+                      sum(model_calls), sum(prompt_tokens), sum(completion_tokens)
+                 FROM proc.bp_agent_run
+                WHERE started_at >= %s AND started_at < %s
+                GROUP BY agent_slug, model, user_id
+                ORDER BY agent_slug, model, user_id""",
+            (since, until),
+        )
+        rows = cur.fetchall()
+        cur.close()
+    return [
+        {
+            "agent_slug": r[0], "model": r[1], "user_id": r[2], "runs": int(r[3]),
+            "model_calls": int(r[4] or 0), "prompt_tokens": int(r[5] or 0),
+            "completion_tokens": int(r[6] or 0),
+        }
+        for r in rows
+    ]
