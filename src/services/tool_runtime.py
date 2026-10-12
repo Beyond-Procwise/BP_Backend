@@ -244,6 +244,52 @@ def _chat(
     return response.json().get("message", {}) or {}
 
 
+def structured(
+    system: str,
+    user: str,
+    schema: Dict[str, Any],
+    *,
+    model: Optional[str] = None,
+    timeout_s: Optional[int] = None,
+) -> Dict[str, Any]:
+    """One turn, no tools, answered as a JSON object in ``schema``.
+
+    The schema is passed as the model server's ``format``, so the answer is
+    constrained to it as it is generated rather than parsed out of prose
+    afterwards. Raises when the model cannot be reached or answers nothing.
+    """
+    payload: Dict[str, Any] = {
+        "model": model or _DEFAULT_MODEL,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "stream": False,
+        "think": False,
+        "keep_alive": -1,
+        "format": schema,
+        "options": {"temperature": 0, "num_predict": 2048},
+    }
+    response = egress.post(
+        _OLLAMA_CHAT,
+        purpose=egress.Purpose.MODEL_INFERENCE,
+        json=payload,
+        timeout=timeout_s or _DEFAULT_TIMEOUT_S,
+        require_global=False,   # the model daemon is on localhost by design
+        raise_transport_errors=True,
+    )
+    if response is None:
+        raise RuntimeError("the model could not be reached")
+    response.raise_for_status()
+    content = (response.json().get("message") or {}).get("content") or ""
+    if not content.strip():
+        raise RuntimeError("the model answered nothing")
+    parsed = json.loads(content)
+    if not isinstance(parsed, dict):
+        raise RuntimeError("the model did not answer with an object")
+    return parsed
+
+
 def _gate(
     content: str,
     messages: List[Dict[str, Any]],

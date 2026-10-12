@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS proc.bp_agent_run (
     tools_offered  JSONB NOT NULL,
     calls          JSONB NOT NULL,
     answer         TEXT,
+    outputs        JSONB,
     rounds         INTEGER NOT NULL DEFAULT 0,
     error          TEXT,
     started_at     TIMESTAMPTZ NOT NULL,
@@ -100,21 +101,25 @@ def record(
     error: Optional[str],
     started_at: datetime,
     finished_at: datetime,
+    outputs: Optional[Dict[str, Any]] = None,
 ) -> None:
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
             """INSERT INTO proc.bp_agent_run
                    (run_id, agent_slug, workflow_id, user_id, model, system_prompt,
-                    system_sha256, task, tools_offered, calls, answer, rounds, error,
-                    started_at, finished_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s)""",
+                    system_sha256, task, tools_offered, calls, answer, outputs, rounds,
+                    error, started_at, finished_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb,
+                       %s, %s, %s, %s)""",
             (
                 run_id, agent_slug, workflow_id, user_id, model or None, system_prompt,
                 hashlib.sha256(system_prompt.encode("utf-8")).hexdigest(), task,
                 json.dumps(list(tools_offered)),
                 json.dumps([_call_record(c) for c in calls], default=str),
-                answer or None, int(rounds or 0), error or None, started_at, finished_at,
+                answer or None,
+                json.dumps(outputs, default=str) if outputs is not None else None,
+                int(rounds or 0), error or None, started_at, finished_at,
             ),
         )
         cur.close()
@@ -122,14 +127,14 @@ def record(
 
 _COLUMNS = (
     "run_id", "agent_slug", "workflow_id", "user_id", "model", "system_prompt",
-    "system_sha256", "task", "tools_offered", "calls", "answer", "rounds", "error",
-    "started_at", "finished_at",
+    "system_sha256", "task", "tools_offered", "calls", "answer", "outputs", "rounds",
+    "error", "started_at", "finished_at",
 )
 
 
 def _row(r, columns=_COLUMNS) -> Dict[str, Any]:
     out = dict(zip(columns, r))
-    for key in ("tools_offered", "calls"):
+    for key in ("tools_offered", "calls", "outputs"):
         if isinstance(out.get(key), str):
             out[key] = json.loads(out[key])
     for key in ("started_at", "finished_at"):

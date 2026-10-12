@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS proc.bp_agent_run (
     tools_offered  JSONB NOT NULL,
     calls          JSONB NOT NULL,
     answer         TEXT,
+    outputs        JSONB,
     rounds         INTEGER NOT NULL DEFAULT 0,
     error          TEXT,
     started_at     TIMESTAMPTZ NOT NULL,

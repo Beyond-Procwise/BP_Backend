@@ -54,6 +54,8 @@ class AgentContract:
     # The tools this agent was given. None means the entry carries no list, and
     # the agent is not narrowed; an empty list means it was given none.
     tools: Optional[List[str]] = None
+    # The outputs a person named for a created agent: [{name, description}].
+    output_spec: Optional[List[Dict[str, str]]] = None
 
 
 class AutoRegistry:
@@ -142,6 +144,11 @@ class AutoRegistry:
                     if isinstance(entry.get("tools"), list)
                     else None
                 ),
+                output_spec=(
+                    [dict(o) for o in entry["output_spec"] if isinstance(o, dict)]
+                    if isinstance(entry.get("output_spec"), list) and entry["output_spec"]
+                    else None
+                ),
             )
             contracts[slug] = contract
             logger.debug("Registered agent contract: %s", slug)
@@ -168,6 +175,9 @@ class AutoRegistry:
                 instance.allowed_tools = list(contract.tools)
             elif getattr(instance, "allowed_tools", None) is not None:
                 instance.allowed_tools = None
+            instance.output_spec = (
+                [dict(o) for o in contract.output_spec] if contract.output_spec else None
+            )
 
     def remove(self, agent_id: str) -> None:
         """Drop *agent_id* from both the contract map and the instance cache.
@@ -311,6 +321,8 @@ class AutoRegistry:
             instance.governance_slug = contract.governance_slug
         if contract.tools is not None:
             instance.allowed_tools = list(contract.tools)
+        if contract.output_spec:
+            instance.output_spec = [dict(o) for o in contract.output_spec]
 
         self._instances[agent_id] = instance
         logger.info("Instantiated agent '%s' from %s", agent_id, contract.class_path)

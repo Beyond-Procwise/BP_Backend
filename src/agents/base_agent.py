@@ -470,7 +470,30 @@ class BaseAgent:
         result = self.reason(
             task, workflow_id=context.workflow_id, user_id=context.user_id
         )
-        run_id, recorded = self._record_reasoning_run(context, task, result, started_at)
+        # The outputs a person named for this agent, filled in from this run.
+        # Only for a run that produced an answer: a failed run has nothing to
+        # fill them from, and asking would invite invention.
+        outputs: Optional[Dict[str, Dict[str, Any]]] = None
+        outputs_error: Optional[str] = None
+        spec = getattr(self, "output_spec", None)
+        if spec and result.answer and not result.error:
+            from agents import named_outputs
+
+            try:
+                outputs = named_outputs.fill(
+                    spec, task=task, calls=result.calls, answer=result.answer,
+                    model=getattr(result, "model", "") or None,
+                )
+            except Exception as exc:
+                logger.error(
+                    "named outputs of %s could not be filled", self._governance_slug(),
+                    exc_info=True,
+                )
+                outputs = {s["name"]: named_outputs.missing() for s in spec}
+                outputs_error = str(exc)
+        run_id, recorded = self._record_reasoning_run(
+            context, task, result, started_at, outputs=outputs
+        )
         data: Dict[str, Any] = {
             # The record that can explain this run later — what the agent was
             # told, which model answered, what each tool returned. ``recorded``
@@ -488,10 +511,20 @@ class BaseAgent:
         if result.error and not result.answer:
             return AgentOutput(status=AgentStatus.FAILED, data=data, error=result.error)
         data["answer"] = result.answer
+        if outputs is not None:
+            data["outputs"] = outputs
+            if outputs_error:
+                data["outputs_error"] = outputs_error
+            # Each output with a value is also published under its own name, so
+            # the next step in a workflow can use it. A missing one publishes nothing.
+            for name, filled in outputs.items():
+                if filled.get("value") is not None:
+                    data[name] = filled["value"]
         return AgentOutput(status=AgentStatus.SUCCESS, data=data)
 
     def _record_reasoning_run(
-        self, context: "AgentContext", task: str, result: Any, started_at: datetime
+        self, context: "AgentContext", task: str, result: Any, started_at: datetime,
+        *, outputs: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> Tuple[str, bool]:
         """Store the run. Returns its id and whether it was written.
 
@@ -515,6 +548,7 @@ class BaseAgent:
                 answer=result.answer,
                 rounds=result.rounds,
                 error=result.error,
+                outputs=outputs,
                 started_at=started_at,
                 finished_at=datetime.utcnow(),
             )
