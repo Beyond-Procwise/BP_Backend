@@ -381,3 +381,26 @@ def test_a_workflow_publishes_a_created_agents_named_outputs(create_app):
     node = wf.nodes["n1"]
     assert node.tool_loop is True
     assert node.output_to_shared == ["supplier", "overbilled_amount", "answer"]
+
+
+# --- a new agent is a draft ----------------------------------------------------
+
+def test_an_agent_created_by_a_signed_in_person_starts_as_a_draft(create_app):
+    from api.auth import require_user
+
+    app, _, _ = create_app
+    app.dependency_overrides[require_user] = lambda: SimpleNamespace(subject="sub-123")
+    resp = _create(TestClient(app))
+
+    assert resp.json()["stage"] == "draft"
+    assert _entry(app)["stage"] == "draft"
+
+
+def test_with_sign_in_off_there_is_nobody_to_keep_a_draft_to(create_app):
+    """No creator to restrict it to and no second person to release it: it is
+    published at once, as every agent was before drafts existed."""
+    app, _, _ = create_app
+    resp = _create(TestClient(app))
+
+    assert resp.json()["stage"] == "published"
+    assert _entry(app)["stage"] == "published"

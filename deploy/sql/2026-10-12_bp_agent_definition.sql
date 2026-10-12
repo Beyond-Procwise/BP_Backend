@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS proc.bp_agent_definition_version (
     slug        TEXT NOT NULL,
     version     INTEGER NOT NULL,
     change      TEXT NOT NULL
-                CHECK (change IN ('created', 'updated', 'deleted', 'imported')),
+                CHECK (change IN ('created', 'updated', 'published', 'deleted', 'imported')),
     definition  JSONB NOT NULL,
     changed_by  TEXT,
     changed_at  TIMESTAMPTZ NOT NULL DEFAULT now(),

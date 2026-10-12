@@ -56,6 +56,9 @@ class AgentContract:
     tools: Optional[List[str]] = None
     # The outputs a person named for a created agent: [{name, description}].
     output_spec: Optional[List[Dict[str, str]]] = None
+    # Set while a created agent is a DRAFT: the one person who may run it.
+    # None once it is published, and for every agent that carries no stage.
+    draft_owner: Optional[str] = None
 
 
 class AutoRegistry:
@@ -149,6 +152,11 @@ class AutoRegistry:
                     if isinstance(entry.get("output_spec"), list) and entry["output_spec"]
                     else None
                 ),
+                draft_owner=(
+                    str(entry.get("created_by") or "")
+                    if entry.get("derived_from") and entry.get("stage") == "draft"
+                    else None
+                ),
             )
             contracts[slug] = contract
             logger.debug("Registered agent contract: %s", slug)
@@ -178,6 +186,7 @@ class AutoRegistry:
             instance.output_spec = (
                 [dict(o) for o in contract.output_spec] if contract.output_spec else None
             )
+            instance.draft_owner = contract.draft_owner
 
     def remove(self, agent_id: str) -> None:
         """Drop *agent_id* from both the contract map and the instance cache.
@@ -323,6 +332,8 @@ class AutoRegistry:
             instance.allowed_tools = list(contract.tools)
         if contract.output_spec:
             instance.output_spec = [dict(o) for o in contract.output_spec]
+        if contract.draft_owner is not None:
+            instance.draft_owner = contract.draft_owner
 
         self._instances[agent_id] = instance
         logger.info("Instantiated agent '%s' from %s", agent_id, contract.class_path)
