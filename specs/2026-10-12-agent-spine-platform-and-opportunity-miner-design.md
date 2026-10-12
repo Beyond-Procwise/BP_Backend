@@ -1,152 +1,223 @@
-I dd# Agent spine platform, and the Opportunity Miner as its first agent: design
+# Orchestrator checkpoints, the agent checklist and report, and the Opportunity Miner as the first agent: design
 
-**Date:** 2026-10-12
-**Status:** Proposed. Awaiting the product owner's review. No code has been changed.
+**Date:** 2026-10-12 (second version, rewritten the same evening after the product owner's review)
+**Status:** Proposed. Not approved. No code has been changed.
 **Basis:** two assessments run on 2026-10-12 against `BP_Backend` (branch `Development`), the gateway, the UI, the predecessor repository `procwise_agents`, and read-only queries on `bp_testdb` and `bp_sqldb`. File and line references were correct on that date; re-check before relying on them.
-**Read alongside:** `specs/2026-10-12-orchestrator-routing-and-agent-governance-brief.md` (another session's brief, also proposed). Section 3 says how the two fit.
+**Supersedes:** the first version of this file (commits `96b0f7b6` to `bd3e40cf`). That version stored the checklist as a policy and checked actions in a gate beside the Orchestrator. The product owner rejected both; section 3 records the rulings.
+**Read alongside:** `specs/2026-10-12-orchestrator-routing-and-agent-governance-brief.md` (another session's brief, also proposed). Section 4 says how the two fit.
 
 ---
 
 ## 1. What this is for
 
-Every agent in the product should work the same way: a short list of things it must assess and report on every run, which a person owns and the agent cannot change, with freedom to investigate inside that list. Actions that cannot be undone are refused unless that report is complete and checked.
+Every agent in the product should work the same way:
 
-This document designs the shared parts once, and puts the Opportunity Miner on them first.
+- The **Orchestrator** applies policy. Agents report back to it at key points, and it checks the policies that matter at that point before the agent carries on.
+- Each agent has a short **checklist** of things it must assess and report on every run. A person owns it; the agent cannot change it.
+- Each run produces one **report** in one shape.
+- A separate **check** challenges the agent's output before anything is done with it.
 
-**Success looks like:** a user opening an opportunity sees a figure that was recomputed and challenged before it reached them, the rows it came from, and what the miner could not assess and why. Adding the next agent means writing its list, its tools and its test cases, not rebuilding the platform.
+This document designs those shared parts once and puts the Opportunity Miner on them first.
 
-## 2. Decisions already made by the product owner (2026-10-12)
+**Success looks like:** a user opening an opportunity sees a figure that was recomputed and challenged before it reached them, the rows it came from, what could not be assessed and why, and which policies were applied along the way. Adding the next agent means writing its checklist, its checkpoints, its tools and its test cases.
+
+## 2. One finding, start to finish
+
+A duplicate invoice: the same £111,784 invoice from one supplier appears twice against one purchase order.
+
+1. The mining run starts. The agent tells the Orchestrator what it has been asked to do and what data it needs. The Orchestrator checks the few policies that bear on that and answers.
+2. The miner runs its detectors, which are code, as today.
+3. It raises the finding. Because the value is above a set amount, it reports that decision to the Orchestrator, which checks the policies relevant to a finding of that size.
+4. The miner fills in its checklist: for each heading, looked at, does not apply, or could not assess, with the reason.
+5. A separate check tries to prove the finding wrong from the invoices and the order, and separately asks what should be done about it.
+6. Before the finding is shown as value, emailed about, handed to negotiation or recorded as a saving, the agent reports the intended action. The Orchestrator checks the policies for that action together with the checklist and the check's verdict.
+7. If two policies disagree at any of these points, the decision engine works out where, settles it if a standing rule or an earlier ruling covers it, and otherwise puts it to a person. Only the step in question waits.
+
+## 3. Decisions made by the product owner (2026-10-12)
+
+### 3.1 Architecture
 
 | Decision | Ruling |
 |---|---|
-| Who owns the fixed list | The existing user types Category Manager (`PROCWISE_CATEGORY_MANAGER`) and tenant super admin (`PROCWISE_TENANT_SUPER_ADMIN`). No new role is created. |
-| Agent order | Opportunity Miner, discrepancy triage, negotiation, quote comparison and award, contract review and renewals, sell-side quotes, sourcing (placeholder only) |
-| Budget, ESG, supplier performance | Reported as "insufficient evidence". That status is carried into the negotiation report. |
-| Opportunity validation | Needs its own checker, with a different angle from the negotiation plan reviewer |
-| Duplicate-invoice detector | Switched on once the validator is live, not before |
-| Accepting a supplier's offer | Always needs a person. The rule is a policy, changeable through the learning loop. |
-| Negotiation rounds | Multi-round stays on. The number of rounds is to be learned, so the cap must be a policy value. |
-| Authority | Whatever the user's policy sets. The agent may ask a supplier for options. |
-| Data | Dummy data now, kept out of production tables; real production documents later, volume unknown |
-| Existing findings | All 308 on `bp_testdb` are re-checked and the result shown before anything is hidden |
-| Detectors from the original requirements that were never built | Re-checked (7.1) and listed as insufficient evidence |
+| Where policy is applied | By the Orchestrator. Not in a separate gate. |
+| How many policies | Many policies may bear on one activity. The checklist is not a policy and must not be treated as the one policy for a run. |
+| When | Agents report back at key points of access or decision, not on every turn. |
+| Which policies, when | Only those relevant to the point reached. At the start, only the key ones for the instruction and for access to data. |
+| Overload | The agent must not be loaded with every policy, and a clash between policies must not stop it completing its task. |
+| Conflicts | Go to the decision engine first, which works out where the conflict is. It may settle one on a standing rule or an earlier ruling, as it does today. Otherwise it presents the conflict to a person. |
+| Order | The Orchestrator's part is built first. |
 
-## 3. How this fits the orchestrator brief
+### 3.2 Agents and data
 
-The two documents cover different layers and do not overlap in code.
-
-| Question | Answered by |
+| Decision | Ruling |
 |---|---|
-| May this agent run at all, and by which route? | The orchestrator brief: WP1 (one policy check on every agent run) and WP2 (`determine_path`) |
-| What must the agent assess on every run, and was it assessed? | This design: the spine and the run report |
-| May this particular action go ahead? | This design: the action gate, which asks for a complete, verified report |
-| How should negotiation use the model inside coded limits? | The orchestrator brief WP6, built on this design's platform (stage 3 below) |
+| Who owns a checklist | The existing user types Category Manager (`PROCWISE_CATEGORY_MANAGER`) and tenant super admin (`PROCWISE_TENANT_SUPER_ADMIN`). No new role. |
+| Agent order | Opportunity Miner, discrepancy triage, negotiation, quote comparison and award, contract review and renewals, sell-side quotes, sourcing (placeholder only) |
+| Budget, ESG, supplier performance | Reported as "could not assess", and carried into the negotiation report |
+| Opportunity validation | Its own check, with a different angle from the negotiation plan reviewer |
+| Duplicate-invoice detector | Switched on once the check is live |
+| Price-variance detector | Connected to the existing benchmark engine in this work |
+| Detectors in the original requirements that were never built | Re-checked (9.1) and listed as could not assess |
+| Existing findings | All 308 on `bp_testdb` re-checked and shown before anything is hidden. First result in 10.4. |
+| Accepting a supplier's offer | Always needs a person. The rule is a policy, changeable through the learning loop. |
+| Negotiation rounds | Multi-round stays on. The cap becomes a policy value so it can be learned. |
+| Dummy data | Used now, kept out of production tables |
 
-This design does not depend on WP1 or WP2 landing first. If they land, the run report gains two fields (the route taken and the policy verdict) and nothing else changes.
+## 4. How this fits the orchestrator brief
 
-## 4. Programme
+The earlier brief proposed eight work packages. This design takes two of them further and leaves the rest where they are.
 
-| Stage | What | Covered by |
+| Brief | This design |
+|---|---|
+| WP1: one policy check on every agent run | Absorbed and extended: a check at the start and at each later checkpoint, with only the relevant policies at each (section 6) |
+| WP3: results change the route | Partly absorbed: the "cannot proceed" and "new information" checkpoints, and the answers the Orchestrator gives (section 6) |
+| WP2: `determine_path` routing | Unchanged, still the brief's. The run report records the route once it exists. |
+| WP4 (Ask reaches the Orchestrator), WP5 (agents read what they are given), WP7 (remove what is not real), WP8 (what AgentNick is) | Unchanged, still the brief's |
+| WP6: negotiation with the model inside coded limits | Stage 7 here, built on this platform |
+
+The brief's rule "no applicable policy means an acting agent does not run" is kept for the action checkpoint only, and starts record-only, for the reason the brief gives: `bp_sqldb` has no live agent policies.
+
+## 5. Stages
+
+| Stage | What | Section |
 |---|---|---|
-| 0 | Four negotiation control holes | Section 11 of this document |
-| 1 | Shared platform, Opportunity Miner, validator | Sections 5 to 10 of this document |
-| 2 | Discrepancy triage on the platform | Its own design, after stage 1 |
-| 3 | Negotiation on the platform, including the gaps against the original requirements | Its own design, after stage 2 |
-| 4+ | Quote comparison and award; contracts and renewals; sell-side; sourcing | Later |
-
-Stage 1 is one coherent slice and is planned in two parts: A (sections 5, 6, 7) and B (sections 8, 9, 10).
+| 1 | Orchestrator checkpoints. Record-only. | 6 |
+| 2 | The checklist and the run report | 7, 8 |
+| 3 | Opportunity Miner: honest figures, benchmark connected | 9 |
+| 4 | The check on each finding | 10 |
+| 5 | Switch from record-only to enforcing, `bp_testdb` first | 11 |
+| 6 | Discrepancy triage | Own design |
+| 7 | Negotiation, including its four safety fixes (section 12) | Own design |
 
 ---
 
-## 5. The spine store (shared)
+## 6. Orchestrator checkpoints (shared)
 
-**What it is.** One governed row per agent holding its fixed list and its assertions.
+### 6.1 The eight points
 
-**Where.** `proc.bp_policy`, the same place email rule sets live (`src/services/draft_assurance/family.py`). A spine is a policy row named `AgentSpine_<agent_key>`, with `policy_type = 'agent_spine'`. The row's `version` column is the spine version.
+| # | Point | The agent reports | Why it is separate |
+|---|---|---|---|
+| 1 | Instruction received | What it has been asked to do, and for whom | Decides which policies are in play at all |
+| 2 | Access | What sensitive data or outside source it is about to read | Access rules differ from action rules |
+| 3 | Plan set or changed | Its approach, and again if new evidence changes it | A changed plan can bring different policies into play |
+| 4 | Decision | Something material it has settled | The moment a later action becomes likely |
+| 5 | New information from outside | A supplier reply or new document has arrived | An earlier "carry on" may no longer hold |
+| 6 | Hand-off | It is about to pass work or data to another agent | The next agent may have different permissions |
+| 7 | Cannot proceed | Low confidence, missing evidence, a limit about to be reached, unclear authority | The agent asks instead of guessing |
+| 8 | Action | Something is about to leave the product or change a record permanently | The last point at which it can be stopped |
 
-**Shape of `policy_details.rules`:**
+Disclosure (what an outside message reveals) and changes to records are checked at point 8. The product's closed list of named actions (`src/services/actions.py`, 73 entries, each classed as reversible or not) identifies which actions need it.
 
-```json
-{
-  "agent_key": "opportunity_miner",
-  "mode": "shadow",
-  "items": [
-    {"key": "price_position", "label": "Price position",
-     "detectors": ["price_variance_check", "volume_consolidation_check", "duplicate_supplier_check"]}
-  ],
-  "assertions": [
-    {"key": "figures_from_formulas", "label": "Every figure comes from a registered formula"}
-  ]
-}
-```
+Routine work between points (reading rows, arithmetic) does not report.
 
-**Rules.**
-- A missing or malformed spine raises. The agent does not run on a default list. This copies `load_family`, which was written for the same reason.
-- `mode` is `shadow` (record only) or `enforce` (the gate may refuse). It starts as `shadow`.
-- Only a Category Manager or a tenant super admin may change a spine row. Both already exist as user types in the admin area (`deploy/sql/2026-09-18_admin_area_role_mapping.sql`); nothing new is created. The product has four roles (Admin, Approver, Buyer, Viewer), and Category Manager maps to Buyer together with Buyer Analyst, so a role check alone would let every Buyer change a spine. The rule is therefore a new policy row, `AgentSpineAuthorityPolicy`, that names the two user types, checked against the user-type claim that `src/services/rbac.py` already reads from the sign-in token. **To confirm during build:** that the endpoint gate (`src/api/endpoint_gate.py`) can be given the user type as well as the role.
-- Every change is a new version. Reports record the version they ran under.
+### 6.2 What the Orchestrator answers
 
-**Code.** New package `src/services/agent_spine/`: `spine.py` (load, parse, raise), no other responsibilities.
-
-## 6. The run report (shared)
-
-**What it is.** One record per agent run, in one shape for every agent.
-
-**Where.** A new append-only table, `proc.bp_agent_run_report`. Updates and deletes are blocked by trigger, the way `proc.bp_agent_actions` already is (`deploy/sql/2026-09-16_bp_agent_actions_immutable.sql`).
-
-| Column | Meaning |
+| Answer | Meaning |
 |---|---|
-| `report_id` | Key |
-| `agent_key`, `spine_policy_id`, `spine_version` | Which agent, under which version of its list |
-| `subject_type`, `subject_id` | What the run was about (a deal, a supplier, the whole corpus) |
-| `trigger`, `initiated_by` | What started it, and who |
-| `brief` | What was asked for. For the miner: scope and the governed minimum impact. |
-| `items` | One entry per spine item: status, reason, counts, evidence references |
-| `assertions` | One entry per assertion: pass, fail or could-not-verify, with detail |
-| `strategy` | The case-specific approach. Empty for the miner. |
-| `open_questions` | What is unknown or assumed |
-| `proposed_additions` | Anything the agent suggests adding to the spine. Kept separate; never applied. |
-| `decision`, `decision_reason` | `proceed`, `revise` or `escalate` |
-| `created_at` | When |
+| Carry on | Nothing that applies objects |
+| Carry on, with a change | For example a lower limit, or a field that must be withheld |
+| Hold this step | This step waits for a person or a ruling; the rest of the task continues |
+| Stop | The run ends. Only for an instruction a policy forbids outright, or policies that cannot be read. |
 
-**Item status** is one of `investigated`, `not_applicable`, `insufficient_evidence`, always with a reason. `investigated` carries how many findings were raised and how many survived validation.
+### 6.3 The right policies at the right moment
+
+- Policies already carry the checkpoint they apply at: `enforcement.check` filters on `policy.context.checkpoint` (`src/services/agent_policy/enforcement.py:98-104`). Today there is one value, `tool.call.before`. This design adds the eight above as the permitted values.
+- At point 1 the Orchestrator applies only policies marked for the instruction and for access. Every other policy waits for its own point.
+- The agent is never handed policy text in bulk. It receives the answer and any limit it must work within.
+- A policy with no checkpoint is treated as an action-point policy, which is how every existing policy behaves.
+
+### 6.4 Conflicts
+
+When policies that apply at one point disagree:
+
+1. The decision engine identifies the conflict: which policies, on what, and what each would allow. `decide_live_conflict` (`src/engines/decision_engine.py:2079`) and `conflict_engine.classify` already do this for tool calls.
+2. If a standing rule covers it, or a person has already ruled on the same clash, the engine settles it. The self-approval bar still holds.
+3. Otherwise it presents the conflict to a person with the facts and the history.
+
+Rules that follow from "do not stop the task":
+- A conflict holds only the step it affects. The run continues.
+- A conflict between policies that never become relevant in this run is never raised.
+- The report lists every held step and what it is waiting for.
+
+### 6.5 One door
+
+The same check must apply however the work started. Today it does not: the brief (its section 2.5) lists five entry paths checked five different ways, and built-in agents bypass the agent-policy gate entirely.
+
+- One function, `Orchestrator.checkpoint(point, agent, subject, facts)`, is the only place a policy verdict is produced.
+- `BaseAgent` gains `self.checkpoint(...)`, which calls it. Built-in and canvas-built agents use the same call.
+- The existing tool-call gate (`src/services/agent_policy/gate.py`) becomes one caller of it, at point 8, with unchanged behaviour.
+- The five entry paths (named workflow, canvas run, stored flow, supplier-reply watcher, scheduled job) each pass point 1.
+- The existing agent signals (`CONFIDENCE_LOW`, `NEEDS_ATTENTION`, `RECOMMEND_ESCALATION` in `src/orchestration/workflow_context.py:20-24`) become point 7.
+- Holding a step reuses what exists: approval cases, and runs that wait for input (`proc.bp_workflow_input_request`).
+
+### 6.6 Record-only first
+
+Every checkpoint writes what it would have answered. While an agent is in record-only mode the answer returned is always "carry on". Moving an agent to enforcing is a setting on its checklist (section 7).
+
+### 6.7 What is checked that is not a policy
+
+At point 8 the Orchestrator also requires, from sections 7 to 10: that the run's earlier listed checkpoints were passed; that the report is complete; and that the subject of the action has a verdict that permits it. These are conditions of the action, recorded beside the policy verdicts, not policies.
+
+## 7. The checklist (shared)
+
+**What it is.** The fixed list an agent must report on, its pass-or-fail assertions, and which of the eight checkpoints it must use and where.
+
+**Where.** Its own table, `proc.bp_agent_checklist`, one active version per agent, every change a new version. It is not stored in `proc.bp_policy`.
+
+**Who may change it.** Only a Category Manager or a tenant super admin. The product's four roles (Admin, Approver, Buyer, Viewer) are too coarse for this, because Category Manager shares the Buyer role with Buyer Analyst (`deploy/sql/2026-09-18_admin_area_role_mapping.sql`). The rule therefore names the two user types, checked against the user-type claim `src/services/rbac.py` already reads. **To confirm during build:** that the endpoint check can be given the user type as well as the role.
 
 **Rules.**
-- A report with any spine item missing is invalid and cannot be written as `proceed`.
-- The report is the only source the gate reads. Nothing in memory counts.
+- A missing or unreadable checklist stops the agent. It does not run on a default.
+- It carries the agent's mode: record-only or enforcing.
+- Reports record the version they ran under.
 
-**Code.** `src/services/agent_spine/report.py` (build, validate against the spine, write) and one migration under `deploy/sql/`, applied to both databases.
+## 8. The run report (shared)
 
-## 7. The Opportunity Miner made honest
+One record per run, in one shape for every agent, in a new append-only table `proc.bp_agent_run_report` (updates and deletes blocked by trigger, as `proc.bp_agent_actions` already is).
 
-The miner stays what it is: detectors written as code over documents, switched on by `proc.bp_rule` rows. It is not turned into a model-driven agent, because its value is arithmetic and a model adds risk there without adding judgement. The changes are inside `src/agents/opportunity_miner_agent.py` and `src/services/opportunity_store.py`.
+| Part | Content |
+|---|---|
+| Header | Agent, checklist version, what the run was about, what started it, who |
+| Brief | What was asked for |
+| Checklist items | For each: looked at, does not apply, or could not assess, with reason, counts and evidence references |
+| Assertions | For each: pass, fail or could not verify |
+| Checkpoint trail | For each checkpoint passed: the point, what the agent reported, each policy that applied with its version and what it said, how any conflict was settled and by whom, and the answer given |
+| Held steps | Each step waiting, and for what |
+| Approach | The case-specific plan. Short for the miner. |
+| Open questions | What is unknown or assumed |
+| Proposed additions | Anything the agent suggests adding to its checklist. Recorded, never applied. |
+| Outcome | Proceed, revise or escalate, with reason |
 
-### 7.1 Spine for the miner
+A report with a checklist item missing cannot be recorded as "proceed".
 
-| Item | Detectors behind it | Expected status today |
+## 9. The Opportunity Miner
+
+The miner stays what it is: detectors written as code over documents, switched on by `proc.bp_rule` rows. It is not made model-driven, because its value is arithmetic.
+
+### 9.1 Checklist
+
+| Item | Detectors behind it | Expected status after this work |
 |---|---|---|
-| Price position | Price variance, volume consolidation, duplicate supplier | Investigated |
-| Billing integrity | Invoice overbilling, duplicate invoice, inflation pass-through | Investigated |
-| Contract | Expiry, expiry buckets, unused contract value, maverick spend | Investigated once repointed (7.4) |
-| Supplier | Risk, performance | Insufficient evidence: no performance source |
-| Budget | Category overspend | Insufficient evidence: no budgets supplied |
-| ESG | ESG switch | Insufficient evidence: no ESG inputs |
-| Benchmark | Unit price against a benchmark | Insufficient evidence: the detector is not connected to the benchmark engine |
-| Index | Contract price drift against an index | Insufficient evidence: no index data held |
-| Payment and logistics | Early-payment discount missed; logistics cost outliers | Insufficient evidence: no discount terms or shipment data held |
+| Price position | Volume consolidation, duplicate supplier | Looked at |
+| Benchmark | Price variance against the benchmark engine | Looked at |
+| Billing integrity | Invoice overbilling, duplicate invoice, inflation pass-through | Looked at |
+| Contract | Expiry, expiry buckets, unused contract value, maverick spend | Looked at, once repointed (9.4) |
+| Supplier | Risk, performance | Could not assess: no performance source |
+| Budget | Category overspend | Could not assess: no budgets supplied |
+| ESG | ESG switch | Could not assess: no ESG inputs |
+| Index | Contract price drift against an index | Could not assess: no index data held |
+| Payment and logistics | Early-payment discount missed; logistics cost outliers | Could not assess: no discount terms or shipment data held |
 
-The last three items come from the original requirements (`procwise_agents/business_requirements/Agents/Opportunity Finder Agent/Opportunity_Agent_MVP_Engineering_Requirements_v1.4.docx`), which asked for seven detectors of which four were never built. They are listed so the report says so on every run. Building them is not part of this stage.
+The last two come from the original requirements (`procwise_agents/business_requirements/Agents/Opportunity Finder Agent/Opportunity_Agent_MVP_Engineering_Requirements_v1.4.docx`). Re-checked 2026-10-12:
 
-Re-checked on 2026-10-12, at the product owner's request:
-
-| Detector | What the re-check found |
+| Detector | Finding |
 |---|---|
-| Unit price against a benchmark | A benchmark engine exists (`src/services/benchmark/engine.py`, fed from past PO and invoice lines by `src/services/benchmark_live.py`) and is tested. The miner does not call it: its "benchmark" is the cheapest other supplier's average for the same item (`opportunity_miner_agent.py:5478`). The evidence is there; the connection is not. Open decision 1 in section 13. |
-| Contract price drift against an index | No index table in either database. The benchmark engine takes an index table as an input and nothing in the product supplies one. |
-| Early-payment discount missed | Invoices have a payment-terms field, filled on 10 of 12,408 invoices on `bp_testdb` and 35 of 51 on `bp_sqldb`. No field records discount terms. |
-| Logistics cost outliers | No shipment table in either database; the miner's shipment loading is commented out (`opportunity_miner_agent.py:2335`). |
+| Unit price against a benchmark | A tested benchmark engine exists (`src/services/benchmark/engine.py`, fed by `src/services/benchmark_live.py` from past PO and invoice lines). The miner does not call it; it uses the cheapest other supplier's average (`opportunity_miner_agent.py:5478`). Connected in this work. |
+| Price drift against an index | No index table in either database. |
+| Early-payment discount missed | Payment terms filled on 10 of 12,408 invoices on `bp_testdb` and 35 of 51 on `bp_sqldb`; no field records discount terms. |
+| Logistics cost outliers | No shipment table in either database. |
 
-### 7.2 Assertions for the miner
+### 9.2 Assertions
 
 1. Every figure comes from a registered formula.
 2. Every finding names source rows that exist.
@@ -155,157 +226,147 @@ Re-checked on 2026-10-12, at the product owner's request:
 5. No finding is retired by a detector that could not read its data.
 6. No finding a person has progressed is changed.
 
-### 7.3 Figures
+### 9.3 Checkpoints
 
-- Each detector's figure moves to a registered formula in `src/services/formulas/definitions/opportunity.py`, with golden test values. `opportunity.price_variance_impact` is already registered and unused; the detectors are rewired onto it and its siblings.
-- Each finding is labelled as a **saving** or a **value at stake**, using the existing `value_basis` column. Contract expiry (whole contract value), maverick spend (whole PO total) and duplicate supplier (total item spend) are values at stake. They are never summed into "potential savings".
-- The contract expiry buckets detector stops writing an unconverted contract value into a GBP column (`opportunity_miner_agent.py:6203`).
+| Point | Where in the miner |
+|---|---|
+| 1 Instruction | Start of a run: scope and what data it will read |
+| 4 Decision | A finding above the governed value is raised |
+| 7 Cannot proceed | A table cannot be read, or a threshold is missing |
+| 6 Hand-off | A finding is passed to negotiation |
+| 8 Action | Retiring existing findings; showing a finding as value; a supplier query email; recording realised value |
 
-### 7.4 Behaviour removed
+### 9.4 Figures and behaviour
+
+- Each detector's figure moves to a registered formula in `src/services/formulas/definitions/opportunity.py` with test values. `opportunity.price_variance_impact` is registered and unused today.
+- Each finding is labelled a **saving** or a **value at stake**, using the existing `value_basis` column. Whole contract values, whole PO totals and duplicates with no payment status are values at stake and are never summed into "potential savings".
 
 | Today | After |
 |---|---|
-| Missing quantity becomes 1; missing unit price becomes the line value (`:5440-5445`) | The row is excluded and counted under "insufficient evidence" |
-| A failed table read becomes an empty table (`:2353-2366`) | The item is "insufficient evidence: could not read `<table>`", and nothing is retired |
+| Missing quantity becomes 1; missing unit price becomes the line value (`:5440-5445`) | The row is excluded and counted under "could not assess" |
+| A failed table read becomes an empty table (`:2353-2366`) | Reported at point 7; the item is "could not assess"; nothing is retired |
 | At most two findings per detector per run (`:961-970`) | No cap |
-| If nothing clears the minimum, the best finding is shown anyway (`:1964-1980`) | Nothing is shown; the report says none cleared the minimum |
-| Thresholds default to 0.0 in code | A missing threshold makes the detector "insufficient evidence" |
-| Older contract detectors read `proc.contracts`, which does not exist in either database | They read `proc.bp_contract_master` (3,051 rows in each database) |
-| Prompt text can change `workflow` and `min_financial_impact` (`:728-769`) | Removed; only policy rows set them |
+| If nothing clears the minimum, the best finding is shown anyway (`:1964-1980`) | Nothing is shown; the report says none cleared it |
+| Thresholds default to 0.0 in code | A missing threshold is "could not assess" |
+| Older contract detectors read `proc.contracts`, which does not exist in either database | They read `proc.bp_contract_master` (3,051 rows in each) |
+| Prompt text can change the scope and the minimum impact (`:728-769`) | Removed; only governed rows set them |
+| An unconverted contract value is written into a GBP column (`:6203`) | Converted, or "could not assess" |
 
-### 7.5 Identity and state
+### 9.5 Identity
 
-- Findings are keyed by `opportunity_ref_id`, the stable reference, everywhere. Today the table's primary key is a per-run counter, so a new finding can collide with an old row and the failed save is swallowed (`:7558-7568`). The migration changes the key and the save stops swallowing errors.
+- Findings are keyed by the stable `opportunity_ref_id`. Today the primary key is a per-run counter, a new finding can collide with an old row, and the failed save is swallowed (`:7558-7568`). The migration changes the key, maps value outcomes and playbook proposals, and the save stops swallowing errors.
 - Production's `bp_opportunity` lacks the `retired_at` column that test has. The migration adds it.
-- The per-run record of which detectors ran, were skipped or found nothing is written into the run report for every path, not only the API path.
 
-### 7.6 The adaptive part
+## 10. The check on each finding
 
-Small on purpose in this stage. For each finding the miner records, in the report's item entry, what evidence would confirm it and what would disprove it, and for "insufficient evidence" what to ask for and from whom. No model chooses detectors.
+### 10.1 Two questions, answered separately
 
-## 8. The validator
+The existing critic asks one question, "would this survive a negotiator's scrutiny". On 2026-10-12 it had rejected sound duplicate-invoice findings as "not a negotiable opportunity", which is a correct answer to the wrong question. The check therefore asks two:
 
-**Angle.** The negotiation reviewer (stage 3) checks a plan: were all the levers examined, is each claim sourced. The opportunity validator tries to disprove one finding. They share the harness in 8.3 and nothing else.
+| Question | How | Result |
+|---|---|---|
+| **Is it true?** | Code only, from the source rows | Sound, sound at a different amount, wrong, duplicate of another finding, could not tell |
+| **What should be done about it?** | The existing critic's model call, given the finding and evidence only | A route: recover through accounts payable, raise with the supplier, take to negotiation, or note only |
 
-### 8.1 Checks
+A finding that is true but not negotiable is still a finding. Only the first question decides whether it is shown and counted.
 
-| # | Check | How | Outcome when it cannot be done |
-|---|---|---|---|
-| 1 | Recompute the figure from the source rows, without the miner's working | Code, registered formulas | Could not assess |
-| 2 | Like-for-like: unit, quantity basis, currency, date | Code | Could not assess |
-| 3 | A contract term explains the variance | Code over captured commercial terms and obligations | Recorded as not checked; does not fail the finding |
-| 4 | Still open: not rejected, realised or already in negotiation | Code | Could not assess |
-| 5 | Same money counted by another detector | Code, comparing source rows across findings | n/a |
-| 6 | Source rows exist and carry the numbers used | Code | Invalid |
-| 7 | Addressable in practice | The existing critic's model call, given the finding and evidence only | Could not assess |
+### 10.2 The truth checks
 
-Checks 1 to 6 run first. Check 7 runs only if they pass. The eleven `critic.*` formulas already written and never executed (`src/agents/opportunity_critic_agent.py:155-163`) are executed here; the arithmetic leaves the prompt.
+| # | Check | When it cannot be done |
+|---|---|---|
+| 1 | Recompute the figure from the source rows, without the miner's working | Could not tell |
+| 2 | Like-for-like: unit, quantity basis, currency, date | Could not tell |
+| 3 | A contract term explains the variance | Recorded as not checked; does not fail the finding |
+| 4 | Still open: not rejected, realised or already in negotiation | Could not tell |
+| 5 | The same money is counted by another finding | n/a |
+| 6 | The source rows exist and carry the numbers used | Wrong |
 
-### 8.2 Verdicts
+The eleven `critic.*` formulas already written and never executed (`src/agents/opportunity_critic_agent.py:155-163`) are executed here.
 
-The existing vocabulary is kept: `VALID`, `VALID_REFRAMED` (valid at a different figure), `INVALID`, `DUPLICATE`, `UNASSESSED`. A recomputed figure that differs from the miner's by more than a governed tolerance makes the finding `VALID_REFRAMED` at the recomputed figure, or `INVALID` if the recomputed saving is zero or negative.
+### 10.3 Storage and running
 
-### 8.3 Storage and harness
+- New append-only table `proc.bp_finding_check`: the finding's stable reference, the report, the check version, each check's outcome and detail, the miner's figure, the recomputed figure, the truth verdict and the route.
+- The check runs inside the mining run, straight after detection, for every finding. `scripts/critic_run.py` is retired.
+- If the model is unavailable the truth verdict still stands; the route is recorded as not determined.
+- A shared harness, `src/services/agent_spine/review.py`, guarantees a reviewer receives only the subject and its evidence. The negotiation plan reviewer (stage 7) uses the same harness with different checks.
 
-- New table `proc.bp_finding_validation`: the finding's stable reference, the report it belongs to, validator version, each check's outcome and detail, the miner's figure, the recomputed figure, the verdict. Append-only.
-- Shared harness `src/services/agent_spine/review.py`: runs a list of checks, guarantees the reviewer receives only the subject and its evidence, records every check. The opportunity checks live in `src/services/opportunity_validation/`.
-- The validator runs inside the mining run, immediately after detection, for every finding. `scripts/critic_run.py` is retired.
-- If the model is unavailable, checks 1 to 6 still decide; check 7 is recorded as not run and the verdict is `UNASSESSED`. That is a state a person sees, not a silent pass.
+### 10.4 First re-check of the existing 308 findings (`bp_testdb`, read-only, 2026-10-12)
 
-## 9. The gate at the action (shared)
+Checks 5 and 6 and part of check 1, run as queries. Not the full check.
 
-**What it is.** One function, `require_report(agent_key, subject, action)`, in `src/services/agent_spine/gate.py`. It reads the latest report and validation for the subject and answers allow, refuse or escalate, and writes its answer to `proc.bp_agent_actions`.
+| Detector | Findings | Result |
+|---|---|---|
+| Duplicate invoice | 300, £3.23m | All hold on the facts: both invoices exist with the same supplier, total, date and currency, and on all 180 purchase orders the invoices exceed the order. None has a payment status, so the figure is value at stake. |
+| Invoice overbilling | 6, £262k | Three single-invoice variances of 13% to 16% look genuine (about £7,000). Three are several invoices on one order (about £255,000); at least two of those deals also carry duplicate-invoice findings, so that money is counted twice. |
+| Price variance | 2, £44k | Not verifiable until the benchmark connection replaces "cheapest other supplier". |
 
-**It refuses when** there is no report, a spine item is missing, an assertion failed or could not be verified, or the verdict is not `VALID` or `VALID_REFRAMED`. `UNASSESSED` escalates to a person.
+## 11. Proof and switching on
 
-**Where it is called for the miner:**
+### 11.1 Scenario set
 
-| Action | Call site |
-|---|---|
-| Counting a finding in "value found" and listing it | `src/services/opportunity_dashboard.py`, `src/api/routers/opportunities.py`, the gateway's opportunity queries |
-| Sending a supplier query about a finding | `src/api/routers/value_summary.py:88-104` (the existing dispatch guard still applies) |
-| Approving a playbook proposal raised on a finding | `src/api/routers/playbooks.py:235-275` |
-| Moving a finding into negotiation | `src/services/deal_lifecycle.py:15-19` |
-| Recording realised value | `src/api/routers/value_ledger.py:98-102` |
+Dummy cases with known right answers, run on every change, in their own throwaway database as `evals/email/` does. No dummy rows enter `bp_sqldb` business tables.
 
-**Recording realised value** gains two further rules: the finding must have been validated, and an amount above the validated figure needs a stated reason.
+**Findings:** a genuine saving; the same money raised by two detectors; a unit mismatch; a contract clause that explains a price rise; a finding already realised; source rows that do not carry the stated numbers; a missing quantity; a legitimate repeat order that looks like a duplicate; an unreadable table; the same run twice.
 
-**Shadow first.** While the spine's `mode` is `shadow`, the gate records what it would have refused and allows the action. It moves to `enforce` per agent once the proof in section 10 passes. Counting and listing are the exception: unvalidated findings are labelled "not yet checked" from the first day.
+**Checkpoints and policy:**
+- A policy relevant only at the action point is not applied at the start.
+- Two policies that disagree at one point: only that step is held, and the run finishes the rest.
+- Two policies that disagree but never become relevant: nothing is raised.
+- A clash covered by an earlier ruling is settled by the decision engine without a person.
+- A clash with no rule and no ruling reaches a person, with the conflict identified.
+- An action attempted without its earlier checkpoints is refused.
+- Policies cannot be read: the run stops and says so.
+- The same work started through each of the five entry paths gets the same answers.
 
-## 10. Proof
+### 11.2 Order
 
-### 10.1 Scenario set
-
-A fixed set of dummy findings with known right answers, run automatically on every change, built like `evals/email/` (its own throwaway database, `evals/email/db.py`). At least:
-
-- A genuine price saving. Expected: valid.
-- The same money raised by two detectors. Expected: one valid, one duplicate.
-- A unit mismatch (each against box). Expected: invalid.
-- A contract clause that explains the price rise. Expected: invalid, with the clause cited.
-- A finding already realised. Expected: invalid, not open.
-- A finding whose source rows do not carry the stated numbers. Expected: invalid.
-- A missing quantity. Expected: item reported as insufficient evidence, no finding.
-- A duplicate invoice pair that is a legitimate repeat order. Expected: invalid.
-- An unreadable table. Expected: nothing retired, item insufficient evidence.
-- The same run twice. Expected: identical report apart from timestamps.
-
-Scored on: correct verdict, correct item status, no unsupported figure, no change between runs.
-
-### 10.2 Where dummy data lives
-
-**Decided 2026-10-12:** dummy rows live only in the scenario set's own database, never in `bp_sqldb` business tables. Production is proven by running the platform in `shadow` mode over whatever real rows exist. This keeps invented invoices out of real totals, which matters because production already has 51 real invoices and a known canonical spend figure.
-
-### 10.3 Switch-on order
-
-1. Platform and miner changes on `bp_testdb`, spine in `shadow`.
-2. Scenario set passing in CI.
-3. Validator live on `bp_testdb`; re-validate the 308 existing findings and report the result.
-4. Same migrations and policy rows applied to `bp_sqldb`, spine in `shadow`.
-5. Duplicate-invoice detector switched on (`duplicate_invoice_detector_enabled` in `AutonomousOperationPolicy`), both databases.
-6. Spine moved to `enforce`, test first, then production.
+1. Checkpoints on `bp_testdb`, record-only. Report what would have been held or stopped.
+2. Checklist, report, miner changes and the check on `bp_testdb`.
+3. Scenario set passing in CI.
+4. Full re-check of the 308 findings; before-and-after shown to the product owner.
+5. The same migrations and rows applied to `bp_sqldb`, record-only.
+6. Duplicate-invoice detector switched on (`duplicate_invoice_detector_enabled` in `AutonomousOperationPolicy`), both databases.
+7. Miner moved to enforcing, `bp_testdb` first, then `bp_sqldb`.
 
 Each step is reported with its evidence before the next begins.
 
-### 10.4 Screen
+### 11.3 Screen
 
-The opportunity view shows each spine item's status and reason, the source rows behind a figure, the saving-or-value-at-stake label, and the validation verdict with its checks. The `source_records` and `calculation_details` already stored are returned by the API, which they are not today. Built last, on the existing drawer and panel styles.
+The opportunity view shows each checklist item's status and reason, the source rows behind a figure, the saving-or-value-at-stake label, the truth verdict and the route, and any held step. `source_records` and `calculation_details` are returned by the API, which they are not today. Built last, on the existing drawer and panel styles.
 
----
-
-## 11. Stage 0: four negotiation control holes
-
-Small, independent of the rest, and worth closing before any negotiation work.
+## 12. Negotiation safety fixes (done at the start of stage 7)
 
 | Hole | Evidence | Fix |
 |---|---|---|
-| A caller-supplied `authority` block is trusted outside three workflows | `src/agents/negotiation/analysis.py:194-198`; the orchestrator overwrites it only for the workflows in `_AUTHORITY_WORKFLOWS` (`src/orchestration/orchestrator.py:419-423`) | The agent always resolves its mandate from policy itself and ignores any block in the request unless it carries a marker only the orchestrator sets |
-| The quantity in the value-limit check comes from the request | `src/agents/negotiation_agent.py:9744` | Quantity is read from the quote lines on record; if none is on record the counter is withheld, as it already is when quantity is missing |
-| The single-supplier and plain-batch paths have no round hold | `_resolve_hitl_decision` has one caller (`negotiation_agent.py:2922`) | The hold is applied on every path that produces a counter |
-| A held round cannot be released | Held tasks are written (`negotiation_agent.py:2206`) and read by nothing | A release path that re-checks the approval and the mandate before drafting |
+| A caller-supplied `authority` block is trusted outside three workflows | `src/agents/negotiation/analysis.py:194-198`; `src/orchestration/orchestrator.py:419-423` | Replaced by the instruction and access checkpoints: the mandate always comes from the Orchestrator |
+| The quantity in the value-limit check comes from the request | `src/agents/negotiation_agent.py:9744` | Read from the quote lines on record; withheld if none |
+| The single-supplier and plain-batch paths have no round hold | `_resolve_hitl_decision` has one caller (`negotiation_agent.py:2922`) | Each counter is a decision checkpoint on every path |
+| A held round cannot be released | Held tasks written at `negotiation_agent.py:2206`, read by nothing | Held steps use the shared hold-and-release from 6.5 |
 
-Each gets a failing test first, and a deliberate break to prove the test goes red.
+They were first planned as a stage of their own. With checkpoints in place three of the four are closed by the platform itself. They affect drafts only; nothing can be sent without approval today.
 
-## 12. Not in this design
+## 13. Not in this design
 
-- Building the four detectors from the original requirements that never existed (they are reported as insufficient evidence).
+- Routing (`determine_path`) and the other work packages left with the brief.
+- Building the index, discount and logistics detectors.
 - Discrepancy triage and negotiation on the platform.
 - Versioned playbooks with owners and usage data.
-- The review queue for agent-proposed additions (they are recorded in the report only).
-- Routing and the single run-time policy check (the orchestrator brief).
+- The review queue for agent-proposed additions.
 - Loading real production documents.
 
-## 13. Open decisions for the product owner
+## 14. To confirm during build
 
-All decisions raised so far were answered on 2026-10-12 and are recorded in section 2. The last one, raised by the re-check in 7.1: the price-variance detector **is** connected to the existing benchmark engine in this stage, replacing "cheapest other supplier" with a like-for-like benchmark, so the Benchmark item becomes investigated.
+1. That the endpoint check can be given the user type as well as the role (section 7).
+2. How many existing policies carry no checkpoint, and that treating them as action-point policies changes nothing for them (6.3).
+3. Whether the gateway's direct queries on `proc.bp_opportunity` need the same "checked or not yet checked" label (11.3).
 
-**The spec as a whole is not yet approved.** The product owner has asked for parts to be explained and for its fit with the wider architecture to be made clear first.
-
-## 14. Risks
+## 15. Risks
 
 | Risk | Handling |
 |---|---|
-| Most existing findings fail validation, and "value found" drops sharply | Expected. Shown as a before-and-after report at step 3 of 10.3 before any screen changes. |
-| Changing the opportunity table's key breaks references from value outcomes and playbook proposals | The migration maps both; it runs on a copy first and the row counts are compared. |
-| Two sessions work in this checkout and on these databases | New files and new tables only where possible; migrations follow the existing reviewed-script pattern and are applied to both databases deliberately. |
-| The orchestrator brief changes the run path under this work | The gate and report are called from action sites, not from the run path, so the two can land in either order. |
-| Enforcing the gate stops something that works today | Shadow first; enforcement is per agent and is a one-row change to reverse. |
+| Checkpoints slow agents down or hold too much | Record-only first; the step-1 report shows how often each point would have held before anything enforces |
+| Too few policies are marked for the early points, so the start check is empty | Expected at first. The report shows which points had no applicable policy. |
+| Most existing findings change status, and "value found" falls | Shown as a before-and-after at step 4 before any screen changes |
+| Changing the opportunity table's key breaks references | The migration maps them, runs on a copy first, and row counts are compared |
+| Two sessions work in this checkout and on these databases, and the brief's author may start WP1 | Agree ownership of the Orchestrator change before stage 1 starts |
+| Enforcing stops something that works today | Per agent, and one setting to reverse |
