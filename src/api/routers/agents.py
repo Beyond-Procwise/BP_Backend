@@ -216,6 +216,10 @@ class CreateAgentBody(BaseModel):
     # The tools this agent reasons with. Absent means it is not narrowed; an
     # empty list means it is given none. Keys come from GET /agents/tools.
     tools: Optional[List[str]] = None
+    # The outputs this agent returns, by name: [{"name", "description"}]. Each
+    # run fills them in from what its tools returned, and reports one the
+    # evidence does not establish as missing. Absent, the agent answers in prose only.
+    outputs: Optional[List[Dict[str, Any]]] = None
 
 
 def _checked_tools(agent_nick, tools: List[str]) -> List[str]:
@@ -459,6 +463,15 @@ async def create_agent(
 
     tools = _checked_tools(agent_nick, body.tools) if body.tools is not None else None
 
+    output_spec: Optional[List[Dict[str, str]]] = None
+    if body.outputs is not None:
+        from agents import named_outputs
+
+        try:
+            output_spec = named_outputs.checked_spec(body.outputs)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
     # The derived entry IS the backing entry (class_path, inputs, outputs,
     # elicit, dependencies, ...) under a new identity. Nothing is invented.
     entry = copy.deepcopy(backing)
@@ -478,6 +491,13 @@ async def create_agent(
     entry.pop("tools", None)
     if tools is not None:
         entry["tools"] = tools
+    # Likewise the base's named outputs. With its own, the copied "outputs" —
+    # the base class's, which an agent that reasons never produces — are
+    # replaced by the ones it was actually defined to return.
+    entry.pop("output_spec", None)
+    if output_spec is not None:
+        entry["output_spec"] = output_spec
+        entry["outputs"] = [o["name"] for o in output_spec]
     if model_ref:
         entry["model_key"] = body.model_key   # what was chosen, for the UI to echo back
         entry["model"] = model_ref            # what AgentNick calls (see get_agent_model)
@@ -609,6 +629,7 @@ async def create_agent(
         "prompt_name": prompt_name,
         "model_key": body.model_key or None,
         "tools": tools,
+        "outputs": output_spec,
         "registered": slug in agent_nick.agents,
         "governance": reload_report,
         "linked": linked,

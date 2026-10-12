@@ -332,3 +332,52 @@ def test_the_history_of_a_created_agent_can_be_read(create_app):
 def test_a_built_in_agent_has_no_history(create_app):
     app, _, _ = create_app
     assert TestClient(app).get("/agents/negotiation/history").status_code == 404
+
+
+# --- the outputs an agent is defined to return --------------------------------
+
+OUTPUTS = [{"name": "supplier", "description": "The supplier that overbilled."},
+           {"name": "overbilled_amount", "description": "How much above the PO."}]
+
+
+def test_named_outputs_are_stored_and_replace_the_ones_copied_from_the_base(create_app):
+    app, _, _ = create_app
+    resp = _create(TestClient(app), outputs=OUTPUTS)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["outputs"] == OUTPUTS
+    entry = _entry(app)
+    assert entry["output_spec"] == OUTPUTS
+    assert entry["outputs"] == ["supplier", "overbilled_amount"]
+
+
+def test_an_agent_created_without_outputs_names_none(create_app):
+    app, _, _ = create_app
+    resp = _create(TestClient(app))
+
+    assert resp.json()["outputs"] is None
+    assert "output_spec" not in _entry(app)
+
+
+def test_a_bad_output_name_is_refused_and_nothing_is_created(create_app):
+    app, sql_log, _ = create_app
+    resp = _create(TestClient(app), outputs=[{"name": "Supplier Name"}])
+
+    assert resp.status_code == 422
+    assert "Supplier Name" in resp.json()["detail"]
+    assert app.state.store.live == {}
+    assert not any("INSERT INTO proc.bp_prompt" in sql for sql, _ in sql_log)
+
+
+def test_a_workflow_publishes_a_created_agents_named_outputs(create_app):
+    """What the next step on a canvas can use is what the agent was defined to return."""
+    from orchestration.workflow_compiler import compile_graph
+
+    app, _, _ = create_app
+    _create(TestClient(app), outputs=OUTPUTS)
+
+    wf = compile_graph("t", {"nodes": [{"id": "n1", "agent_slug": "eu-tail-spend-negotiator"}],
+                             "edges": []})
+    node = wf.nodes["n1"]
+    assert node.tool_loop is True
+    assert node.output_to_shared == ["supplier", "overbilled_amount", "answer"]

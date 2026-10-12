@@ -46,6 +46,8 @@ def _record(slug, run_id, *, at, error=None):
                         result={"rows": [{"supplier": "Acme", "over": 812.5,
                                           "at": datetime(2026, 10, 1)}]})],
         answer="Acme billed 812.50 above its PO.", rounds=2, error=error,
+        outputs={"supplier": {"value": "Acme", "status": "evidence_found",
+                              "evidence": '"supplier": "Acme"'}},
         started_at=at, finished_at=at + timedelta(seconds=40),
     )
 
@@ -64,6 +66,7 @@ def test_a_recorded_run_reads_back_whole(slug):
     assert call["arguments"] == {"query": "overbilling"}
     assert "Acme" in call["result"] and call["result_truncated"] is False
     assert run["answer"] == "Acme billed 812.50 above its PO."
+    assert run["outputs"]["supplier"]["status"] == "evidence_found"
 
 
 def test_an_agents_runs_are_listed_newest_first_without_their_contents(slug):
