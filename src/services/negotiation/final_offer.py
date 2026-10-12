@@ -20,6 +20,10 @@ from src.services.draft_assurance.frame import SIGN_OFF
 
 ACCEPT = "accept"
 ESCALATE = "escalate"
+DECLINE = "decline"
+
+#: What a person may decide about a final offer that was escalated to them.
+DECISIONS = (ACCEPT, DECLINE)
 
 
 @dataclass(frozen=True)
@@ -113,6 +117,39 @@ def reply_html(advice: FinalOfferAdvice, *, contact_name: Optional[str]) -> str:
         paragraphs = [
             "Thank you for your reply and for setting out your final offer.",
             "We are reviewing it internally and will come back to you with our decision.",
+        ]
+    parts = [greeting, *paragraphs, *SIGN_OFF.split("\n")]
+    return "".join(f"<p>{escape(part)}</p>" for part in parts)
+
+
+def decision_html(decision: str, *, offer: Optional[float], currency: Optional[str],
+                  contact_name: Optional[str]) -> str:
+    """The reply a person's decision turns the waiting draft into.
+
+    An acceptance states the supplier's own price and nothing of ours. It cannot be
+    written without that price: accepting "your final offer" for a figure nobody
+    could read commits to an unknown amount.
+    """
+
+    if decision not in DECISIONS:
+        raise ValueError(f"a final offer is accepted or declined, not {decision!r}")
+    offer_value = _positive(offer)
+    name = (contact_name or "").strip()
+    greeting = f"Dear {name}," if name else "Hello,"
+    if decision == ACCEPT:
+        if offer_value is None:
+            raise ValueError("the supplier's price could not be read, so it cannot be accepted here")
+        paragraphs = [
+            f"Thank you for your final offer. We accept the price of {_money(offer_value, currency)}.",
+            "We will be in touch shortly with the next steps.",
+        ]
+    else:
+        opening = (f"Thank you for your final offer of {_money(offer_value, currency)}."
+                   if offer_value is not None else "Thank you for setting out your final offer.")
+        paragraphs = [
+            opening,
+            "After reviewing it, we are not able to proceed at this price.",
+            "Thank you for the time you have given this.",
         ]
     parts = [greeting, *paragraphs, *SIGN_OFF.split("\n")]
     return "".join(f"<p>{escape(part)}</p>" for part in parts)

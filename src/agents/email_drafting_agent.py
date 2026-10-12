@@ -2616,8 +2616,12 @@ class EmailDraftingAgent(BaseAgent):
 
     def assure_final_offer_reply(
         self, data: Dict[str, Any], *, text: str, recipients, supplier_id: Optional[str], workflow_id: Optional[str],
+        requested_by: Optional[str] = None,
     ) -> Tuple[Optional[str], Dict[str, Any]]:
         """Assure the fixed-wording reply to a supplier's final offer. Returns ``(blocked_reason, record)``; never raises.
+
+        ``requested_by`` is the person whose decision this email states, when a person decided; the agent's own
+        holding reply or acceptance has none, and is accounted to the agent.
 
         A reason means nothing may be drafted on this thread (an unreviewed flagged reply, or the check could not
         run) and the record is empty. Otherwise the record is the family's shadow assurance of ``text``, which is
@@ -2628,7 +2632,9 @@ class EmailDraftingAgent(BaseAgent):
             payload = dict(data or {})
             payload["supplier_id"] = supplier_id
             payload["workflow_id"] = workflow_id
-            run = self._assurance_prepare(payload, workflow_id=workflow_id, slug=self.FINAL_OFFER_FAMILY_SLUG)
+            run = self._assurance_prepare(
+                payload, workflow_id=workflow_id, slug=self.FINAL_OFFER_FAMILY_SLUG, user_id=requested_by,
+            )
             blocked = run.blocked_reason() if run is not None else None
             if blocked:
                 return blocked, {}

@@ -12,7 +12,7 @@ a person has to decide drafts a holding reply that commits to nothing.
 """
 import pytest
 
-from src.services.negotiation.final_offer import ACCEPT, ESCALATE, advise, reply_html
+from src.services.negotiation.final_offer import ACCEPT, ESCALATE, advise, decision_html, reply_html
 
 
 class TestTheRecommendation:
@@ -110,3 +110,27 @@ class TestTheReply:
     def test_a_contact_name_cannot_inject_markup(self):
         html = reply_html(advise(offer=450.0, target=455.0, walkaway=None, currency="GBP"), contact_name="<b>Nick</b>")
         assert "<b>" not in html
+
+
+class TestThePersonsDecision:
+    def test_an_acceptance_states_the_suppliers_price(self):
+        html = decision_html("accept", offer=470.0, currency="GBP", contact_name="Nadia Rahman")
+        assert "<p>Dear Nadia Rahman,</p>" in html and "We accept the price of 470.00 GBP" in html
+
+    def test_a_decline_commits_to_nothing_and_accepts_nothing(self):
+        html = decision_html("decline", offer=470.0, currency="GBP", contact_name=None)
+        assert "not able to proceed at this price" in html and "470.00 GBP" in html
+        assert "accept" not in html.lower()
+
+    def test_a_decline_with_no_readable_price_quotes_no_figure(self):
+        html = decision_html("decline", offer=None, currency="GBP", contact_name=None)
+        assert not any(ch.isdigit() for ch in html)
+
+    def test_an_unreadable_price_cannot_be_accepted(self):
+        with pytest.raises(ValueError):
+            decision_html("accept", offer=None, currency="GBP", contact_name=None)
+
+    @pytest.mark.parametrize("word", ["escalate", "approve", ""])
+    def test_only_accept_or_decline_is_a_decision(self, word):
+        with pytest.raises(ValueError):
+            decision_html(word, offer=470.0, currency="GBP", contact_name=None)

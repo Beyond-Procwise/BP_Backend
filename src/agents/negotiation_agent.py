@@ -8953,6 +8953,24 @@ class NegotiationAgent(BaseAgent):
                     self._supplier_agent = SupplierInteractionAgent(self.agent_nick)
         return self._supplier_agent
 
+    @staticmethod
+    def _final_offer_thread_headers(sent_reference: Optional[str]) -> Dict[str, Any]:
+        """``In-Reply-To``/``References`` for a reply to the email ``sent_reference`` names. Never raises."""
+
+        if not sent_reference:
+            return {}
+        try:
+            from repositories import draft_rfq_emails_repo
+            from src.services.reply_threading import reply_thread_headers
+
+            source = draft_rfq_emails_repo.load_by_unique_id(sent_reference)
+            if not source:
+                return {}
+            return reply_thread_headers(source_draft=source, source_payload={}) or {}
+        except Exception:
+            logger.debug("could not thread the final-offer reply", exc_info=True)
+            return {}
+
     def _raise_final_offer(
         self,
         *,
@@ -9018,6 +9036,11 @@ class NegotiationAgent(BaseAgent):
             "final_offer": record,
             "in_reply_to_unique_id": sent_reference,
         }
+        # In the supplier's own conversation, as a person's reply is: without
+        # these it arrives as a new thread. Nothing recorded means none are set.
+        thread_headers = self._final_offer_thread_headers(sent_reference)
+        if thread_headers:
+            draft["thread_headers"] = thread_headers
         try:
             # The same assurance every other email takes: a thread holding an
             # unreviewed flagged reply is not written on by an agent, and the
