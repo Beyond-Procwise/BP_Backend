@@ -23,6 +23,12 @@ class _EmailAgent:
         self.fail = fail
         self.blocked = blocked
         self.assured = []
+        self.master = SimpleNamespace(emails=["nick@supplier.example"], name="Nicholas Geelen")
+        self.looked_up = []
+
+    def _master_contact(self, supplier_id):
+        self.looked_up.append(supplier_id)
+        return self.master
 
     def assure_final_offer_reply(self, data, *, text, recipients, supplier_id, workflow_id):
         self.assured.append({"data": dict(data), "text": text, "recipients": list(recipients),
@@ -45,13 +51,12 @@ def agent(monkeypatch):
     agent = NegotiationAgent(DummyNick())
     agent.stub_email = _EmailAgent()
     monkeypatch.setattr(agent, "_ensure_email_agent", lambda: agent.stub_email)
-    monkeypatch.setattr(agent, "_final_offer_recipients", lambda workflow_id, sent_reference, context: ["nick@supplier.example"])
     return agent
 
 
 def _raise(agent, **overrides):
     args = dict(
-        context=SimpleNamespace(input_data={"contact_name": "Nicholas Geelen"}),
+        context=SimpleNamespace(input_data={"contact_name": "Somebody Else", "supplier_email": "elsewhere@example.com"}),
         workflow_id="wf-1", supplier="SUP-1", supplier_name="Test Supplies Ltd",
         sent_reference="PROC-WF-SENT", round_no=1, state={"base_subject": "Pricing Discussion"},
         offer=470.0, target=455.0, walkaway=None, currency="GBP",
@@ -92,12 +97,22 @@ def test_the_recommendation_travels_with_the_draft(agent):
     assert stored["in_reply_to_unique_id"] == "PROC-WF-SENT"
 
 
-def test_no_known_recipient_means_advice_but_no_draft(agent, monkeypatch):
-    """An email is never addressed to a guess."""
-    monkeypatch.setattr(agent, "_final_offer_recipients", lambda *a: [])
+def test_no_address_on_the_supplier_master_means_advice_but_no_draft(agent):
+    """An email is never addressed from what travelled with the workflow."""
+    agent.stub_email.master = SimpleNamespace(emails=[], name="Nicholas Geelen")
     advice, draft = _raise(agent)
     assert advice["recommendation"] == ESCALATE
     assert draft is None and agent.stub_email.stored == []
+    assert "supplier master" in advice["reply_not_drafted"]
+
+
+def test_the_address_and_name_come_from_the_supplier_master_not_the_workflow(agent):
+    """The workflow carried a different name and address; neither is used."""
+    _raise(agent)
+    stored = agent.stub_email.stored[0]
+    assert agent.stub_email.looked_up == ["SUP-1"]
+    assert stored["recipients"] == ["nick@supplier.example"]
+    assert "Somebody Else" not in stored["body"] and "elsewhere@example.com" not in str(stored["recipients"])
 
 
 def test_a_failing_draft_store_still_returns_the_advice(agent):
@@ -106,8 +121,10 @@ def test_a_failing_draft_store_still_returns_the_advice(agent):
     assert advice["recommendation"] == ESCALATE and draft is None
 
 
-def test_the_supplier_name_is_not_used_as_a_persons_name(agent):
-    _raise(agent, context=SimpleNamespace(input_data={}))
+def test_with_no_contact_name_on_the_master_nobody_is_named(agent):
+    """Not the supplier's company name, and not a name the workflow carried."""
+    agent.stub_email.master = SimpleNamespace(emails=["nick@supplier.example"], name=None)
+    _raise(agent)
     assert agent.stub_email.stored[0]["body"].startswith("<p>Hello,</p>")
 
 

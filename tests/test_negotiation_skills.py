@@ -28,7 +28,7 @@ from agents.negotiation_agent import (
     plan_counter,
     _detect_finality,
     _format_currency,
-    FINAL_OFFER_PATTERNS,
+    FINAL_OFFER_PHRASES,
 )
 from agents.base_agent import AgentContext, AgentOutput, AgentStatus
 
