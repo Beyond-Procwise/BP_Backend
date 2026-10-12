@@ -134,3 +134,9 @@ def test_publishing_frees_an_agent_that_is_already_running(tmp_path):
     registry.refresh_from_json(path)
 
     assert agent.draft_owner is None
+
+
+def test_after_an_edit_the_draft_is_the_editors_not_the_creators(tmp_path):
+    registry, _, _ = _registry(tmp_path, stage="draft", created_by="sub-maker",
+                               draft_by="sub-editor")
+    assert registry.get_agent("overcharge-hunter").draft_owner == "sub-editor"

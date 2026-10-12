@@ -219,6 +219,8 @@ class AgentType(BaseModel):
     # and for agents created before drafts existed, which are all published.
     stage: Optional[str] = None
     created_by: Optional[str] = None
+    # Whose draft it is after an edit; that person cannot be the one to publish it.
+    draft_by: Optional[str] = None
 
 
 class OpportunityRejectionRequest(BaseModel):
