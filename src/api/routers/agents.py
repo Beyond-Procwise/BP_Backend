@@ -212,6 +212,35 @@ class CreateAgentBody(BaseModel):
     model_key: Optional[str] = None      # a key from proc.bp_model, never a model name
     prompt_ids: Optional[List[int]] = None
     policy_ids: Optional[List[int]] = None
+    # The tools this agent reasons with. Absent means it is not narrowed; an
+    # empty list means it is given none. Keys come from GET /agents/tools.
+    tools: Optional[List[str]] = None
+
+
+def _checked_tools(agent_nick, tools: List[str]) -> List[str]:
+    """The list as it will be stored, or a 422 naming what cannot be in it.
+
+    Refused here rather than dropped at run time: a list that names a tool the
+    agent will never be handed reads, to whoever reviews it, as a statement of
+    what the agent can do.
+    """
+    from agents.base_agent import NODE_TOOL_EXCLUSIONS
+
+    wanted = list(dict.fromkeys(str(t).strip() for t in tools if str(t).strip()))
+    known = {t.name for t in agent_nick.tools()}
+    unknown = [t for t in wanted if t not in known]
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"not a tool on this installation: {', '.join(unknown)}",
+        )
+    barred = [t for t in wanted if t in NODE_TOOL_EXCLUSIONS]
+    if barred:
+        raise HTTPException(
+            status_code=422,
+            detail=f"no agent can be given: {', '.join(barred)}",
+        )
+    return wanted
 
 
 @router.get("/governance-options")
@@ -427,6 +456,8 @@ async def create_agent(
         # agent would leave it behind the next time the standard moves.
         model_ref = model_repo.resolve_ref(body.model_key)
 
+    tools = _checked_tools(agent_nick, body.tools) if body.tools is not None else None
+
     # The derived entry IS the backing entry (class_path, inputs, outputs,
     # elicit, dependencies, ...) under a new identity. Nothing is invented.
     entry = copy.deepcopy(backing)
@@ -437,6 +468,11 @@ async def create_agent(
         entry["capabilities"] = list(body.capabilities)
     entry["derived_from"] = body.backing_slug
     entry["created_by"] = "workspace"
+    # A base's own list is never inherited: the base is not narrowed by one, and
+    # a copy must not start life narrowed by a list nobody chose for it.
+    entry.pop("tools", None)
+    if tools is not None:
+        entry["tools"] = tools
     if model_ref:
         entry["model_key"] = body.model_key   # what was chosen, for the UI to echo back
         entry["model"] = model_ref            # what AgentNick calls (see get_agent_model)
@@ -567,6 +603,7 @@ async def create_agent(
         "prompt_id": prompt_id,
         "prompt_name": prompt_name,
         "model_key": body.model_key or None,
+        "tools": tools,
         "registered": slug in agent_nick.agents,
         "governance": reload_report,
         "linked": linked,

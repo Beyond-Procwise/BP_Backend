@@ -51,6 +51,9 @@ class AgentContract:
     # resolves the derived agent's own bp_prompt/bp_policy rows instead of the
     # backing class's. None for ordinary agents — their behaviour is unchanged.
     governance_slug: Optional[str] = None
+    # The tools this agent was given. None means the entry carries no list, and
+    # the agent is not narrowed; an empty list means it was given none.
+    tools: Optional[List[str]] = None
 
 
 class AutoRegistry:
@@ -128,6 +131,11 @@ class AutoRegistry:
                 output_fields=list(entry.get("output_fields", entry.get("outputs", []))),
                 description=entry.get("description", ""),
                 governance_slug=slug if entry.get("derived_from") else None,
+                tools=(
+                    [str(t) for t in entry["tools"]]
+                    if isinstance(entry.get("tools"), list)
+                    else None
+                ),
             )
             contracts[slug] = contract
             logger.debug("Registered agent contract: %s", slug)
@@ -144,6 +152,16 @@ class AutoRegistry:
         """
         fresh = AutoRegistry.from_json(path)
         self._contracts = fresh._contracts
+        # A kept instance must not keep the tools it had before: a list that was
+        # narrowed in the catalogue has to narrow the agent that is already running.
+        for agent_id, instance in self._instances.items():
+            contract = self._contracts.get(agent_id)
+            if contract is None:
+                continue
+            if contract.tools is not None:
+                instance.allowed_tools = list(contract.tools)
+            elif getattr(instance, "allowed_tools", None) is not None:
+                instance.allowed_tools = None
 
     def remove(self, agent_id: str) -> None:
         """Drop *agent_id* from both the contract map and the instance cache.
@@ -285,6 +303,8 @@ class AutoRegistry:
             # Derived agent: this instance resolves governance under its own
             # catalogue slug, not under the backing class's name.
             instance.governance_slug = contract.governance_slug
+        if contract.tools is not None:
+            instance.allowed_tools = list(contract.tools)
 
         self._instances[agent_id] = instance
         logger.info("Instantiated agent '%s' from %s", agent_id, contract.class_path)

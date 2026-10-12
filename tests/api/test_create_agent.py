@@ -68,6 +68,9 @@ def _agent_nick(sql_log):
         get_db_connection=lambda: _FakeConn(sql_log),
         agents={},
         auto_registry=_FakeRegistry(),
+        tools=lambda: [SimpleNamespace(name=n) for n in (
+            "get_corpus_facts", "get_policy", "run_supplier_ranking", "run_email_dispatch",
+        )],
     )
 
 
@@ -86,6 +89,10 @@ def create_app(tmp_path, monkeypatch):
     }))
     import agents.definitions as agent_defs
     monkeypatch.setattr(agent_defs, "DEFINITIONS_PATH", defs)
+    # Who may create an agent is the gate's question and is tested with the gate;
+    # these tests are about what a create that is allowed then does.
+    import api.routers.agents as agents_mod
+    monkeypatch.setattr(agents_mod, "gate", lambda *a, **k: None)
 
     sql_log = []
     app = FastAPI()
@@ -155,3 +162,66 @@ def test_nothing_to_derive_from_is_still_refused(create_app):
     detail = json.dumps(resp.json())
     assert "instructions" in detail and "description" in detail
     assert not sql_log  # nothing written before the refusal
+
+
+# --- the tools an agent is given at creation ---------------------------------
+
+def _create(client, **extra):
+    return client.post("/agents", json={
+        "name": "EU Tail-Spend Negotiator",
+        "description": "Negotiates renewal terms for EU tail-spend suppliers.",
+        "backing_slug": "negotiation",
+        **extra,
+    })
+
+
+def _entry(defs):
+    return next(a for a in json.loads(defs.read_text())["agents"]
+                if a["slug"] == "eu-tail-spend-negotiator")
+
+
+def test_a_tool_list_given_at_creation_is_stored_on_the_agent(create_app):
+    app, _, defs = create_app
+    resp = _create(TestClient(app), tools=["get_policy", "get_corpus_facts"])
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["tools"] == ["get_policy", "get_corpus_facts"]
+    assert _entry(defs)["tools"] == ["get_policy", "get_corpus_facts"]
+
+
+def test_an_empty_tool_list_is_stored_as_no_tools(create_app):
+    app, _, defs = create_app
+    resp = _create(TestClient(app), tools=[])
+
+    assert resp.status_code == 200, resp.text
+    assert _entry(defs)["tools"] == []
+
+
+def test_no_tool_list_stores_no_list(create_app):
+    """Absent is "not narrowed", and must not be written down as an empty list."""
+    app, _, defs = create_app
+    resp = _create(TestClient(app))
+
+    assert resp.status_code == 200, resp.text
+    assert "tools" not in _entry(defs)
+    assert resp.json()["tools"] is None
+
+
+def test_a_tool_that_does_not_exist_is_refused_and_nothing_is_created(create_app):
+    app, sql_log, defs = create_app
+    resp = _create(TestClient(app), tools=["get_policy", "launch_rocket"])
+
+    assert resp.status_code == 422
+    assert "launch_rocket" in resp.json()["detail"]
+    assert not any("INSERT INTO proc.bp_prompt" in sql for sql, _ in sql_log)
+    assert len(json.loads(defs.read_text())["agents"]) == 1
+
+
+def test_the_tool_that_sends_email_cannot_be_given(create_app):
+    """A list that named it would be stored and then silently not honoured."""
+    app, _, defs = create_app
+    resp = _create(TestClient(app), tools=["run_email_dispatch"])
+
+    assert resp.status_code == 422
+    assert "run_email_dispatch" in resp.json()["detail"]
+    assert len(json.loads(defs.read_text())["agents"]) == 1
