@@ -133,6 +133,11 @@ NODE_TOOL_EXCLUSIONS: Tuple[str, ...] = ("run_email_dispatch",)
 _NODE_TASK_SKIP_KEYS = frozenset({"prompts", "policies", "llm", "workflow_id"})
 _NODE_TASK_MAX_CHARS = 6000
 
+# How much of what governs a created agent is written into its system prompt.
+# Anything beyond is named, with the tool that fetches it.
+_BRIEF_POLICY_CHARS = 6000
+_BRIEF_PROMPT_CHARS = 4000
+
 
 def _render_node_task(input_data: Any) -> str:
     """The workflow's state so far, as the task for a reasoning node."""
@@ -356,7 +361,15 @@ class BaseAgent:
         """
         from orchestration.agentnick_control import reason as _reason
 
-        parts = [p for p in (self.instructions(), kwargs.pop("extra_system", None)) if p]
+        parts = [
+            p
+            for p in (
+                self.instructions(),
+                self.governance_brief(),
+                kwargs.pop("extra_system", None),
+            )
+            if p
+        ]
         kwargs.setdefault("exclude", NODE_TOOL_EXCLUSIONS)
         own_slug = getattr(self, "governance_slug", None)
         if own_slug:
@@ -372,6 +385,88 @@ class BaseAgent:
             extra_system="\n\n".join(parts) or None,
             **kwargs,
         )
+
+    def governance_brief(self) -> Optional[str]:
+        """What governs THIS created agent, as text for its system prompt.
+
+        The policies and prompts linked to the agent's own slug. Before this a
+        link was a record and nothing more: the loop was given the agent's
+        instructions, and everything else governing it had to be asked for by
+        name. Policies are stated as binding and come with their values;
+        linked prompts are guidance. The agent's own instructions are not
+        repeated here.
+
+        Whatever does not fit the budget is still NAMED, with the tool that
+        fetches it — never left out without a word. ``None`` for an agent that
+        is not a created one, or that has nothing linked.
+        """
+        if not getattr(self, "governance_slug", None):
+            return None
+        slug = self._governance_slug()
+
+        policies: List[Tuple[str, str]] = []
+        engine = getattr(self.agent_nick, "policy_engine", None)
+        try:
+            for policy in (engine.list_policies() if engine is not None else []):
+                linked = {_slugify_agent_name(a) for a in policy.get("policy_linked_agents") or []}
+                if slug not in linked:
+                    continue
+                name = str(policy.get("policyName") or policy.get("slug") or "").strip()
+                if not name:
+                    continue
+                lines = [f"- {name}"]
+                if policy.get("policy_desc"):
+                    lines.append(f"  {str(policy['policy_desc']).strip()}")
+                details = policy.get("details")
+                if details:
+                    lines.append(
+                        "  " + json.dumps(details, ensure_ascii=False, default=str, sort_keys=True)
+                    )
+                policies.append((name, "\n".join(lines)))
+        except Exception:  # pragma: no cover - defensive
+            logger.warning("governance_brief: policies unreadable for %s", slug, exc_info=True)
+
+        prompts: List[Tuple[str, str]] = []
+        own = f"{slug}_instructions"
+        try:
+            prompt_engine = getattr(self, "prompt_engine", None)
+            for prompt in (prompt_engine.prompts_for_agent(slug) if prompt_engine else []):
+                name = str(prompt.get("promptName") or "").strip()
+                template = prompt.get("template")
+                if not name or not template or _slugify_agent_name(name) == own:
+                    continue
+                prompts.append((name, f"- {name}\n  {str(template).strip()}"))
+        except Exception:  # pragma: no cover - defensive
+            logger.warning("governance_brief: prompts unreadable for %s", slug, exc_info=True)
+
+        sections: List[str] = []
+        for heading, items, budget, tool in (
+            (
+                "Policies that bind you. You must not act against any of them, and "
+                "where one sets a value you use that value:",
+                policies, _BRIEF_POLICY_CHARS, "get_policy",
+            ),
+            ("Guidance linked to you:", prompts, _BRIEF_PROMPT_CHARS, "get_prompt"),
+        ):
+            if not items:
+                continue
+            shown: List[str] = []
+            named_only: List[str] = []
+            used = 0
+            for name, text in items:
+                if used + len(text) <= budget:
+                    shown.append(text)
+                    used += len(text)
+                else:
+                    named_only.append(name)
+            block = [heading, *shown]
+            if named_only:
+                block.append(
+                    f"These also apply and are not shown in full; read each with {tool} "
+                    f"before you answer: {', '.join(named_only)}"
+                )
+            sections.append("\n".join(block))
+        return "\n\n".join(sections) or None
 
     def run_tool_loop(self, context: "AgentContext") -> "AgentOutput":
         """Run this workflow node by reasoning with tools.
