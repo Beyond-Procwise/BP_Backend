@@ -40,7 +40,15 @@ GOVERNED_LIMIT_SEED = {
         "max_volume_limit": 1000, "max_term_days": 120,
         "max_supplier_replies": 3, "first_counter_aggr_pct": 0.12,
         "market_review_pct": 0.2, "market_escalation_pct": 0.4,
-        "lt_value_pct_per_week": 0.01, "cost_of_capital_apr": 0.12},
+        "lt_value_pct_per_week": 0.01, "cost_of_capital_apr": 0.12,
+        "max_rounds": 3, "round1_anchor_gap_pct": 0.10, "round2_gap_share": 0.6,
+        "closing_risk_buffer_pct": 0.06, "closing_min_abs_buffer": 3.0,
+        "closing_step_pct_of_gap": 0.12,
+        "final_offer_phrases": [
+            "best and final", "best final", "best offer we can", "best price we can",
+            "cannot go lower", "final offer", "final price", "final quotation", "last price",
+            "lowest we can do", "our best price", "rock bottom", "take it or leave it",
+            "ultimatum"]},
     "agent_reach": {
         "max_dynamic_agents": 3, "tool_runtime_max_rounds": 6,
         "governed_reasoning_max_rounds": 5, "supplier_research_max_rounds": 4,

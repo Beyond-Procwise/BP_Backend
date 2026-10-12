@@ -73,22 +73,52 @@ def AGGRESSIVE_FIRST_COUNTER_PCT() -> float:
     """NegotiationBoundsPolicy (P9)."""
     return _governed_limit("negotiation_bounds", "first_counter_aggr_pct",
                            env="NEG_FIRST_COUNTER_AGGR_PCT")
-FINAL_OFFER_PATTERNS = (
-    "best and final",
-    "best final",
-    "best offer we can",
-    "best price we can",
-    "cannot go lower",
-    "final offer",
-    "final price",
-    "final quotation",
-    "last price",
-    "lowest we can do",
-    "our best price",
-    "rock bottom",
-    "take it or leave it",
-    "ultimatum",
-)
+def _phrases(value) -> tuple:
+    """A governed list of phrases, lower-cased; anything else is not a phrase list."""
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("final_offer_phrases must be a list of phrases")
+    return tuple(str(item).strip().lower() for item in value if str(item).strip())
+
+
+def FINAL_OFFER_PHRASES() -> tuple:
+    """Wording that marks a supplier's offer as final. NegotiationBoundsPolicy.
+
+    Was the constant FINAL_OFFER_PATTERNS. What ends a negotiation is a rule of
+    the negotiation, so it is stated in policy with the agent's other bounds.
+    """
+    return _governed_limit("negotiation_bounds", "final_offer_phrases", cast=_phrases)
+
+
+def MAX_ROUNDS() -> int:
+    """How many rounds the agent negotiates before it holds. NegotiationBoundsPolicy."""
+    return _governed_limit("negotiation_bounds", "max_rounds", cast=int)
+
+
+def ROUND1_ANCHOR_GAP_PCT() -> float:
+    """Above this gap to target, round 1 anchors low; at or under it, it offers the midpoint.
+    Round 2 uses the same threshold for midpoint against push. NegotiationBoundsPolicy."""
+    return _governed_limit("negotiation_bounds", "round1_anchor_gap_pct")
+
+
+def ROUND2_GAP_SHARE() -> float:
+    """The share of the remaining gap a round-2 push asks for. NegotiationBoundsPolicy."""
+    return _governed_limit("negotiation_bounds", "round2_gap_share")
+
+
+def CLOSING_RISK_BUFFER_PCT() -> float:
+    """Round 3+: the buffer over target, as a share of target. NegotiationBoundsPolicy."""
+    return _governed_limit("negotiation_bounds", "closing_risk_buffer_pct")
+
+
+def CLOSING_MIN_ABS_BUFFER() -> float:
+    """Round 3+: the least that buffer may be, in money. NegotiationBoundsPolicy."""
+    return _governed_limit("negotiation_bounds", "closing_min_abs_buffer")
+
+
+def CLOSING_STEP_PCT_OF_GAP() -> float:
+    """Round 3+: the small step down when already inside the buffer. NegotiationBoundsPolicy."""
+    return _governed_limit("negotiation_bounds", "closing_step_pct_of_gap")
+
 
 #: The decisions that end a negotiation. `plan_counter` returns one of these when
 #: it has resolved the outcome -- an offer inside our threshold is accepted, one

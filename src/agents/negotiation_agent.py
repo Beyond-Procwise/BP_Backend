@@ -90,16 +90,22 @@ from agents.negotiation.config import (  # noqa: F401
     BATCH_INPUT_KEYS,
     BATCH_SHARED_KEYS,
     COST_OF_CAPITAL_APR,
+    CLOSING_MIN_ABS_BUFFER,
+    CLOSING_RISK_BUFFER_PCT,
+    CLOSING_STEP_PCT_OF_GAP,
     DEFAULT_NEGOTIATION_MESSAGE_TEMPLATE,
-    FINAL_OFFER_PATTERNS,
+    FINAL_OFFER_PHRASES,
     LEAD_TIME_VALUE_PCT_PER_WEEK,
     LLM_ENABLED,
     LLM_MODEL,
     MARKET_ESCALATION_THRESHOLD,
     MARKET_REVIEW_THRESHOLD,
+    MAX_ROUNDS,
     MAX_SUPPLIER_REPLIES,
     MAX_TERM_DAYS,
     MAX_VOLUME_LIMIT,
+    ROUND1_ANCHOR_GAP_PCT,
+    ROUND2_GAP_SHARE,
     TERMINAL_STRATEGIES,
     _resolve_thread_transcript_limit,
 )
@@ -249,7 +255,7 @@ class NegotiationEmailHTMLShellBuilder:
 
 def _detect_finality(message: str) -> bool:
     lowered = (message or "").lower()
-    return any(pattern in lowered for pattern in FINAL_OFFER_PATTERNS)
+    return any(pattern in lowered for pattern in FINAL_OFFER_PHRASES())
 
 
 def _format_currency(amount: float, currency: Optional[str]) -> str:
@@ -368,9 +374,12 @@ def plan_counter(ctx: NegotiationContext, signals: SupplierSignals) -> Dict[str,
     counter_price: float
 
     if round_no <= 1:
-        if gap_pct is not None and gap_pct > 0.10:
-            counter_price = max(target_price, current_offer * 0.88)
-            log.append("Round 1 anchor strategy applied with ~12% reduction from supplier offer.")
+        if gap_pct is not None and gap_pct > ctx.anchor_gap_pct:
+            counter_price = max(target_price, current_offer * (1 - ctx.anchor_reduction_pct))
+            log.append(
+                f"Round 1 anchor strategy applied with ~{ctx.anchor_reduction_pct * 100:.0f}% "
+                "reduction from supplier offer."
+            )
             asks.extend(
                 [
                     "Volume-based discount for 250/500 unit tiers?",
@@ -380,7 +389,9 @@ def plan_counter(ctx: NegotiationContext, signals: SupplierSignals) -> Dict[str,
             )
         else:
             counter_price = (current_offer + target_price) / 2
-            log.append("Round 1 gap within 10%; proposing midpoint counter.")
+            log.append(
+                f"Round 1 gap within {ctx.anchor_gap_pct * 100:.0f}%; proposing midpoint counter."
+            )
             asks.extend(
                 [
                     "Hold quoted price for the full project timeline.",
@@ -389,14 +400,15 @@ def plan_counter(ctx: NegotiationContext, signals: SupplierSignals) -> Dict[str,
             )
         message_intro = "Round 1 plan"
     elif round_no == 2:
-        if gap_pct is not None and gap_pct <= 0.10:
+        if gap_pct is not None and gap_pct <= ctx.anchor_gap_pct:
             counter_price = (current_offer + target_price) / 2
             log.append("Round 2 midpoint strategy: splitting difference with supplier.")
         else:
-            step = gap_value * 0.6
+            step = gap_value * ctx.round2_gap_share
             counter_price = current_offer - step
             log.append(
-                "Round 2 assertive push: capturing ~60% of remaining gap to accelerate convergence."
+                f"Round 2 assertive push: capturing ~{ctx.round2_gap_share * 100:.0f}% of "
+                "remaining gap to accelerate convergence."
             )
         message_intro = "Round 2 plan"
     else:
@@ -1181,11 +1193,16 @@ def compute_decision(
         aggressiveness=0.75,
         leverage=0.6,
         urgency=0.3,
-        risk_buffer_pct=0.06,
-        min_abs_buffer=3.0,
-        step_pct_of_gap=0.12,
+        # Governed (NegotiationBoundsPolicy), not hardwired: these figures decide
+        # what the agent offers, and a missing one refuses rather than assuming.
+        risk_buffer_pct=CLOSING_RISK_BUFFER_PCT(),
+        min_abs_buffer=CLOSING_MIN_ABS_BUFFER(),
+        step_pct_of_gap=CLOSING_STEP_PCT_OF_GAP(),
         min_abs_step=4.0,
-        max_rounds=int(payload.get("max_rounds", 3)),
+        max_rounds=int(payload.get("max_rounds") or MAX_ROUNDS()),
+        anchor_gap_pct=ROUND1_ANCHOR_GAP_PCT(),
+        anchor_reduction_pct=AGGRESSIVE_FIRST_COUNTER_PCT(),
+        round2_gap_share=ROUND2_GAP_SHARE(),
         walkaway_price=walkaway,
         ask_early_pay_disc=ask_disc,
         ask_lead_time_keep=bool(payload.get("ask_lead_time_keep", True)),
@@ -1631,14 +1648,15 @@ class NegotiationAgent(BaseAgent):
                 max_rounds = (
                     shared_context.get("max_rounds")
                     or input_payload.get("max_rounds")
-                    or getattr(self.agent_nick.settings, "negotiation_max_rounds", 3)
-                    or 3
+                    or MAX_ROUNDS()
                 )
                 try:
                     max_rounds = int(max_rounds)
                 except Exception:
-                    logger.warning("Unable to coerce max_rounds=%s; defaulting to 3", max_rounds)
-                    max_rounds = 3
+                    logger.warning(
+                        "Unable to coerce max_rounds=%s; using the governed limit", max_rounds
+                    )
+                    max_rounds = MAX_ROUNDS()
 
                 return self._run_multi_round_negotiation(
                     context,
@@ -2864,7 +2882,8 @@ class NegotiationAgent(BaseAgent):
 
         workflow_id = shared_context.get("workflow_id") or context.workflow_id
 
-        max_rounds = max(1, min(int(max_rounds), 3))
+        # A caller may ask for fewer rounds, never for more than policy allows.
+        max_rounds = max(1, min(int(max_rounds), MAX_ROUNDS()))
 
         shared_context = dict(shared_context or {})
 
@@ -3749,9 +3768,9 @@ class NegotiationAgent(BaseAgent):
             or self._coerce_text(negotiation_state.get("max_rounds"))
         )
         try:
-            max_rounds_value = int(max_rounds_raw) if max_rounds_raw is not None else 3
+            max_rounds_value = int(max_rounds_raw) if max_rounds_raw is not None else MAX_ROUNDS()
         except Exception:
-            max_rounds_value = 3
+            max_rounds_value = MAX_ROUNDS()
 
         session_workflow_id = (
             self._coerce_text(workflow_id)
@@ -4554,7 +4573,7 @@ class NegotiationAgent(BaseAgent):
             "workflow_id": negotiation_state.get("workflow_id"),
             "negotiation_type": "multi_round",
             "total_rounds_executed": len(all_round_results),
-            "max_rounds": negotiation_state.get("max_rounds", 3),
+            "max_rounds": negotiation_state.get("max_rounds") or MAX_ROUNDS(),
             "total_suppliers": negotiation_state.get("total_suppliers", 0),
             "completed_suppliers": completed_suppliers,
             "failed_suppliers": failed_suppliers,
@@ -4730,7 +4749,7 @@ class NegotiationAgent(BaseAgent):
                 round_no = max(round_no, int(raw_round))
             except (TypeError, ValueError):
                 round_no = max(round_no, 1)
-        round_no = max(1, min(round_no, 3))
+        round_no = max(1, min(round_no, MAX_ROUNDS()))
         state["current_round"] = round_no
         identifier.round_number = round_no
 
@@ -4792,7 +4811,7 @@ class NegotiationAgent(BaseAgent):
             "target_price": target_price,
             "round": raw_round,
             "currency": currency,
-            "max_rounds": context.input_data.get("max_rounds") or 3,
+            "max_rounds": context.input_data.get("max_rounds") or MAX_ROUNDS(),
             "walkaway_price": walkaway_price,
             "ask_early_pay_disc": context.input_data.get("ask_early_pay_disc", 0.02),
             "ask_lead_time_keep": context.input_data.get("ask_lead_time_keep", True),
@@ -4838,7 +4857,7 @@ class NegotiationAgent(BaseAgent):
         decision.setdefault("asks", [])
         decision.setdefault("lead_time_request", None)
         decision.setdefault("rationale", "")
-        decision["closing_round"] = round_no >= 3
+        decision["closing_round"] = round_no >= MAX_ROUNDS()
         decision["counter_price"] = self._respect_positions(
             decision.get("counter_price"), positions
         )
@@ -5275,7 +5294,7 @@ class NegotiationAgent(BaseAgent):
             "lead_time_request": decision.get("lead_time_request"),
             "rationale": decision.get("rationale"),
             "round": round_no,
-            "closing_round": round_no >= 3,
+            "closing_round": round_no >= MAX_ROUNDS(),
             "supplier_reply_count": supplier_reply_count,
             "supplier_message": supplier_message,
             "supplier_snippets": supplier_snippets,
@@ -5357,7 +5376,7 @@ class NegotiationAgent(BaseAgent):
             "target_price": target_price,
             "current_offer": price,
             "round": round_no,
-            "closing_round": round_no >= 3,
+            "closing_round": round_no >= MAX_ROUNDS(),
             "supplier_reply_count": supplier_reply_count,
             "strategy": decision.get("strategy"),
             "asks": decision.get("asks", []),
@@ -5404,7 +5423,7 @@ class NegotiationAgent(BaseAgent):
         draft_stub["negotiation_message"] = negotiation_message
         draft_stub["counter_proposals"] = counter_options
         draft_stub["thread_index"] = round_no
-        draft_stub["closing_round"] = round_no >= 3
+        draft_stub["closing_round"] = round_no >= MAX_ROUNDS()
         if currency:
             draft_stub["currency"] = currency
         if supplier_snippets:
@@ -7822,7 +7841,7 @@ class NegotiationAgent(BaseAgent):
             header += f": {strategy}"
         lines.append(header)
 
-        if round_no >= 3:
+        if round_no >= MAX_ROUNDS():
             lines.append(
                 "- Closing round: request the supplier's best and final quote and confirm readiness to award"
             )
@@ -8934,27 +8953,6 @@ class NegotiationAgent(BaseAgent):
                     self._supplier_agent = SupplierInteractionAgent(self.agent_nick)
         return self._supplier_agent
 
-    def _final_offer_recipients(
-        self, workflow_id: Optional[str], sent_reference: Optional[str], context: AgentContext
-    ) -> List[str]:
-        """Who the reply goes to: the address our own email was sent to."""
-
-        if workflow_id and sent_reference:
-            try:
-                from repositories import workflow_email_tracking_repo
-
-                for row in workflow_email_tracking_repo.load_workflow_rows(workflow_id=workflow_id):
-                    if (row.unique_id or "").strip() != sent_reference:
-                        continue
-                    sent_to = [str(a).strip() for a in (row.recipient_emails or []) if str(a).strip()]
-                    if not sent_to and row.supplier_email:
-                        sent_to = [row.supplier_email.strip()]
-                    if sent_to:
-                        return sent_to
-            except Exception:
-                logger.debug("could not load the dispatch record for the final-offer reply", exc_info=True)
-        return self._collect_recipient_candidates(context)
-
     def _raise_final_offer(
         self,
         *,
@@ -8984,23 +8982,35 @@ class NegotiationAgent(BaseAgent):
         )
         record = advice.as_dict()
 
-        recipients = self._final_offer_recipients(workflow_id, sent_reference, context)
+        # Who the supplier is reached through, and by what name, is what the
+        # supplier master holds and nothing that travelled with the workflow
+        # (the one lookup the drafting and sending paths share).
+        email_agent = None
+        contact = None
+        try:
+            email_agent = self._ensure_email_agent()
+            contact = email_agent._master_contact(supplier) if email_agent is not None else None
+        except Exception:
+            logger.debug("could not resolve the supplier's contact for the final-offer reply", exc_info=True)
+        recipients = list(getattr(contact, "emails", None) or [])
+        contact_name = getattr(contact, "name", None)
         if not (workflow_id and supplier and recipients):
+            record["reply_not_drafted"] = "the supplier master holds no contact address for this supplier"
             logger.warning(
                 "Final offer from supplier=%s workflow=%s: recommendation=%s, but no reply was drafted "
-                "(no known recipient or workflow)", supplier, workflow_id, advice.recommendation,
+                "(no contact address on the supplier master, or no workflow)",
+                supplier, workflow_id, advice.recommendation,
             )
             return record, None
 
-        payload = context.input_data if isinstance(context.input_data, dict) else {}
         draft: Dict[str, Any] = {
             "intent": "NEGOTIATION_FINAL_OFFER_REPLY",
             "workflow_id": workflow_id,
             "supplier_id": supplier,
             "supplier_name": supplier_name,
             "subject": self._format_negotiation_subject(state),
-            # No fallback to the supplier's name: a company is not greeted as a person.
-            "body": _final_offer.reply_html(advice, contact_name=self._resolve_contact_name(payload)),
+            # The contact on the supplier master, or no name: a company is not greeted as a person.
+            "body": _final_offer.reply_html(advice, contact_name=contact_name),
             "recipients": recipients,
             "sender": getattr(self.agent_nick.settings, "ses_default_sender", None),
             "round": round_no,
@@ -9009,9 +9019,6 @@ class NegotiationAgent(BaseAgent):
             "in_reply_to_unique_id": sent_reference,
         }
         try:
-            email_agent = self._ensure_email_agent()
-            if email_agent is None:
-                raise RuntimeError("email drafting agent unavailable")
             # The same assurance every other email takes: a thread holding an
             # unreviewed flagged reply is not written on by an agent, and the
             # draft carries its checks (our own limits must never be in it).
@@ -9021,7 +9028,7 @@ class NegotiationAgent(BaseAgent):
                     "currency": currency,
                     "target_price": target,
                     "walkaway_price": walkaway,
-                    "contact_name": self._resolve_contact_name(payload),
+                    "contact_name": contact_name,
                 },
                 text=draft["body"], recipients=recipients, supplier_id=supplier, workflow_id=workflow_id,
             )
@@ -12299,7 +12306,7 @@ class NegotiationSession:
             session_id=str(payload.get("session_id") or ""),
             supplier_negotiations=supplier_states,
             current_round=int(payload.get("current_round") or 1),
-            max_rounds=int(payload.get("max_rounds") or 3),
+            max_rounds=int(payload.get("max_rounds") or MAX_ROUNDS()),
             pending_responses=list(payload.get("pending_responses") or []),
             received_responses=list(payload.get("received_responses") or []),
             negotiation_parameters=dict(payload.get("negotiation_parameters") or {}),

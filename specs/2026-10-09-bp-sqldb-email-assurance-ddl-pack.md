@@ -4,9 +4,9 @@ Rewritten 2026-10-08 from the real files (it had grown a trail of addenda); refr
 
 ## What it is
 
-Nineteen files in four groups, per your rulings:
+Twenty files in four groups, per your rulings:
 
-* **Pack (a), schema, capture, validators in shadow:** fourteen files. Creates the `email_agent` schema and its tables, and inserts the family
+* **Pack (a), schema, capture, validators in shadow:** fifteen files. Creates the `email_agent` schema and its tables, and inserts the family
   rows (all `shadow`: they record and never block) and the retention, learning and sweep settings. Nothing in (a) changes what the model is
   asked to write. **One exception to "records and never blocks":** once `bp_inbound_flag` exists, a reply flagged as a suspected request to change
   payment details DOES stop an agent drafting, and the send guard sending, on that supplier's thread until an approver clears it. That is its purpose;
@@ -36,6 +36,7 @@ file's sha256, so you can check that the file applied is the file rehearsed.
 | 13 | a | `2026-10-08_email_family_v2.sql` | `5a039ce0b4bf1d48` | `2026-10-08_email_family_v2_rollback.sql` | UPDATE only the two original family rows (created_by = `email_assurance_migration`): fact labels, rubric, authority agent. |
 | 14 | a | `2026-10-08_email_draft_sweep.sql` | `61fc89e9772e4027` | `2026-10-08_email_draft_sweep_rollback.sql` | INSERT `EmailDraftSweepRules` (`abandon_after_days: 14`, `batch_size: 500`). |
 | 14b | a | `2026-10-09_email_award_commitment.sql` | `76ce3ef6096b655b` | `2026-10-09_email_award_commitment_rollback.sql` | UPDATE the four family rows' `award_commitment` pattern, only where it is still the original (found live 2026-10-09: "the contract is yours" passed). Applied to bp_testdb 2026-10-09. |
+| 14c | a | `2026-10-12_email_family_final_offer_reply.sql` | `b05e2576f725015a` | `2026-10-12_email_family_final_offer_reply_rollback.sql` | INSERT `EmailFamily_final_offer_reply` (mode `shadow`, not classifiable): the fixed-wording reply to a supplier's final offer. The supplier's offer is a claim unless confirmed; our target, walk-away and market floor are never-state. Carries the widened `award_commitment` pattern itself, because 14b updates only the four families that existed then. Applied to bp_testdb 2026-10-12. |
 | 15 | b | `2026-10-08_email_agent_steering.sql` | `7f21b66f8a5f762b` | `2026-10-08_email_agent_steering_rollback.sql` | INSERT `EmailSteeringRules`. **Held back with the tone rules and prompts.** |
 | 16 | b | `2026-10-08_email_tone_rules.sql` | `436d01b122b0807b` | `2026-10-08_email_tone_rules_rollback.sql` | INSERT `EmailToneRules` (with tone `directives`). **Awaiting your review; held back.** |
 | 17 | b | `2026-10-08_email_assurance_prompts.sql` | `25dfc1508506e4cd` | `2026-10-08_email_assurance_prompts_rollback.sql` | INSERT two rows into `proc.bp_prompt`: classify and judge (the planner prompt is HELD outside the pack since 2026-10-09: `2026-10-09_email_brief_plan_prompt_held.sql`, never applied). **Awaiting your review; held back.** |

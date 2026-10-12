@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from agents.base_agent import AgentContext
 from agents.negotiation.config import (
     AUTHORITY_AGENT_KEY,
-    FINAL_OFFER_PATTERNS,
+    FINAL_OFFER_PHRASES,
     LLM_ENABLED,
     LLM_MODEL,
     MARKET_ESCALATION_THRESHOLD,
@@ -105,7 +105,7 @@ def detect_final_offer(supplier_message: Optional[str], supplier_snippets: List[
     texts.extend(snippet for snippet in supplier_snippets if snippet)
     for text in texts:
         lowered = text.lower()
-        for pattern in FINAL_OFFER_PATTERNS:
+        for pattern in FINAL_OFFER_PHRASES():
             if pattern in lowered:
                 return f"Supplier indicated final offer via phrase '{pattern}'."
     return None

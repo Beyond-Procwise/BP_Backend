@@ -210,9 +210,11 @@ def test_every_governed_limit_is_present_in_the_live_policy_set():
     # over_delivery_pct, billed_over_received_qty, uom_conversion_required),
     # plus the 22 triage tolerances (2026-09-24, never counted here: 64 on
     # bp_sqldb), plus precedent_count (2026-10-13), plus precedent_value_range_pct
-    # (2026-10-14), plus reconciliation_tolerances.uplift_tolerance_pp (2026-10-09, price_schedule).
-    assert sum(len(r) for r in live.values()) == 67, (
-        f"expected 67 governed values, found "
+    # (2026-10-14), plus reconciliation_tolerances.uplift_tolerance_pp (2026-10-09, price_schedule),
+    # plus the seven negotiation rules that were constants (2026-10-12: max_rounds, the round
+    # tactics and final_offer_phrases).
+    assert sum(len(r) for r in live.values()) == 74, (
+        f"expected 74 governed values, found "
         f"{ {k: len(v) for k, v in live.items()} }")
     for slug, rules in live.items():
         assert rules, f"{slug} states no limits at all"

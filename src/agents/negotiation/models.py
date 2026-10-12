@@ -45,6 +45,11 @@ class NegotiationContext:
     step_pct_of_gap: float = 0.1
     min_abs_step: float = 1.0
     max_rounds: int = 3
+    # Round tactics. The caller states them from governed policy (compute_decision);
+    # the defaults are the figures plan_counter used when they were literals.
+    anchor_gap_pct: float = 0.10
+    anchor_reduction_pct: float = 0.12
+    round2_gap_share: float = 0.6
     walkaway_price: Optional[float] = None
     ask_early_pay_disc: Optional[float] = None
     ask_lead_time_keep: bool = True
