@@ -25,10 +25,11 @@ it knew when it did it — is inspectable afterwards rather than taken on faith.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import uuid
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from services.tool_runtime import Tool, ToolRunResult, run_tools
 
@@ -60,6 +61,16 @@ Arithmetic:
 - Do not total a truncated or "top N" list and present it as the whole. If you need
   a total, use the total the tool returned; if it did not return one, say so.
 - Report the figures as given. Do not round, rescale, or restate them in other units."""
+
+
+# The created agents currently reasoning on this thread, outermost first. One
+# created agent may be asked from inside a run; the agent it was asked from
+# cannot start another. Each loop is minutes of model time, and a chain nobody
+# drew on a canvas has no natural end.
+MAX_CREATED_AGENT_DEPTH = 1
+_CREATED_AGENT_CHAIN: contextvars.ContextVar[Tuple[str, ...]] = contextvars.ContextVar(
+    "created_agent_chain", default=()
+)
 
 
 def _agent_tools(
@@ -103,6 +114,22 @@ def _agent_tools(
                 if agent is None:
                     return {"error": f"agent '{slug}' is not registered"}
 
+                # A created agent is its task: run as the class it was copied
+                # from, it would do that class's job and ignore what a person
+                # wrote for it. So it reasons here exactly as it does on the canvas.
+                created = bool(getattr(agent, "governance_slug", None))
+                chain = _CREATED_AGENT_CHAIN.get()
+                if created:
+                    if slug in chain:
+                        return {"error": f"agent '{slug}' cannot call itself"}
+                    if len(chain) >= MAX_CREATED_AGENT_DEPTH:
+                        return {
+                            "error": (
+                                f"agent '{slug}' was not run: this is too many created "
+                                "agents deep. Answer with what you already have."
+                            )
+                        }
+
                 from agents.base_agent import AgentContext
 
                 ctx = AgentContext(
@@ -113,7 +140,14 @@ def _agent_tools(
                 )
                 # execute(), not run(): a tool call is an agent run like any other
                 # and must leave the same proc.routing / bp_action record.
-                output = agent.execute(ctx)
+                if created:
+                    token = _CREATED_AGENT_CHAIN.set(chain + (slug,))
+                    try:
+                        output = agent.execute(ctx, tool_loop=True)
+                    finally:
+                        _CREATED_AGENT_CHAIN.reset(token)
+                else:
+                    output = agent.execute(ctx)
                 data = dict(output.data or {})
                 # The agentic_plan is narration for a human reader; feeding it back
                 # into the loop just burns context the model needs for facts.
@@ -262,6 +296,7 @@ def build_tools(
     agent_nick: Any,
     *,
     exclude: Sequence[str] = (),
+    only: Optional[Sequence[str]] = None,
     workflow_id: Optional[str] = None,
     user_id: Optional[str] = None,
 ) -> List[Tool]:
@@ -269,6 +304,11 @@ def build_tools(
 
     ``exclude`` names tools to leave out — a workflow node's loop, for one,
     must never be handed the tool that sends real email.
+
+    ``only`` is the list of tools an agent was given. ``None`` means no list was
+    ever set; an empty list means none at all, which is why it is not tested for
+    truth. It narrows and never widens: a name in ``exclude`` stays out even
+    when it is also in ``only``.
     """
     tools = (
         _agent_tools(agent_nick, workflow_id=workflow_id, user_id=user_id)
@@ -278,6 +318,9 @@ def build_tools(
     if exclude:
         blocked = set(exclude)
         tools = [t for t in tools if t.name not in blocked]
+    if only is not None:
+        given = set(only)
+        tools = [t for t in tools if t.name in given]
     return tools
 
 
@@ -289,6 +332,7 @@ def reason(
     require_tool_use: bool = True,
     extra_system: Optional[str] = None,
     exclude: Sequence[str] = (),
+    only: Optional[Sequence[str]] = None,
     workflow_id: Optional[str] = None,
     user_id: Optional[str] = None,
     agent: Optional[str] = None,
@@ -303,8 +347,12 @@ def reason(
     before accepting it.
     """
     tools = build_tools(
-        agent_nick, exclude=exclude, workflow_id=workflow_id, user_id=user_id
+        agent_nick, exclude=exclude, only=only, workflow_id=workflow_id, user_id=user_id
     )
+    if not tools:
+        # An agent given no tools has nothing to consult; insisting that it
+        # consult something would only buy a wasted round and a nudge.
+        require_tool_use = False
     system = _SYSTEM if not extra_system else f"{_SYSTEM}\n\n{extra_system}"
     result = run_tools(
         task,

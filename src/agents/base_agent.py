@@ -349,11 +349,22 @@ class BaseAgent:
         prompts, registered agents as tools — with this agent's instructions
         added to the system prompt. ``NODE_TOOL_EXCLUSIONS`` applies unless the
         caller passes its own ``exclude``.
+
+        An agent given a list of tools (``allowed_tools``, stamped from the
+        catalogue) reasons with those and no others; an empty list is no tools.
+        An agent never given a list is not narrowed.
         """
         from orchestration.agentnick_control import reason as _reason
 
         parts = [p for p in (self.instructions(), kwargs.pop("extra_system", None)) if p]
         kwargs.setdefault("exclude", NODE_TOOL_EXCLUSIONS)
+        own_slug = getattr(self, "governance_slug", None)
+        if own_slug:
+            # An agent is never one of its own tools.
+            kwargs["exclude"] = tuple(kwargs["exclude"]) + (f"run_{own_slug}",)
+        allowed = getattr(self, "allowed_tools", None)
+        if allowed is not None:
+            kwargs.setdefault("only", list(allowed))
         kwargs.setdefault("agent", self._governance_slug())   # who is calling, for the policy gate
         return _reason(
             self.agent_nick,
