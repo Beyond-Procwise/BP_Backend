@@ -330,3 +330,16 @@ def test_an_ordinary_draft_carries_no_recommendation(monkeypatch):
 
 def test_a_malformed_recommendation_is_not_passed_on(monkeypatch):
     assert _read(monkeypatch, _draft(final_offer="accept"))["final_offer"] is None
+
+
+# ---- the audit record says what the caller's role was resolved from -----------
+
+def test_every_verdict_records_the_groups_the_sign_in_carried(monkeypatch):
+    """An allow resting on a stop-gap grant must be tellable from one resting on real groups."""
+    seen = []
+    monkeypatch.setattr(approvals_router, "record_action_or_fail", lambda **kw: seen.append(kw))
+    monkeypatch.setattr(approvals_router.rbac, "_direct_roles", lambda subject: ["Approver"])
+    _listing(monkeypatch, [])
+    assert _client().get("/approvals/drafts").status_code == 200
+    (row,) = seen
+    assert row["details"]["role_from"] == {"groups": ["bp-buyers"], "direct_grants": ["Approver"]}

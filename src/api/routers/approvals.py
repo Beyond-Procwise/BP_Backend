@@ -173,6 +173,10 @@ def _require_capability(
             "policy_version": decision.policy_version,
             "decision": "allow" if decision.allowed else "deny",
             "evidence": decision.evidence,
+            # Allowed or not: which groups the sign-in carried and any direct grant.
+            # An allow that rests on a stop-gap grant looks the same as one that
+            # rests on the person's real groups unless this says which it was.
+            "role_from": rbac.role_basis(principal, policy_engine=engine),
         },
     )
     if not decision.allowed:
