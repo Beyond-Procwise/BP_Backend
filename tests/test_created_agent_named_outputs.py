@@ -234,3 +234,89 @@ def test_the_catalogue_outputs_are_stamped_on_the_agent(tmp_path):
     registry.set_agent_nick(_agent().agent_nick)
 
     assert registry.get_agent("overcharge-hunter").output_spec == SPEC
+
+
+# --- the call that fills them --------------------------------------------------
+
+def test_the_structured_call_is_constrained_and_shares_the_loaded_model(monkeypatch):
+    """A request that left out the load options would ask the model server for a
+    runner of its own and evict the one every other caller is using."""
+    from services import tool_runtime
+    from src.services import ollama_client
+
+    sent = {}
+
+    class _Reply:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"message": {"content": '{"supplier": {"found": false, "value": "", "evidence": ""}}'}}
+
+    def fake_post(url, **kw):
+        sent.update(kw["json"])
+        return _Reply()
+
+    monkeypatch.setattr(tool_runtime.egress, "post", fake_post)
+    schema = named_outputs.schema_for([{"name": "supplier", "description": ""}])
+    got = tool_runtime.structured("SYS", "USER", schema, model="some-model")
+
+    assert got == {"supplier": {"found": False, "value": "", "evidence": ""}}
+    assert sent["format"] == schema
+    assert sent["model"] == "some-model"
+    assert sent["think"] is False
+    for key, value in ollama_client.load_options().items():
+        assert sent["options"][key] == value
+    assert sent["options"]["temperature"] == 0
+
+
+def test_a_model_that_answers_nothing_is_an_error_not_an_empty_result(monkeypatch):
+    from services import tool_runtime
+
+    class _Empty:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"message": {"content": ""}}
+
+    monkeypatch.setattr(tool_runtime.egress, "post", lambda url, **kw: _Empty())
+    with pytest.raises(RuntimeError):
+        tool_runtime.structured("SYS", "USER", {"type": "object"})
+
+
+def test_a_refused_gpu_layout_is_noted_and_the_call_goes_again(monkeypatch):
+    """The model server answers 500 when it cannot place the model as asked.
+    Without this step the call fails, having already evicted the model
+    everyone else was using."""
+    from services import tool_runtime
+    from src.services import ollama_client
+
+    monkeypatch.setattr(ollama_client, "_LAYOUT_REJECTED_UNTIL", 0.0)
+    sent = []
+
+    class _Reply:
+        def __init__(self, status, text, body=None):
+            self.status_code, self.text, self._body = status, text, body
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(f"{self.status_code}")
+
+        def json(self):
+            return self._body
+
+    refusal = ollama_client._LAYOUT_REFUSALS[0]
+
+    def fake_post(url, **kw):
+        sent.append(dict(kw["json"]["options"]))
+        if len(sent) == 1:
+            return _Reply(500, f"error: {refusal}")
+        return _Reply(200, "", {"message": {"content": '{"ok": true}'}})
+
+    monkeypatch.setattr(tool_runtime.egress, "post", fake_post)
+    got = tool_runtime.structured("SYS", "USER", {"type": "object"})
+
+    assert got == {"ok": True}
+    assert "num_gpu" in sent[0] and "num_gpu" not in sent[1]
+    assert ollama_client.gpu_options() == {}          # every other caller now knows too
