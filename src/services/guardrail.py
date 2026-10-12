@@ -200,6 +200,10 @@ def _evaluate(
                 f"role {role} may not perform {action_class}",
                 action=action,
                 role=role,
+                # What the role was resolved from, so the refusal can be acted on:
+                # no groups on the sign-in, groups the mapping does not know, or
+                # a grant that was not enough.
+                role_from=rbac.role_basis(principal, policy_engine=engine),
             )
 
         allowing: Optional[Dict[str, Any]] = None
