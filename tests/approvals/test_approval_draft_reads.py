@@ -296,3 +296,37 @@ def test_an_approval_that_names_no_version_still_approves_the_draft_as_it_stands
 
     assert _client().post("/approvals/dispatch/PROC-WF-AAAA11112222", json={}).status_code == 200
     assert len(recorded) == 1
+
+
+# ---- a reply to a supplier's final offer carries its recommendation -----------
+
+_ADVICE = {
+    "recommendation": "escalate",
+    "reason": "The supplier's final offer of 470.00 GBP is 15.00 GBP (3.3%) above the target of 455.00 GBP. "
+              "A person needs to decide whether to accept it or walk away.",
+    "offer": 470.0, "currency": "GBP", "limit": 455.0, "limit_kind": "target", "over_by": 15.0, "over_pct": 3.3,
+}
+
+
+def _read(monkeypatch, draft):
+    _one(monkeypatch, draft)
+    return _client().get("/approvals/drafts/PROC-WF-AAAA11112222").json()
+
+
+def test_a_final_offer_reply_shows_the_recommendation_to_its_approver(monkeypatch):
+    """Without it the approver sees only a holding email, and not why it is one."""
+    assert _read(monkeypatch, _draft(final_offer=_ADVICE))["final_offer"] == _ADVICE
+
+
+def test_the_list_shows_which_drafts_answer_a_final_offer(monkeypatch):
+    _listing(monkeypatch, [{"draft": _draft(final_offer=_ADVICE), "approval": None, "created_on": None}])
+    (row,) = _client().get("/approvals/drafts").json()["drafts"]
+    assert row["final_offer"]["recommendation"] == "escalate"
+
+
+def test_an_ordinary_draft_carries_no_recommendation(monkeypatch):
+    assert _read(monkeypatch, _draft())["final_offer"] is None
+
+
+def test_a_malformed_recommendation_is_not_passed_on(monkeypatch):
+    assert _read(monkeypatch, _draft(final_offer="accept"))["final_offer"] is None
