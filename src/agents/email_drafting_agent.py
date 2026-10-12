@@ -2612,6 +2612,32 @@ class EmailDraftingAgent(BaseAgent):
             logger.exception("assurance of a human-written email failed")
             return self._unassured_record("human_written", f"{type(exc).__name__}: {exc}")
 
+    FINAL_OFFER_FAMILY_SLUG = "email_family_final_offer_reply"
+
+    def assure_final_offer_reply(
+        self, data: Dict[str, Any], *, text: str, recipients, supplier_id: Optional[str], workflow_id: Optional[str],
+    ) -> Tuple[Optional[str], Dict[str, Any]]:
+        """Assure the fixed-wording reply to a supplier's final offer. Returns ``(blocked_reason, record)``; never raises.
+
+        A reason means nothing may be drafted on this thread (an unreviewed flagged reply, or the check could not
+        run) and the record is empty. Otherwise the record is the family's shadow assurance of ``text``, which is
+        never altered -- or an ``unassured`` record when the family could not be read, so silence never reads as checked.
+        """
+
+        try:
+            payload = dict(data or {})
+            payload["supplier_id"] = supplier_id
+            payload["workflow_id"] = workflow_id
+            run = self._assurance_prepare(payload, workflow_id=workflow_id, slug=self.FINAL_OFFER_FAMILY_SLUG)
+            blocked = run.blocked_reason() if run is not None else None
+            if blocked:
+                return blocked, {}
+            plain = self._html_to_plain_text(text or "")
+            return None, self._assurance_finalize(run, plain, recipients or [], supplier_id, repaired=False)
+        except Exception as exc:  # noqa: BLE001 - assurance failing must be visible on the draft, not lose the reply
+            logger.exception("assurance of a final-offer reply failed")
+            return None, self._unassured_record("final_offer_reply", f"{type(exc).__name__}: {exc}")
+
     def _rfq_assurance_finish(self, began, checked_text: str, recipients, supplier_id: Any) -> Dict[str, Any]:
         """The assurance record for one RFQ draft. Shadow: records, never repairs, never edits the body."""
 

@@ -5026,9 +5026,19 @@ class NegotiationAgent(BaseAgent):
                     target=target_price,
                     walkaway=walkaway_price,
                     currency=currency,
+                    # The agent's governed mandate, and any review it has already
+                    # called for, outrank a good price.
+                    hold_reason=(
+                        decision.get("authority_reason")
+                        if decision.get("authority_withheld")
+                        else ("this offer has been flagged for a person's review"
+                              if decision.get("human_override_required") else None)
+                    ),
                 )
                 decision["final_offer"] = final_offer_record
-                decision["recommendation"] = final_offer_record["recommendation"]
+                if final_offer_record["recommendation"] == _final_offer.ESCALATE:
+                    # The agent's existing word for "a person decides"; one already set stands.
+                    decision.setdefault("recommendation", "query_for_human_review")
                 stop_message = f"{stop_message} {final_offer_record['reason']}"
                 if final_offer_draft is not None:
                     draft_records.append(final_offer_draft)
@@ -8959,6 +8969,7 @@ class NegotiationAgent(BaseAgent):
         target: Optional[float],
         walkaway: Optional[float],
         currency: Optional[str],
+        hold_reason: Optional[str] = None,
     ) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
         """Recommend what to do with a supplier's final offer and save a reply for approval.
 
@@ -8968,7 +8979,9 @@ class NegotiationAgent(BaseAgent):
         approves it. Failing to save it never loses the recommendation.
         """
 
-        advice = _final_offer.advise(offer=offer, target=target, walkaway=walkaway, currency=currency)
+        advice = _final_offer.advise(
+            offer=offer, target=target, walkaway=walkaway, currency=currency, hold_reason=hold_reason
+        )
         record = advice.as_dict()
 
         recipients = self._final_offer_recipients(workflow_id, sent_reference, context)
@@ -8999,6 +9012,27 @@ class NegotiationAgent(BaseAgent):
             email_agent = self._ensure_email_agent()
             if email_agent is None:
                 raise RuntimeError("email drafting agent unavailable")
+            # The same assurance every other email takes: a thread holding an
+            # unreviewed flagged reply is not written on by an agent, and the
+            # draft carries its checks (our own limits must never be in it).
+            blocked, assurance = email_agent.assure_final_offer_reply(
+                {
+                    "current_offer": advice.offer,
+                    "currency": currency,
+                    "target_price": target,
+                    "walkaway_price": walkaway,
+                    "contact_name": self._resolve_contact_name(payload),
+                },
+                text=draft["body"], recipients=recipients, supplier_id=supplier, workflow_id=workflow_id,
+            )
+            if blocked:
+                record["reply_not_drafted"] = blocked
+                logger.warning(
+                    "Final offer from supplier=%s workflow=%s: recommendation=%s; no reply drafted: %s",
+                    supplier, workflow_id, advice.recommendation, blocked,
+                )
+                return record, None
+            draft["assurance"] = assurance
             email_agent._store_draft(draft)
         except Exception:
             logger.exception(

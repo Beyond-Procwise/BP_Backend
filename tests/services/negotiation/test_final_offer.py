@@ -62,6 +62,21 @@ class TestTheRecommendation:
         advice = advise(offer=470.0, target=bad, walkaway=None, currency="GBP")
         assert advice.recommendation == ESCALATE and advice.limit is None
 
+    def test_a_hold_escalates_an_offer_that_is_within_the_limit(self):
+        advice = advise(offer=450.0, target=455.0, walkaway=None, currency="GBP",
+                        hold_reason="the policy that governs this agent states no value limit.")
+        assert advice.recommendation == ESCALATE
+        assert "within the target of 455.00 GBP" in advice.reason
+        assert advice.reason.endswith("states no value limit.")
+
+    @pytest.mark.parametrize("empty", [None, "", "   "])
+    def test_no_hold_reason_is_no_hold(self, empty):
+        assert advise(offer=450.0, target=455.0, walkaway=None, currency="GBP", hold_reason=empty).recommendation == ACCEPT
+
+    def test_a_hold_does_not_change_an_offer_already_over_the_limit(self):
+        held = advise(offer=470.0, target=455.0, walkaway=None, currency="GBP", hold_reason="needs sign-off")
+        assert held == advise(offer=470.0, target=455.0, walkaway=None, currency="GBP")
+
     def test_it_is_recorded_as_plain_data(self):
         record = advise(offer=470.0, target=455.0, walkaway=None, currency="GBP").as_dict()
         assert record["recommendation"] == ESCALATE

@@ -35,6 +35,7 @@ def test_a_family_that_opts_out_is_not_listed_and_the_default_is_listed():
 def test_the_shipped_rows_say_which_families_are_requests():
     assert rules_of("2026-10-08_email_family_rfq_batch.sql")["classifiable"] is False
     assert rules_of("2026-10-08_email_family_human_written.sql")["classifiable"] is False
+    assert rules_of("2026-10-12_email_family_final_offer_reply.sql")["classifiable"] is False
     for name in ("2026-10-07_email_family_negotiation_counter.sql", "2026-10-07_email_family_free_prompt.sql"):
         assert rules_of(name).get("classifiable", True) is True
 

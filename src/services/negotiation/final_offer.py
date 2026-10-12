@@ -50,8 +50,13 @@ def _money(amount: float, currency: Optional[str]) -> str:
 
 
 def advise(*, offer: Optional[float], target: Optional[float], walkaway: Optional[float],
-           currency: Optional[str]) -> FinalOfferAdvice:
-    """Accept a final offer that is within the limit on record; otherwise a person decides."""
+           currency: Optional[str], hold_reason: Optional[str] = None) -> FinalOfferAdvice:
+    """Accept a final offer that is within the limit on record; otherwise a person decides.
+
+    ``hold_reason`` is why the agent may not commit to this on its own (its governed
+    authority was withheld, or a review was required). An offer within the limit is
+    then still escalated: being a good price does not make it the agent's to accept.
+    """
 
     offer_value = _positive(offer)
     walkaway_value, target_value = _positive(walkaway), _positive(target)
@@ -72,8 +77,12 @@ def advise(*, offer: Optional[float], target: Optional[float], walkaway: Optiona
         return _advice(ESCALATE, f"The supplier's final offer is {_money(offer_value, currency)}. There is no target "
                                  "or walk-away price on record to judge it against, so a person needs to decide.")
     if offer_value <= limit:
-        return _advice(ACCEPT, f"The supplier's final offer of {_money(offer_value, currency)} is within the "
-                               f"{limit_kind} of {_money(limit, currency)}.")
+        within = (f"The supplier's final offer of {_money(offer_value, currency)} is within the "
+                  f"{limit_kind} of {_money(limit, currency)}")
+        hold = (hold_reason or "").strip().rstrip(".")
+        if hold:
+            return _advice(ESCALATE, f"{within}, but it needs a person's sign-off: {hold}.")
+        return _advice(ACCEPT, f"{within}.")
     over_by = round(offer_value - limit, 2)
     over_pct = round(over_by / limit * 100, 1)
     return _advice(
