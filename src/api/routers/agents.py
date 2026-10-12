@@ -776,6 +776,34 @@ async def agent_history(slug: str, principal=Depends(require_user)):
     return {"slug": slug, "versions": versions}
 
 
+@router.get("/runs/{run_id}")
+async def agent_run(run_id: str, principal=Depends(require_user)):
+    """The record of one reasoning run: what the agent was told (its system
+    prompt, as sent), which model answered, each tool call with what it was
+    asked and what it returned, and the answer.
+
+    Asked of the same gate as running an agent: the record holds what the tools
+    returned, which is as much as running the agent would show.
+    """
+    gate("agent.run", principal, agent="AgentsRouter", context={"run_id": run_id})
+    from repositories import agent_run_repo
+
+    run = agent_run_repo.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"no recorded run {run_id!r}")
+    return run
+
+
+@router.get("/{slug}/runs")
+async def agent_runs(slug: str, limit: int = 50, principal=Depends(require_user)):
+    """The recorded runs of one agent, newest first. A summary of each — who,
+    when, which model, how it ended; GET /agents/runs/{run_id} has the rest."""
+    gate("agent.run", principal, agent="AgentsRouter", context={"slug": slug})
+    from repositories import agent_run_repo
+
+    return {"slug": slug, "runs": agent_run_repo.list_for_agent(slug, limit)}
+
+
 class AgentExecutionRequest(BaseModel):
     agent_type: str
     payload: Dict[str, Any] = {}

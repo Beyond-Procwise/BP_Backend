@@ -477,10 +477,18 @@ class BaseAgent:
         of what each was asked — never what it returned, which can be raw rows.
         """
         task = _render_node_task(context.input_data)
+        started_at = datetime.utcnow()
         result = self.reason(
             task, workflow_id=context.workflow_id, user_id=context.user_id
         )
+        run_id, recorded = self._record_reasoning_run(context, task, result, started_at)
         data: Dict[str, Any] = {
+            # The record that can explain this run later — what the agent was
+            # told, which model answered, what each tool returned. ``recorded``
+            # is False when it could not be written, so a run that cannot be
+            # explained never looks like one that can.
+            "run_id": run_id,
+            "recorded": recorded,
             "tools_used": list(result.tools_used),
             "rounds": result.rounds,
             "trace": [
@@ -492,6 +500,42 @@ class BaseAgent:
             return AgentOutput(status=AgentStatus.FAILED, data=data, error=result.error)
         data["answer"] = result.answer
         return AgentOutput(status=AgentStatus.SUCCESS, data=data)
+
+    def _record_reasoning_run(
+        self, context: "AgentContext", task: str, result: Any, started_at: datetime
+    ) -> Tuple[str, bool]:
+        """Store the run. Returns its id and whether it was written.
+
+        A record that cannot be written does not fail the run: the work is done
+        and the answer stands. It is logged as an error and reported on the result.
+        """
+        from repositories import agent_run_repo
+
+        run_id = agent_run_repo.new_run_id()
+        try:
+            agent_run_repo.record(
+                run_id=run_id,
+                agent_slug=getattr(self, "governance_slug", None) or self._governance_slug(),
+                workflow_id=context.workflow_id,
+                user_id=context.user_id,
+                model=getattr(result, "model", "") or None,
+                system_prompt=getattr(result, "system", "") or "",
+                task=task,
+                tools_offered=list(getattr(result, "tools_offered", []) or []),
+                calls=list(result.calls),
+                answer=result.answer,
+                rounds=result.rounds,
+                error=result.error,
+                started_at=started_at,
+                finished_at=datetime.utcnow(),
+            )
+            return run_id, True
+        except Exception:
+            logger.error(
+                "reasoning run %s of %s could not be recorded", run_id,
+                self._governance_slug(), exc_info=True,
+            )
+            return run_id, False
 
     def set_workflow_context(self, wf_ctx) -> None:
         """Attach a WorkflowContext for inter-agent communication."""
