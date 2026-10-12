@@ -152,8 +152,9 @@ class AutoRegistry:
                     if isinstance(entry.get("output_spec"), list) and entry["output_spec"]
                     else None
                 ),
+                # Whose draft it is: whoever last edited it, else whoever created it.
                 draft_owner=(
-                    str(entry.get("created_by") or "")
+                    str(entry.get("draft_by") or entry.get("created_by") or "")
                     if entry.get("derived_from") and entry.get("stage") == "draft"
                     else None
                 ),

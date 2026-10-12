@@ -26,6 +26,9 @@ def client(monkeypatch):
                         lambda slug, limit=50: [{"run_id": "abc123", "agent_slug": slug}])
     app = FastAPI()
     app.include_router(agents_mod.router)
+    # Who is signed in is not what these tests are about; the gate is.
+    from api.auth import require_user
+    app.dependency_overrides[require_user] = lambda: None
     return TestClient(app), asked
 
 

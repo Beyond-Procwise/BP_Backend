@@ -143,6 +143,10 @@ def create_app(tmp_path, monkeypatch):
     app.include_router(agents_router)
     app.state.agent_nick = _agent_nick(sql_log)
     app.state.store = store
+    # Nobody signed in, unless a test says who. Stated here rather than left to
+    # whatever sign-in mode an earlier test or the environment set up.
+    from api.auth import require_user
+    app.dependency_overrides[require_user] = lambda: None
     return app, sql_log, defs
 
 
