@@ -67,6 +67,36 @@ def _parse_dt(dt) -> datetime:
     except Exception:
         return datetime.now(timezone.utc)
 
+def _without_superseded(rows) -> List[Any]:
+    """Drop unsent drafts that a later draft to the same supplier replaced.
+
+    A redraft leaves the earlier version behind unsent. Counted as expected, it
+    kept the workflow from ever being fully sent, so the watcher never read the
+    reply to the version that did go out. Sent rows are always kept, as is a
+    row with no supplier: there is nothing to say what replaced it.
+    """
+
+    latest_by_supplier: Dict[str, Any] = {}
+    for row in rows:
+        supplier, row_id = row[1], row[4]
+        if supplier and row_id is not None:
+            if supplier not in latest_by_supplier or row_id > latest_by_supplier[supplier]:
+                latest_by_supplier[supplier] = row_id
+
+    kept = []
+    for row in rows:
+        supplier, sent, row_id = row[1], row[3], row[4]
+        superseded = (
+            not sent
+            and supplier
+            and row_id is not None
+            and row_id < latest_by_supplier.get(supplier, row_id)
+        )
+        if not superseded:
+            kept.append(row)
+    return kept
+
+
 def expected_unique_ids_and_last_dispatch(*, workflow_id: str, run_id: Optional[str] = None) -> Tuple[Set[str], Dict[str, str], Optional[datetime]]:
     """
     Return:
@@ -76,7 +106,7 @@ def expected_unique_ids_and_last_dispatch(*, workflow_id: str, run_id: Optional[
     """
     with get_conn() as conn:
         if isinstance(conn, sqlite3.Connection):
-            q = "SELECT unique_id, supplier_id, dispatched_at FROM draft_rfq_emails WHERE workflow_id=?"
+            q = "SELECT unique_id, supplier_id, dispatched_at, sent, id FROM draft_rfq_emails WHERE workflow_id=?"
             params = [workflow_id]
             if run_id is not None:
                 q += " AND run_id=?"
@@ -86,7 +116,7 @@ def expected_unique_ids_and_last_dispatch(*, workflow_id: str, run_id: Optional[
             rows = cur.fetchall()
             cur.close()
         else:
-            q = "SELECT unique_id, supplier_id, dispatched_at FROM proc.draft_rfq_emails WHERE workflow_id=%s"
+            q = "SELECT unique_id, supplier_id, dispatched_at, sent, id FROM proc.draft_rfq_emails WHERE workflow_id=%s"
             params = [workflow_id]
             if run_id is not None:
                 q += " AND run_id=%s"
@@ -100,7 +130,7 @@ def expected_unique_ids_and_last_dispatch(*, workflow_id: str, run_id: Optional[
     map_uid_to_supplier: Dict[str, str] = {}
     last_dt: Optional[datetime] = None
 
-    for row in rows:
+    for row in _without_superseded(rows):
         uid = row[0]
         sid = row[1]
         dt = _parse_dt(row[2])
