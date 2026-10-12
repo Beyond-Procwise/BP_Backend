@@ -393,7 +393,11 @@ async def tool_options(agent_nick=Depends(get_agent_nick)):
     metadata, and inferring one from a tool's name would be a guess presented to
     a reviewer as a fact about what the agent may do.
     """
-    tools = agent_nick.tools()
+    from agents.base_agent import NODE_TOOL_EXCLUSIONS
+
+    # Only what an agent can actually be given: offering the tool that sends
+    # email here would invite a pick that the create and edit calls refuse.
+    tools = [t for t in agent_nick.tools() if t.name not in NODE_TOOL_EXCLUSIONS]
     return {
         "count": len(tools),
         "tools": [

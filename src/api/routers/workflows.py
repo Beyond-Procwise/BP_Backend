@@ -221,6 +221,11 @@ class AgentType(BaseModel):
     created_by: Optional[str] = None
     # Whose draft it is after an edit; that person cannot be the one to publish it.
     draft_by: Optional[str] = None
+    # What a created agent was given, so the edit console can show it as it
+    # is rather than as blank: its tools (None = not narrowed, [] = none) and
+    # the outputs it was defined to return ([{name, description}]).
+    tools: Optional[List[str]] = None
+    output_spec: Optional[List[Dict[str, Any]]] = None
 
 
 class OpportunityRejectionRequest(BaseModel):
