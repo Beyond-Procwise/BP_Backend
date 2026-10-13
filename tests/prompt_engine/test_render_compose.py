@@ -196,3 +196,19 @@ def test_nothing_logged_carries_wording_or_values(caplog):
 
     for marker in ("Ada", "123-45-6789", "Triage the claim", "Be plain", "MARKER"):
         assert marker not in caplog.text
+
+
+def test_two_prompts_that_say_the_same_thing_do_not_share_a_hash():
+    """Found by a test against the real store: the manifest kept under a shared
+    hash named whichever prompt had rendered those words first."""
+    twin = dict(VERSION, prompt_key="another-prompt")
+    same_words = RD.compose(twin, _request(prompt_id="another-prompt"),
+                            fragment=_fragment, pack=_pack)
+
+    assert same_words[0] == _compose()[0]
+    assert same_words[1]["hash"] != _compose()[1]["hash"]
+
+
+def test_the_same_words_from_another_version_do_not_share_a_hash():
+    assert RD.compose(dict(VERSION, version=15), _request(), fragment=_fragment,
+                      pack=_pack)[1]["hash"] != _compose()[1]["hash"]

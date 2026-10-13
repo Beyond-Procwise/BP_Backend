@@ -5,8 +5,12 @@
 --                       under the sha256 of that text. Holds prompt wording with
 --                       customer values filled in, so it is the restricted
 --                       table: read only through services/prompt_engine/render.py.
---                       Aged out after PromptEnginePolicy.manifest_retention_days
---                       from the last time it was used.
+--                       The TEXT (`rendered`) is removed once it has gone unused
+--                       for PromptEnginePolicy.manifest_retention_days. The
+--                       manifest stays: which prompt version, which fragment
+--                       versions, which obligations, how many tokens. It holds
+--                       no wording and no values (owner ruling 2026-10-13: the
+--                       text goes after 7 days, the metadata is kept).
 -- bp_prompt_render_use  one row per render call: which run and step used which
 --                       hash. No wording, no values. Append-only and kept.
 --
@@ -20,12 +24,14 @@ CREATE TABLE IF NOT EXISTS proc.bp_prompt_render (
     prompt_key         TEXT NOT NULL,
     version            INTEGER NOT NULL,
     manifest           JSONB NOT NULL,
-    rendered           JSONB NOT NULL,
+    rendered           JSONB,               -- NULL once the text has been removed
     first_rendered_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_used_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+    last_used_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    text_removed_at    TIMESTAMPTZ,
+    CONSTRAINT ck_bp_prompt_render_text CHECK ((rendered IS NULL) = (text_removed_at IS NOT NULL))
 );
 CREATE INDEX IF NOT EXISTS ix_bp_prompt_render_last_used
-    ON proc.bp_prompt_render (last_used_at);
+    ON proc.bp_prompt_render (last_used_at) WHERE rendered IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS proc.bp_prompt_render_use (
     use_id       BIGSERIAL PRIMARY KEY,

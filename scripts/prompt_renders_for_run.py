@@ -4,8 +4,8 @@
     python scripts/prompt_renders_for_run.py <run_id> --text    # and the text itself
 
 --text prints prompt wording with customer values filled in. Use it only where
-that may be shown. A render older than the retention window has no text left;
-its hash, prompt and version are still listed.
+that may be shown. A render unused for longer than the retention window has no
+text left; its manifest (prompt, versions, obligations, token count) is still shown.
 """
 from __future__ import annotations
 
@@ -36,12 +36,14 @@ def main() -> int:
         try:
             stored = render.get_render(use["render_hash"])
         except render.RenderNotFound:
-            print("    (text aged out)")
+            print("    (no stored record)")
             continue
         m = stored["manifest"]
         print(f"    fragments {m['fragments']}  obligations {m['obligations_applied']}  "
               f"{m['token_count']} tokens")
-        if args.text:
+        if stored["rendered"] is None:
+            print(f"    (text removed {stored['text_removed_at']}; kept for the retention window only)")
+        elif args.text:
             print("    ---")
             for line in stored["rendered"]["instructions"].splitlines():
                 print(f"    {line}")

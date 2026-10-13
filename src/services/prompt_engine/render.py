@@ -48,8 +48,16 @@ def canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def _hash(body: Dict[str, Any]) -> str:
-    return "sha256:" + hashlib.sha256(canonical(body).encode("utf-8")).hexdigest()
+def _hash(body: Dict[str, Any], identity: Dict[str, Any]) -> str:
+    """One hash for what the agent was given AND what it was made from.
+
+    Two prompts can produce the same words. Hashing the words alone would give
+    them one stored record, and the manifest kept under it would name whichever
+    prompt got there first. So the prompt, its version, the fragment versions
+    and the obligations are part of what is hashed.
+    """
+    return "sha256:" + hashlib.sha256(
+        canonical({"rendered": body, "made_from": identity}).encode("utf-8")).hexdigest()
 
 
 def count_tokens(text: str) -> Tuple[int, str]:
@@ -166,15 +174,18 @@ def compose(version: Dict[str, Any], request: Dict[str, Any], *, fragment: Fragm
     }
     counted, how = count_tokens(
         body["instructions"] + "".join(t["description"] for t in body["tool_descriptions"]))
-    manifest = {
+    identity = {
         "prompt_id": version["prompt_key"],
         "version": version["version"],
         "fragments": dict(sorted(used.items())),
         "obligations_applied": applied,
         "obligation_vocabulary": OBLIGATION_VOCABULARY,
+    }
+    manifest = {
+        **identity,
         "token_count": counted,
         "token_count_method": how,
-        "hash": _hash(body),
+        "hash": _hash(body, identity),
     }
     logger.debug("composed %s v%s -> %s (%d tokens)", manifest["prompt_id"],
                  manifest["version"], manifest["hash"], counted)
@@ -227,7 +238,8 @@ def _store(body: Dict[str, Any], manifest: Dict[str, Any], trace: Dict[str, Any]
             INSERT INTO proc.bp_prompt_render
                 (render_hash, prompt_key, version, manifest, rendered)
             VALUES (%s, %s, %s, %s::jsonb, %s::jsonb)
-            ON CONFLICT (render_hash) DO UPDATE SET last_used_at = now()
+            ON CONFLICT (render_hash) DO UPDATE
+                SET last_used_at = now(), rendered = EXCLUDED.rendered, text_removed_at = NULL
             RETURNING render_hash
         )
         INSERT INTO proc.bp_prompt_render_use
@@ -262,17 +274,20 @@ def render(request: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def get_render(render_hash: str) -> Dict[str, Any]:
-    """The manifest and the text stored under this hash. Restricted: the text
-    carries customer values."""
+    """The manifest stored under this hash, and the text if it is still kept.
+
+    ``rendered`` is None once the text has aged out; the manifest remains.
+    Restricted: the text carries customer values.
+    """
     rows = _query(
-        "SELECT manifest, rendered, first_rendered_at, last_used_at "
+        "SELECT manifest, rendered, first_rendered_at, last_used_at, text_removed_at "
         "FROM proc.bp_prompt_render WHERE render_hash = %s", (render_hash,))
     if not rows:
         raise RenderNotFound(f"no stored render {render_hash}")
-    manifest, rendered, first, last = rows[0]
+    manifest, rendered, first, last, removed = rows[0]
     load = lambda v: json.loads(v) if isinstance(v, str) else v  # noqa: E731
     return {"manifest": load(manifest), "rendered": load(rendered),
-            "first_rendered_at": first, "last_used_at": last}
+            "first_rendered_at": first, "last_used_at": last, "text_removed_at": removed}
 
 
 def renders_for_run(run_id: str) -> List[Dict[str, Any]]:
@@ -299,15 +314,17 @@ def retention_days() -> int:
 
 
 def sweep() -> int:
-    """Delete stored renders not used within the retention window. Returns how
-    many. The record of which run used which hash is kept."""
+    """Remove the text of stored renders not used within the retention window.
+    Returns how many. The manifest and the record of which run used which
+    render are kept: neither holds wording or values."""
     days = retention_days()
     rows = _query(
-        "WITH gone AS (DELETE FROM proc.bp_prompt_render "
-        "WHERE last_used_at < now() - make_interval(days => %s) RETURNING 1) "
-        "SELECT count(*) FROM gone", (days,))
+        "WITH gone AS (UPDATE proc.bp_prompt_render "
+        "SET rendered = NULL, text_removed_at = now() "
+        "WHERE rendered IS NOT NULL AND last_used_at < now() - make_interval(days => %s) "
+        "RETURNING 1) SELECT count(*) FROM gone", (days,))
     removed = int(rows[0][0]) if rows else 0
     if removed:
-        logger.info("prompt render retention: removed %d stored render(s) unused for "
-                    "more than %d days", removed, days)
+        logger.info("prompt render retention: removed the text of %d stored render(s) "
+                    "unused for more than %d days", removed, days)
     return removed

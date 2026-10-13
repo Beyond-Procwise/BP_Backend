@@ -2,7 +2,8 @@
 
 13 Oct 2026. Status: **building. Milestones 2 (registry, import, routes, policies, agent
 instructions) and 3 (typed templates and fragments) are done. Milestone 4 (render, manifest
-store, retention) is built and tested, awaiting its two tables on the databases.**
+store, retention) is done and its tables are on both databases. Next: milestone 5, the
+orchestrator client and one agent end to end.**
 Built on the Step 0 reuse audit of the same date and the owner's seven answers.
 
 ## 1. What is being built
@@ -206,10 +207,15 @@ not rewrite it.
 | 13 Oct | A refused obligation is reported by its position in the list, not its text: an obligation is another system's output and a malformed one may carry anything. | Builder |
 | 13 Oct | Tool descriptions are wording, so they are versioned with the prompt (`settings.tool_descriptions`). The engine returns them for allowed tools only; a tool the prompt has no wording for is left to the orchestrator's own description. This replaces "taken from tool_runtime" in the first draft, which would have made the engine depend on the tool layer. | Builder |
 | 13 Oct | The trace (run, step, attempt, decision) is recorded with each use but is not part of the hash: the same wording has the same hash in every run. | Builder |
-| 13 Oct | Retention is counted from a stored render's LAST use, not its first, and deletes only the text. The record of which run used which hash, prompt and version is kept. | Builder — owner to confirm |
+| 13 Oct | Retention is counted from a stored render's LAST use, not its first, and deletes only the text. The record of which run used which hash, prompt and version is kept. | Builder — confirmed by the owner's ruling below |
 | 13 Oct | If the render cannot be stored, the render fails. | Builder |
 | 13 Oct | Token counts use the `cl100k_base` tokenizer, and the manifest says how the count was made; it is an approximation for models that tokenize differently. | Builder |
-| 13 Oct | No HTTP render endpoint in phase 1: the orchestrator calls the engine in-process, and reading stored text is by script on the server. Fewer doors onto text that carries customer values. | Builder — owner to confirm |
+| 13 Oct | No HTTP render endpoint in phase 1: the orchestrator calls the engine in-process, and reading stored text is by script on the server. Fewer doors onto text that carries customer values. | Builder — confirmed by the owner's ruling below |
+| 13 Oct | Apply the two store tables to both databases: approved. | Owner |
+| 13 Oct | Rendered text goes after 7 days; the metadata is kept. | Owner |
+| 13 Oct | How that is met: after 7 days unused, only the text is removed. The manifest (prompt version, fragment versions, obligations, token count, hash) and the record of which run used it stay; neither holds wording or values. Rendering the same text again stores it again. The 7 days run from the text's last use. | Builder |
+| 13 Oct | No web route for rendering or for reading stored text, for now. | Owner |
+| 13 Oct | The hash covers what the text was made from (prompt, version, fragment versions, obligations) as well as the text. Found by a test: two prompts with identical wording shared one stored record, whose manifest named the wrong prompt. | Builder |
 
 ## 11. Things that move out of prompt-building code
 

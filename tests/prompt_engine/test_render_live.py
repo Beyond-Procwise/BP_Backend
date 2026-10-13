@@ -198,21 +198,44 @@ def test_a_render_unused_past_the_window_loses_its_text_and_keeps_its_record(pro
 
     assert RD.sweep() >= 1
 
-    with pytest.raises(RD.RenderNotFound):
-        RD.get_render(digest)
+    kept = RD.get_render(digest)
+    assert kept["rendered"] is None and kept["text_removed_at"] is not None
+    assert kept["manifest"]["version"] == 1 and kept["manifest"]["hash"] == digest
+    assert kept["manifest"]["fragments"] == {f"{prompt}_voice": 1}
     assert [u["render_hash"] for u in RD.renders_for_run(run)] == [digest]
+    with db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT to_jsonb(r)::text FROM proc.bp_prompt_render r "
+                    "WHERE render_hash = %s", (digest,))
+        assert "Acme" not in cur.fetchone()[0], "the text was meant to be gone"
+
+
+def test_rendering_the_same_text_again_after_it_aged_out_stores_it_again(prompt, db, days):
+    digest = RD.render(_request(prompt))["manifest"]["hash"]
+    _age(db, digest, 8)
+    RD.sweep()
+
+    assert RD.render(_request(prompt))["manifest"]["hash"] == digest
+    again = RD.get_render(digest)
+    assert again["rendered"]["instructions"] == "Be brief. Rank Acme."
+    assert again["text_removed_at"] is None
+
+
+def test_a_hash_that_was_never_rendered_is_not_found(db):
+    with pytest.raises(RD.RenderNotFound):
+        RD.get_render("sha256:" + "0" * 64)
 
 
 def test_a_render_inside_the_window_is_kept_and_using_it_again_resets_the_clock(prompt, db, days):
     digest = RD.render(_request(prompt))["manifest"]["hash"]
     _age(db, digest, 6)
     RD.sweep()
-    assert RD.get_render(digest)
+    assert RD.get_render(digest)["rendered"] is not None
 
     _age(db, digest, 30)
     RD.render(_request(prompt))
     RD.sweep()
-    assert RD.get_render(digest)
+    assert RD.get_render(digest)["rendered"] is not None
 
 
 @pytest.mark.parametrize("stated", [0, -1, None])
@@ -225,4 +248,4 @@ def test_a_window_of_nothing_or_no_window_at_all_sweeps_nothing(prompt, db, days
 
     with pytest.raises(LimitUnavailable):
         RD.sweep()
-    assert RD.get_render(digest)
+    assert RD.get_render(digest)["rendered"] is not None
