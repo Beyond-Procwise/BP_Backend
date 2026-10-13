@@ -79,6 +79,9 @@ GOVERNED_LIMIT_SEED = {
     # 2026-10-13: how many same-way decisions by people make a precedent (design §3.3, ruling R4)
     # 2026-10-14: how far above the largest earlier value precedent still applies (Task 12)
     "agent_policy_conflicts": {"precedent_count": 5, "precedent_value_range_pct": 20},
+    # 2026-10-13: the prompt engine. How long rendered prompt text is kept, and whether a
+    # prompt's wording is passed through the output-safety scrubber to its own screen.
+    "prompt_engine": {"manifest_retention_days": 7, "wording_read_passthrough": True},
 }
 
 

@@ -86,6 +86,7 @@ from api.routers import triage as triage_router
 from api.routers import atb as atb_router
 from api.routers import i18n as i18n_router
 from api.routers import agent_policies as agent_policies_router
+from api.routers import prompts as prompts_router
 from api.routers import demand_intake as demand_intake_router
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), '..', 'logs')
@@ -555,6 +556,7 @@ app.include_router(ws_router_mod.router)
 # so they are NOT in _AUTHENTICATED_ROUTERS: the browser never calls them directly.
 app.include_router(agent_policies_router.router)
 app.include_router(agent_policies_router.orchestrator_router)
+app.include_router(prompts_router.router)
 
 # The one signed-out translation path: the sign-in screens' text, from cache only. It takes
 # no input text and never calls the model (see api/routers/i18n.py). Listed in _PUBLIC in
@@ -729,6 +731,39 @@ _AGENT_POLICY_SCREEN_EXEMPT = (
 )
 
 
+# The prompt registry's two reads that return a prompt's wording (user ruling 2026-10-13).
+# A prompt is the customer's own internal instruction text; the scrubber withholds a date
+# like "01/04/2026" and rewrites sentences that mention the orchestrator, so the screen
+# would show wording that is not the wording. Passing it through is conditional on three
+# things, and all three are checked: the read was allowed and written down by the gate
+# (prompt.read, in the route itself); the answer is a 2xx from exactly these two paths; and
+# PromptEnginePolicy says so (`wording_read_passthrough`). If that policy is missing,
+# unreadable or says no, the answer is scrubbed like any other. The listing, every write
+# answer and every error are always scrubbed.
+_PROMPT_WORDING_READ = (
+    re.compile(r"^/prompts/[a-z0-9][a-z0-9_.-]*$"),
+    re.compile(r"^/prompts/[a-z0-9][a-z0-9_.-]*/versions/[0-9]{1,9}$"),
+)
+
+
+def _prompt_wording_passthrough_allowed() -> bool:
+    try:
+        from src.services import governed_limits
+
+        return governed_limits.limit("prompt_engine", "wording_read_passthrough",
+                                     cast=lambda v: v) is True
+    except Exception:  # noqa: BLE001 - no policy, no pass-through
+        return False
+
+
+def _prompt_wording_exempt(method: str, path: str, status_code: int) -> bool:
+    if method != "GET" or not 200 <= status_code < 300:
+        return False
+    if not any(rx.fullmatch(path) for rx in _PROMPT_WORDING_READ):
+        return False
+    return _prompt_wording_passthrough_allowed()
+
+
 def _agent_policy_screen_exempt(method: str, path: str, status_code: int) -> bool:
     if not 200 <= status_code < 300:
         return False
@@ -773,6 +808,8 @@ class OutputSafetyMiddleware(BaseHTTPMiddleware):
         if path == _AGENT_POLICY_FEED and request.method == "GET":
             return response
         if _agent_policy_screen_exempt(request.method, path, response.status_code):
+            return response
+        if _prompt_wording_exempt(request.method, path, response.status_code):
             return response
         ctype = response.headers.get("content-type", "")
 

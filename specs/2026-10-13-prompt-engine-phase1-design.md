@@ -1,7 +1,7 @@
 # Prompt engine, phase 1 — design note
 
-13 Oct 2026. Status: **building. Milestone 2 (registry and import) is written and tested on a
-throwaway database; not yet applied to bp_testdb or bp_sqldb.**
+13 Oct 2026. Status: **building. Milestone 2: registry tables and import applied to both databases;
+routes, permissions and policy rows built.**
 Built on the Step 0 reuse audit of the same date and the owner's seven answers.
 
 ## 1. What is being built
@@ -155,8 +155,9 @@ prompt injection).
 
 | Row | Purpose |
 |---|---|
-| Permissions `prompt.author`, `prompt.promote`, `prompt.render`, `prompt.manifest_read` | Four separate rights. Each gets an explicit policy row, because a write right with no row currently defaults to "Buyer and above allowed". |
-| Limit `manifest_retention_days` = 7 | How long rendered text is kept. A missing value refuses to sweep rather than guessing. |
+| Permissions `prompt.read`, `prompt.author`, `prompt.promote` (milestone 2); `prompt.render`, `prompt.manifest_read` (milestone 4) | Separate rights, each with an explicit policy row stating the role. |
+| `PromptEnginePolicy`: `manifest_retention_days` = 7 | How long rendered text is kept. A missing value refuses to sweep rather than guessing. |
+| `PromptEnginePolicy`: `wording_read_passthrough` = true | Whether a prompt's wording reaches its own screens unaltered. |
 | Policy `data_residency` | States where prompt and manifest data may be stored. Today: no restriction. Enforcing it is the platform's job, not the prompt engine's. |
 
 ## 10. Decision log
@@ -185,6 +186,11 @@ not rewrite it.
 | 13 Oct | The import writes nothing to the older table. A later promotion steps that table's own version number on by one, never back. | Builder, during milestone 2 |
 | 13 Oct | A rollback may be approved by anyone with the right to promote, the author included, because the version returned to was approved by a second person when it first went into use. | Builder, during milestone 2 — owner to confirm |
 | 13 Oct | Registry tests run only against a throwaway database: its rows cannot be deleted, so a shared database must never be a test target. | Builder, during milestone 2 |
+| 13 Oct | Apply the registry tables and run the import on both databases: approved, and done (33 prompts on bp_testdb, 19 on bp_sqldb; the existing prompt table verified unchanged). | Owner |
+| 13 Oct | Rollback may be approved by anyone with the right to promote, the author included: confirmed. | Owner |
+| 13 Oct | A prompt's wording may be shown unaltered on its own screens (not scrubbed by the output-safety layer) provided every read is logged with when it happened, it is internal, and it is a policy decision. | Owner |
+| 13 Oct | How that ruling is met: the two wording reads ask the gate for `prompt.read`, which records every attempt, allowed or refused, before answering; a stated role is required; and `PromptEnginePolicy.wording_read_passthrough` switches the pass-through. Missing, unreadable or false means scrubbed. | Builder |
+| 13 Oct | Roles set in the policy rows: read wording = Buyer or above; save a version = Buyer or above; promote or roll back = Approver or above. These are rows, so they can be changed without a release. | Builder — owner to confirm |
 
 ## 11. Things that move out of prompt-building code
 

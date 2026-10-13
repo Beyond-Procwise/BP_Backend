@@ -199,6 +199,22 @@ def save_version(
     raise RegistryError(f"could not take a version number for {key!r}") from last
 
 
+def list_prompts() -> List[Dict[str, Any]]:
+    """Every prompt and fragment with the version its live pointer names (or None)."""
+    rows = _query(
+        """
+        SELECT r.prompt_key, r.kind, r.owner,
+               (SELECT max(v.version) FROM proc.bp_prompt_version v
+                 WHERE v.prompt_key = r.prompt_key),
+               (SELECT m.to_version FROM proc.bp_prompt_pointer_move m
+                 WHERE m.prompt_key = r.prompt_key AND m.pointer = %s
+                 ORDER BY m.move_id DESC LIMIT 1)
+          FROM proc.bp_prompt_registry r ORDER BY r.prompt_key
+        """, (LIVE,))
+    return [dict(zip(("prompt_key", "kind", "owner", "latest_version", "live_version"), r))
+            for r in rows]
+
+
 def get_version(key: str, version: int) -> Dict[str, Any]:
     _check_key(key)
     rows = _query(
