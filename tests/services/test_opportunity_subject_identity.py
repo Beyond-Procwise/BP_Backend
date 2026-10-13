@@ -196,7 +196,10 @@ def _rows(cur, tag):
                 "review_detail, source_records, financial_impact_gbp "
                 "from proc.bp_opportunity where supplier_id=%s order by created_at, "
                 "opportunity_id", (f"SUP-{tag}",))
-    return cur.fetchall()
+    # Parsed here, not left to the driver: importing scripts/testdata/db.py anywhere in
+    # the same run tells psycopg2 to hand JSONB back as text, process-wide.
+    return [(oid, stage, asked, store._as_dict(detail) or None, store._as_list(sources), impact)
+            for oid, stage, asked, detail, sources, impact in cur.fetchall()]
 
 
 @pytest.fixture()

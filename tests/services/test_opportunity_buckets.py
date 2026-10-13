@@ -113,3 +113,18 @@ def test_a_bucket_with_no_open_lever_claims_no_saving():
                                     stage="rejected")])["buckets"]
 
     assert bucket["potentialSaving"] is None
+
+
+def test_json_columns_that_arrive_as_text_are_still_read():
+    """scripts/testdata/db.py tells the driver to hand JSONB back unparsed, process-wide."""
+    asked = datetime(2026, 10, 13, tzinfo=timezone.utc)
+    (bucket,) = buckets.group([_row(
+        "a", "Price Benchmark Variance", 300.0, stage="rejected", unit_price=None, quantity=None,
+        calculation_details='{"actual_price": 15.0, "quantity": 10}',
+        source_records='["PO-1", "INV-2"]', review_requested_at=asked,
+        review_detail='{"new_records": ["INV-2"]}')])["buckets"]
+
+    lever = bucket["levers"][0]
+    assert (bucket["unitPrice"], bucket["quantity"]) == (15.0, 10.0)
+    assert lever["evidence"] == ["PO-1", "INV-2"]
+    assert lever["whatChanged"] == {"new_records": ["INV-2"]}
