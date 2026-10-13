@@ -347,6 +347,8 @@ def build(principal: Any, *, conn=None) -> dict:
         "role": who["role"],
         "scope": settings.SCOPE_OWN if buyers is not None else settings.SCOPE_EVERYONE,
         "assigned": not unassigned,
+        # Whether to OFFER the settings. The settings endpoints ask the gate themselves.
+        "canConfigure": rbac.may(who["role"], "configure"),
         "sections": out,
     }
 
