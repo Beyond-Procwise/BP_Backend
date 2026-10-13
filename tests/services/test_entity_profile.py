@@ -6,7 +6,7 @@ from src.services import entity_profile as ep
 
 def test_a_profile_nobody_has_filled_in_is_all_nulls_not_a_stand_in_company():
     shaped = ep.shape(None)
-    assert set(shaped) == set(ep.FIELDS) | {"bank"}
+    assert set(shaped) == set(ep.FIELDS) | {"bank", "logoId"} and shaped["logoId"] is None
     assert all(shaped[f] is None for f in ep.FIELDS)
     assert shaped["bank"] == {"name": None, "sortCode": None, "accountNumber": None, "iban": None}
 
@@ -23,3 +23,13 @@ def test_only_known_fields_are_kept_and_blanks_are_null():
 def test_a_field_of_the_wrong_kind_or_size_is_refused(profile):
     with pytest.raises(ValueError):
         ep.clean(profile)
+
+
+@pytest.mark.parametrize("logo", ["7", True, 0, -3, 1.5])
+def test_a_logo_is_named_by_its_id_and_nothing_else(logo):
+    with pytest.raises(ValueError, match="logoId"):
+        ep.clean({"logoId": logo})
+
+
+def test_a_profile_may_name_its_logo_or_none():
+    assert ep.clean({"logoId": 7})["logoId"] == 7 and ep.clean({})["logoId"] is None

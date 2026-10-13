@@ -26,12 +26,19 @@ CORRIDOR_8 = {"discountCorridor": {"maxPct": 8.0}, "marginFloorPct": None}
 
 
 class _Model:
-    def __init__(self, *intents, refused="", raw=None):
+    """Stands in for the model. ``sum`` is its answer to the separate sum turn."""
+
+    def __init__(self, *intents, refused="", raw=None, sum=None):
         self.raw = raw if raw is not None else json.dumps({"refused": refused,
                                                            "intents": list(intents)})
-        self.prompts, self.kwargs = [], []
+        self.sum = sum
+        self.prompts, self.kwargs, self.sum_prompts = [], [], []
 
     def __call__(self, prompt, **kw):
+        if kw.get("format") == qa.SUM_SCHEMA:
+            self.sum_prompts.append(prompt)
+            return json.dumps({"expression": "", "label": "", "line_id": "", "into": "",
+                               **(self.sum or {})})
         self.prompts.append(prompt)
         self.kwargs.append(kw)
         return self.raw
@@ -239,7 +246,8 @@ SAID = "For Kestrel Freight (A. Reyes). 340 seats at £200, cost 125. Onboarding
 
 def _fill(model, message=SAID, quote=BLANK, checks=NO_LIMITS):
     return qa.propose(quote, message, checks=checks, call=model, template=TEMPLATE,
-                      prompt=lambda: "{template} {quote} {message}")
+                      prompt=lambda: "{template} {quote} {message}",
+                      sum_prompt=lambda: "SUM {quote} {message}")
 
 
 def test_a_template_is_filled_from_the_sellers_words_and_says_what_is_left():
@@ -398,3 +406,278 @@ def test_a_discount_is_not_filed_as_a_term():
                 message="200 units with 5% off")
     assert out["change"] == {"lines": [{"id": "s", "qty": D(200)}]}
     assert "reads as a discount" in out["summary"]
+
+
+# --- sections ----------------------------------------------------------------------
+
+LAID_OUT = {**BLANK, "scopeHtml": "", "sections": [
+    {"key": "letterhead", "kind": "letterhead", "heading": "From", "logoId": None},
+    {"key": "scope", "kind": "scope", "heading": "Our understanding"},
+    {"key": "deliverables", "kind": "text", "heading": "Deliverables", "html": ""},
+    {"key": "pricing", "kind": "lines", "heading": "Investment"},
+    {"key": "terms", "kind": "terms", "heading": "Terms"}]}
+WORDS = "Deliverables are a configured platform & two training days. Scope: 340 seats across 11 sites."
+
+
+def test_sections_are_recognised_by_the_heading_the_page_shows():
+    found = qa.section_words(
+        "The deliverables are a configured platform and two training days. Our understanding "
+        "is that Kestrel run 11 depots. What does that come to?", LAID_OUT["sections"])
+    assert found == [
+        {"op": "set_section", "section_key": "deliverables",
+         "text": "a configured platform and two training days."},
+        {"op": "set_section", "section_key": "scope", "text": "Kestrel run 11 depots."}]
+
+
+@pytest.mark.parametrize("message, key, words", [
+    ("Deliverables: platform; training", "deliverables", "platform; training"),
+    ("DELIVERABLES - a platform", "deliverables", "a platform"),
+    ("340 seats. Scope: eleven sites.", "scope", "eleven sites."),
+    ("Deliverables will be a platform.\nAnything else?", "deliverables", "a platform."),
+])
+def test_ways_a_seller_names_a_section(message, key, words):
+    assert qa.section_words(message, LAID_OUT["sections"]) == [
+        {"op": "set_section", "section_key": key, "text": words}]
+
+
+@pytest.mark.parametrize("message", [
+    "340 seats at 200", "We discussed the deliverables are late", "Pricing: 200 each",
+    "Investment is high", "Terms: Net 30", "Deliverables:", "Deliverables: ?",
+])
+def test_what_is_not_a_written_section_is_not_filed_as_one(message):
+    """Mid-sentence mentions, the pricing and terms sections, and a heading with nothing
+    after it."""
+    assert qa.section_words(message, LAID_OUT["sections"]) == []
+
+
+def test_the_sellers_words_are_filed_under_the_section_they_belong_to():
+    out = _fill(_Model(), message=WORDS, quote=LAID_OUT)
+    assert out["change"] == {
+        "sections": [{"key": "deliverables",
+                      "html": "<p>a configured platform &amp; two training days.</p>"}],
+        "scopeHtml": "<p>340 seats across 11 sites.</p>"}
+    assert "Put your words under “Deliverables”." in out["summary"]
+    assert "Put your words under “Our understanding”." in out["summary"]
+    left = [m["field"] for m in out["missing"]]
+    assert "sections.deliverables" not in left and "sections.scope" not in left
+
+
+def test_the_model_does_not_get_to_write_a_section():
+    """Whatever it offers for one is dropped: a section holds the seller's words, found in
+    their message by code, or nothing."""
+    out = _fill(_Model({"op": "set_section", "section_key": "deliverables",
+                        "text": "A best-in-class platform delivering transformational value"}),
+                message="Write a compelling deliverables section for me.", quote=LAID_OUT)
+    assert out["change"] is None and out["refused"]
+
+
+def test_markup_in_the_sellers_words_is_text_not_html():
+    out = _fill(_Model(), message="deliverables: <script>x()</script> works", quote=LAID_OUT)
+    assert out["change"]["sections"][0]["html"] == "<p>&lt;script&gt;x()&lt;/script&gt; works</p>"
+
+
+# --- calculations ------------------------------------------------------------------
+
+PRICED = {**BLANK, "lines": [
+    {"id": "s", "tag": "product", "description": "Seats", "qty": "340", "cost": "125",
+     "unitPrice": "200", "discountPct": "4"},
+    {"id": "o", "tag": "service", "description": "Onboarding", "qty": "1", "cost": "12000",
+     "unitPrice": "18000", "discountPct": "0"},
+    {"id": "d", "tag": "one-off", "description": "Devices", "qty": "11", "cost": None,
+     "unitPrice": "950", "discountPct": "0"}]}
+
+
+def test_a_total_is_worked_out_in_code_and_shown_with_its_working():
+    out = _fill(_Model(), message="what's the total?", quote=PRICED)
+    assert out["refused"] is None and out["change"] is None, "a sum changes nothing"
+    assert out["calculations"] == [{
+        "label": "Quote total, before tax",
+        "working": "65,280.00 + 18,000.00 + 10,450.00 = 93,730.00", "result": D("93730.00")}]
+    assert "Check these figures" in out["summary"]
+
+
+def test_margin_is_over_the_costed_lines_and_says_what_it_left_out():
+    out = _fill(_Model(), message="what margin are we making?", quote=PRICED)
+    calc = out["calculations"][0]
+    assert calc["result"] == D("28780.00") and "1 with no cost left out" in calc["label"]
+    assert calc["working"] == "83,280.00 − 54,500.00 = 28,780.00, which is 34.6% of that revenue"
+
+
+def test_a_margin_with_no_costs_is_not_invented():
+    out = _fill(_Model(), message="margin?", quote=BLANK)
+    assert out["calculations"] == [] and "no line has a cost" in out["refused"]
+
+
+def test_tax_needs_a_rate_the_seller_gave():
+    out = _fill(_Model(), message="total with 20% VAT", quote=PRICED)
+    assert out["calculations"][0]["working"] == "93,730.00 + 18,746.00 tax = 112,476.00"
+    out = _fill(_Model({"op": "calculate", "calc": "with_tax", "percent": 20}),
+                message="total with VAT", quote=PRICED)
+    assert out["calculations"] == [] and "give the tax rate" in out["refused"]
+
+
+def test_a_total_asked_for_in_the_same_breath_includes_what_was_just_filled_in():
+    out = _fill(_Model({"op": "set_line", "line_id": "s", "qty": 340, "unit_price": 200}),
+                message="340 seats at 200, what does that come to?")
+    assert out["change"]["lines"] == [{"id": "s", "qty": D(340), "unitPrice": D(200)}]
+    assert out["calculations"][0]["result"] == D("68000.00")
+    assert "Check these figures" in out["summary"]
+
+
+@pytest.mark.parametrize("expression, said, working, result", [
+    ("12000 / 340", "spread 12000 over 340 seats", "12000 ÷ 340 = 35.2941", D("35.2941")),
+    ("200 * (1 - 4%)", "200 less 4%", "200 × (1 - 4%) = 192", D("192.0000")),
+    ("4,200 x 24", "4,200 a month for 24 months", "4200 × 24 = 100800", D("100800.0000")),
+    ("18k + 2 * 950", "18k plus two days at 950", "18000 + 2 × 950 = 19900", D("19900.0000")),
+    ("-(5 - 20)", "20 minus 5", "- (5 - 20) = 15", D("15.0000")),
+])
+def test_a_sum_on_the_sellers_own_numbers(expression, said, working, result):
+    out = _fill(_Model(sum={"expression": expression, "label": "Worked out"}),
+                message="work out " + said)
+    assert out["calculations"] == [{"label": "Worked out", "working": working, "result": result}]
+
+
+@pytest.mark.parametrize("expression, says", [
+    ("12000 / 350", "a sum using 350, which you did not give me"),
+    ("__import__('os').system('id')", "a sum I could not read"),
+    ("12000 ** 340", "a sum I could not read"),
+    ("12000 / (340 - 340)", "a sum I could not read"),
+    ("(12000 / 340", "a sum I could not read"),
+    ("price * 2", "a sum I could not read"),
+    ("", "a sum I could not read"),
+])
+def test_a_sum_that_is_not_plain_arithmetic_on_typed_numbers_is_left_out(expression, says):
+    out = _fill(_Model(sum={"expression": expression}), message="spread 12000 over 340 seats")
+    assert out["calculations"] == [] and out["change"] is None
+    assert (says in out["refused"]) if expression else out["refused"]
+
+
+def test_a_result_is_put_on_a_line_only_as_a_proposal_marked_as_worked_out():
+    out = _fill(_Model(sum={"expression": "12000 / 340", "label": "Price per seat",
+                            "line_id": "s", "into": "unit_price"}),
+                message="spread 12000 over 340 seats and use that as the seat price")
+    assert out["change"] == {"lines": [{"id": "s", "unitPrice": D("35.2941")}]}
+    assert out["calculations"][0]["into"] == {"lineId": "s", "field": "unitPrice"}
+    assert "Price per seat: 12000 ÷ 340 = 35.2941." in out["summary"]
+    assert "Check these figures" in out["summary"]
+
+
+def test_a_worked_out_cost_still_needs_the_seller_to_be_talking_about_cost():
+    answer = {"expression": "12000 / 340", "line_id": "s", "into": "cost"}
+    assert _fill(_Model(sum=answer), message="work out 12000 over 340")["change"] is None
+    out = _fill(_Model(sum=answer), message="it costs us 12000 for 340, work out the cost per seat")
+    assert out["change"] == {"lines": [{"id": "s", "cost": D("35.2941")}]}
+
+
+def test_there_is_no_calculator_without_the_wider_answer():
+    out = _turn(_Model({"op": "calculate", "calc": "quote_total"}), message="total?")
+    assert out["change"] is None and "calculations" in out and out["calculations"] == []
+
+
+def test_the_quotes_own_sums_are_asked_for_in_words_not_offered_by_the_model():
+    """Seen against the real model: it volunteered a total, a margin and a tax figure on
+    a message that asked for none."""
+    out = _fill(_Model({"op": "calculate", "calc": "quote_total"},
+                       {"op": "calculate", "calc": "margin"},
+                       {"op": "calculate", "calc": "with_tax", "percent": 20},
+                       {"op": "set_customer", "name": "Kestrel Freight"}),
+                message="It's for Kestrel Freight.", quote=PRICED)
+    assert out["calculations"] == [] and out["change"] == {"customer": {"name": "Kestrel Freight"}}
+
+
+@pytest.mark.parametrize("message, asked", [
+    ("what's the total?", ["quote_total"]), ("what does that come to", ["quote_total"]),
+    ("total with 20% VAT", ["with_tax"]), ("what margin are we making, and the total?", ["quote_total", "margin"]),
+    ("give them a 40% margin", []), ("340 seats at 200", []),
+])
+def test_which_sums_a_message_asks_for(message, asked):
+    assert [i["calc"] for i in qa.asked_sums(message)] == asked
+
+
+def test_a_price_to_be_worked_out_is_not_also_filed_as_it_stands():
+    """Seen against the real model: "a budget of 12000 across 340 seats, work out the price
+    per seat" came back as 340 seats at 12,000 each."""
+    said = "We've got a budget of 12000 for the licences across 340 seats, work out the price per seat and use it."
+    out = _fill(_Model({"op": "set_line", "line_id": "s", "qty": 340, "unit_price": 12000}), message=said)
+    assert out["change"] == {"lines": [{"id": "s", "qty": D(340)}]}
+    assert "asked for it to be worked out" in out["summary"]
+    out = _fill(_Model({"op": "set_line", "line_id": "s", "qty": 340},
+                       sum={"expression": "12000 / 340", "label": "Price per seat",
+                            "line_id": "s", "into": "unit_price"}), message=said)
+    assert out["change"] == {"lines": [{"id": "s", "qty": D(340), "unitPrice": D("35.2941")}]}
+
+
+def test_the_sum_turn_is_only_taken_when_a_sum_is_asked_for_and_there_are_numbers_for_it():
+    for message in ("340 seats at 200", "what's the total?", "work out a fair price", "hello"):
+        model = _Model(sum={"expression": "340 * 200"})
+        out = _fill(model, message=message, quote=PRICED)
+        assert model.sum_prompts == [], message
+        assert not any("340 × 200" in c["working"] for c in out["calculations"])
+    model = _Model(sum={"expression": "340 * 200", "label": "Seats"})
+    out = _fill(model, message="what is 340 seats at 200?")
+    assert len(model.sum_prompts) == 1 and "999" not in model.sum_prompts[0]
+    assert out["calculations"][-1]["working"] == "340 × 200 = 68000"
+
+
+def test_the_model_cannot_slip_a_sum_into_the_fill_turn():
+    out = _fill(_Model({"op": "calculate", "calc": "expression", "expression": "340 * 200",
+                        "line_id": "o", "into": "unit_price"}), message="340 seats at 200")
+    assert out["change"] is None and out["calculations"] == []
+
+
+def test_a_sentence_of_prose_is_not_a_contact_or_a_term():
+    """Seen against the real model: the scope came back as the contact, and half the
+    timeline as the service level."""
+    said = ("Our understanding is that Kestrel run 11 depots and want one system for all of "
+            "them. Timeline: kick-off in January, go-live by the end of March. It's for Kestrel Freight.")
+    out = _fill(_Model(
+        {"op": "set_customer", "name": "Kestrel Freight",
+         "contact": "Kestrel run 11 depots and want one system for all of them"},
+        {"op": "set_term", "field": "sla", "text": "go-live by the end of March"}),
+        message=said, quote={**LAID_OUT, "sections": LAID_OUT["sections"] + [
+            {"key": "timeline", "kind": "text", "heading": "Timeline", "html": ""}]})
+    assert out["change"]["customer"] == {"name": "Kestrel Freight"}
+    assert "terms" not in out["change"]
+    assert out["summary"].count("reads as part of a section") == 2
+
+
+def test_a_figure_inside_a_written_section_is_prose_not_a_quantity():
+    """Seen against the real model: "Kestrel run 11 depots" in the scope came back as 11
+    licences, and "Kestrel" as the contact."""
+    said = "Our understanding is that Kestrel run 11 depots. It's for Kestrel Freight."
+    out = _fill(_Model({"op": "set_line", "line_id": "s", "qty": 11},
+                       {"op": "set_customer", "name": "Kestrel Freight", "contact": "Kestrel"}),
+                message=said, quote=LAID_OUT)
+    assert "lines" not in out["change"]
+    assert out["change"]["customer"] == {"name": "Kestrel Freight"}
+    # the same figure typed OUTSIDE a section is the seller's instruction
+    out = _fill(_Model({"op": "set_line", "line_id": "s", "qty": 11}),
+                message="11 licences. Our understanding is that Kestrel run 11 depots.", quote=LAID_OUT)
+    assert out["change"]["lines"] == [{"id": "s", "qty": D(11)}]
+
+
+def test_a_long_list_of_what_was_left_out_is_cut_short():
+    out = _fill(_Model(*[{"op": "set_line", "line_id": "s", "unit_price": 1000 + n} for n in range(7)]),
+                message="fill in sensible prices")
+    assert "a price of 1003; 3 more:" in out["refused"]
+
+
+def test_the_model_cannot_file_the_sellers_words_under_a_section_they_did_not_name():
+    """Even words that ARE in the message: which section they belong under is read from
+    the heading the seller used, and they used none."""
+    out = _fill(_Model({"op": "set_section", "section_key": "deliverables",
+                        "text": "340 seats at 200"}),
+                message="340 seats at 200", quote=LAID_OUT)
+    assert out["change"] is None
+
+
+def test_only_a_section_the_seller_writes_can_be_given_words():
+    change, did, _reads, _sums = qa._work_out(
+        [{"op": "set_section", "section_key": "pricing", "text": "340 seats"}],
+        LAID_OUT, NO_LIMITS, "pricing: 340 seats", filling=True)
+    assert change == {} and "could not match to a section" in did[0]
+
+
+def test_a_tax_rate_has_to_be_a_rate():
+    out = _fill(_Model(), message="total with 150% VAT", quote=PRICED)
+    assert out["calculations"] == [] and "give the tax rate" in out["refused"]

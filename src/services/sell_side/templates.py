@@ -30,6 +30,71 @@ TERM_LABELS = {"payment": "payment terms", "start": "a start date",
                "renewal": "the renewal terms", "sla": "the service level"}
 
 
+# The parts of a quote, in the order they are laid out on the page. `kind` is what a part
+# IS and comes from this closed list, so the page and the agent both know how to treat
+# it; `heading` is what it is CALLED and is the seller's to word. Every kind appears at
+# most once, except `text`: a free section with its own heading ("Deliverables",
+# "Timeline") of which a layout may have several.
+SECTION_KINDS = ("letterhead", "customer", "scope", "lines", "totals", "terms",
+                 "assumptions", "conditions", "signature", "text")
+WRITTEN_KINDS = ("scope", "assumptions", "text")     # the seller writes prose here
+DEFAULT_SECTIONS = (
+    ("letterhead", "letterhead", "Letterhead"), ("customer", "customer", "Prepared for"),
+    ("scope", "scope", "Scope"), ("lines", "lines", "Pricing"), ("totals", "totals", "Totals"),
+    ("terms", "terms", "Terms"), ("assumptions", "assumptions", "Assumptions and exclusions"),
+    ("conditions", "conditions", "Conditions of approval"))
+MAX_SECTIONS = 30
+
+
+def default_sections() -> List[Dict[str, Any]]:
+    return [{"key": k, "kind": kind, "heading": heading,
+             **({"logoId": None} if kind == "letterhead" else {})}
+            for k, kind, heading in DEFAULT_SECTIONS]
+
+
+def clean_sections(raw: Any, *, with_content: bool) -> List[Dict[str, Any]]:
+    """A layout as it is stored. On a template (``with_content`` false) a section is a
+    key, a kind and a heading; on a quote a `text` section also holds what the seller
+    wrote in it. The letterhead may name the logo it wears (`logoId`)."""
+    if raw is None:
+        return default_sections()
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("sections must be a list with at least one section")
+    if len(raw) > MAX_SECTIONS:
+        raise ValueError(f"a layout has at most {MAX_SECTIONS} sections")
+    out, keys, kinds = [], set(), set()
+    for n, item in enumerate(raw, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"section {n} must be an object")
+        kind = item.get("kind")
+        if kind not in SECTION_KINDS:
+            raise ValueError(f"section {n}: kind {kind!r} is not one of {', '.join(SECTION_KINDS)}")
+        key = str(item.get("key") or "").strip()
+        if not _KEY.fullmatch(key):
+            raise ValueError(f"section {n}: key {key!r} must be lower-case letters, digits "
+                             "and underscores, starting with a letter")
+        if key in keys:
+            raise ValueError(f"section {n}: key {key!r} is used twice")
+        if kind != "text" and kind in kinds:
+            raise ValueError(f"section {n}: a layout has one {kind} section, not two")
+        keys.add(key)
+        kinds.add(kind)
+        section: Dict[str, Any] = {
+            "key": key, "kind": kind,
+            "heading": _text(item.get("heading"), f"section {n}: heading", 120, needed=True)}
+        if kind == "letterhead":
+            logo = item.get("logoId")
+            if logo is not None and (isinstance(logo, bool) or not isinstance(logo, int) or logo < 1):
+                raise ValueError(f"section {n}: logoId must be a logo's id")
+            section["logoId"] = logo
+        if kind == "text" and with_content:
+            section["html"] = clean_html(item.get("html"), f"section {n}: html") or ""
+        out.append(section)
+    if "lines" not in kinds:
+        raise ValueError("a layout needs its lines section: a quote with no prices is not a quote")
+    return out
+
+
 def _text(value: Any, what: str, limit: int, *, needed: bool = False) -> Optional[str]:
     s = str(value).strip() if value is not None else ""
     if len(s) > limit:
@@ -73,13 +138,16 @@ def clean(body: Any) -> Dict[str, Any]:
     return {"category": _text(body.get("category"), "category", 300),
             "lines": lines,
             "termFields": [f for f in TERM_KEYS if f in fields],
-            "assumptionsHtml": clean_html(body.get("assumptionsHtml"), "assumptionsHtml")}
+            "assumptionsHtml": clean_html(body.get("assumptionsHtml"), "assumptionsHtml"),
+            "sections": clean_sections(body.get("sections"), with_content=False)}
 
 
 def _row(row: Mapping[str, Any]) -> Dict[str, Any]:
     body = row["body"]
     if isinstance(body, str):
         body = json.loads(body)
+    # a template stored before layouts existed has the standard one
+    body = {**body, "sections": body.get("sections") or default_sections()}
     return {"key": row["template_key"], "name": row["template_name"],
             "description": row["description"], "status": row["status"], **body,
             "updatedBy": row["last_modified_by"], "updatedAt": row["last_modified_date"]}
@@ -158,6 +226,8 @@ def draft_from(template: Mapping[str, Any], *, currency: str,
                    "unit": l["unit"], "cost": None, "markupPct": None, "unitPrice": 0,
                    "discountPct": 0} for l in template["lines"]],
         "terms": {},
+        "sections": [{**sec, **({"html": ""} if sec["kind"] == "text" else {})}
+                     for sec in (template.get("sections") or default_sections())],
     }
 
 
@@ -190,4 +260,20 @@ def missing(template: Optional[Mapping[str, Any]], quote: Mapping[str, Any]) -> 
     for field in (template or {}).get("termFields") or []:
         if terms.get(field) in (None, ""):
             need(f"terms.{field}", TERM_LABELS[field])
+    # the sections the seller writes: asked for by the heading the page will show
+    for sec in quote.get("sections") or []:
+        if not isinstance(sec, dict):
+            continue
+        written = {"scope": quote.get("scopeHtml"), "text": sec.get("html")}.get(sec.get("kind"), "x")
+        if not _has_words(written):
+            need(f"sections.{sec.get('key')}", f"the “{sec.get('heading')}” section")
     return out
+
+
+# What a quote with no template is read against: the standard layout, no terms asked for.
+BLANK: Dict[str, Any] = {"key": None, "name": "Blank quote", "description": None,
+                         "lines": [], "termFields": [], "sections": default_sections()}
+
+
+def _has_words(html: Any) -> bool:
+    return bool(re.sub(r"<[^>]*>|&nbsp;|\s", "", str(html or "")))

@@ -31,6 +31,7 @@ def clean(cur):
     cur.execute("DELETE FROM proc.bp_sales_quote "
                 "WHERE created_by LIKE 'LIVETEST%%' OR deal_id LIKE 'LIVETEST-%%'")
     cur.execute("DELETE FROM proc.bp_deal WHERE deal_id LIKE 'LIVETEST-%%'")
+    cur.execute("DELETE FROM proc.bp_brand_logo WHERE created_by LIKE 'LIVETEST%%'")
     cur.execute(f"DELETE FROM proc.bp_sales_quote_outcome WHERE sales_quote_id IN ({_QUOTES})")
     cur.execute(f"DELETE FROM proc.bp_sales_quote_line WHERE sales_quote_id IN ({_QUOTES})")
     cur.execute("UPDATE proc.bp_sales_quote SET supersedes_id = NULL WHERE account_id LIKE 'LIVETEST-%%'")

@@ -50,7 +50,7 @@ _COLS = ("sales_quote_id", "quote_ref", "quote_number", "deal_id", "version", "s
          "customer_name", "customer_contact", "scope_html", "assumptions_html", "terms",
          "conditions", "total_ex_tax", "phase_id", "subprocess_id", "supersedes_id",
          "created_by", "approved_by", "approved_at", "issued_at", "last_modified_date",
-         "template_key")
+         "template_key", "sections")
 
 
 # --- rich text ---------------------------------------------------------------------
@@ -201,7 +201,21 @@ def _clean(draft: Dict[str, Any]) -> Dict[str, Any]:
         "assumptions_html": clean_html(draft.get("assumptionsHtml"), "assumptionsHtml"),
         "terms": terms,
         "lines": [_line(l, n) for n, l in enumerate(raw_lines, start=1)],
+        # None = the caller said nothing about the layout, so it is left as it is
+        "sections": (_layout(draft["sections"]) if draft.get("sections") is not None else None),
     }
+
+
+def _layout(raw: Any) -> List[Dict[str, Any]]:
+    from src.services.sell_side import templates       # templates imports this module
+    return templates.clean_sections(raw, with_content=True)
+
+
+def _check_logos(cur: Any, sections: Optional[List[Dict[str, Any]]]) -> None:
+    from src.services import brand_logos
+    for sec in sections or []:
+        if sec.get("logoId") is not None and not brand_logos.exists(cur, sec["logoId"]):
+            raise ValueError(f"logo {sec['logoId']} is not one of the company's logos")
 
 
 # --- the deal ----------------------------------------------------------------------
@@ -264,6 +278,7 @@ def _insert(cur: Any, d: Dict[str, Any], *, deal_id: Optional[str], created_by: 
             version: int = 1, supersedes_id: Optional[int] = None,
             account_id: Optional[str] = None,
             template_key: Optional[str] = None) -> Dict[str, Any]:
+    _check_logos(cur, d["sections"])
     cur.execute("SELECT nextval(pg_get_serial_sequence('proc.bp_sales_quote', "
                 "'sales_quote_id')) AS id")
     quote_id = cur.fetchone()["id"]
@@ -273,12 +288,14 @@ def _insert(cur: Any, d: Dict[str, Any], *, deal_id: Optional[str], created_by: 
         "INSERT INTO proc.bp_sales_quote (sales_quote_id, tenant_id, quote_ref, account_id, "
         "deal_id, version, currency, quote_date, valid_until, category, prepared_by, "
         "customer_name, customer_contact, scope_html, assumptions_html, terms, phase_id, "
-        "subprocess_id, status, supersedes_id, created_by, template_key) VALUES (%s, %s, %s, %s, "
-        "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, 'draft', %s, %s, %s)",
+        "subprocess_id, status, supersedes_id, created_by, template_key, sections) VALUES (%s, %s, "
+        "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, 'draft', %s, %s, "
+        "%s, %s::jsonb)",
         (quote_id, quotes.TENANT, quote_ref, account_id, deal_id, version, d["currency"],
          d["quote_date"], d["valid_until"], d["category"], d["prepared_by"], d["customer_name"],
          d["customer_contact"], d["scope_html"], d["assumptions_html"], json.dumps(d["terms"]),
-         phase, sub, supersedes_id, created_by, template_key))
+         phase, sub, supersedes_id, created_by, template_key,
+         json.dumps(d["sections"]) if d["sections"] is not None else None))
     _write_lines(cur, quote_id, d["currency"], d["lines"])
     return {"sales_quote_id": quote_id, "quote_ref": quote_ref}
 
@@ -354,15 +371,18 @@ def save(conn: Any, quote_id: int, *, draft: Dict[str, Any], actor: Optional[str
             if deal_id is not None:
                 _check_deal(cur, deal_id, for_quote=quote_id)
                 linked = deal_id
+        _check_logos(cur, d["sections"])
         cur.execute(
             "UPDATE proc.bp_sales_quote SET currency = %s, quote_date = %s, valid_until = %s, "
             "category = %s, prepared_by = %s, customer_name = %s, customer_contact = %s, "
             "scope_html = %s, assumptions_html = %s, terms = %s::jsonb, "
+            "sections = COALESCE(%s::jsonb, sections), "
             "deal_id = COALESCE(%s, deal_id), last_modified_date = clock_timestamp() "
             "WHERE sales_quote_id = %s",
             (d["currency"], d["quote_date"], d["valid_until"], d["category"], d["prepared_by"],
              d["customer_name"], d["customer_contact"], d["scope_html"], d["assumptions_html"],
-             json.dumps(d["terms"]), linked, quote_id))
+             json.dumps(d["terms"]),
+             json.dumps(d["sections"]) if d["sections"] is not None else None, linked, quote_id))
         _write_lines(cur, quote_id, d["currency"], d["lines"])
         quotes.record_event(conn, "sales_quote.saved", row, actor=actor,
                             **({"linked_deal_id": linked} if linked else {}))
@@ -474,6 +494,8 @@ def _screen(cur: Any, row: Dict[str, Any]) -> Dict[str, Any]:
                      "accountId": row["account_id"]},
         "scopeHtml": row["scope_html"] or "", "assumptionsHtml": row["assumptions_html"] or "",
         "lines": lines, "terms": row["terms"] or {}, "conditions": row["conditions"] or [],
+        # the layout: a quote saved before layouts existed has the standard one
+        "sections": row["sections"] or _layout(None),
         "totals": {"exTax": row["total_ex_tax"], "cost": internal.get("total_cost"),
                    "margin": internal.get("total_margin"),
                    # a fraction of costed revenue (0.4 = 40%), the sell side's convention
