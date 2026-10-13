@@ -221,6 +221,20 @@ class CreateAgentBody(BaseModel):
     # run fills them in from what its tools returned, and reports one the
     # evidence does not establish as missing. Absent, the agent answers in prose only.
     outputs: Optional[List[Dict[str, Any]]] = None
+    # The registered calculations this agent must always have, by name. Each is
+    # run before the agent reasons and stated in its task; the agent does not
+    # choose. Keys come from GET /agents/calculation-options.
+    calculations: Optional[List[str]] = None
+
+
+def _checked_calculations(names: List[str]) -> List[str]:
+    """The list as it will be stored, or a 422 naming what cannot be in it."""
+    from services import calculation_tools
+
+    try:
+        return calculation_tools.checked_required(names)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 def _checked_tools(agent_nick, tools: List[str]) -> List[str]:
@@ -411,6 +425,20 @@ async def tool_options(agent_nick=Depends(get_agent_nick)):
     }
 
 
+@router.get("/calculation-options")
+async def calculation_options():
+    """The registered calculations an agent may be declared to need, with the
+    inputs each reads from a run, by name: ``{key, family, purpose, reads}``.
+
+    A declared calculation is run on every run of the agent, before it reasons.
+    One that scores a whole set of rows is not listed: it cannot be declared yet.
+    """
+    from services import calculation_tools
+
+    options = calculation_tools.required_options()
+    return {"count": len(options), "calculations": options}
+
+
 def _tool_label(key: str) -> str:
     """`run_data_extraction` -> `Data extraction`. Presentation only: the key is
     unchanged and remains what the caller sends back."""
@@ -538,6 +566,10 @@ async def create_agent(
     entry.pop("tools", None)
     if tools is not None:
         entry["tools"] = tools
+    # Nor the base's required calculations: they are declared, never inherited.
+    entry.pop("calculations", None)
+    if body.calculations:
+        entry["calculations"] = _checked_calculations(body.calculations)
     # Likewise the base's named outputs. With its own, the copied "outputs" —
     # the base class's, which an agent that reasons never produces — are
     # replaced by the ones it was actually defined to return.
@@ -704,6 +736,9 @@ class UpdateAgentBody(BaseModel):
     # The named outputs, [{"name", "description"}]. Omitted keeps them; null
     # removes them, and the agent answers in prose only.
     outputs: Optional[List[Dict[str, Any]]] = None
+    # The calculations the agent must always have. Omitted keeps them; null or
+    # an empty list removes them.
+    calculations: Optional[List[str]] = None
     capabilities: Optional[List[str]] = None
     prompt_ids: Optional[List[int]] = None
     policy_ids: Optional[List[int]] = None
@@ -823,7 +858,7 @@ async def update_agent(
         carried = copy.deepcopy(backing)
         for keep in ("agentId", "slug", "description", "created_by", "name",
                      "capabilities", "model", "model_key", "tools", "output_spec",
-                     "stage", "draft_by", "published_by"):
+                     "calculations", "stage", "draft_by", "published_by"):
             carried.pop(keep, None)
         updated.update(carried)
         updated["derived_from"] = body.backing_slug
@@ -850,6 +885,15 @@ async def update_agent(
         else:
             updated["tools"] = _checked_tools(agent_nick, body.tools)
             applied["tools"] = updated["tools"]
+
+    # --- required calculations ---------------------------------------------
+    if "calculations" in sent:
+        if not body.calculations:
+            updated.pop("calculations", None)
+            applied["calculations"] = None
+        else:
+            updated["calculations"] = _checked_calculations(body.calculations)
+            applied["calculations"] = updated["calculations"]
 
     # --- named outputs -----------------------------------------------------
     if "outputs" in sent:

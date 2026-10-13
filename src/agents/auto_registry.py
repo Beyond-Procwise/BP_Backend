@@ -56,6 +56,9 @@ class AgentContract:
     tools: Optional[List[str]] = None
     # The outputs a person named for a created agent: [{name, description}].
     output_spec: Optional[List[Dict[str, str]]] = None
+    # The registered calculations this agent must always have. They are run
+    # before it reasons and handed to it as facts; it is never asked.
+    calculations: Optional[List[str]] = None
     # Set while a created agent is a DRAFT: the one person who may run it.
     # None once it is published, and for every agent that carries no stage.
     draft_owner: Optional[str] = None
@@ -152,6 +155,11 @@ class AutoRegistry:
                     if isinstance(entry.get("output_spec"), list) and entry["output_spec"]
                     else None
                 ),
+                calculations=(
+                    [str(c) for c in entry["calculations"]]
+                    if isinstance(entry.get("calculations"), list) and entry["calculations"]
+                    else None
+                ),
                 # Whose draft it is: whoever last edited it, else whoever created it.
                 draft_owner=(
                     str(entry.get("draft_by") or entry.get("created_by") or "")
@@ -186,6 +194,9 @@ class AutoRegistry:
                 instance.allowed_tools = None
             instance.output_spec = (
                 [dict(o) for o in contract.output_spec] if contract.output_spec else None
+            )
+            instance.required_calculations = (
+                list(contract.calculations) if contract.calculations else None
             )
             instance.draft_owner = contract.draft_owner
 
@@ -333,6 +344,8 @@ class AutoRegistry:
             instance.allowed_tools = list(contract.tools)
         if contract.output_spec:
             instance.output_spec = [dict(o) for o in contract.output_spec]
+        if contract.calculations:
+            instance.required_calculations = list(contract.calculations)
         if contract.draft_owner is not None:
             instance.draft_owner = contract.draft_owner
 

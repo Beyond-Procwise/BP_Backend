@@ -296,6 +296,68 @@ def _corpus_tools(agent_nick: Any) -> List[Tool]:
     ]
 
 
+def _calculation_tools(*, workflow_id: Optional[str] = None) -> List[Tool]:
+    """The registered formulas, as tools: what can be calculated, and run one.
+
+    For the calculation nobody could schedule in advance — a "what if" in a
+    conversation, a percentage an agent needs part-way through. A calculation an
+    agent must ALWAYS have is not left to these: it is declared on the agent and
+    run before it reasons (``BaseAgent.run_tool_loop``).
+    """
+    try:
+        from services import calculation_tools as CT
+    except Exception:  # noqa: BLE001
+        log.exception("calculation tools unavailable")
+        return []
+
+    return [
+        Tool(
+            name="list_calculations",
+            description=(
+                "List the exact calculations that exist (scores, savings, price "
+                "variances, negotiation positions and so on). With no argument: "
+                "every calculation by name and purpose. With a family or a name: "
+                "the inputs it needs. Call this before run_calculation."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "family": {"type": "string",
+                               "description": "e.g. 'negotiation', 'supplier', 'deal'"},
+                    "name": {"type": "string",
+                             "description": "One calculation, e.g. 'deal.pct_change'"},
+                },
+            },
+            handler=lambda family=None, name=None: CT.list_calculations(family, name),
+        ),
+        Tool(
+            name="run_calculation",
+            description=(
+                "Run ONE exact calculation and return its value. Use this instead of "
+                "doing arithmetic yourself. The name and the input names must come "
+                "from list_calculations, and every input value must be one a tool "
+                "returned or the task stated — never one you estimated. If it "
+                "reports assessed=false, say the figure could not be calculated and "
+                "why; do not supply one."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "inputs": {"type": "object",
+                               "description": "Input names and values for the calculation."},
+                    "rows": {"type": "array", "items": {"type": "object"},
+                             "description": ("Only for a calculation that scores a whole "
+                                             "set: one object per member.")},
+                },
+                "required": ["name"],
+            },
+            handler=lambda name=None, inputs=None, rows=None: CT.run_calculation(
+                name, inputs, rows, trace_id=workflow_id),
+        ),
+    ]
+
+
 def build_tools(
     agent_nick: Any,
     *,
@@ -304,7 +366,8 @@ def build_tools(
     workflow_id: Optional[str] = None,
     user_id: Optional[str] = None,
 ) -> List[Tool]:
-    """Every tool AgentNick can reach: the agents, governance, and the corpus.
+    """Every tool AgentNick can reach: the agents, governance, the corpus and the
+    registered calculations.
 
     ``exclude`` names tools to leave out — a workflow node's loop, for one,
     must never be handed the tool that sends real email.
@@ -318,6 +381,7 @@ def build_tools(
         _agent_tools(agent_nick, workflow_id=workflow_id, user_id=user_id)
         + _governance_tools()
         + _corpus_tools(agent_nick)
+        + _calculation_tools(workflow_id=workflow_id)
     )
     if exclude:
         blocked = set(exclude)
