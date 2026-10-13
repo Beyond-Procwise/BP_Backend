@@ -115,6 +115,13 @@ def _rules(policy: str, *, fresh: bool = False) -> Dict[str, Any]:
     return rules
 
 
+def rules(policy: str, *, fresh: bool = False) -> Dict[str, Any]:
+    """Every rule one policy states, or raise. For a reader that needs the whole
+    set together (a settings screen, a validator) rather than one limit at a time."""
+
+    return dict(_rules(policy, fresh=fresh))
+
+
 def _as_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
