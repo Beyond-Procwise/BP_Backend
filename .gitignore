@@ -40,6 +40,15 @@ backups/testdata/
 # ignored for the same reason and this one was not, so 517 files sat untracked
 # and one `git add .` from the remote. Aged out by services/capture_retention.
 data/conversations/
+# The same captures in the directory the running service actually writes to
+# (settings.context_training_data_dir), and its two older locations. 245 files
+# were committed from here before this line existed; ignoring stops new ones,
+# it does not remove those.
+resources/training/conversations/
+src/data/conversations/
+src/resources/training/conversations/
+# Document text collected for training by services/process_monitor_watcher.
+src/data/training/
 backups/neo4j/
 
 # Supervised KG rebuild transcripts (scripts/kg_full_rebuild.py)
