@@ -60,7 +60,10 @@ SCHEMA: Dict[str, Any] = {
 # (_grounded_*) and dropped with a refusal if it is not there. The seller's words are
 # the only source; the model is the clerk who files them under the right line.
 FILL_PROMPT_NAME = "sales_quote_template_fill"
-FILL_OPS = OPS + ("set_line", "set_customer", "set_term")
+FILL_OPS = OPS + ("set_line", "set_customer", "set_term", "set_section", "calculate")
+CALCS = ("quote_total", "margin", "with_tax", "expression")
+INTO = ("qty", "unit_price", "cost")
+WRITTEN_KINDS = ("scope", "assumptions", "text")
 TERM_FIELDS = ("payment", "start", "lengthMonths", "renewal", "sla")
 FILL_SCHEMA: Dict[str, Any] = {
     "type": "object",
@@ -78,11 +81,29 @@ FILL_SCHEMA: Dict[str, Any] = {
                 "field": {"type": "string", "enum": list(TERM_FIELDS)},
                 "text": {"type": "string"},
                 "number": {"type": "number"},
+                "section_key": {"type": "string"},
+                "calc": {"type": "string", "enum": list(CALCS)},
+                "expression": {"type": "string"},
+                "label": {"type": "string"},
+                "into": {"type": "string", "enum": list(INTO)},
             },
             "required": ["op"],
         }},
     },
     "required": ["refused", "intents"],
+}
+
+
+# A sum the seller asks for on their own numbers is set up by a second, very small turn
+# with one job and one required answer. Asked for it as part of the fill, the real model
+# named the calculation and left the sum itself out, every time (2026-10-13).
+SUM_PROMPT_NAME = "sales_quote_sum"
+SUM_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {"expression": {"type": "string"}, "label": {"type": "string"},
+                   "line_id": {"type": "string"},
+                   "into": {"type": "string", "enum": ["", *INTO]}},
+    "required": ["expression", "label", "line_id", "into"],
 }
 
 
@@ -199,6 +220,21 @@ def _grounded_text(value: Any, what: str, message: str, limit: int = 300) -> Opt
     return flat[at:at + len(wanted)]
 
 
+def _short_field(value: Optional[str], what: str, prose: List[str]) -> Optional[str]:
+    """A name or a term is a few words. Seen against the real model: a sentence of the
+    seller's scope came back as the contact, and half their timeline as the service
+    level -- their own words, so the wording check passed, filed in the wrong place."""
+    if not value:
+        return value
+    words = len(value.split())
+    inside = any(_squash(value) in _squash(p) for p in prose)
+    # the customer's own name may well appear in the scope; nothing else short does
+    if words > 8 or (inside and (words > 3 or what != "the customer")):
+        raise _Refuse("", f"{what} “{value[:40]}…” (that reads as part of a section, "
+                          "not as " + what + ")")
+    return value
+
+
 _DAY_MONTH = re.compile(
     r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(" + "|".join(m[:3] for m in _MONTHS)
     + r")[a-z]*\.?(?:\s+(\d{4}))?", re.I)
@@ -243,6 +279,115 @@ def _grounded_date(value: Any, what: str, message: str) -> dt.date:
                   "month, for example “1 November”.", what)
 
 
+# --- the calculator ------------------------------------------------------------------
+#
+# The model never does arithmetic. Asked for a sum, it writes the sum down
+# ("12000 / 340") and this works it out, in Decimal, and hands back the working beside
+# the answer so the seller can check it. Only + - * / and brackets exist here; there is
+# no name, no function and no power to evaluate, so there is nothing to inject.
+
+_TOKEN = re.compile(r"\s*(?:(\d[\d,]*(?:\.\d+)?)\s?(k|m)?\s*(%)?|([-+*/()x×÷]))", re.I)
+# What a sum may contain besides the seller's own numbers: 1 and 100, which are how
+# "less 4%" and "per hundred" are written and are nobody's price.
+_FREE = (Decimal(1), Decimal(100))
+
+
+class _Sum:
+    """One expression, tokenised once: `value` is its result, `literals` every number in
+    it, and `text` the sum as it will be shown."""
+
+    def __init__(self, expression: str) -> None:
+        self.tokens: List[Any] = []
+        self.literals: List[Decimal] = []
+        text = str(expression or "").replace("£", "").replace("$", "").replace("€", "").strip()
+        at = 0
+        while at < len(text):
+            m = _TOKEN.match(text, at)
+            if m is None or m.end() == at:
+                raise ValueError("unreadable")
+            at = m.end()
+            if m.group(4):
+                self.tokens.append({"x": "*", "×": "*", "÷": "/"}.get(m.group(4).lower(), m.group(4)))
+                continue
+            n = Decimal(m.group(1).replace(",", "")) * {"k": 1000, "m": 1_000_000}.get(
+                (m.group(2) or "").lower(), 1)
+            self.literals.append(n)
+            self.tokens.append(n / 100 if m.group(3) else n)
+            if m.group(3):
+                self.tokens[-1] = ("%", n)
+        if not self.tokens or len(self.tokens) > 60:
+            raise ValueError("unreadable")
+        self._at = 0
+        self.value = self._add()
+        if self._at != len(self.tokens):
+            raise ValueError("unreadable")
+        self.text = " ".join(f"{_num(t[1])}%" if isinstance(t, tuple) else
+                             _num(t) if isinstance(t, Decimal) else {"*": "×", "/": "÷"}.get(t, t)
+                             for t in self.tokens).replace("( ", "(").replace(" )", ")")
+
+    def _peek(self) -> Any:
+        return self.tokens[self._at] if self._at < len(self.tokens) else None
+
+    def _add(self) -> Decimal:
+        left = self._mul()
+        while self._peek() in ("+", "-"):
+            op = self.tokens[self._at]
+            self._at += 1
+            right = self._mul()
+            left = left + right if op == "+" else left - right
+        return left
+
+    def _mul(self) -> Decimal:
+        left = self._atom()
+        while self._peek() in ("*", "/"):
+            op = self.tokens[self._at]
+            self._at += 1
+            right = self._atom()
+            if op == "/" and right == 0:
+                raise ValueError("division by zero")
+            left = left * right if op == "*" else left / right
+        return left
+
+    def _atom(self) -> Decimal:
+        t = self._peek()
+        self._at += 1
+        if t == "-":
+            return -self._atom()
+        if t == "(":
+            inner = self._add()
+            if self._peek() != ")":
+                raise ValueError("unreadable")
+            self._at += 1
+            return inner
+        if isinstance(t, tuple):
+            return t[1] / 100
+        if isinstance(t, Decimal):
+            return t
+        raise ValueError("unreadable")
+
+
+def _money(x: Decimal) -> str:
+    return f"{x.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,}"
+
+
+def _line_net(line: Mapping[str, Any]) -> Decimal:
+    qty, price = _d(line.get("qty")) or Decimal(0), _d(line.get("unitPrice")) or Decimal(0)
+    off = _d(line.get("discountPct")) or Decimal(0)
+    return (qty * price * (Decimal(1) - off / 100)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def quote_figures(quote: Mapping[str, Any]) -> Dict[str, Any]:
+    """The quote's own total and margin, by the builder's rules: every line in the total,
+    and the margin over the costed lines only."""
+    lines = [l for l in (quote.get("lines") or []) if isinstance(l, dict)]
+    nets = [_line_net(l) for l in lines]
+    costed = [(l, n) for l, n in zip(lines, nets) if (_d(l.get("cost")) or Decimal(0)) > 0]
+    revenue = sum((n for _, n in costed), Decimal(0))
+    cost = sum(((_d(l.get("qty")) or Decimal(0)) * _d(l.get("cost")) for l, _ in costed), Decimal(0))
+    return {"lines": lines, "nets": nets, "total": sum(nets, Decimal(0)), "revenue": revenue,
+            "cost": cost, "costed": len(costed), "uncosted": len(lines) - len(costed)}
+
+
 def _percent(intent: Mapping[str, Any], what: str, *, top: int,
              stated: List[Decimal]) -> Decimal:
     p = _d(intent.get("percent"))
@@ -265,7 +410,8 @@ def _target(intent: Mapping[str, Any], lines: List[Mapping[str, Any]]) -> Tuple[
 
 def _work_out(intents: List[Mapping[str, Any]], quote: Mapping[str, Any],
               checks: Mapping[str, Any], message: str, *,
-              filling: bool = False) -> Tuple[Dict[str, Any], List[str], List[str]]:
+              filling: bool = False,
+              ) -> Tuple[Dict[str, Any], List[str], List[str], List[Dict[str, Any]]]:
     """Intents -> (change, what it does in words, what it read). Every figure is computed
     here from the quote. Raises _Refuse with the sentence to answer with."""
     lines = [l for l in (quote.get("lines") or []) if isinstance(l, dict)]
@@ -277,6 +423,16 @@ def _work_out(intents: List[Mapping[str, Any]], quote: Mapping[str, Any],
     stated = stated_percents(message)
     numbers = stated_numbers(message)
     left_out: List[str] = []
+    asked: List[Mapping[str, Any]] = []
+    # What the seller wrote for a section this turn is prose for the customer to read,
+    # not instructions to file: a figure in it is not a quantity ("11 depots" came back
+    # from the real model as 11 licences), and a phrase of it is not a contact or a term.
+    prose = [str(i.get("text") or "") for i in intents if i.get("op") == "set_section"]
+    outside = " ".join(str(message or "").split())
+    for words in prose:
+        outside = outside.replace(" ".join(words.split()), " ")
+    fill_numbers, fill_percents = stated_numbers(outside), stated_percents(outside)
+    calculations: List[Dict[str, Any]] = []
 
     def take(read: Callable[[], Any]) -> Any:
         """One value of a fill. A value that is not in the seller's words is left out and
@@ -380,16 +536,20 @@ def _work_out(intents: List[Mapping[str, Any]], quote: Mapping[str, Any],
                 continue
             zero = lambda k: _d(intent.get(k)) == 0          # noqa: E731  "0" is "not given"
             qty = None if zero("qty") else take(
-                lambda: _grounded_number(intent, "qty", "a quantity", numbers))
+                lambda: _grounded_number(intent, "qty", "a quantity", fill_numbers))
             price = None if zero("unit_price") else take(
-                lambda: _grounded_number(intent, "unit_price", "a price", numbers))
+                lambda: _grounded_number(intent, "unit_price", "a price", fill_numbers))
+            if price is not None and _DERIVE_TALK.search(message):
+                left_out.append(f"a price of {_num(price)} on {_label(line, n)} (you asked "
+                                "for it to be worked out, so I have not set it directly)")
+                price = None
             # a cost is taken only when the seller was talking about what it costs them
-            cost = (take(lambda: _grounded_number(intent, "cost", "a cost", numbers))
+            cost = (take(lambda: _grounded_number(intent, "cost", "a cost", fill_numbers))
                     if _COST_TALK.search(message) and not zero("cost") else None)
             off = None
             if intent.get("percent") is not None and not zero("percent"):
-                if _d(intent.get("percent")) in stated:
-                    off = _percent(intent, "discount", top=100, stated=stated)
+                if _d(intent.get("percent")) in fill_percents:
+                    off = _percent(intent, "discount", top=100, stated=fill_percents)
                 else:
                     left_out.append(f"a discount of {_num(_d(intent.get('percent')) or Decimal(0))}%")
             if off is not None:
@@ -412,8 +572,10 @@ def _work_out(intents: List[Mapping[str, Any]], quote: Mapping[str, Any],
                     f"a {_num(off)}% discount" if off is not None else ""]
             did.append(f"Fill in {_label(line, n)}: " + ", ".join(x for x in said if x) + ".")
         elif op == "set_customer" and filling:
-            name = take(lambda: _grounded_text(intent.get("name"), "the customer", message))
-            contact = take(lambda: _grounded_text(intent.get("contact"), "the contact", message))
+            name = take(lambda: _short_field(_grounded_text(
+                intent.get("name"), "the customer", message), "the customer", prose))
+            contact = take(lambda: _short_field(_grounded_text(
+                intent.get("contact"), "the contact", message), "the contact", prose))
             if name:
                 change.setdefault("customer", {})["name"] = name
                 did.append(f"Address the quote to {name}.")
@@ -445,8 +607,9 @@ def _work_out(intents: List[Mapping[str, Any]], quote: Mapping[str, Any],
                 value = int(months)
                 did.append(f"Set the term to {value} months.")
             else:
-                value = take(lambda: _grounded_text(intent.get("text"),
-                                                    "the " + field + " term", message))
+                value = take(lambda: _short_field(_grounded_text(
+                    intent.get("text"), "the " + field + " term", message),
+                    "the " + field + " term", prose))
                 if not value:
                     continue
                 if re.search(r"\d\s*%\s*(off|discount)|\bdiscount\b", value, re.I):
@@ -458,14 +621,111 @@ def _work_out(intents: List[Mapping[str, Any]], quote: Mapping[str, Any],
                             "renewal": f"Set the renewal terms to {value}.",
                             "sla": f"Set the service level to {value}."}[field])
             change.setdefault("terms", {})[field] = value
+        elif op == "set_section" and filling:
+            wanted = str(intent.get("section_key") or "")
+            sec = next((x for x in (quote.get("sections") or [])
+                        if isinstance(x, dict) and x.get("key") == wanted), None)
+            if sec is None or sec.get("kind") not in WRITTEN_KINDS:
+                left_out.append("some words I could not match to a section of this quote")
+                continue
+            words = take(lambda: _grounded_text(intent.get("text"),
+                                                f"the words for “{sec.get('heading')}”",
+                                                message, limit=4000))
+            if not words:
+                continue
+            html = "<p>" + words.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") + "</p>"
+            if sec["kind"] == "scope":
+                change["scopeHtml"] = html
+            elif sec["kind"] == "assumptions":
+                change["assumptionsHtml"] = html
+            else:
+                change.setdefault("sections", []).append({"key": sec["key"], "html": html})
+            did.append(f"Put your words under “{sec.get('heading')}”.")
+        elif op == "calculate" and filling:
+            asked.append(intent)
         else:
             raise _Refuse("That is not something I can change on a quote.")
+
+    # Sums are worked out last, on the quote as this proposal would leave it, so "what
+    # is the total" after "340 seats at 200" is the total with those seats in it.
+    for intent in asked:
+        kind = intent.get("calc")
+        if kind == "expression":
+            try:
+                total = _Sum(str(intent.get("expression") or ""))
+            except (ValueError, InvalidOperation, ZeroDivisionError):
+                left_out.append("a sum I could not read")
+                continue
+            strangers = [n for n in total.literals if n not in numbers and n not in _FREE]
+            if strangers:
+                left_out.append("a sum using " + ", ".join(_num(n) for n in strangers)
+                                + ", which you did not give me")
+                continue
+            label = str(intent.get("label") or "").strip()[:80] or "Result"
+            result = total.value
+            entry: Dict[str, Any] = {"label": label, "working": f"{total.text} = {_num(_q4(result))}",
+                                     "result": _q4(result)}
+            into = intent.get("into")
+            if into in INTO and intent.get("line_id") is not None:
+                try:
+                    n, line = _target(intent, lines)
+                except _Refuse:
+                    left_out.append("where to put the result of a sum")
+                    calculations.append(entry)
+                    continue
+                if result < 0 or (into == "qty" and result <= 0) or \
+                        (into == "cost" and not _COST_TALK.search(message)):
+                    left_out.append(f"putting {_num(_q4(result))} on {_label(line, n)}")
+                else:
+                    field = {"qty": "qty", "unit_price": "unitPrice", "cost": "cost"}[into]
+                    patch(line)[field] = _q4(result)
+                    entry["into"] = {"lineId": str(line.get("id")), "field": field}
+                    did.append(f"Put {_num(_q4(result))} on {_label(line, n)} as its "
+                               f"{ {'qty': 'quantity', 'unitPrice': 'price', 'cost': 'cost'}[field] }.")
+            calculations.append(entry)
+            continue
+        merged = [{**l, **by_line.get(str(l.get("id")), {})} for l in lines] \
+            + list(change.get("addLines") or [])
+        fig = quote_figures({"lines": merged})
+        parts = " + ".join(_money(n) for n in fig["nets"]) or "0.00"
+        if kind == "quote_total":
+            calculations.append({"label": "Quote total, before tax",
+                                 "working": f"{parts} = {_money(fig['total'])}",
+                                 "result": fig["total"]})
+        elif kind == "margin":
+            if not fig["costed"]:
+                left_out.append("a margin (no line has a cost, so there is none to work out)")
+                continue
+            margin = fig["revenue"] - fig["cost"]
+            pct = (margin / fig["revenue"] * 100) if fig["revenue"] else Decimal(0)
+            calculations.append({
+                "label": f"Margin on the {fig['costed']} costed line"
+                         f"{'s' if fig['costed'] != 1 else ''}"
+                         + (f" ({fig['uncosted']} with no cost left out)" if fig["uncosted"] else ""),
+                "working": f"{_money(fig['revenue'])} − {_money(fig['cost'])} = {_money(margin)}"
+                           f", which is {_num(pct.quantize(Decimal('0.1'), rounding=ROUND_HALF_UP))}%"
+                           " of that revenue",
+                "result": margin.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)})
+        elif kind == "with_tax":
+            rate = _d(intent.get("percent"))
+            if rate is None or rate not in stated or rate > 100:
+                left_out.append("a total with tax (give the tax rate as a percentage; none "
+                                "is set for quotes)")
+                continue
+            tax = (fig["total"] * rate / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            calculations.append({"label": f"Quote total with tax at {_num(rate)}%",
+                                 "working": f"{_money(fig['total'])} + {_money(tax)} tax = "
+                                            f"{_money(fig['total'] + tax)}",
+                                 "result": fig["total"] + tax})
+        else:
+            left_out.append("a calculation I do not know how to do")
     if by_line:
         change["lines"] = [by_line[str(l.get("id"))] for l in lines if str(l.get("id")) in by_line]
     if left_out:
-        did.append("I left out " + "; ".join(left_out) + ": I could not match "
+        shown = left_out[:4] + ([f"{len(left_out) - 4} more"] if len(left_out) > 4 else [])
+        did.append("I left out " + "; ".join(shown) + ": I could not match "
                    + ("it" if len(left_out) == 1 else "them") + " to what you typed.")
-    return change, did, reads
+    return change, did, reads, calculations
 
 
 def _quote_for_model(quote: Mapping[str, Any]) -> str:
@@ -485,13 +745,90 @@ def _template_for_model(template: Mapping[str, Any]) -> str:
                       ensure_ascii=False)
 
 
+# --- what is read from the seller's message in code, not by the model ------------------
+#
+# Tried against the real model on 2026-10-13 with the layout and the calculations all in
+# its instructions, it stopped filing sections at all, offered sums nobody asked for, and
+# dropped the tax rate from "with 20% VAT". These are things a pattern reads exactly, so
+# a pattern reads them: the model is left with the one job it does well, filing figures
+# under lines, and the one sum only it can set up (an expression).
+
+_SECTION_LEAD = r"(?:^|(?<=[.!?:;\n])\s*)(?:and\s+)?(?:(?:the|our|for the)\s+)?"
+_SECTION_JOIN = r"\s*(?::|[-–—]|\bis that\b|\bare that\b|\bis\b|\bare\b|\bwill be\b)\s*"
+
+
+def section_words(message: str, sections: Any) -> List[Dict[str, Any]]:
+    """The seller's words for each written section they named, as set_section intents.
+
+    A section is named by the heading the page shows ("Deliverables: ...", "The timeline
+    is ...", "Our understanding is that ...") or, for scope and assumptions, by that word.
+    Its words run to the next named section or to the end, less any closing question --
+    "what does that come to?" is for the calculator, not for the customer."""
+    names: List[Tuple[str, str]] = []
+    for sec in sections or []:
+        if not isinstance(sec, dict) or sec.get("kind") not in WRITTEN_KINDS:
+            continue
+        for name in {str(sec.get("heading") or "").strip().lower(),
+                     sec["kind"] if sec["kind"] != "text" else ""}:
+            if len(name) >= 3:
+                names.append((name, sec["key"]))
+    if not names or not message:
+        return []
+    names.sort(key=lambda n: -len(n[0]))
+    by_name = dict(reversed(names))
+    found = list(re.finditer(_SECTION_LEAD + "(" + "|".join(re.escape(n) for n, _ in names) + ")"
+                             + _SECTION_JOIN, message, re.I))
+    out: List[Dict[str, Any]] = []
+    for at, m in enumerate(found):
+        end = found[at + 1].start() if at + 1 < len(found) else len(message)
+        words = message[m.end():end].strip()
+        sentences = re.split(r"(?<=[.!?])\s+", words)
+        while sentences and sentences[-1].rstrip().endswith("?"):
+            sentences.pop()
+        words = " ".join(sentences).strip().rstrip(";,")
+        if len(words) >= 3:
+            out.append({"op": "set_section", "section_key": by_name[m.group(1).lower()],
+                        "text": words})
+    return out
+
+
+_TOTAL_TALK = re.compile(r"\btotal\b|\bcomes? to\b|\badds? up\b|\bhow much\b.*\b(all|altogether|overall)\b", re.I)
+_TAX_TALK = re.compile(r"\b(vat|tax)\b", re.I)
+_MARGIN_TALK = re.compile(r"\bmargin\b", re.I)
+_SUM_TALK = re.compile(r"\bwork(ed|ing)? (it |that |this )?out\b|\bcalculat|\bhow much\b|\bwhat(\'s| is| does| would| will)\b"
+                       r"|\bper (seat|unit|user|head|day|month|year|site)\b.*\?|\btotal\b|\bcomes? to\b|=\s*\?", re.I)
+# The seller wants a price DERIVED ("budget of 12,000 across 340 seats, work out the
+# price per seat"). Seen against the real model: it filed the 12,000 as the unit price.
+_DERIVE_TALK = re.compile(r"\bbudget\b|\bspread\b|\bsplit\b|\bdivid|\bwork(ed|ing)? (it |that |this |the \w+ )?out\b"
+                          r"|\bcalculate\b", re.I)
+
+
+def asked_sums(message: str) -> List[Dict[str, Any]]:
+    """The sums on the quote's own figures the seller asked for, read from their words."""
+    out: List[Dict[str, Any]] = []
+    if _TAX_TALK.search(message or ""):
+        rates = stated_percents(message)
+        out.append({"op": "calculate", "calc": "with_tax",
+                    "percent": rates[0] if len(set(rates)) == 1 else None})
+    elif _TOTAL_TALK.search(message or ""):
+        out.append({"op": "calculate", "calc": "quote_total"})
+    if _MARGIN_TALK.search(message or "") and not stated_percents(message):
+        out.append({"op": "calculate", "calc": "margin"})    # "40% margin" is not a question
+    return out
+
+
 def _after(quote: Mapping[str, Any], change: Mapping[str, Any]) -> Dict[str, Any]:
     """The quote as it would stand if the proposal were applied -- only to say what
     would still be missing. Nothing is saved."""
     patches = {str(p.get("id")): p for p in change.get("lines") or []}
     lines = [{**l, **patches.get(str(l.get("id")), {})}
              for l in (quote.get("lines") or []) if isinstance(l, dict)]
+    words = {x.get("key"): x.get("html") for x in change.get("sections") or []}
+    sections = [{**x, "html": words[x.get("key")]} if x.get("key") in words else x
+                for x in (quote.get("sections") or []) if isinstance(x, dict)]
     return {**quote, "lines": lines + list(change.get("addLines") or []),
+            "sections": sections,
+            "scopeHtml": change.get("scopeHtml", quote.get("scopeHtml")),
             "customer": {**(quote.get("customer") or {}), **(change.get("customer") or {})},
             "terms": {**(quote.get("terms") or {}), **(change.get("terms") or {})}}
 
@@ -501,6 +838,32 @@ def _still_needed(needs: List[Mapping[str, str]]) -> str:
     if not labels:
         return " That is everything this template asks for."
     return " Still needed: " + "; ".join(labels) + "."
+
+
+def _sum_turn(quote: Mapping[str, Any], message: str, call: Callable[..., Optional[str]],
+              wording: Optional[Callable[[], str]]) -> List[Dict[str, Any]]:
+    """The sum the seller asked for on their own numbers, as a calculate intent -- written
+    down by the model, never worked out by it. Asked only when the message talks about
+    working something out and holds at least two numbers to do it with. Anything short
+    of a readable answer is no sum at all; the fill carries on without it."""
+    from src.services.agent_policy.extractor import _fill
+    if not (_SUM_TALK.search(message) or _DERIVE_TALK.search(message)) \
+            or len(set(stated_numbers(message))) < 2:
+        return []
+    try:
+        template = (wording or (lambda: _default_prompt(SUM_PROMPT_NAME)))()
+        raw = call(_fill(template, {"quote": _quote_for_model(quote), "message": message}),
+                   format=SUM_SCHEMA, think=False, temperature=0, num_predict=256,
+                   use_load_options=True)
+        said = json.loads(raw or "")
+        expression = str(said.get("expression") or "").strip()
+    except (AgentUnavailable, ValueError, AttributeError):
+        return []
+    if not expression:
+        return []
+    return [{"op": "calculate", "calc": "expression", "expression": expression,
+             "label": said.get("label"), "into": said.get("into") or None,
+             "line_id": said.get("line_id") or None}]
 
 
 def _default_prompt(name: str = PROMPT_NAME) -> str:
@@ -521,6 +884,7 @@ def propose(quote: Mapping[str, Any], message: str, *, checks: Mapping[str, Any]
             template: Optional[Mapping[str, Any]] = None,
             call: Optional[Callable[..., Optional[str]]] = None,
             prompt: Optional[Callable[[], str]] = None,
+            sum_prompt: Optional[Callable[[], str]] = None,
             busy: Optional[Callable[[], bool]] = None) -> Dict[str, Any]:
     """One turn. Returns {summary, change, reads, session_id, refused, missing}; `change`
     is None whenever `refused` is a sentence. Raises AgentUnavailable when no turn could
@@ -539,9 +903,13 @@ def propose(quote: Mapping[str, Any], message: str, *, checks: Mapping[str, Any]
     if len(message) > MAX_MESSAGE:
         raise ValueError(f"message is longer than {MAX_MESSAGE} characters")
 
-    def answer(*, summary: str, change=None, reads=(), refused=None) -> Dict[str, Any]:
+    def answer(*, summary: str, change=None, reads=(), refused=None,
+               calculations=()) -> Dict[str, Any]:
         return {"summary": summary, "change": change, "reads": list(reads),
                 "session_id": session, "refused": refused,
+                # every sum, with its working. Nothing here is on the quote; a figure
+                # reaches it only as part of `change`, and only when the seller applies it.
+                "calculations": list(calculations),
                 "missing": quote_templates.missing(template, _after(quote, change or {}))}
 
     if (quote.get("status") or "draft") != "draft":
@@ -571,6 +939,12 @@ def propose(quote: Mapping[str, Any], message: str, *, checks: Mapping[str, Any]
     except (ValueError, AttributeError):
         raise AgentUnavailable("the model's answer could not be read") from None
 
+    if filling:
+        # Sections and the quote's own sums are read from the message in code; from the
+        # model only a sum it had to set up is kept, and only if a sum was asked for.
+        intents = ([i for i in intents if i.get("op") not in ("set_section", "calculate")]
+                   + section_words(message, quote.get("sections")) + asked_sums(message)
+                   + _sum_turn(quote, message, call or ollama_generate, sum_prompt))
     if not intents:
         # The model's own words are not repeated: a refusal is prose, and prose is where
         # an invented figure would ride out.
@@ -581,9 +955,18 @@ def propose(quote: Mapping[str, Any], message: str, *, checks: Mapping[str, Any]
                        "customer and the terms from what you tell me." if filling else ""))
         return answer(summary=sentence, refused=sentence)
     try:
-        change, did, reads = _work_out(intents, quote, checks, message, filling=filling)
+        change, did, reads, sums = _work_out(intents, quote, checks, message, filling=filling)
     except _Refuse as no:
         return answer(summary=str(no), refused=str(no))
+    worked = [f"{c['label']}: {c['working']}." for c in sums]
+    if sums:
+        worked.append("Check these figures before you rely on them: I worked them out "
+                      "from what is on the quote and what you typed.")
+    if not change and sums:
+        # an answer to a question: nothing to apply, and not a refusal
+        # (what the fill turn offered unasked alongside a question is not worth reporting)
+        return answer(summary=" ".join(worked), calculations=sums,
+                      reads=["what you typed", "the figures on this quote"])
     if not change:
         # `did` holds only the note of what was left out, if anything was
         sentence = " ".join(["Nothing in that gave me a value to fill in on this quote."] + did)
@@ -594,5 +977,5 @@ def propose(quote: Mapping[str, Any], message: str, *, checks: Mapping[str, Any]
         tail = _still_needed(quote_templates.missing(template, _after(quote, change)))
     else:
         tail = ""
-    return answer(summary=" ".join(did) + tail, change=change,
+    return answer(summary=" ".join(did + worked) + tail, change=change, calculations=sums,
                   reads=([f"quote {ref}"] if ref else []) + reads)

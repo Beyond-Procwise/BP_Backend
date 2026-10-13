@@ -12,10 +12,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.services import entity_profile
+from src.services import brand_logos, entity_profile
 from src.services.sell_side import builder, pricing_checks, quote_agent, quotes
 from src.services.sell_side import templates as quote_templates
 from src.services.sell_side._db import transactional_conn as get_conn
@@ -45,6 +46,9 @@ class QuoteDraft(BaseModel):
     assumptionsHtml: Optional[str] = None
     terms: Optional[Dict[str, Any]] = None
     lines: List[Dict[str, Any]] = Field(default_factory=list)
+    # The quote's layout: its sections in page order, with their headings, the words of
+    # any free-text section, and the logo on the letterhead. Left out, it is unchanged.
+    sections: Optional[List[Dict[str, Any]]] = None
     dealId: Optional[str] = None
     # What the last read returned as `revision`. Sent back, it stops a save from
     # silently undoing somebody else's later save.
@@ -79,6 +83,7 @@ class TemplateBody(BaseModel):
     lines: List[Dict[str, Any]] = Field(default_factory=list)
     termFields: List[str] = Field(default_factory=list)
     assumptionsHtml: Optional[str] = None
+    sections: Optional[List[Dict[str, Any]]] = None
 
 
 class FromTemplate(BaseModel):
@@ -283,11 +288,14 @@ def agent_turn(quote_id: int, body: AgentTurn, principal=Depends(require_user)):
     _require_margin_permit(principal, {"sales_quote_id": quote_id})
     with http_errors(), get_conn() as c:
         saved = builder.get(c, quote_id)
-        template = quote_templates.find(c, saved.get("templateKey"))
+        # A quote that was not started from a template is read against the plain layout,
+        # so its sections can be filled and its sums worked out just the same.
+        template = quote_templates.find(c, saved.get("templateKey")) or quote_templates.BLANK
     # Whether it may be changed, which template it follows and what it is tested against
     # are the saved quote's; what is on it is the screen's when it sent that.
     held = body.quote if isinstance(body.quote, dict) else {}
-    quote = {**saved, **{k: held[k] for k in ("lines", "validUntil", "customer", "terms")
+    quote = {**saved, **{k: held[k] for k in ("lines", "validUntil", "customer", "terms",
+                                               "sections", "scopeHtml", "assumptionsHtml")
                          if k in held}}
     try:
         with http_errors():
@@ -329,6 +337,8 @@ class EntityProfileBody(BaseModel):
     vatNumber: Optional[str] = None
     footerNote: Optional[str] = None
     bank: Optional[Dict[str, Any]] = None
+    # the company's default logo: one of GET /entity/logos, or null for none
+    logoId: Optional[int] = None
 
 
 @router.get("/entity/profile")
@@ -344,3 +354,45 @@ def put_entity_profile(body: EntityProfileBody, principal=Depends(require_user))
     with http_errors(), get_conn() as c:
         return money_json(entity_profile.save(c, body.model_dump(),
                                               actor=_subject(principal)))
+
+
+# --- logos --------------------------------------------------------------------
+#
+# Uploading and removing a logo are changes to the company profile, so they ask the
+# same permit. Which logo is the default is a field of the profile (`logoId`); a quote
+# or template swaps to another by naming it on its letterhead section.
+
+@router.get("/entity/logos")
+def list_logos(principal=Depends(require_user)):
+    with http_errors(), get_conn() as c:
+        return money_json(brand_logos.list_logos(c))
+
+
+@router.post("/entity/logos")
+def upload_logo(file: UploadFile = File(...), name: Optional[str] = Form(default=None),
+                principal=Depends(require_user)):
+    """A PNG or JPEG, up to 1 MB. It joins the list; it is not made the default."""
+    gate("entity_profile.write", principal, agent=_AGENT, context={"logo": "upload"})
+    data = file.file.read(brand_logos.MAX_BYTES + 1)
+    with http_errors(), get_conn() as c:
+        return money_json(brand_logos.add(c, name=name or file.filename, data=data,
+                                          actor=_subject(principal)))
+
+
+@router.get("/entity/logos/{logo_id}/image")
+def logo_image(logo_id: int, principal=Depends(require_user)):
+    with http_errors(), get_conn() as c:
+        data, content_type = brand_logos.image(c, logo_id)
+    return Response(content=data, media_type=content_type,
+                    headers={"X-Content-Type-Options": "nosniff",
+                             "Cache-Control": "private, max-age=3600"})
+
+
+@router.delete("/entity/logos/{logo_id}")
+def remove_logo(logo_id: int, principal=Depends(require_user)):
+    gate("entity_profile.write", principal, agent=_AGENT, context={"logo": logo_id})
+    with http_errors(), get_conn() as c:
+        default = entity_profile.load(c).get("logoId")
+        c.rollback()
+        brand_logos.remove(c, logo_id, default_logo_id=default)
+    return {"removed": True}

@@ -177,7 +177,9 @@ def test_a_quote_is_started_from_a_template_and_filled_from_what_the_seller_says
     assert all(l["unitPrice"] == "0.0000" and l["cost"] is None for l in q["lines"])
     assert q["totals"]["exTax"] == "0.00" and q["totals"]["margin"] is None
     assert [m["field"] for m in q["missing"]][:2] == ["customer.name", "customer.contact"]
-    assert len(q["missing"]) == 2 + 3 + 5
+    assert len(q["missing"]) == 2 + 3 + 5 + 1          # ... and the Scope section
+    assert q["missing"][-1] == {"field": "sections.scope", "label": "the “Scope” section"}
+    assert [x["kind"] for x in q["sections"]][:4] == ["letterhead", "customer", "scope", "lines"]
 
     seats, onboarding, _training = [l["id"] for l in q["lines"]]
     asked_with = {}
@@ -208,7 +210,8 @@ def test_a_quote_is_started_from_a_template_and_filled_from_what_the_seller_says
         "lines": [{"id": seats, "qty": "340", "unitPrice": "200", "cost": "125", "markupPct": "60.0"},
                   {"id": onboarding, "unitPrice": "18000"}]}
     assert [m["field"] for m in out["missing"]] == [
-        f"lines.{_training}.unitPrice", "terms.start", "terms.renewal", "terms.sla"]
+        f"lines.{_training}.unitPrice", "terms.start", "terms.renewal", "terms.sla",
+        "sections.scope"]
     assert "Still needed: a price for “Training”; a start date" in out["summary"]
 
     # proposed, not written
@@ -235,6 +238,108 @@ def test_a_retired_or_unknown_template_starts_nothing(http):
         started = http.post("/spendiq/quotes/from-template",
                             json={"templateKey": key, "currency": "GBP"}).json()
         assert started["dealId"] is None and started["lines"][0]["unitPrice"] == "0.0000"
+    finally:
+        with http.conn.cursor() as cur:
+            cur.execute("DELETE FROM proc.bp_sales_quote_template WHERE template_key = %s", (key,))
+        http.conn.commit()
+
+
+# --- logos and layout --------------------------------------------------------------
+
+def _png(colour):
+    import io
+
+    from PIL import Image
+    out = io.BytesIO()
+    Image.new("RGB", (160, 48), colour).save(out, format="PNG")
+    return out.getvalue()
+
+
+def test_a_logo_is_uploaded_swapped_on_a_quote_and_the_default_cannot_be_removed(http, monkeypatch):
+    key = f"{SENTINEL}_entity_profile"
+    monkeypatch.setattr(qb.entity_profile, "CONFIG_KEY", key)
+    try:
+        blue, red = _png((20, 60, 160)), _png((180, 30, 30))
+        first = http.post("/entity/logos", files={"file": ("blue.png", blue, "image/png")},
+                          data={"name": "Blue mark"}).json()
+        second = http.post("/entity/logos", files={"file": ("red.png", red, "image/png")}).json()
+        assert first["name"] == "Blue mark" and second["name"] == "red.png"
+        assert (first["width"], first["height"], first["contentType"]) == (160, 48, "image/png")
+        assert {first["id"], second["id"]} <= {x["id"] for x in http.get("/entity/logos").json()}
+
+        served = http.get(first["imagePath"])
+        assert served.content == blue and served.headers["content-type"] == "image/png"
+        assert served.headers["x-content-type-options"] == "nosniff"
+
+        # not a picture, whatever it says it is
+        r = http.post("/entity/logos", files={"file": ("logo.png", b"<svg><script>x</script></svg>",
+                                                       "image/png")})
+        assert r.status_code == 422 and "PNG or JPEG" in r.json()["detail"]
+
+        # the company's default, then a different one on this quote's letterhead
+        assert http.put("/entity/profile", json={"legalName": f"{SENTINEL} Ltd",
+                                                 "logoId": first["id"]}).json()["logoId"] == first["id"]
+        assert http.put("/entity/profile", json={"logoId": 999_999_999}).status_code == 422
+        q = http.post(f"/spendiq/deals/{http.deal}/quotes", json=_body()).json()
+        layout = q["sections"]
+        assert layout[0]["kind"] == "letterhead" and layout[0]["logoId"] is None
+        layout[0]["logoId"] = second["id"]
+        layout[2]["heading"] = "Our understanding"
+        layout.insert(3, {"key": "deliverables", "kind": "text", "heading": "Deliverables",
+                          "html": "<p>Platform</p>"})
+        saved = http.put(f"/spendiq/quotes/{q['id']}", json=_body(sections=layout)).json()
+        assert saved["sections"][0]["logoId"] == second["id"]
+        assert [(x["key"], x["heading"]) for x in saved["sections"]][2:4] == [
+            ("scope", "Our understanding"), ("deliverables", "Deliverables")]
+        assert saved["sections"][3]["html"] == "<p>Platform</p>"
+
+        # a save that says nothing about the layout leaves it alone
+        assert http.put(f"/spendiq/quotes/{q['id']}", json=_body()).json()["sections"] == saved["sections"]
+        # a logo nobody uploaded cannot be put on a quote
+        layout[0]["logoId"] = 999_999_999
+        assert http.put(f"/spendiq/quotes/{q['id']}", json=_body(sections=layout)).status_code == 422
+
+        # the default stays until another is chosen; a removed logo leaves the list but
+        # is still served, because quotes already wear it
+        r = http.delete(f"/entity/logos/{first['id']}")
+        assert r.status_code == 409 and "choose another" in r.json()["detail"]
+        assert http.delete(f"/entity/logos/{second['id']}").status_code == 200
+        assert second["id"] not in {x["id"] for x in http.get("/entity/logos").json()}
+        assert http.get(second["imagePath"]).content == red
+        assert http.delete(f"/entity/logos/{second['id']}").status_code == 404
+    finally:
+        with http.conn.cursor() as cur:
+            cur.execute("DELETE FROM proc.bp_admin_config WHERE config_key = %s", (key,))
+        http.conn.commit()
+
+
+def test_a_template_carries_its_layout_onto_the_quote_and_the_agent_fills_a_section(http, monkeypatch):
+    key = f"livetest_{uuid.uuid4().hex[:8]}"
+    try:
+        http.put(f"/spendiq/quote-templates/{key}", json={
+            "name": f"{SENTINEL} proposal", "lines": [{"key": "work", "description": "Work", "unit": "day"}],
+            "sections": [{"key": "intro", "kind": "text", "heading": "Why us", "html": "not kept"},
+                         {"key": "pricing", "kind": "lines", "heading": "Investment"},
+                         {"key": "timeline", "kind": "text", "heading": "Timeline"}]})
+        q = http.post("/spendiq/quotes/from-template",
+                      json={"templateKey": key, "currency": "GBP"}).json()
+        assert [(x["heading"], x.get("html")) for x in q["sections"]] == [
+            ("Why us", ""), ("Investment", None), ("Timeline", "")]
+        assert [m["label"] for m in q["missing"]][-2:] == [
+            "the “Why us” section", "the “Timeline” section"]
+
+        monkeypatch.setattr(quote_agent, "_default_prompt", lambda name: "{template} {quote} {message}")
+        monkeypatch.setattr(quote_agent, "_default_busy", lambda: False)
+        monkeypatch.setattr(quote_agent, "ollama_generate", lambda prompt, **kw: json.dumps(
+            {"expression": "20 * 850", "label": "Delivery", "line_id": "", "into": ""}
+            if kw["format"] == quote_agent.SUM_SCHEMA else {"refused": "", "intents": []}))
+        out = http.post(f"/spendiq/quotes/{q['id']}/agent", json={
+            "message": "Timeline: kick-off in January, live by March. What is 20 days at 850?"}).json()
+        assert out["change"] == {"sections": [
+            {"key": "timeline", "html": "<p>kick-off in January, live by March.</p>"}]}
+        assert out["calculations"] == [{"label": "Delivery", "working": "20 × 850 = 17000",
+                                        "result": "17000.0000"}]
+        assert http.get(f"/spendiq/quotes/{q['id']}").json()["sections"] == q["sections"]
     finally:
         with http.conn.cursor() as cur:
             cur.execute("DELETE FROM proc.bp_sales_quote_template WHERE template_key = %s", (key,))

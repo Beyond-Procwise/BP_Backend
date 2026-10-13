@@ -173,3 +173,21 @@ def test_starting_a_quote_from_a_template_needs_the_margin_permit_like_any_quote
     body = {"templateKey": "t", "currency": "GBP"}
     assert serve(buyer()).post("/spendiq/quotes/from-template", json=body).status_code == 403
     assert started == []
+
+
+# --- logos -------------------------------------------------------------------------
+
+@pytest.mark.parametrize("who, status", [(None, 403), (viewer(), 403), (buyer(), 403),
+                                         (admin(), 200)],
+                         ids=["nobody", "viewer", "buyer", "admin"])
+def test_a_logo_is_uploaded_and_removed_only_by_an_admin(serve, monkeypatch, who, status):
+    done = []
+    monkeypatch.setattr(qb.brand_logos, "add", lambda c, **k: done.append("add") or {"id": 1})
+    monkeypatch.setattr(qb.brand_logos, "remove", lambda c, i, **k: done.append("remove"))
+    monkeypatch.setattr(qb.entity_profile, "load", lambda c: {"logoId": None})
+    monkeypatch.setattr(qb, "get_conn", lambda: contextlib.nullcontext(type(
+        "C", (), {"rollback": lambda self: None})()))
+    client = serve(who, PROFILE_PERMIT)
+    assert client.post("/entity/logos", files={"file": ("l.png", b"x", "image/png")}).status_code == status
+    assert client.delete("/entity/logos/1").status_code == status
+    assert done == (["add", "remove"] if status == 200 else [])
