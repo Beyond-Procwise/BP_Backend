@@ -204,7 +204,7 @@ def test_every_governed_limit_is_present_in_the_live_policy_set():
         live = {slug: rules for slug, rules in cur.fetchall()}
     conn.close()
 
-    assert len(live) == 11, f"expected eleven limit rows, found {sorted(live)}"
+    assert len(live) == 12, f"expected twelve limit rows, found {sorted(live)}"
     # 57, plus the two contract parent-proposal limits (2026-10-04), plus the
     # three receipt tolerances the three-way match reads (2026-10-04:
     # over_delivery_pct, billed_over_received_qty, uom_conversion_required),
@@ -212,9 +212,10 @@ def test_every_governed_limit_is_present_in_the_live_policy_set():
     # bp_sqldb), plus precedent_count (2026-10-13), plus precedent_value_range_pct
     # (2026-10-14), plus reconciliation_tolerances.uplift_tolerance_pp (2026-10-09, price_schedule),
     # plus the seven negotiation rules that were constants (2026-10-12: max_rounds, the round
-    # tactics and final_offer_phrases).
-    assert sum(len(r) for r in live.values()) == 74, (
-        f"expected 74 governed values, found "
+    # tactics and final_offer_phrases), plus the Quote builder's margin floor and discount
+    # corridor (2026-10-13, sales_quote_pricing: both stated as null, "not set").
+    assert sum(len(r) for r in live.values()) == 76, (
+        f"expected 76 governed values, found "
         f"{ {k: len(v) for k, v in live.items()} }")
     for slug, rules in live.items():
         assert rules, f"{slug} states no limits at all"

@@ -64,3 +64,59 @@ def total_quote(lines: Sequence[LinePrice]) -> QuoteTotals:
     total_margin = q2(total_ex_tax - total_cost)
     margin_pct = q4(total_margin / total_ex_tax) if total_ex_tax != 0 else None
     return QuoteTotals(total_ex_tax, total_cost, total_margin, margin_pct)
+
+
+# --- the Quote builder's arithmetic ------------------------------------------------
+#
+# A builder line is priced by the seller: a unit price, a discount typed in percent, and
+# (when they have one) their own cost. Two things must never read as profit: a cost of
+# zero, and a line with no cost at all. So a line is COSTED only when its cost is above
+# zero, and a quote's margin is taken over its costed lines alone -- revenue from an
+# uncosted line is left out of the margin on both sides, and the count of lines left
+# out travels with the figure.
+
+@dataclass(frozen=True)
+class BuilderLine:
+    line_total: Decimal                 # net of the entered discount
+    line_cost: Optional[Decimal]        # None when the line is uncosted
+    line_margin: Optional[Decimal]
+    line_margin_pct: Optional[Decimal]  # fraction of the line's net, like LinePrice
+
+    @property
+    def costed(self) -> bool:
+        return self.line_cost is not None
+
+
+@dataclass(frozen=True)
+class BuilderTotals:
+    total_ex_tax: Decimal               # every line
+    total_cost: Optional[Decimal]       # costed lines only
+    total_margin: Optional[Decimal]     # costed revenue less costed cost
+    margin_pct: Optional[Decimal]       # fraction of costed revenue
+    costed_lines: int
+    uncosted_lines: int
+
+
+def builder_line(quantity: Decimal, unit_price: Decimal, discount_pct: Optional[Decimal],
+                 unit_cost: Optional[Decimal]) -> BuilderLine:
+    discount = discount_pct or Decimal(0)
+    line_total = q2(quantity * unit_price * (Decimal(1) - discount / Decimal(100)))
+    if unit_cost is None or unit_cost <= 0:
+        return BuilderLine(line_total, None, None, None)
+    line_cost = q2(quantity * unit_cost)
+    line_margin = q2(line_total - line_cost)
+    return BuilderLine(line_total, line_cost, line_margin,
+                       q4(line_margin / line_total) if line_total != 0 else None)
+
+
+def total_builder(lines: Sequence[BuilderLine]) -> BuilderTotals:
+    total_ex_tax = q2(sum((l.line_total for l in lines), Decimal(0)))
+    costed = [l for l in lines if l.costed]
+    if not costed:
+        return BuilderTotals(total_ex_tax, None, None, None, 0, len(lines))
+    revenue = sum((l.line_total for l in costed), Decimal(0))
+    total_cost = q2(sum((l.line_cost for l in costed), Decimal(0)))
+    total_margin = q2(revenue - total_cost)
+    return BuilderTotals(total_ex_tax, total_cost, total_margin,
+                         q4(total_margin / revenue) if revenue != 0 else None,
+                         len(costed), len(lines) - len(costed))

@@ -19,7 +19,18 @@ live = pytest.mark.skipif(not _LIVE, reason="needs PROCWISE_TEST_LIVE_DB=1")
 _QUOTES = "SELECT sales_quote_id FROM proc.bp_sales_quote WHERE account_id LIKE 'LIVETEST-%%'"
 
 
+# A Quote builder quote has no account: it is known by who drafted it and by its deal.
+_BUILDER = ("SELECT sales_quote_id FROM proc.bp_sales_quote "
+            "WHERE created_by LIKE 'LIVETEST%%' OR deal_id LIKE 'LIVETEST-%%'")
+
+
 def clean(cur):
+    cur.execute(f"DELETE FROM proc.bp_sales_quote_outcome WHERE sales_quote_id IN ({_BUILDER})")
+    cur.execute(f"UPDATE proc.bp_sales_quote SET supersedes_id = NULL "
+                f"WHERE supersedes_id IN ({_BUILDER})")
+    cur.execute("DELETE FROM proc.bp_sales_quote "
+                "WHERE created_by LIKE 'LIVETEST%%' OR deal_id LIKE 'LIVETEST-%%'")
+    cur.execute("DELETE FROM proc.bp_deal WHERE deal_id LIKE 'LIVETEST-%%'")
     cur.execute(f"DELETE FROM proc.bp_sales_quote_outcome WHERE sales_quote_id IN ({_QUOTES})")
     cur.execute(f"DELETE FROM proc.bp_sales_quote_line WHERE sales_quote_id IN ({_QUOTES})")
     cur.execute("UPDATE proc.bp_sales_quote SET supersedes_id = NULL WHERE account_id LIKE 'LIVETEST-%%'")

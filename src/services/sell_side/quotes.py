@@ -12,6 +12,7 @@ read only by get_quote_internal. Nothing here selects * from a quote table.
 from __future__ import annotations
 
 import datetime as dt
+import json
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -29,7 +30,7 @@ _SUPERSEDABLE = ("draft", "in_review", "approved", "issued")
 # The customer record. A column is readable through get_quote only if it is named here,
 # so one added to the table later stays invisible until someone names it.
 _QUOTE_COLS = ("sales_quote_id", "tenant_id", "quote_ref", "quote_number", "account_id",
-               "contact_id",
+               "contact_id", "deal_id",
                "currency", "quote_date", "valid_until", "total_ex_tax", "phase_id",
                "subprocess_id", "status", "supersedes_id", "approved_by", "approved_at",
                "issued_at", "created_by", "created_date", "last_modified_date")
@@ -222,9 +223,12 @@ def get_quote(conn: Any, sales_quote_id: int) -> Dict[str, Any]:
     for a customer. What the quote costs us is get_quote_internal."""
     cur = dict_cursor(conn)
     cur.execute(
-        f"SELECT {', '.join('q.' + c for c in _QUOTE_COLS)}, a.account_name, c.contact_name "
+        f"SELECT {', '.join('q.' + c for c in _QUOTE_COLS)}, "
+        # A Quote builder quote may have no account yet; it names its customer in words.
+        "COALESCE(a.account_name, q.customer_name) AS account_name, "
+        "COALESCE(c.contact_name, q.customer_contact) AS contact_name "
         "FROM proc.bp_sales_quote q "
-        "JOIN proc.bp_account a ON a.account_id = q.account_id "
+        "LEFT JOIN proc.bp_account a ON a.account_id = q.account_id "
         "LEFT JOIN proc.bp_account_contact c ON c.contact_id = q.contact_id "
         "WHERE q.sales_quote_id = %s", (sales_quote_id,))
     row = cur.fetchone()
@@ -306,7 +310,43 @@ def submit(conn: Any, sales_quote_id: int, *, actor: Optional[str]) -> Dict[str,
                        event="sales_quote.submitted", actor=actor)
 
 
-def approve(conn: Any, sales_quote_id: int, *, approver: Optional[str]) -> Dict[str, Any]:
+def withdraw(conn: Any, sales_quote_id: int, *, actor: Optional[str]) -> Dict[str, Any]:
+    """The drafter takes a quote back out of review to change it."""
+    return _transition(conn, sales_quote_id, frm="in_review", to="draft",
+                       event="sales_quote.withdrawn", actor=actor)
+
+
+def reject(conn: Any, sales_quote_id: int, *, approver: Optional[str],
+           reason: str) -> Dict[str, Any]:
+    """A reviewer sends a quote back to draft, and says why. The same person who may not
+    approve their own quote may not reject it either: both are the reviewer's decision."""
+    reason = (reason or "").strip()
+
+    def _check(row, cur):
+        if not (approver or "").strip():
+            raise StateConflict("a rejection needs an authenticated reviewer")
+        if row["created_by"] and row["created_by"] == approver:
+            raise StateConflict("nobody reviews their own quote; withdraw it instead")
+        if not reason:
+            raise ValueError("a rejection needs a reason")
+        return {"reason": reason}
+    return _transition(conn, sales_quote_id, frm="in_review", to="draft", check=_check,
+                       event="sales_quote.rejected", actor=approver)
+
+
+def clean_conditions(conditions: Optional[Sequence[str]]) -> List[str]:
+    out = [str(c).strip() for c in (conditions or []) if str(c or "").strip()]
+    if len(out) > 20 or any(len(c) > 500 for c in out):
+        raise ValueError("at most 20 conditions of at most 500 characters each")
+    return out
+
+
+def approve(conn: Any, sales_quote_id: int, *, approver: Optional[str],
+            conditions: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+    """``conditions`` are the approver's, attached to the approval. Nothing else writes
+    them: the drafter cannot set the terms of their own approval."""
+    conditions = clean_conditions(conditions)
+
     def _check(row, cur):
         if not (approver or "").strip():
             raise StateConflict("an approval needs an authenticated approver")
@@ -321,9 +361,11 @@ def approve(conn: Any, sales_quote_id: int, *, approver: Optional[str]) -> Dict[
                 f"quote {sales_quote_id} is priced below cost (margin "
                 f"{margin}); it needs a deal-desk exception, "
                 "not a routine approval")
+        return {"conditions": conditions}
     return _transition(conn, sales_quote_id, frm="in_review", to="approved", check=_check,
                        event="sales_quote.approved", actor=approver,
-                       sets=", approved_by = %s, approved_at = now()", params=(approver,))
+                       sets=", approved_by = %s, approved_at = now(), conditions = %s::jsonb",
+                       params=(approver, json.dumps(conditions)))
 
 
 def issue(conn: Any, sales_quote_id: int, *, actor: Optional[str],
