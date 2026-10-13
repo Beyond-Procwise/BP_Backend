@@ -129,6 +129,8 @@ ACTIONS: Dict[str, str] = {
     "policy.reload": "configure",
     # Which buyers a Buyer/Viewer may see in reports. Changes what every report shows that person.
     "report.scope.write": "configure",
+    # Who reads which daily brief and what it shows. Changes what every person is told on Home.
+    "brief.settings.write": "configure",
     "prompt.write": "configure",
     # The prompt registry. Reading a prompt's wording is a read, but one that is
     # logged and held to a stated role (PromptWordingAuthorityPolicy): the wording
