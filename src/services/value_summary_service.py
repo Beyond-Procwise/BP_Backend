@@ -189,6 +189,9 @@ def classify_opportunity(row: dict) -> Optional[dict]:
         "id": f"opp:{row.get('opportunity_id')}",
         "tier": tier,
         "source": "opportunity",
+        # The kind of saving. Several can be found on one supplier and item; see
+        # supersede_levers_in_bucket.
+        "lever": row.get("detector_type"),
         "amount_gbp": amount,          # financial_impact_gbp is already native GBP
         # Realised/avoided/recovered now come only from the ledger (apply_ledger),
         # never from the legacy realised_savings_gbp column -- see constraints.md.
@@ -278,7 +281,54 @@ def supersede_overlaps(findings: list[dict]) -> list[dict]:
     one entry point for anything valuing findings (Value Found, the upload summary)."""
     findings = dedupe(findings)
     findings = supersede_po_level_by_duplicate(findings)     # R6: before the line pass
-    return supersede_lines_under_overbilled_po(findings)
+    findings = supersede_lines_under_overbilled_po(findings)
+    return supersede_levers_in_bucket(findings)
+
+
+_OPEN_STAGES = ("identified", "negotiation", "agreed")
+
+
+def stamp_buckets(findings: list[dict], opportunity_rows: list[dict]) -> list[dict]:
+    """Mark each opportunity finding with the bucket it is a lever on, if any.
+
+    A bucket is a supplier and item carrying a unit price and a volume
+    (services/opportunity_buckets.py) -- one piece of spend. Which rows form one is
+    decided there, from the stored rows, so this screen and the Opportunities screen
+    cannot disagree about it."""
+    from src.services import opportunity_buckets
+
+    member = {}
+    for bucket in opportunity_buckets.group(opportunity_rows)["buckets"]:
+        for lever in bucket["levers"]:
+            member[f"opp:{lever['opportunityId']}"] = bucket["bucketId"]
+    for f in findings:
+        if f.get("source") == "opportunity" and f["id"] in member:
+            f["bucket_id"] = member[f["id"]]
+    return findings
+
+
+def supersede_levers_in_bucket(findings: list[dict]) -> list[dict]:
+    """Levers on one bucket are savings on the SAME spend: the price is above benchmark,
+    the volume earns a discount. They overlap, so the bucket counts once, at its largest
+    open lever (ties -> lowest id); the others are counted under it.
+
+    The one that stands carries ``levers`` -- every open lever on the bucket, largest
+    first -- so a card can say what it is made of. Only open levers take part: a realised
+    saving is money already banked and is never hidden under an open one, nor the other
+    way round. Findings with no ``bucket_id`` (see stamp_buckets) are left alone."""
+    buckets: dict[str, list[dict]] = {}
+    for f in findings:
+        if (f.get("bucket_id") and f.get("source") == "opportunity"
+                and f.get("status") in _OPEN_STAGES and f.get("superseded_by") is None):
+            buckets.setdefault(f["bucket_id"], []).append(f)
+    for members in buckets.values():
+        members.sort(key=lambda f: (-(f.get("amount_gbp") or 0.0), str(f["id"])))
+        lead = members[0]
+        lead["levers"] = [{"id": m["id"], "lever": m.get("lever"),
+                           "amount_gbp": m.get("amount_gbp")} for m in members]
+        for other in members[1:]:
+            other["superseded_by"] = lead["id"]
+    return findings
 
 
 _KEY = {"finding": "disc", "opportunity": "opp"}
@@ -515,7 +565,9 @@ SELECT e.discrepancy_id, e.doc_type, e.doc_pk_candidate, e.field_name, e.raw_val
 _OPPORTUNITY_SQL = """
 SELECT opportunity_id, stage, financial_impact_gbp, realised_savings_gbp,
        supplier_name, deal_id, po_id, quote_id, invoice_id, item_description, created_at,
-       stage_updated_at
+       stage_updated_at,
+       -- which supplier+item bucket a row is a lever on (stamp_buckets)
+       detector_type, supplier_id, item_id, unit_price, quantity, calculation_details
   FROM proc.bp_opportunity
 """
 
@@ -641,6 +693,7 @@ def build_value_summary(conn=None) -> dict:
                 f = classify_opportunity(row)
                 if f is not None:
                     findings.append(f)
+            stamp_buckets(findings, rows)
             sources["opportunities"] = "ok"
         except Exception:
             log.exception("value_summary_service: opportunity source failed")

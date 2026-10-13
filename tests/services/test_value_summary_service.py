@@ -499,3 +499,69 @@ def test_an_unpriced_claimed_po_finding_never_hides_the_priced_lines_under_it(mo
     by_id = {f["id"]: f for f in out["findings"]}
     assert by_id["disc:52"]["superseded_by"] is None
     assert out["verified_found_gbp"] == 40.0
+
+
+# --- levers on one bucket count once ------------------------------------------------------
+
+def _lever(oid, lever, amount, stage="identified", **extra):
+    return {"opportunity_id": oid, "stage": stage, "financial_impact_gbp": amount,
+            "supplier_name": "Copperleaf", "supplier_id": "SUP-1", "item_id": "ITM-1",
+            "item_description": "Notebooks", "detector_type": lever, "unit_price": 12.0,
+            "quantity": 40, "calculation_details": {}, **extra}
+
+
+def _bucketed(rows):
+    from src.services.value_summary_service import stamp_buckets, supersede_overlaps
+    findings = [f for f in (classify_opportunity(r) for r in rows) if f is not None]
+    return {f["id"]: f for f in supersede_overlaps(stamp_buckets(findings, rows))}
+
+
+def test_two_levers_on_one_priced_item_count_once_at_the_larger():
+    out = _bucketed([_lever("a", "Price Benchmark Variance", 300.0),
+                     _lever("b", "Volume Consolidation", 120.0)])
+
+    assert out["opp:a"]["superseded_by"] is None
+    assert out["opp:b"]["superseded_by"] == "opp:a"
+    assert summarise(list(out.values()))["potential_gbp"] == 300.0     # not 420
+
+
+def test_the_lever_that_stands_says_what_the_bucket_is_made_of():
+    out = _bucketed([_lever("a", "Price Benchmark Variance", 300.0),
+                     _lever("b", "Volume Consolidation", 120.0)])
+
+    assert out["opp:a"]["levers"] == [
+        {"id": "opp:a", "lever": "Price Benchmark Variance", "amount_gbp": 300.0},
+        {"id": "opp:b", "lever": "Volume Consolidation", "amount_gbp": 120.0}]
+    assert "levers" not in out["opp:b"]
+
+
+def test_a_rejected_lever_takes_no_part_so_the_open_one_stands():
+    out = _bucketed([_lever("a", "Price Benchmark Variance", 300.0, stage="rejected"),
+                     _lever("b", "Volume Consolidation", 120.0)])
+
+    assert "opp:a" not in out                      # rejected: not a finding at all
+    assert out["opp:b"]["superseded_by"] is None
+
+
+def test_a_realised_saving_is_never_hidden_under_an_open_lever_or_the_reverse():
+    out = _bucketed([_lever("a", "Price Benchmark Variance", 300.0),
+                     _lever("b", "Volume Consolidation", 120.0, stage="realised")])
+
+    assert out["opp:a"]["superseded_by"] is None
+    assert out["opp:b"]["superseded_by"] is None
+
+
+def test_without_a_unit_price_and_volume_two_findings_on_one_item_both_count():
+    """Nothing ties them to one piece of spend, so nothing says they overlap."""
+    out = _bucketed([_lever("a", "Duplicate Invoice Recovery", 300.0, unit_price=None, quantity=None),
+                     _lever("b", "Supplier Risk", 120.0, unit_price=None, quantity=None)])
+
+    assert [f["superseded_by"] for f in out.values()] == [None, None]
+    assert all("bucket_id" not in f for f in out.values())
+
+
+def test_different_items_are_different_buckets():
+    out = _bucketed([_lever("a", "Price Benchmark Variance", 300.0),
+                     _lever("b", "Price Benchmark Variance", 120.0, item_id="ITM-2")])
+
+    assert [f["superseded_by"] for f in out.values()] == [None, None]
