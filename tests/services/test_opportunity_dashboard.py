@@ -110,6 +110,7 @@ def test_detailed_opportunities_mapping_with_uncategorised_fallback():
         "category": "Uncategorised", "supplier": "City of Newport",
         "opportunity": "Tier 3 Marketing Services", "potentialSaving": "£100k",
         "stage": "identified", "quoteId": "Q1", "orphaned": True,
+        "bucketId": None, "reviewRequested": False, "whatChanged": None,
     }
 
 

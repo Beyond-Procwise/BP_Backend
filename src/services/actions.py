@@ -61,6 +61,9 @@ ACTIONS: Dict[str, str] = {
     # draft to the supplier, which is email.draft below, and a second name for the same
     # act is exactly what this module's header warns against.
     "opportunity.reject": "write",
+    # Answering "new information has arrived on something you rejected": re-open it or
+    # keep it rejected. The same weight as the rejection it revisits.
+    "opportunity.review": "write",
     "document.upload": "write",
     "document.promote": "write",
     "email.draft": "write",

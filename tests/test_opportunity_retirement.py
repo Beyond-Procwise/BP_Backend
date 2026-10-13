@@ -44,41 +44,82 @@ class _Cur:
 # Identity
 # ---------------------------------------------------------------------------
 
-def test_upsert_is_keyed_on_the_stable_reference_not_the_run_counter():
+# What upsert reads back for an existing row: id, stage, source_records, impact,
+# review_detail, review_requested_at.
+_EXISTING = [("row-1", "identified", [], 10.0, None, None)]
+
+
+def _statement(cur, verb):
+    """The one statement of this kind, with its parameters."""
+    hits = [(q, p) for q, p in zip(cur.sql, cur.params) if q.lower().startswith(verb)]
+    assert len(hits) == 1, f"expected one {verb}, got {[q[:40] for q in cur.sql]}"
+    return hits[0][0].lower(), hits[0][1]
+
+
+def test_a_finding_is_looked_up_by_identity_never_by_the_run_counter():
     cur = _Cur()
     store.upsert_opportunity(cur, {
         "opportunity_id": "12123",
         "opportunity_ref_id": "pol_det_abc123_supplier_item",
         "detector_type": "Price Benchmark Variance",
+        "supplier_id": "SUP-1", "item_id": "ITM-1",
         "financial_impact_gbp": 100.0,
     })
 
-    sql = cur.sql[0].lower()
-    assert "on conflict (opportunity_ref_id)" in sql
-    assert "on conflict (opportunity_id)" not in sql
+    lookups = [q.lower() for q in cur.sql if q.lower().startswith("select")]
+    assert "where subject_key=%s" in lookups[0]
+    assert "where opportunity_ref_id=%s" in lookups[1]
+    assert not any("where opportunity_id" in q for q in lookups)
+
+
+def test_a_new_row_is_not_stored_under_the_run_counter():
+    """opportunity_id is the primary key and the counter restarts at 1 every run, so
+    a new finding numbered like an existing row was refused -- and took the whole
+    run's save down with it."""
+    cur = _Cur()
+    stored = store.upsert_opportunity(cur, {
+        "opportunity_id": "1", "opportunity_ref_id": "ref-1",
+        "supplier_id": "SUP-1", "item_id": "ITM-1", "financial_impact_gbp": 10.0,
+    })
+
+    _, params = _statement(cur, "insert")
+    assert stored == params[0]
+    assert stored != "1" and stored.startswith("opp:")
+
+
+def test_an_id_the_detector_chose_itself_is_kept():
+    cur = _Cur()
+    stored = store.upsert_opportunity(cur, {
+        "opportunity_id": "dupinv:INV-9", "opportunity_ref_id": "duplicate_invoice_a_b",
+        "financial_impact_gbp": 10.0,
+    })
+
+    assert stored == "dupinv:INV-9"
 
 
 def test_re_detection_clears_a_previous_retirement():
     """A finding that comes back is live again, not left marked as retired."""
-    cur = _Cur()
+    cur = _Cur(rows=_EXISTING)
     store.upsert_opportunity(cur, {
         "opportunity_id": "1",
         "opportunity_ref_id": "ref-1",
         "financial_impact_gbp": 10.0,
     })
 
-    assert "retired_at=null" in cur.sql[0].lower().replace(" ", "")
+    sql, _ = _statement(cur, "update")
+    assert "retired_at=null" in sql.replace(" ", "")
 
 
 def test_a_progressed_stage_is_still_never_demoted():
-    cur = _Cur()
+    cur = _Cur(rows=_EXISTING)
     store.upsert_opportunity(cur, {
         "opportunity_id": "1", "opportunity_ref_id": "ref-1",
         "financial_impact_gbp": 10.0,
     })
 
-    sql = cur.sql[0].lower()
-    assert "else proc.bp_opportunity.stage end" in sql
+    sql, _ = _statement(cur, "update")
+    assert "else stage end" in sql
+    assert "to_state='rejected'" in sql
 
 
 def test_deal_id_is_persisted_when_the_finding_carries_one():
@@ -93,9 +134,9 @@ def test_deal_id_is_persisted_when_the_finding_carries_one():
         "deal_id": "DEALV2-005049",
     })
 
-    sql = cur.sql[0].lower()
+    sql, params = _statement(cur, "insert")
     assert "deal_id" in sql
-    assert "DEALV2-005049" in cur.params[0]
+    assert "DEALV2-005049" in params
 
 
 def test_deal_id_falls_back_to_calculation_details():
@@ -106,7 +147,8 @@ def test_deal_id_falls_back_to_calculation_details():
         "calculation_details": {"deal_id": "DEALV2-000001"},
     })
 
-    assert "DEALV2-000001" in cur.params[0]
+    _, params = _statement(cur, "insert")
+    assert "DEALV2-000001" in params
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +157,7 @@ def test_deal_id_falls_back_to_calculation_details():
 
 def test_retire_only_touches_identified_rows():
     cur = _Cur()
-    store.retire_missing(cur, seen_ref_ids=["ref-a"],
+    store.retire_missing(cur, seen_ids=["ref-a"],
                          detector_types=["Price Benchmark Variance"])
 
     sql = cur.sql[0].lower()
@@ -128,7 +170,7 @@ def test_retire_is_scoped_to_the_detectors_this_run_produced():
     """A detector that returned nothing is indistinguishable from a broken one
     (proc.contracts does not exist in this corpus), so its findings are left."""
     cur = _Cur()
-    store.retire_missing(cur, seen_ref_ids=["ref-a"],
+    store.retire_missing(cur, seen_ids=["ref-a"],
                          detector_types=["Price Benchmark Variance"])
 
     assert "detector_type" in cur.sql[0].lower()
@@ -139,7 +181,7 @@ def test_retire_is_scoped_to_the_detectors_this_run_produced():
 
 def test_retire_does_nothing_without_detectors():
     cur = _Cur()
-    n = store.retire_missing(cur, seen_ref_ids=[], detector_types=[])
+    n = store.retire_missing(cur, seen_ids=[], detector_types=[])
 
     assert n == 0
     assert cur.sql == [], "a run that produced no findings must retire nothing"
@@ -152,7 +194,7 @@ def test_retire_spares_findings_below_this_runs_threshold():
     never a candidate for re-detection — its absence means nothing.
     """
     cur = _Cur()
-    store.retire_missing(cur, seen_ref_ids=["ref-a"], detector_types=["D"],
+    store.retire_missing(cur, seen_ids=["ref-a"], detector_types=["D"],
                          min_impact=20000.0)
 
     sql = cur.sql[0].lower().replace(" ", "")
@@ -162,7 +204,7 @@ def test_retire_spares_findings_below_this_runs_threshold():
 
 def test_retire_keeps_findings_this_run_still_sees():
     cur = _Cur()
-    store.retire_missing(cur, seen_ref_ids=["ref-a", "ref-b"],
+    store.retire_missing(cur, seen_ids=["ref-a", "ref-b"],
                          detector_types=["D"])
 
     sql = cur.sql[0].lower()

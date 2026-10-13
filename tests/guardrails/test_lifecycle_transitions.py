@@ -102,13 +102,16 @@ _OPP_ALLOWED = [
     ("negotiation", "agreed"), ("negotiation", "realised"),
     ("negotiation", "closed"), ("negotiation", "rejected"),
     ("agreed", "realised"), ("agreed", "closed"), ("agreed", "rejected"),
+    # A rejection is a person's judgement on the evidence of the day. When new
+    # information arrives they may take it back (opportunity_store.resolve_review).
+    ("rejected", "identified"),
 ]
 _OPP_REFUSED = [
     ("realised", "identified"), ("realised", "agreed"), ("realised", "rejected"),
     ("realised", "closed"),
     ("agreed", "negotiation"), ("negotiation", "identified"),
     ("closed", "identified"), ("closed", "negotiation"),
-    ("rejected", "identified"), ("rejected", "closed"),
+    ("rejected", "closed"), ("rejected", "negotiation"), ("rejected", "realised"),
 ]
 
 
