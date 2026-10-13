@@ -277,6 +277,27 @@ class AgentOutput:
     agentic_plan: Optional[str] = None
     context_snapshot: Optional[Dict[str, Any]] = None
 
+def _context_dataset_writer_for(settings: Any) -> Any:
+    """The writer an agent captures its runs with, or None when capture is off.
+
+    Off means ``context_training_capture_enabled`` is false or the directory is
+    blank. The directory is only created when something will be written to it.
+    """
+    if not (ConversationDatasetWriter and TrainingConfig):
+        return None
+    if not getattr(settings, "context_training_capture_enabled", True):
+        return None
+    try:
+        data_dir = getattr(
+            settings, "context_training_data_dir", TrainingConfig().data_dir
+        )
+        if data_dir:
+            return ConversationDatasetWriter(data_dir)
+    except Exception:
+        logger.debug("Failed to initialise context dataset writer", exc_info=True)
+    return None
+
+
 class BaseAgent:
     DEFAULT_AGENTIC_PLAN_STEPS: Tuple[str, ...] = (
         "Review the incoming context and clarify the task objectives.",
@@ -305,18 +326,8 @@ class BaseAgent:
         self.prompt_engine = prompt_engine
         self.learning_repository = getattr(agent_nick, "learning_repository", None)
         dataset_writer = getattr(agent_nick, "_context_dataset_writer", None)
-        if dataset_writer is None and ConversationDatasetWriter and TrainingConfig:
-            try:
-                data_dir = getattr(
-                    self.settings,
-                    "context_training_data_dir",
-                    TrainingConfig().data_dir if TrainingConfig else None,
-                )
-                if data_dir:
-                    dataset_writer = ConversationDatasetWriter(data_dir)
-            except Exception:
-                logger.debug("Failed to initialise context dataset writer", exc_info=True)
-                dataset_writer = None
+        if dataset_writer is None:
+            dataset_writer = _context_dataset_writer_for(self.settings)
             if dataset_writer is not None:
                 setattr(agent_nick, "_context_dataset_writer", dataset_writer)
         self._context_dataset_writer = dataset_writer
