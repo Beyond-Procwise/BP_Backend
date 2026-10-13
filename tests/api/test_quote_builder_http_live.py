@@ -1,0 +1,158 @@
+"""The Quote builder over HTTP against a real database: the journey the screen makes,
+with only the permission gate stood in for (it has its own tests)."""
+import datetime as dt
+import json
+import uuid
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from api.routers import quote_builder as qb
+from src.services import guardrail
+from src.services.sell_side import quote_agent
+from tests.sell_side.conftest import SENTINEL, live, live_db  # noqa: F401  (fixture)
+
+pytestmark = live
+TODAY = dt.date.today()
+_OK = guardrail.Decision(allowed=True, reason="stated", policy_name="P", policy_id=1)
+
+
+class _Who:
+    def __init__(self, subject):
+        self.subject = subject
+
+
+@pytest.fixture
+def http(live_db, monkeypatch):
+    conn, _ = live_db
+    monkeypatch.setattr(qb, "gate", lambda *a, **k: _OK)
+    monkeypatch.setattr(qb, "_require_margin_permit", lambda *a, **k: None)
+    who = {"now": f"{SENTINEL}-drafter"}
+    app = FastAPI()
+    app.include_router(qb.router)
+    app.dependency_overrides[qb.require_user] = lambda: _Who(who["now"])
+    client = TestClient(app)
+    client.who = who
+    deal = f"{SENTINEL}-DEAL-{uuid.uuid4().hex[:8]}"
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO proc.bp_deal (deal_id) VALUES (%s)", (deal,))
+    conn.commit()
+    client.deal, client.conn = deal, conn
+    return client
+
+
+def _body(**over):
+    return {"id": "q_local_1", "status": "draft", "number": None, "version": 1,
+            "currency": "GBP", "category": "Platform / Enterprise",
+            "issuedAt": TODAY.isoformat(),
+            "validUntil": (TODAY + dt.timedelta(days=30)).isoformat(),
+            "preparedBy": "A. Okafor", "customer": {"name": "Kestrel Freight", "contact": "A. Reyes"},
+            "scopeHtml": "<p>Scope</p>", "assumptionsHtml": "",
+            "lines": [{"id": "l_local_1", "tag": "product", "description": "Seats", "qty": 340,
+                       "unit": "seat", "cost": 125, "markupPct": 60, "unitPrice": 200,
+                       "discountPct": 4}],
+            "terms": {"payment": "Net 30", "start": "", "lengthMonths": 12, "renewal": "", "sla": ""},
+            "conditions": [], "checks": {"marginFloorPct": 30}, **over}
+
+
+def test_the_journey_from_a_blank_quote_to_an_approved_one(http):
+    # started with no deal, saved, and given the server's own id
+    r = http.post("/spendiq/quotes", json=_body(dealId=None))
+    assert r.status_code == 200, r.text
+    q = r.json()
+    assert q["id"].isdigit() and q["dealId"] is None and q["number"] is None
+    assert q["lines"][0]["unitPrice"] == "200.0000", "money leaves as a string, never a float"
+    assert q["checks"]["marginFloorPct"] is None, "the screen's own 30 was not taken as policy"
+    assert q["checks"]["sources"]["marginFloorPct"] == "not_set"
+
+    # linked to its deal, and then it is the deal's quote
+    r = http.put(f"/spendiq/quotes/{q['id']}", json=_body(dealId=http.deal, revision=q["revision"]))
+    assert r.status_code == 200, r.text
+    listed = http.get(f"/spendiq/deals/{http.deal}/quotes").json()
+    assert [x["id"] for x in listed] == [q["id"]] and listed[0]["dealId"] == http.deal
+
+    # a second quote on the same deal is refused in words
+    r = http.post(f"/spendiq/deals/{http.deal}/quotes", json=_body())
+    assert r.status_code == 409 and "already has quote" in r.json()["detail"]
+
+    # a stale save is refused; a bad line is a 422 naming the field
+    assert http.put(f"/spendiq/quotes/{q['id']}",
+                    json=_body(revision=q["revision"])).status_code == 409
+    r = http.put(f"/spendiq/quotes/{q['id']}", json=_body(lines=[{"qty": 0, "unitPrice": 1}]))
+    assert r.status_code == 422 and "qty" in r.json()["detail"]
+
+    # review: the drafter cannot approve their own; a reviewer can, with conditions
+    assert http.post(f"/spendiq/quotes/{q['id']}/review").json()["status"] == "in-review"
+    assert q["id"] in [x["id"] for x in http.get("/spendiq/quotes/review-queue").json()]
+    r = http.post(f"/spendiq/quotes/{q['id']}/approve", json={"conditions": ["Mine"]})
+    assert r.status_code == 409 and "their own" in r.json()["detail"]
+    http.who["now"] = f"{SENTINEL}-reviewer"
+    done = http.post(f"/spendiq/quotes/{q['id']}/approve",
+                     json={"conditions": ["Price held to year end"]}).json()
+    assert done["status"] == "approved" and done["conditions"] == ["Price held to year end"]
+    assert done["approvedBy"] == f"{SENTINEL}-reviewer"
+    assert http.get("/spendiq/quotes/999999999").status_code == 404
+
+
+def test_the_agent_proposes_over_http_and_the_quote_is_untouched(http, monkeypatch):
+    q = http.post(f"/spendiq/deals/{http.deal}/quotes", json=_body()).json()
+    monkeypatch.setattr(quote_agent, "_default_prompt", lambda: "{quote} {message}")
+    monkeypatch.setattr(quote_agent, "_default_busy", lambda: False)
+    monkeypatch.setattr(quote_agent, "ollama_generate", lambda prompt, **kw: json.dumps(
+        {"refused": "", "intents": [{"op": "markup_all", "percent": 40}]}))
+
+    r = http.post(f"/spendiq/quotes/{q['id']}/agent",
+                  json={"message": "apply 40% markup to all items", "created_by": "x"})
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["change"] == {"lines": [{"id": q["lines"][0]["id"], "markupPct": "40",
+                                        "unitPrice": "175.0000"}]}
+    assert out["refused"] is None and out["session_id"] == q["id"]
+    after = http.get(f"/spendiq/quotes/{q['id']}").json()
+    assert after["lines"] == q["lines"] and after["revision"] == q["revision"]
+
+    # turned down: kept on the quote's trail
+    r = http.post(f"/spendiq/quotes/{q['id']}/agent/dismiss",
+                  json={"summary": out["summary"], "message": "apply 40% markup to all items"})
+    assert r.status_code == 200
+    with http.conn.cursor() as cur:
+        cur.execute("SELECT details->>'proposal' FROM proc.bp_agent_actions WHERE doc_pk = %s "
+                    "AND action_type = 'sales_quote.proposal_dismissed'", (q["id"],))
+        assert cur.fetchone()[0] == out["summary"]
+    http.conn.rollback()
+
+
+def test_with_no_stored_prompt_the_agent_is_unavailable_rather_than_improvising(http, monkeypatch):
+    q = http.post(f"/spendiq/deals/{http.deal}/quotes", json=_body()).json()
+
+    def _missing():
+        raise quote_agent.AgentUnavailable("prompt unavailable: sales_quote_drafting")
+    monkeypatch.setattr(quote_agent, "_default_prompt", _missing)
+    r = http.post(f"/spendiq/quotes/{q['id']}/agent", json={"message": "40% markup"})
+    assert r.status_code == 503 and "prompt unavailable" in r.json()["detail"]
+
+
+def test_the_company_profile_round_trips_and_starts_empty(http, monkeypatch):
+    """Under a LIVETEST key: the real profile is on every quote that goes out, and a test
+    must not blank it even for a moment."""
+    key = f"{SENTINEL}_entity_profile"
+    monkeypatch.setattr(qb.entity_profile, "CONFIG_KEY", key)
+
+    def _clear():
+        with http.conn.cursor() as cur:
+            cur.execute("DELETE FROM proc.bp_admin_config WHERE config_key = %s", (key,))
+        http.conn.commit()
+
+    _clear()
+    try:
+        empty = http.get("/entity/profile").json()
+        assert empty["legalName"] is None and empty["bank"]["iban"] is None
+        saved = http.put("/entity/profile", json={
+            "legalName": f"{SENTINEL} Trading Ltd", "vatNumber": "GB000",
+            "bank": {"name": "Bank", "sortCode": "00-00-00", "accountNumber": "00000000"}}).json()
+        assert saved["legalName"] == f"{SENTINEL} Trading Ltd" and saved["tradingName"] is None
+        assert saved["updatedBy"] == f"{SENTINEL}-drafter"
+        assert http.get("/entity/profile").json()["bank"]["sortCode"] == "00-00-00"
+    finally:
+        _clear()

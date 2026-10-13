@@ -80,6 +80,7 @@ from api.routers import draft_assurance as draft_assurance_router
 from api.routers import email_learning as email_learning_router
 from api.routers import catalog as catalog_router
 from api.routers import sales as sales_router
+from api.routers import quote_builder as quote_builder_router
 from api.routers import reports as reports_router
 from api.routers import triage as triage_router
 from api.routers import atb as atb_router
@@ -611,6 +612,7 @@ _AUTHENTICATED_ROUTERS = [
     email_learning_router.router,
     catalog_router.router,
     sales_router.router,
+    quote_builder_router.router,
     reports_router.router,
     triage_router.router,
     i18n_router.router,

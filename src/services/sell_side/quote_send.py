@@ -188,6 +188,13 @@ def prepare(conn: Any, sales_quote_id: int, *, principal: Any, sender: Optional[
     check("quote_numbered", numbered,
           "The quote has its number, or is given one when it is sent." if numbered else
           "The quote was issued without a number and cannot be sent.")
+    # A quote drafted in the Quote builder may be started before its deal exists; it is
+    # linked before it goes to a customer (ruled 2026-10-12). An account quote is the
+    # reseller's and was never on a deal.
+    on_record = bool(quote.get("account_id") or quote.get("deal_id"))
+    check("linked_to_deal", on_record,
+          "The quote is on a deal." if on_record else
+          "The quote is not linked to a deal yet; link it before it is sent.")
     asked_for_unknown = contact is None and (contact_id is not None or quote.get("contact_id"))
     check("has_recipient", valid_address(to),
           "The quote has a contact with an email address." if valid_address(to) else
