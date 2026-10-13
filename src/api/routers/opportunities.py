@@ -25,7 +25,7 @@ from api.endpoint_gate import require as gate
 from src.services.opportunity_dashboard import build_opportunities_dashboard, detailed_opportunities
 from src.services.opportunity_linkage import link_opportunities_to_deals
 from src.services.lifecycle import IllegalTransition
-from src.services.opportunity_buckets import list_buckets
+from src.services.opportunity_buckets import group as group_buckets, list_buckets
 from src.services.opportunity_store import resolve_review, set_stage, sync_findings_from_json
 from src.services.db import get_conn
 
@@ -85,18 +85,35 @@ def get_opportunities_by_deal(deal_id: str) -> dict:
     cols = ["opportunity_id", "detector_type", "category_id", "supplier_name",
             "item_description", "financial_impact_gbp", "stage",
             "ml_priority_score", "quote_id"]
+    # Read for grouping only -- which rows are levers on one supplier and item, and
+    # whether new information is waiting on a rejection. Not returned as they are.
+    grouping = ["supplier_id", "item_id", "unit_price", "quantity", "calculation_details",
+                "source_records", "detected_on", "review_requested_at", "review_detail"]
     try:
         with get_conn() as conn:
             cur = conn.cursor()
             cur.execute(
-                f"select {', '.join(cols)} from proc.bp_opportunity "
+                f"select {', '.join(cols + grouping)} from proc.bp_opportunity "
                 "where deal_id = %s order by financial_impact_gbp desc nulls last",
                 (deal_id,))
             rows = cur.fetchall() or []
     except Exception as exc:  # noqa: BLE001
         logger.exception("by-deal opportunities failed for %s", deal_id)
         raise HTTPException(status_code=500, detail=str(exc))
-    return {"deal_id": deal_id, "opportunities": [dict(zip(cols, r)) for r in rows]}
+    full = [dict(zip(cols + grouping, r)) for r in rows]
+    buckets = group_buckets(full)["buckets"]
+    in_bucket = {str(lever["opportunityId"]): b["bucketId"]
+                 for b in buckets for lever in b["levers"]}
+    opportunities = []
+    for row in full:
+        asked = row.get("review_requested_at") is not None
+        opportunities.append({
+            **{c: row.get(c) for c in cols},
+            "bucket_id": in_bucket.get(str(row.get("opportunity_id"))),
+            "review_requested": asked,
+            "what_changed": row.get("review_detail") if asked else None,
+        })
+    return {"deal_id": deal_id, "opportunities": opportunities, "buckets": buckets}
 
 
 @router.post("/link-deals", summary="Link opportunities to their deal via anchoring quote")
