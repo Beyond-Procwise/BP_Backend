@@ -223,3 +223,32 @@ def test_the_tool_that_sends_email_is_not_offered_to_pick(app):
     resp = _as(app, "sub-editor").get("/agents/tool-options")
     assert resp.status_code == 200, resp.text
     assert [t["key"] for t in resp.json()["tools"]] == ["get_corpus_facts", "get_policy"]
+
+
+def test_required_calculations_are_checked_stored_and_removed(app):
+    client = _as(app, "sub-editor")
+
+    resp = client.patch("/agents/eu-negotiator",
+                        json={"calculations": ["supplier.payment_terms_score"]})
+    assert resp.status_code == 200, resp.text
+    assert _stored(app)["calculations"] == ["supplier.payment_terms_score"]
+
+    client.patch("/agents/eu-negotiator", json={"calculations": []})
+    assert "calculations" not in _stored(app)
+
+
+@pytest.mark.parametrize("bad", ["supplier.vibes", "supplier.criterion_normalisation"])
+def test_a_calculation_that_cannot_be_required_is_refused_and_nothing_is_saved(app, bad):
+    resp = _as(app, "sub-editor").patch("/agents/eu-negotiator", json={"calculations": [bad]})
+
+    assert resp.status_code == 422 and bad in resp.json()["detail"]
+    assert "calculations" not in _stored(app)
+
+
+def test_the_calculations_an_agent_can_be_required_to_run_are_listed(app):
+    resp = _as(app, "sub-editor").get("/agents/calculation-options")
+
+    assert resp.status_code == 200
+    keys = {c["key"] for c in resp.json()["calculations"]}
+    assert "supplier.payment_terms_score" in keys
+    assert "supplier.criterion_normalisation" not in keys      # scores a set: not yet

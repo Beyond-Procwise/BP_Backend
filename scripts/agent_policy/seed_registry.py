@@ -20,6 +20,8 @@ FIXED_TOOLS = {
     "get_policy": ["query"],
     "get_prompt": ["query"],
     "get_corpus_facts": ["query"],
+    "list_calculations": ["family", "name"],
+    "run_calculation": ["name", "inputs", "rows"],
 }
 
 CHECKPOINTS = [

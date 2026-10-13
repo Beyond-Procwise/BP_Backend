@@ -492,12 +492,74 @@ class BaseAgent:
 
         task = _render_node_task(context.input_data)
         started_at = datetime.utcnow()
+        # The calculations this agent was declared to need are run first and
+        # stated in its task. It is not asked whether to run them, and the task
+        # that is recorded is the task it was actually given.
+        calculations = self._required_calculation_results(context)
+        if calculations:
+            from services import calculation_tools
+
+            task = f"{task}\n\n{calculation_tools.render_required(calculations)}"
         with count_tokens() as usage:
             result, outputs, outputs_error = self._reason_and_fill(context, task)
         run_id, recorded = self._record_reasoning_run(
             context, task, result, started_at, outputs=outputs, usage=usage
         )
-        return self._tool_loop_output(result, outputs, outputs_error, run_id, recorded, usage)
+        output = self._tool_loop_output(result, outputs, outputs_error, run_id, recorded, usage)
+        if calculations:
+            output.data["calculations"] = calculations
+        if result.answer and not result.error:
+            untraced = self._untraced_figures(task, result)
+            # Reported, not enforced: the answer stands, and a reader can see
+            # which of its figures were not read from anything the run was given.
+            output.data["untraced_figures"] = untraced
+            if untraced:
+                logger.warning(
+                    "run %s of %s states figures found in nothing it was given: %s",
+                    run_id, self._governance_slug(), ", ".join(untraced),
+                )
+        return output
+
+    def _required_calculation_results(
+        self, context: "AgentContext"
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Run the calculations declared on this agent, or None if it has none.
+
+        A failure to run them is not a quiet absence: each is reported to the
+        agent as not assessed, so it cannot read silence as licence to estimate.
+        """
+        names = getattr(self, "required_calculations", None)
+        if not names:
+            return None
+        try:
+            from services import calculation_tools
+
+            return calculation_tools.run_required(
+                names, context.input_data, trace_id=context.workflow_id
+            )
+        except Exception as exc:
+            logger.error(
+                "required calculations of %s could not be run", self._governance_slug(),
+                exc_info=True,
+            )
+            return [
+                {"calculation": name, "assessed": False,
+                 "why": f"the calculation could not be run: {exc}"}
+                for name in names
+            ]
+
+    def _untraced_figures(self, task: str, result: Any) -> List[str]:
+        try:
+            from services import calculation_tools
+
+            return calculation_tools.untraced_figures(
+                result.answer,
+                [task, getattr(result, "system", "") or "",
+                 *(c.result for c in result.calls if c.ok)],
+            )
+        except Exception:  # pragma: no cover - a check must not fail the run it checks
+            logger.warning("figure check failed for %s", self._governance_slug(), exc_info=True)
+            return []
 
     def _reason_and_fill(self, context: "AgentContext", task: str):
         """The run itself: reason with tools, then fill the named outputs.
