@@ -53,3 +53,8 @@ backups/neo4j/
 
 # Supervised KG rebuild transcripts (scripts/kg_full_rebuild.py)
 logs/kg_rebuild*.log
+
+# Local debris that was one `git add .` from the remote: a development database
+# and negotiation run dumps written to the project root.
+/procwise_dev.sqlite
+/neg_*.json

@@ -173,3 +173,28 @@ def test_base_agent_writes_context_dataset(tmp_path):
     assert "context" in payload and "response" in payload
     assert "digital" in payload["context"]
     assert "scanned" in payload["context"]
+
+
+def test_agent_capture_can_be_switched_off(tmp_path):
+    """Capture had no off switch short of blanking the directory setting."""
+    dataset_dir = tmp_path / "context"
+    on = SimpleNamespace(context_training_data_dir=str(dataset_dir))
+    off = SimpleNamespace(
+        context_training_data_dir=str(dataset_dir),
+        context_training_capture_enabled=False,
+    )
+
+    assert base_agent._context_dataset_writer_for(on) is not None
+    assert base_agent._context_dataset_writer_for(off) is None
+
+
+def test_switching_capture_off_does_not_create_the_directory(tmp_path):
+    dataset_dir = tmp_path / "never"
+    off = SimpleNamespace(
+        context_training_data_dir=str(dataset_dir),
+        context_training_capture_enabled=False,
+    )
+
+    base_agent._context_dataset_writer_for(off)
+
+    assert not dataset_dir.exists()

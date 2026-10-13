@@ -188,3 +188,55 @@ def test_purge_all_reports_each_directory(monkeypatch, captures):
     monkeypatch.setattr(R, "CAPTURE_DIRS", (root,))
     monkeypatch.setenv("CAPTURE_RETENTION_DAYS", "30")
     assert R.purge_all() == {str(root): 1}
+
+
+# --------------------------------------------------------------------------
+# Every place a capture is written is a place that is swept
+# --------------------------------------------------------------------------
+def _known():
+    return {d.resolve() for d in R.CAPTURE_DIRS}
+
+
+def test_the_directory_the_service_writes_agent_captures_to_is_swept():
+    """The sweep named data/conversations/ while the running service wrote to
+    settings.context_training_data_dir, which defaults somewhere else. 254 files
+    older than the window sat in the real directory, untouched."""
+    from config.settings import Settings
+
+    default = Settings.model_fields["context_training_data_dir"].default
+    assert Path(default).resolve() in _known(), default
+
+
+@pytest.mark.parametrize("legacy", [
+    "src/data/conversations",
+    "src/resources/training/conversations",
+])
+def test_the_older_capture_directories_are_swept_too(legacy):
+    """Earlier builds wrote the same captures here. Nothing writes to them now,
+    which is exactly why nothing would ever have cleared them."""
+    assert (R._ROOT / legacy).resolve() in _known(), legacy
+
+
+# --------------------------------------------------------------------------
+# A capture is never something git carries
+# --------------------------------------------------------------------------
+def _git(*args: str) -> str:
+    import subprocess
+
+    done = subprocess.run(["git", "-C", str(R._ROOT), *args],
+                          capture_output=True, text=True)
+    if done.returncode not in (0, 1):
+        pytest.skip(f"not a git checkout: {done.stderr.strip()}")
+    return done.stdout
+
+
+@pytest.mark.parametrize("directory", R.CAPTURE_DIRS, ids=lambda d: d.name + "@" + d.parent.name)
+def test_no_capture_is_tracked_and_new_ones_are_ignored(directory):
+    """281 captures were committed and pushed, prompts and supplier emails among
+    them, because the directory the service wrote to was neither ignored nor
+    swept. Ageing a file out of the disk does nothing for a copy in the remote."""
+    rel = str(directory.relative_to(R._ROOT))
+
+    assert _git("ls-files", "--", rel) == "", f"captures are tracked under {rel}"
+    assert _git("check-ignore", "--", f"{rel}/conversation-x.json"), (
+        f"{rel} is not ignored, so the next capture is one `git add .` from the remote")

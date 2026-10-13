@@ -67,6 +67,12 @@ class Settings(BaseSettings):
     )
     llamaparse_api_key: Optional[str] = Field(default=None, env="LLAMAPARSE_API_KEY")
     llamaparse_base_url: Optional[str] = Field(default=None, env="LLAMAPARSE_BASE_URL")
+    # Whether an agent run writes its context and response to
+    # context_training_data_dir. On by default because it always was; what is
+    # written is aged out by services/capture_retention.
+    context_training_capture_enabled: bool = Field(
+        default=True, env="CONTEXT_TRAINING_CAPTURE_ENABLED"
+    )
     context_training_data_dir: str = Field(
         default=os.path.join(PROJECT_ROOT, "resources", "training", "conversations"),
         env="CONTEXT_TRAINING_DATA_DIR",

@@ -1,7 +1,7 @@
 """Age out the on-disk captures of document and agent content.
 
-Two directories accumulate content lifted out of customer documents, outside the
-database and outside every retention rule the product has:
+These directories accumulate content lifted out of customer documents, outside
+the database and outside every retention rule the product has:
 
   ``artifacts/llm_failures/``  prompt head, prompt tail and the model's raw
                                response, written by
@@ -9,13 +9,21 @@ database and outside every retention rule the product has:
                                failed LLM call.
   ``data/conversations/``      agent context and response, written by
                                ``models.context_trainer``.
+  ``resources/training/conversations/``
+                               the same captures, in the directory the running
+                               service actually writes to
+                               (``settings.context_training_data_dir``). The
+                               sweep named the line above and missed this one.
+  ``src/data/conversations/``, ``src/resources/training/conversations/``
+                               where earlier builds wrote them. Nothing writes
+                               there now, so nothing else would clear them.
 
-Neither was ever deleted. A right-to-erasure request could not reach them, and
+None was ever deleted. A right-to-erasure request could not reach them, and
 the honest answer to "how long do you keep this" was "forever".
 
 DELETING BY AGE IS THE DANGEROUS PART, so the shape here is deliberately narrow:
 
-  * Only the two directories named in ``CAPTURE_DIRS`` may be purged. Passing
+  * Only the directories named in ``CAPTURE_DIRS`` may be purged. Passing
     anything else raises rather than proceeding — an age-based delete pointed at
     a source tree is a data-loss incident, not a bug to find later.
   * Files only. Directories are left alone.
@@ -29,8 +37,10 @@ DELETING BY AGE IS THE DANGEROUS PART, so the shape here is deliberately narrow:
     nobody types that on purpose.
 
 This does not solve retention generally — the database, S3 and the external
-vector index all still keep what they keep. It closes the two places where
-document text was accumulating on local disk with no policy at all.
+vector index all still keep what they keep. It closes the places where document
+text was accumulating on local disk with no policy at all. A deployment that
+points ``CONTEXT_TRAINING_DATA_DIR`` somewhere else writes outside this list,
+and has to add that directory here to have it swept.
 """
 from __future__ import annotations
 
@@ -52,6 +62,9 @@ _ROOT = Path(__file__).resolve().parent.parent.parent
 CAPTURE_DIRS: tuple[Path, ...] = (
     _ROOT / "artifacts" / "llm_failures",
     _ROOT / "data" / "conversations",
+    _ROOT / "resources" / "training" / "conversations",
+    _ROOT / "src" / "data" / "conversations",
+    _ROOT / "src" / "resources" / "training" / "conversations",
 )
 
 def retention_days() -> int:
