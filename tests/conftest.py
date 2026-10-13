@@ -81,7 +81,8 @@ GOVERNED_LIMIT_SEED = {
     "agent_policy_conflicts": {"precedent_count": 5, "precedent_value_range_pct": 20},
     # 2026-10-13: the prompt engine. How long rendered prompt text is kept, and whether a
     # prompt's wording is passed through the output-safety scrubber to its own screen.
-    "prompt_engine": {"manifest_retention_days": 7, "wording_read_passthrough": True},
+    "prompt_engine": {"manifest_retention_days": 7, "wording_read_passthrough": True,
+                      "render_retry_seconds": 30},
 }
 
 

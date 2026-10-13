@@ -207,15 +207,10 @@ def _registry():
     return registry
 
 
-def _query(sql: str, params: tuple) -> List[tuple]:
-    from services.db import get_conn
+def _query(sql: str, params: tuple, *, write: bool = False) -> List[tuple]:
+    from services.prompt_engine import db
 
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute(sql, params)
-        rows = cur.fetchall() if cur.description else []
-        cur.close()
-    return rows
+    return db.query(sql, params, write=write)
 
 
 def _pack_in_use(name: str) -> Optional[int]:
@@ -251,6 +246,7 @@ def _store(body: Dict[str, Any], manifest: Dict[str, Any], trace: Dict[str, Any]
          manifest["prompt_id"], manifest["version"], trace.get("run_id"),
          trace.get("step_id"), int(attempt) if attempt is not None else None,
          trace.get("decision_id")),
+        write=True,
     )
 
 
@@ -322,7 +318,7 @@ def sweep() -> int:
         "WITH gone AS (UPDATE proc.bp_prompt_render "
         "SET rendered = NULL, text_removed_at = now() "
         "WHERE rendered IS NOT NULL AND last_used_at < now() - make_interval(days => %s) "
-        "RETURNING 1) SELECT count(*) FROM gone", (days,))
+        "RETURNING 1) SELECT count(*) FROM gone", (days,), write=True)
     removed = int(rows[0][0]) if rows else 0
     if removed:
         logger.info("prompt render retention: removed the text of %d stored render(s) "

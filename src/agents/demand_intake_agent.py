@@ -53,6 +53,8 @@ import re
 from typing import Any, Dict, Iterable, Optional
 
 from agents.base_agent import BaseAgent
+from services.prompt_engine import client as prompt_client
+from services.prompt_engine.convert import typed_to_braces
 
 logger = logging.getLogger(__name__)
 
@@ -194,11 +196,7 @@ class DemandIntakeAgent(BaseAgent):
         — a model that is down, a timeout, a reply that is not JSON — returns no fields, because
         one model call is not worth losing the requester's session over.
         """
-        template = self.resolve_prompt(PROMPT_NAME)
-        if not template:
-            raise DemandIntakeUnavailable(
-                f"the prompt {PROMPT_NAME} is not installed, so extraction is not authorised")
-        prompt = self._render(str(template), context or {})
+        template, prompt = self._governed_prompt(context or {})
         try:
             # think=False is required: AgentNick is a reasoning model and returns an empty
             # `response` without it (Model Routing Policy). format="json" is what makes the
@@ -221,6 +219,45 @@ class DemandIntakeAgent(BaseAgent):
         # and the screen would tell the requester their words held no values.
         return {"fields": self._fields(parsed, leaked, said, offered, asked),
                 "governed": True, "failed": not answered}
+
+    # ------------------------------------------------------------------
+    def _governed_prompt(self, context: Dict[str, Any]) -> tuple[str, str]:
+        """-> (the wording with its blanks marked `{name}`, the prompt as the model is given it).
+
+        Two ways in, and which one runs is decided by the prompt registry, not by this code:
+
+          * the version in use is a typed template: the prompt engine fills it, checks every
+            value against its declaration, and records exactly what was rendered for this run;
+          * the version in use is still the wording as it was imported (or the registry does not
+            hold it): filled here, as it always was.
+
+        Promoting the typed version switches this agent over; rolling it back switches it back.
+        If the registry cannot be read in the time allowed there is no wording to run under, and
+        this refuses rather than use some other.
+        """
+        try:
+            live = prompt_client.in_use(PROMPT_NAME)
+            if live is not None and live.get("syntax") == "v1":
+                names = [d["name"] for d in live.get("variables") or []]
+                out = prompt_client.render(
+                    PROMPT_NAME, version=live["version"],
+                    vars={name: self._one(context.get(name)) for name in names},
+                    trace=prompt_client.trace(context.get("run_id"), "demand_intake.extract"))
+                return typed_to_braces(live["template"], names), out["instructions"]
+        except prompt_client.PromptUnavailable as exc:
+            raise DemandIntakeUnavailable(
+                f"the prompt {PROMPT_NAME} could not be read, so extraction is not authorised"
+            ) from exc
+        except prompt_client.REFUSALS as exc:
+            raise DemandIntakeUnavailable(
+                f"the prompt {PROMPT_NAME} could not be rendered ({exc.code}), so extraction "
+                f"is not authorised") from exc
+
+        template = self.resolve_prompt(PROMPT_NAME)
+        if not template:
+            raise DemandIntakeUnavailable(
+                f"the prompt {PROMPT_NAME} is not installed, so extraction is not authorised")
+        return str(template), self._render(str(template), context)
 
     # ------------------------------------------------------------------
     @staticmethod

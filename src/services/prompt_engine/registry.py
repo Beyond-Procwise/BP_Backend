@@ -13,12 +13,13 @@ not this module, is what refuses an edit to a saved version.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
 from typing import Any, Dict, Iterable, List, Optional
 
-from services.db import get_conn
+from services.prompt_engine import db
 from services.prompt_engine import templates
 
 LIVE = "live"
@@ -113,12 +114,33 @@ def _version_row(row: Iterable[Any]) -> Dict[str, Any]:
 
 
 def _query(sql: str, params: tuple) -> List[tuple]:
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute(sql, params)
-        rows = cur.fetchall()
-        cur.close()
-    return rows
+    return db.query(sql, params)
+
+
+def _write(sql: str, params: tuple) -> List[tuple]:
+    return db.query(sql, params, write=True)
+
+
+# A saved version never changes (the database refuses it), and neither does a
+# prompt's kind, so both are safe to remember for the life of the process.
+# The POINTER is never remembered: a rollback must be seen by the very next
+# render, in every process.
+_VERSION_CACHE: Dict[tuple, Dict[str, Any]] = {}
+_FRAGMENT_CACHE: Dict[tuple, Optional[Dict[str, Any]]] = {}
+_CACHE_LIMIT = 2048
+
+
+def _remember(cache: Dict[tuple, Any], key: tuple, value: Any) -> Any:
+    if len(cache) >= _CACHE_LIMIT:
+        cache.clear()
+    cache[key] = value
+    return value
+
+
+def forget() -> None:
+    """Drop what is remembered. Only tests that rebuild the tables need this."""
+    _VERSION_CACHE.clear()
+    _FRAGMENT_CACHE.clear()
 
 
 def _kind_of(key: str) -> Optional[str]:
@@ -128,6 +150,9 @@ def _kind_of(key: str) -> Optional[str]:
 
 def _fragment_version(key: str, version: int) -> Optional[Dict[str, Any]]:
     """That version of a fragment, or None if there is no such fragment version."""
+    hit = _FRAGMENT_CACHE.get((key, int(version)))
+    if hit is not None:
+        return dict(hit)
     rows = _query(
         """
         SELECT v.template, v.variables
@@ -136,8 +161,9 @@ def _fragment_version(key: str, version: int) -> Optional[Dict[str, Any]]:
          WHERE r.kind = 'fragment' AND v.prompt_key = %s AND v.version = %s
         """, (key, int(version)))
     if not rows:
-        return None
-    return {"template": rows[0][0], "variables": _loaded(rows[0][1])}
+        return None      # not remembered: the fragment may be saved a moment later
+    return dict(_remember(_FRAGMENT_CACHE, (key, int(version)),
+                          {"template": rows[0][0], "variables": _loaded(rows[0][1])}))
 
 
 def used_by(fragment_key: str, version: Optional[int] = None) -> List[Dict[str, Any]]:
@@ -229,7 +255,7 @@ def save_version(
     last: Optional[Exception] = None
     for _ in range(5):
         try:
-            return int(_query(sql, params)[0][0])
+            return int(_write(sql, params)[0][0])
         except Exception as exc:  # noqa: BLE001 - only the duplicate number is retried
             if "bp_prompt_version_pkey" not in str(exc):
                 raise
@@ -256,11 +282,15 @@ def list_prompts() -> List[Dict[str, Any]]:
 
 def get_version(key: str, version: int) -> Dict[str, Any]:
     _check_key(key)
+    cached = _VERSION_CACHE.get((key, int(version)))
+    if cached is not None:
+        return copy.deepcopy(cached)
     rows = _query(
         f"SELECT {', '.join(_VERSION_COLUMNS)} FROM proc.bp_prompt_version "
         "WHERE prompt_key = %s AND version = %s", (key, int(version)))
     if rows:
-        return _version_row(rows[0])
+        return copy.deepcopy(
+            _remember(_VERSION_CACHE, (key, int(version)), _version_row(rows[0])))
     if _kind_of(key) is None:
         raise PromptNotFound(f"no prompt {key!r}")
     raise VersionNotFound(f"prompt {key!r} has no version {version}")
@@ -332,7 +362,7 @@ def _move(key: str, version: Dict[str, Any], *, pointer: str, change: str,
     ``mirror=False`` is for the import, which records what is already in use
     and must leave the older table exactly as it found it.
     """
-    rows = _query(
+    rows = _write(
         """
         WITH moved AS (
             INSERT INTO proc.bp_prompt_pointer_move

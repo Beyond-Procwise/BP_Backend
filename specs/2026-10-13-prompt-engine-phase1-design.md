@@ -2,8 +2,8 @@
 
 13 Oct 2026. Status: **building. Milestones 2 (registry, import, routes, policies, agent
 instructions) and 3 (typed templates and fragments) are done. Milestone 4 (render, manifest
-store, retention) is done and its tables are on both databases. Next: milestone 5, the
-orchestrator client and one agent end to end.**
+store, retention) is done and its tables are on both databases. Milestone 5 (client, retry,
+the demand-intake agent's two paths) is built; its typed prompt awaits promotion.**
 Built on the Step 0 reuse audit of the same date and the owner's seven answers.
 
 ## 1. What is being built
@@ -160,6 +160,7 @@ prompt injection).
 | Permissions `prompt.read`, `prompt.author`, `prompt.promote` (milestone 2); `prompt.render`, `prompt.manifest_read` (milestone 4) | Separate rights, each with an explicit policy row stating the role. |
 | `PromptEnginePolicy`: `manifest_retention_days` = 7 | How long rendered text is kept. A missing value refuses to sweep rather than guessing. |
 | `PromptEnginePolicy`: `wording_read_passthrough` = true | Whether a prompt's wording reaches its own screens unaltered. |
+| `PromptEnginePolicy`: `render_retry_seconds` = 30 | How long a caller keeps retrying a render that can pass before the step is refused. |
 | Policy `data_residency` | States where prompt and manifest data may be stored. Today: no restriction. Enforcing it is the platform's job, not the prompt engine's. |
 
 ## 10. Decision log
@@ -216,6 +217,14 @@ not rewrite it.
 | 13 Oct | How that is met: after 7 days unused, only the text is removed. The manifest (prompt version, fragment versions, obligations, token count, hash) and the record of which run used it stay; neither holds wording or values. Rendering the same text again stores it again. The 7 days run from the text's last use. | Builder |
 | 13 Oct | No web route for rendering or for reading stored text, for now. | Owner |
 | 13 Oct | The hash covers what the text was made from (prompt, version, fragment versions, obligations) as well as the text. Found by a test: two prompts with identical wording shared one stored record, whose manifest named the wrong prompt. | Builder |
+| 13 Oct | Milestone 5. Measured on the real database: a prompt lookup took about 200 ms because every query opened a new connection. The engine now keeps one connection per thread and remembers saved versions (they cannot change). The pointer is never remembered. Measured after: lookup 11 ms, full render including storing it 27 ms at p95. | Builder |
+| 13 Oct | The "cache keyed on the exact request" the owner accepted is not built. Every render must be recorded against its run, so a cache could only skip reading the pointer, which is the one thing that must be read fresh for a rollback to be seen. Remembering immutable versions gives the speed without that risk. | Builder |
+| 13 Oct | "Retry until complete" is bounded by `PromptEnginePolicy.render_retry_seconds` = 30 unless the caller allows its own time. When it runs out the step is refused; it never runs on other wording. A refusal (missing value, unknown obligation, nothing in use) is raised at once. | Builder — owner to confirm the 30 |
+| 13 Oct | First agent moved: demand intake (one prompt, the smallest). Which path runs is the registry's decision: a typed version in use is rendered by the engine; imported wording is filled as before. Promoting switches the agent over; rolling back switches it back, with no deploy. | Builder |
+| 13 Oct | Conversion to a typed template is mechanical and refused unless it is lossless and fills to the same text character for character. | Builder |
+| 13 Oct | One intended difference: the older fill replaced blanks one after another, so a value containing the name of a later blank had other text substituted into it. The typed fill puts each value in once. | Builder |
+| 13 Oct | Trace ids for now: the run id is the caller's, or a new one if it has none; the step id names the agent step; the attempt is 1. Orchestrator-wide step ids and attempt counting are still to come, with tracing. | Builder |
+| 13 Oct | An agent's instructions failing to reach the registry stays a logged error, not a failed save, until created agents themselves are rendered through the registry. | Builder |
 
 ## 11. Things that move out of prompt-building code
 

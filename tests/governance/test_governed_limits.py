@@ -214,9 +214,10 @@ def test_every_governed_limit_is_present_in_the_live_policy_set():
     # plus the seven negotiation rules that were constants (2026-10-12: max_rounds, the round
     # tactics and final_offer_phrases), plus the Quote builder's margin floor and discount
     # corridor (2026-10-13, sales_quote_pricing: both stated as null, "not set"), plus the
-    # prompt engine's two (2026-10-13: manifest_retention_days, wording_read_passthrough).
-    assert sum(len(r) for r in live.values()) == 78, (
-        f"expected 78 governed values, found "
+    # prompt engine's three (2026-10-13: manifest_retention_days, wording_read_passthrough,
+    # render_retry_seconds).
+    assert sum(len(r) for r in live.values()) == 79, (
+        f"expected 79 governed values, found "
         f"{ {k: len(v) for k, v in live.items()} }")
     for slug, rules in live.items():
         assert rules, f"{slug} states no limits at all"

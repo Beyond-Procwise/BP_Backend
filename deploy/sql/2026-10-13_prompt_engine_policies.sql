@@ -10,6 +10,10 @@
 --                                      fine, provided every read is logged, it is
 --                                      internal, and it is a policy decision).
 --                                      Set false and the wording is scrubbed again.
+--      render_retry_seconds      30    how long a caller keeps retrying a render that
+--                                      fails for a reason that can pass (the database not
+--                                      answering) before the step is refused. It never
+--                                      falls back to other wording.
 --
 -- 2. Three authority rows, in the canonical action vocabulary:
 --      prompt.read      Buyer     see a prompt's wording (every attempt is logged)
@@ -34,7 +38,8 @@ SELECT 'PromptEnginePolicy', 'limit',
          'policy_identifier', 'prompt_engine',
          'rules', jsonb_build_object(
              'manifest_retention_days',  7,
-             'wording_read_passthrough', true)),
+             'wording_read_passthrough', true,
+             'render_retry_seconds',     30)),
        '', 1, 1, now(), 'prompt_engine', now(), 'prompt_engine'
  WHERE NOT EXISTS (
     SELECT 1 FROM proc.bp_policy p
@@ -68,5 +73,13 @@ SELECT v.name, 'authority', v.descr,
  WHERE NOT EXISTS (
     SELECT 1 FROM proc.bp_policy p
      WHERE p.policy_name = v.name AND p.policy_status = 1);
+
+-- A row created before render_retry_seconds existed gains it; one that states it keeps its value.
+UPDATE proc.bp_policy
+   SET policy_details = jsonb_set(policy_details, '{rules,render_retry_seconds}', '30'::jsonb),
+       version = version + 1, last_modified_by = 'prompt_engine', last_modified_date = now()
+ WHERE policy_status = 1
+   AND policy_details->>'policy_identifier' = 'prompt_engine'
+   AND NOT (policy_details->'rules' ? 'render_retry_seconds');
 
 COMMIT;
