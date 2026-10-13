@@ -206,3 +206,13 @@ def test_a_save_that_lost_the_race_is_reported_not_swallowed(db):
     db.rowcount = 0
     with pytest.raises(service.SettingsConflict):
         service.save_settings({"critical_aged_min_days": 30}, by="a", expected_version=3)
+
+
+def test_the_brief_says_whether_to_offer_the_settings(monkeypatch, rules):
+    stub_sections(monkeypatch, momentum=None, critical_aged=None, upcoming=None, approvals=None,
+                  pipeline=None, supplier_emails=None, opportunities=None)
+    monkeypatch.setattr(rbac, "may", lambda role, action_class, policy_engine=None:
+                        role == "Admin" and action_class == "configure")
+    admin = service.build(sign_in(monkeypatch, role="Admin"), conn=FakeConn())
+    buyer = service.build(sign_in(monkeypatch, role="Buyer", buyers=["B1"]), conn=FakeConn())
+    assert admin["canConfigure"] is True and buyer["canConfigure"] is False
