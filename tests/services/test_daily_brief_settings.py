@@ -163,3 +163,14 @@ def test_load_reads_the_saved_row_fresh(monkeypatch, rules):
     monkeypatch.setattr(governed_limits, "rules", read)
     assert settings.load() == rules
     assert seen == {"policy": "daily_brief", "fresh": True}
+
+
+def test_the_migration_also_lets_an_admin_change_the_settings():
+    """Saving is a configure action, and the gate refuses those unless a policy says
+    allow. Shipping the settings without it left nobody able to open them, an Admin
+    included (found on the first live call, 2026-10-13)."""
+    from src.services import actions
+    sql = MIGRATION.read_text()
+    assert actions.action_class("brief.settings.write") == "configure"
+    assert "jsonb_build_array('brief.settings.write')" in sql
+    assert "'required_role', 'Admin'" in sql

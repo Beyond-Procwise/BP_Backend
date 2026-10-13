@@ -61,4 +61,28 @@ $rules$::jsonb),
      WHERE p.policy_details->>'policy_identifier' = 'daily_brief'
        AND p.policy_status = 1);
 
+-- Who may read and change those settings.
+--
+-- brief.settings.write is a configure action, and the gate refuses those unless a policy
+-- states effect=allow -- so until this row exists nobody can open or save the settings,
+-- an Admin included. Admin, because the settings decide what every person is told on
+-- Home, and whether a reader sees everyone's records or only their own.
+INSERT INTO proc.bp_policy (
+    policy_name, policy_type, policy_desc, policy_details,
+    policy_linked_agents, policy_status, version,
+    created_date, created_by, last_modified_date, last_modified_by
+)
+SELECT 'DailyBriefSettingsWriteAuthorityPolicy', 'authority',
+       'Who may read and change the daily brief settings. No agent changes them.',
+       jsonb_build_object(
+         'policy_identifier', 'brief_settings_write_authority',
+         'applies_to', jsonb_build_array('brief.settings.write'),
+         'required_role', 'Admin',
+         'rules', jsonb_build_object('effect', 'allow')),
+       '', 1, 1, now(), 'daily_brief', now(), 'daily_brief'
+ WHERE NOT EXISTS (
+    SELECT 1 FROM proc.bp_policy p
+     WHERE p.policy_details->>'policy_identifier' = 'brief_settings_write_authority'
+       AND p.policy_status = 1);
+
 COMMIT;

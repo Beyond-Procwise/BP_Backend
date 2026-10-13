@@ -10,4 +10,10 @@ DELETE FROM proc.bp_policy
    AND created_by = 'daily_brief'
    AND last_modified_by = 'daily_brief';
 
+-- With this gone nobody can open or save the settings (the gate refuses configure actions
+-- no policy allows); the brief itself is unaffected.
+DELETE FROM proc.bp_policy
+ WHERE policy_details->>'policy_identifier' = 'brief_settings_write_authority'
+   AND created_by = 'daily_brief';
+
 COMMIT;
