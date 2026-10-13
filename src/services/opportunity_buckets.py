@@ -57,6 +57,17 @@ def _mapping(value: Any) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _listing(value: Any) -> list:
+    # A JSONB column normally arrives parsed. It arrives as text when the driver has
+    # been told not to parse it (scripts/testdata/db.py does, process-wide).
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return []
+    return list(value) if isinstance(value, (list, tuple)) else []
+
+
 def _first(calc: dict, keys: tuple) -> Optional[float]:
     for key in keys:
         found = _num(calc.get(key))
@@ -82,7 +93,7 @@ def _lever(row: dict) -> dict:
         else _first(calc, _UNIT_PRICE_KEYS),
         "quantity": _num(row.get("quantity")) if row.get("quantity") is not None
         else _first(calc, _QUANTITY_KEYS),
-        "evidence": row.get("source_records") or [],
+        "evidence": _listing(row.get("source_records")),
         "detectedOn": _iso(row.get("detected_on")),
         # New information has arrived on a lever a person rejected.
         "reviewRequested": asked is not None,

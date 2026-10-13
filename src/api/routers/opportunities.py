@@ -25,7 +25,8 @@ from api.endpoint_gate import require as gate
 from src.services.opportunity_dashboard import build_opportunities_dashboard, detailed_opportunities
 from src.services.opportunity_linkage import link_opportunities_to_deals
 from src.services.lifecycle import IllegalTransition
-from src.services.opportunity_buckets import group as group_buckets, list_buckets
+from src.services.opportunity_buckets import (
+    _mapping as as_mapping, group as group_buckets, list_buckets)
 from src.services.opportunity_store import resolve_review, set_stage, sync_findings_from_json
 from src.services.db import get_conn
 
@@ -111,7 +112,7 @@ def get_opportunities_by_deal(deal_id: str) -> dict:
             **{c: row.get(c) for c in cols},
             "bucket_id": in_bucket.get(str(row.get("opportunity_id"))),
             "review_requested": asked,
-            "what_changed": row.get("review_detail") if asked else None,
+            "what_changed": as_mapping(row.get("review_detail")) if asked else None,
         })
     return {"deal_id": deal_id, "opportunities": opportunities, "buckets": buckets}
 

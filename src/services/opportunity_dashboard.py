@@ -13,7 +13,7 @@ import logging
 from typing import Any, Optional
 
 from src.services.db import get_conn
-from src.services.opportunity_buckets import bucket_id
+from src.services.opportunity_buckets import _mapping, bucket_id
 
 log = logging.getLogger(__name__)
 
@@ -200,7 +200,7 @@ def detailed_opportunities(cur, limit: int = 100) -> list[dict]:
             # whether new information is waiting on a rejection.
             "bucketId": bucket_id(r.get("supplier_id"), r.get("item_id")),
             "reviewRequested": r.get("review_requested_at") is not None,
-            "whatChanged": (r.get("review_detail")
+            "whatChanged": (_mapping(r.get("review_detail"))
                             if r.get("review_requested_at") is not None else None),
         })
     return out
