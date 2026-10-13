@@ -128,6 +128,14 @@ ACTIONS: Dict[str, str] = {
     # Which buyers a Buyer/Viewer may see in reports. Changes what every report shows that person.
     "report.scope.write": "configure",
     "prompt.write": "configure",
+    # The prompt registry. Reading a prompt's wording is a read, but one that is
+    # logged and held to a stated role (PromptWordingAuthorityPolicy): the wording
+    # is internal. Saving a version is a `write` -- it changes nothing in use.
+    # Promoting or rolling back is `configure`: it changes what every agent that
+    # uses the prompt is told, until someone moves the pointer again.
+    "prompt.read": "read",
+    "prompt.author": "write",
+    "prompt.promote": "configure",
     # Authoring a strategy and approving one are configuration: they change
     # what the system will recommend, for every finding that matches, until
     # someone changes it back. Approving a PROPOSAL is a different act -- it
