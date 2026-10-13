@@ -257,15 +257,22 @@ def render(request: Dict[str, Any]) -> Dict[str, Any]:
     with the contract's code and returns no text if anything is wrong.
     ``experiment_key`` is accepted and has no effect in phase 1.
     """
+    from services.prompt_engine import telemetry
+
     registry = _registry()
     key = request.get("prompt_id")
-    if request.get("version") is not None:
-        version = registry.get_version(key, int(request["version"]))
-    else:
-        version = registry.resolve(key, request.get("pointer") or registry.LIVE)
-    body, manifest = compose(version, request, fragment=registry._fragment_version,
-                             pack=_pack_in_use)
-    _store(body, manifest, request.get("trace") or {})
+    with telemetry.render_span(request.get("trace")) as span:
+        span.set(id=key)
+        if request.get("version") is not None:
+            version = registry.get_version(key, int(request["version"]))
+        else:
+            version = registry.resolve(key, request.get("pointer") or registry.LIVE)
+        body, manifest = compose(version, request, fragment=registry._fragment_version,
+                                 pack=_pack_in_use)
+        _store(body, manifest, request.get("trace") or {})
+        span.set(version=manifest["version"], hash=manifest["hash"],
+                 fragments=[f"{k}@{v}" for k, v in manifest["fragments"].items()],
+                 token_count=manifest["token_count"])
     return {**body, "manifest": manifest}
 
 

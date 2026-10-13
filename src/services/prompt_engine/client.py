@@ -44,11 +44,22 @@ class PromptUnavailable(Exception):
 
 
 def trace(run_id: Optional[str], step_id: str, *, attempt: int = 1,
-          decision_id: Optional[str] = None) -> Dict[str, Any]:
+          decision_id: Optional[str] = None, traceparent: Optional[str] = None,
+          baggage: Optional[str] = None) -> Dict[str, Any]:
     """The ids a render is recorded under. A caller with no run of its own gets
-    a new run id, so the render can still be found again."""
-    return {"run_id": run_id or f"run-{uuid.uuid4().hex}", "step_id": step_id,
-            "attempt": int(attempt), "decision_id": decision_id}
+    a new run id, so the render can still be found again.
+
+    ``traceparent`` (W3C) joins the render's span to the caller's trace when the
+    call crosses a queue or a pause; inside one process the current span is
+    joined without it.
+    """
+    out = {"run_id": run_id or f"run-{uuid.uuid4().hex}", "step_id": step_id,
+           "attempt": int(attempt), "decision_id": decision_id}
+    if traceparent:
+        out["traceparent"] = traceparent
+    if baggage:
+        out["baggage"] = baggage
+    return out
 
 
 def _allowed_seconds() -> float:

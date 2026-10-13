@@ -2,8 +2,10 @@
 
 13 Oct 2026. Status: **building. Milestones 2 (registry, import, routes, policies, agent
 instructions) and 3 (typed templates and fragments) are done. Milestone 4 (render, manifest
-store, retention) is done and its tables are on both databases. Milestone 5 (client, retry,
-the demand-intake agent's two paths) is built; its typed prompt awaits promotion.**
+store, retention) is done and its tables are on both databases. Milestones 5 (client, retry,
+the demand-intake agent's two paths) and 6 (tracing, the telemetry scan, the runbook) are
+built. Outstanding: promoting the demand-intake typed prompt; switching tracing on; the
+Gemini / OpenAI test (waits on the model-provider decision).**
 Built on the Step 0 reuse audit of the same date and the owner's seven answers.
 
 ## 1. What is being built
@@ -225,6 +227,10 @@ not rewrite it.
 | 13 Oct | One intended difference: the older fill replaced blanks one after another, so a value containing the name of a later blank had other text substituted into it. The typed fill puts each value in once. | Builder |
 | 13 Oct | Trace ids for now: the run id is the caller's, or a new one if it has none; the step id names the agent step; the attempt is 1. Orchestrator-wide step ids and attempt counting are still to come, with tracing. | Builder |
 | 13 Oct | An agent's instructions failing to reach the registry stays a logged error, not a failed save, until created agents themselves are rendered through the registry. | Builder |
+| 13 Oct | Milestone 6. A render's span joins the caller's trace and never starts one; with no trace to join, no span is recorded. | Builder |
+| 13 Oct | What may be on a span is a closed list. Every value must be a number or shaped like an id; anything else is replaced by a hash of itself. A failed render is marked with its code only: the tracing library's default of attaching the error message and stack is switched off (a test caught that default). | Builder |
+| 13 Oct | Tracing is optional at run time: without the library installed, rendering is unaffected. The service's environment does not have it yet, and no trace store is running; switching tracing on is a separate step for the owner to approve. | Builder |
+| 13 Oct | Runbook: `specs/2026-10-13-prompt-engine-runbook.md`. | Builder |
 
 ## 11. Things that move out of prompt-building code
 
