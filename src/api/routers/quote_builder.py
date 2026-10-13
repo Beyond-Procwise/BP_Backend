@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.services import entity_profile
 from src.services.sell_side import builder, pricing_checks, quote_agent, quotes
+from src.services.sell_side import templates as quote_templates
 from src.services.sell_side._db import transactional_conn as get_conn
 
 from api.auth import require_user
@@ -64,6 +65,76 @@ def _with_checks(quote: Dict[str, Any]) -> Dict[str, Any]:
 
 def _draft(body: QuoteDraft) -> Dict[str, Any]:
     return body.model_dump(exclude={"dealId", "revision"})
+
+
+# --- templates --------------------------------------------------------------
+
+class TemplateBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    name: str
+    description: Optional[str] = None
+    status: str = "active"
+    category: Optional[str] = None
+    lines: List[Dict[str, Any]] = Field(default_factory=list)
+    termFields: List[str] = Field(default_factory=list)
+    assumptionsHtml: Optional[str] = None
+
+
+class FromTemplate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    templateKey: str
+    currency: str
+    dealId: Optional[str] = None
+    customer: Optional[Dict[str, Any]] = None
+
+
+@router.get("/spendiq/quote-templates")
+def list_quote_templates(include_retired: bool = False, principal=Depends(require_user)):
+    """The templates a quote can be started from. They hold no price and no cost."""
+    gate("quote.read", principal, agent=_AGENT, context={"scope": "quote-templates"})
+    with http_errors(), get_conn() as c:
+        return money_json(quote_templates.list_templates(c, include_retired=include_retired))
+
+
+@router.get("/spendiq/quote-templates/{key}")
+def get_quote_template(key: str, principal=Depends(require_user)):
+    gate("quote.read", principal, agent=_AGENT, context={"template_key": key})
+    with http_errors(), get_conn() as c:
+        return money_json(quote_templates.get(c, key))
+
+
+@router.put("/spendiq/quote-templates/{key}")
+def put_quote_template(key: str, body: TemplateBody, principal=Depends(require_user)):
+    """Add a template, reword one, or retire one (`status: retired`)."""
+    gate("quote_template.write", principal, agent=_AGENT, context={"template_key": key})
+    with http_errors(), get_conn() as c:
+        return money_json(quote_templates.save(
+            c, key, name=body.name, description=body.description, status=body.status,
+            body=body.model_dump(exclude={"name", "description", "status"}),
+            actor=_subject(principal)))
+
+
+@router.post("/spendiq/quotes/from-template")
+def create_from_template(body: FromTemplate, principal=Depends(require_user)):
+    """Start a quote from a template: its lines, with no price on any of them. On a deal
+    when `dealId` is given, on none yet when it is not."""
+    gate("sales_quote.create", principal, agent=_AGENT,
+         context={"deal_id": body.dealId, "template_key": body.templateKey})
+    _require_margin_permit(principal, {"deal_id": body.dealId})
+    with http_errors(), get_conn() as c:
+        template = quote_templates.get(c, body.templateKey)
+        if template["status"] != "active":
+            raise HTTPException(status_code=409, detail=f"template {body.templateKey} is "
+                                "retired; choose another")
+        c.rollback()                 # a read; create opens its own transaction
+        draft = quote_templates.draft_from(template, currency=body.currency,
+                                           customer=body.customer)
+        quote = builder.create(c, deal_id=body.dealId, draft=draft,
+                               created_by=_subject(principal), template_key=body.templateKey)
+        return money_json({**_with_checks(quote),
+                           "missing": quote_templates.missing(template, quote)})
 
 
 # --- reads ------------------------------------------------------------------
@@ -212,14 +283,16 @@ def agent_turn(quote_id: int, body: AgentTurn, principal=Depends(require_user)):
     _require_margin_permit(principal, {"sales_quote_id": quote_id})
     with http_errors(), get_conn() as c:
         saved = builder.get(c, quote_id)
-    # Whether it may be changed, and what it is tested against, are the saved quote's;
-    # the lines are the screen's when it sent them.
+        template = quote_templates.find(c, saved.get("templateKey"))
+    # Whether it may be changed, which template it follows and what it is tested against
+    # are the saved quote's; what is on it is the screen's when it sent that.
     held = body.quote if isinstance(body.quote, dict) else {}
-    quote = {**saved, **{k: held[k] for k in ("lines", "validUntil") if k in held}}
+    quote = {**saved, **{k: held[k] for k in ("lines", "validUntil", "customer", "terms")
+                         if k in held}}
     try:
         with http_errors():
             return money_json(quote_agent.propose(
-                quote, body.message, session_id=body.session_id,
+                quote, body.message, session_id=body.session_id, template=template,
                 checks=pricing_checks.for_quote(saved.get("category"))))
     except quote_agent.AgentUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None

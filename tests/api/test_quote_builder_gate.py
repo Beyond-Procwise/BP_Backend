@@ -111,3 +111,65 @@ def test_without_its_permit_row_not_even_an_admin_changes_the_profile(serve):
     client = serve(admin())
     assert client.put("/entity/profile", json={"legalName": "X"}).status_code == 403
     assert client.fetched == []
+
+
+# --- templates ---------------------------------------------------------------------
+
+TEMPLATE_PERMIT = {
+    "policyId": "quote_template_write_authority",
+    "policyName": "QuoteTemplateWriteAuthorityPolicy",
+    "details": {"policy_identifier": "quote_template_write_authority",
+                "applies_to": ["quote_template.write"], "required_role": "Admin",
+                "rules": {"effect": "allow"}},
+    "raw_row": {"version": 1},
+}
+_TEMPLATE = {"name": "T", "lines": [{"key": "work", "description": "Work"}]}
+
+
+@pytest.fixture
+def templates(serve, monkeypatch):
+    monkeypatch.setattr(qb.quote_templates, "list_templates",
+                        lambda c, **k: [{"key": "t", "lines": []}])
+    saved = []
+    monkeypatch.setattr(qb.quote_templates, "save",
+                        lambda c, key, **k: saved.append(k["actor"]) or {"key": key})
+    serve.saved = saved
+    return serve
+
+
+def test_a_viewer_can_see_the_templates_because_they_hold_no_figures(templates):
+    assert templates(viewer()).get("/spendiq/quote-templates").status_code == 200
+
+
+@pytest.mark.parametrize("who, status", [(None, 403), (viewer(), 403), (buyer(), 403),
+                                         (admin(), 200)],
+                         ids=["nobody", "viewer", "buyer", "admin"])
+def test_templates_are_changed_only_by_an_admin(templates, who, status):
+    r = templates(who, TEMPLATE_PERMIT).put("/spendiq/quote-templates/t", json=_TEMPLATE)
+    assert r.status_code == status, r.text
+    assert templates.saved == (["sub-admin"] if status == 200 else [])
+
+
+def test_without_its_permit_row_not_even_an_admin_changes_a_template(templates):
+    assert templates(admin()).put("/spendiq/quote-templates/t", json=_TEMPLATE).status_code == 403
+    assert templates.saved == []
+
+
+def test_a_viewer_cannot_start_a_quote_from_a_template(serve, monkeypatch):
+    started = []
+    monkeypatch.setattr(qb.builder, "create", lambda *a, **k: started.append(k) or {})
+    r = serve(viewer(), MARGIN_PERMIT).post(
+        "/spendiq/quotes/from-template", json={"templateKey": "t", "currency": "GBP"})
+    assert r.status_code == 403 and started == []
+
+
+def test_starting_a_quote_from_a_template_needs_the_margin_permit_like_any_quote_read(serve, monkeypatch):
+    """What comes back is a quote in the builder's shape, cost fields and all. A buyer may
+    create quotes by default, so only the permit stands in the way here."""
+    started = []
+    monkeypatch.setattr(qb.quote_templates, "get",
+                        lambda c, key: {"key": key, "status": "active", "lines": []})
+    monkeypatch.setattr(qb.builder, "create", lambda *a, **k: started.append(k) or {})
+    body = {"templateKey": "t", "currency": "GBP"}
+    assert serve(buyer()).post("/spendiq/quotes/from-template", json=body).status_code == 403
+    assert started == []

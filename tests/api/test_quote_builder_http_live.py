@@ -97,7 +97,7 @@ def test_the_journey_from_a_blank_quote_to_an_approved_one(http):
 
 def test_the_agent_proposes_over_http_and_the_quote_is_untouched(http, monkeypatch):
     q = http.post(f"/spendiq/deals/{http.deal}/quotes", json=_body()).json()
-    monkeypatch.setattr(quote_agent, "_default_prompt", lambda: "{quote} {message}")
+    monkeypatch.setattr(quote_agent, "_default_prompt", lambda name: "{quote} {message}")
     monkeypatch.setattr(quote_agent, "_default_busy", lambda: False)
     monkeypatch.setattr(quote_agent, "ollama_generate", lambda prompt, **kw: json.dumps(
         {"refused": "", "intents": [{"op": "markup_all", "percent": 40}]}))
@@ -126,7 +126,7 @@ def test_the_agent_proposes_over_http_and_the_quote_is_untouched(http, monkeypat
 def test_with_no_stored_prompt_the_agent_is_unavailable_rather_than_improvising(http, monkeypatch):
     q = http.post(f"/spendiq/deals/{http.deal}/quotes", json=_body()).json()
 
-    def _missing():
+    def _missing(name):
         raise quote_agent.AgentUnavailable("prompt unavailable: sales_quote_drafting")
     monkeypatch.setattr(quote_agent, "_default_prompt", _missing)
     r = http.post(f"/spendiq/quotes/{q['id']}/agent", json={"message": "40% markup"})
@@ -156,3 +156,86 @@ def test_the_company_profile_round_trips_and_starts_empty(http, monkeypatch):
         assert http.get("/entity/profile").json()["bank"]["sortCode"] == "00-00-00"
     finally:
         _clear()
+
+
+# --- templates ---------------------------------------------------------------------
+
+def test_a_quote_is_started_from_a_template_and_filled_from_what_the_seller_says(http, monkeypatch):
+    listed = http.get("/spendiq/quote-templates").json()
+    assert "software_subscription" in [t["key"] for t in listed]
+    chosen = next(t for t in listed if t["key"] == "software_subscription")
+    assert not any({"unitPrice", "cost", "discountPct"} & set(l) for l in chosen["lines"])
+
+    r = http.post("/spendiq/quotes/from-template",
+                  json={"templateKey": "software_subscription", "currency": "GBP",
+                        "dealId": http.deal})
+    assert r.status_code == 200, r.text
+    q = r.json()
+    assert q["templateKey"] == "software_subscription" and q["dealId"] == http.deal
+    assert [l["description"] for l in q["lines"]] == [
+        "Subscription licences", "Onboarding and set-up", "Training"]
+    assert all(l["unitPrice"] == "0.0000" and l["cost"] is None for l in q["lines"])
+    assert q["totals"]["exTax"] == "0.00" and q["totals"]["margin"] is None
+    assert [m["field"] for m in q["missing"]][:2] == ["customer.name", "customer.contact"]
+    assert len(q["missing"]) == 2 + 3 + 5
+
+    seats, onboarding, _training = [l["id"] for l in q["lines"]]
+    asked_with = {}
+
+    def _model(prompt, **kw):
+        asked_with.update(prompt=prompt, **kw)
+        return json.dumps({"refused": "", "intents": [
+            {"op": "set_customer", "name": "kestrel freight", "contact": "A. Reyes"},
+            {"op": "set_line", "line_id": seats, "qty": 340, "unit_price": 200, "cost": 125},
+            {"op": "set_line", "line_id": onboarding, "unit_price": 18000},
+            {"op": "set_term", "field": "payment", "text": "Net 30"},
+            {"op": "set_term", "field": "lengthMonths", "number": 12}]})
+    monkeypatch.setattr(quote_agent, "_default_prompt",
+                        lambda name: name + " {template} {quote} {message}")
+    monkeypatch.setattr(quote_agent, "_default_busy", lambda: False)
+    monkeypatch.setattr(quote_agent, "ollama_generate", _model)
+
+    said = ("It's for Kestrel Freight, contact A. Reyes. 340 seats at £200 each, they cost us "
+            "125. Onboarding is 18k. Net 30, 12 months.")
+    out = http.post(f"/spendiq/quotes/{q['id']}/agent", json={"message": said}).json()
+    assert asked_with["prompt"].startswith("sales_quote_template_fill")
+    assert "Software subscription" in asked_with["prompt"]
+    assert asked_with["format"] == quote_agent.FILL_SCHEMA
+    assert out["refused"] is None, out
+    assert out["change"] == {
+        "customer": {"name": "Kestrel Freight", "contact": "A. Reyes"},
+        "terms": {"payment": "Net 30", "lengthMonths": 12},
+        "lines": [{"id": seats, "qty": "340", "unitPrice": "200", "cost": "125", "markupPct": "60.0"},
+                  {"id": onboarding, "unitPrice": "18000"}]}
+    assert [m["field"] for m in out["missing"]] == [
+        f"lines.{_training}.unitPrice", "terms.start", "terms.renewal", "terms.sla"]
+    assert "Still needed: a price for “Training”; a start date" in out["summary"]
+
+    # proposed, not written
+    after = http.get(f"/spendiq/quotes/{q['id']}").json()
+    assert after["lines"] == q["lines"] and after["customer"]["name"] is None
+
+
+def test_a_retired_or_unknown_template_starts_nothing(http):
+    assert http.post("/spendiq/quotes/from-template",
+                     json={"templateKey": "no_such_template", "currency": "GBP"}).status_code == 404
+    key = f"livetest_{uuid.uuid4().hex[:8]}"
+    body = {"name": f"{SENTINEL} template", "status": "retired",
+            "lines": [{"key": "work", "tag": "service", "description": "Work", "unit": "day",
+                       "unitPrice": 999}]}
+    try:
+        saved = http.put(f"/spendiq/quote-templates/{key}", json=body).json()
+        assert saved["status"] == "retired" and "unitPrice" not in saved["lines"][0]
+        assert key not in [t["key"] for t in http.get("/spendiq/quote-templates").json()]
+        assert key in [t["key"] for t in
+                       http.get("/spendiq/quote-templates?include_retired=true").json()]
+        r = http.post("/spendiq/quotes/from-template", json={"templateKey": key, "currency": "GBP"})
+        assert r.status_code == 409 and "retired" in r.json()["detail"]
+        http.put(f"/spendiq/quote-templates/{key}", json={**body, "status": "active"})
+        started = http.post("/spendiq/quotes/from-template",
+                            json={"templateKey": key, "currency": "GBP"}).json()
+        assert started["dealId"] is None and started["lines"][0]["unitPrice"] == "0.0000"
+    finally:
+        with http.conn.cursor() as cur:
+            cur.execute("DELETE FROM proc.bp_sales_quote_template WHERE template_key = %s", (key,))
+        http.conn.commit()

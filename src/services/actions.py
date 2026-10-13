@@ -124,6 +124,8 @@ ACTIONS: Dict[str, str] = {
     "policy.write": "configure",
     # The selling entity's own letterhead and bank details, printed on every quote sent.
     "entity_profile.write": "configure",
+    # The templates every seller starts a customer quote from.
+    "quote_template.write": "configure",
     "policy.reload": "configure",
     # Which buyers a Buyer/Viewer may see in reports. Changes what every report shows that person.
     "report.scope.write": "configure",

@@ -49,7 +49,8 @@ _COLS = ("sales_quote_id", "quote_ref", "quote_number", "deal_id", "version", "s
          "account_id", "currency", "category", "quote_date", "valid_until", "prepared_by",
          "customer_name", "customer_contact", "scope_html", "assumptions_html", "terms",
          "conditions", "total_ex_tax", "phase_id", "subprocess_id", "supersedes_id",
-         "created_by", "approved_by", "approved_at", "issued_at", "last_modified_date")
+         "created_by", "approved_by", "approved_at", "issued_at", "last_modified_date",
+         "template_key")
 
 
 # --- rich text ---------------------------------------------------------------------
@@ -261,7 +262,8 @@ def _write_lines(cur: Any, quote_id: int, currency: str, lines: Sequence[Dict[st
 
 def _insert(cur: Any, d: Dict[str, Any], *, deal_id: Optional[str], created_by: Optional[str],
             version: int = 1, supersedes_id: Optional[int] = None,
-            account_id: Optional[str] = None) -> Dict[str, Any]:
+            account_id: Optional[str] = None,
+            template_key: Optional[str] = None) -> Dict[str, Any]:
     cur.execute("SELECT nextval(pg_get_serial_sequence('proc.bp_sales_quote', "
                 "'sales_quote_id')) AS id")
     quote_id = cur.fetchone()["id"]
@@ -271,12 +273,12 @@ def _insert(cur: Any, d: Dict[str, Any], *, deal_id: Optional[str], created_by: 
         "INSERT INTO proc.bp_sales_quote (sales_quote_id, tenant_id, quote_ref, account_id, "
         "deal_id, version, currency, quote_date, valid_until, category, prepared_by, "
         "customer_name, customer_contact, scope_html, assumptions_html, terms, phase_id, "
-        "subprocess_id, status, supersedes_id, created_by) VALUES (%s, %s, %s, %s, %s, %s, %s, "
-        "%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, 'draft', %s, %s)",
+        "subprocess_id, status, supersedes_id, created_by, template_key) VALUES (%s, %s, %s, %s, "
+        "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, 'draft', %s, %s, %s)",
         (quote_id, quotes.TENANT, quote_ref, account_id, deal_id, version, d["currency"],
          d["quote_date"], d["valid_until"], d["category"], d["prepared_by"], d["customer_name"],
          d["customer_contact"], d["scope_html"], d["assumptions_html"], json.dumps(d["terms"]),
-         phase, sub, supersedes_id, created_by))
+         phase, sub, supersedes_id, created_by, template_key))
     _write_lines(cur, quote_id, d["currency"], d["lines"])
     return {"sales_quote_id": quote_id, "quote_ref": quote_ref}
 
@@ -290,15 +292,18 @@ def _deal_taken(exc: Exception, deal_id: Optional[str]) -> Optional[StateConflic
 
 
 def create(conn: Any, *, deal_id: Optional[str], draft: Dict[str, Any],
-           created_by: Optional[str]) -> Dict[str, Any]:
+           created_by: Optional[str], template_key: Optional[str] = None) -> Dict[str, Any]:
+    """``template_key`` notes which template the draft was started from (templates.py);
+    the caller has already built ``draft`` from it."""
     d = _clean(draft)
     cur = dict_cursor(conn)
     try:
         if deal_id is not None:
             _check_deal(cur, deal_id, for_quote=None)
-        new = _insert(cur, d, deal_id=deal_id, created_by=created_by)
+        new = _insert(cur, d, deal_id=deal_id, created_by=created_by,
+                      template_key=template_key)
         quotes.record_event(conn, "sales_quote.created", new, actor=created_by,
-                            deal_id=deal_id, builder=True)
+                            deal_id=deal_id, builder=True, template_key=template_key)
     except Exception as exc:
         conn.rollback()
         raise (_deal_taken(exc, deal_id) or exc) from None
@@ -417,7 +422,7 @@ def supersede(conn: Any, quote_id: int, *, actor: Optional[str]) -> Dict[str, An
                     (quote_id,))
         new = _insert(cur, _clean(draft), deal_id=old["deal_id"], created_by=actor,
                       version=old["version"] + 1, supersedes_id=quote_id,
-                      account_id=old["account_id"])
+                      account_id=old["account_id"], template_key=old["template_key"])
         quotes.record_event(conn, "sales_quote.superseded", old, actor=actor,
                             superseded_by=new["sales_quote_id"])
         quotes.record_event(conn, "sales_quote.created", new, actor=actor,
@@ -459,6 +464,7 @@ def _screen(cur: Any, row: Dict[str, Any]) -> Dict[str, Any]:
     internal = dict(cur.fetchone() or {})
     return {
         "id": str(quote_id), "ref": row["quote_ref"], "dealId": row["deal_id"],
+        "templateKey": row["template_key"],
         "version": row["version"], "status": _SCREEN_STATUS.get(row["status"], row["status"]),
         "backendStatus": row["status"], "number": row["quote_number"],
         "currency": (row["currency"] or "").strip(), "category": row["category"],
