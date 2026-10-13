@@ -1,8 +1,8 @@
 # Prompt engine, phase 1 — design note
 
 13 Oct 2026. Status: **building. Milestones 2 (registry, import, routes, policies, agent
-instructions) and 3 (typed templates and fragments) are done. Next: milestone 4, render
-and the manifest store.**
+instructions) and 3 (typed templates and fragments) are done. Milestone 4 (render, manifest
+store, retention) is built and tested, awaiting its two tables on the databases.**
 Built on the Step 0 reuse audit of the same date and the owner's seven answers.
 
 ## 1. What is being built
@@ -202,6 +202,14 @@ not rewrite it.
 | 13 Oct | A value put into a blank is never read again as template, so text from a supplier or a document cannot become instructions. | Builder |
 | 13 Oct | A refusal names the variable and the expected type, never the value: values are customer data and refusals reach logs. | Builder |
 | 13 Oct | A blank declared `required: false` and left out renders as nothing. | Builder |
+| 13 Oct | Milestone 4. Redaction is applied before any text is built, whatever position the obligation was given in; the masked value shows as `[redacted]`, and a redacted object field is masked inside the object too. | Builder |
+| 13 Oct | A refused obligation is reported by its position in the list, not its text: an obligation is another system's output and a malformed one may carry anything. | Builder |
+| 13 Oct | Tool descriptions are wording, so they are versioned with the prompt (`settings.tool_descriptions`). The engine returns them for allowed tools only; a tool the prompt has no wording for is left to the orchestrator's own description. This replaces "taken from tool_runtime" in the first draft, which would have made the engine depend on the tool layer. | Builder |
+| 13 Oct | The trace (run, step, attempt, decision) is recorded with each use but is not part of the hash: the same wording has the same hash in every run. | Builder |
+| 13 Oct | Retention is counted from a stored render's LAST use, not its first, and deletes only the text. The record of which run used which hash, prompt and version is kept. | Builder — owner to confirm |
+| 13 Oct | If the render cannot be stored, the render fails. | Builder |
+| 13 Oct | Token counts use the `cl100k_base` tokenizer, and the manifest says how the count was made; it is an approximation for models that tokenize differently. | Builder |
+| 13 Oct | No HTTP render endpoint in phase 1: the orchestrator calls the engine in-process, and reading stored text is by script on the server. Fewer doors onto text that carries customer values. | Builder — owner to confirm |
 
 ## 11. Things that move out of prompt-building code
 

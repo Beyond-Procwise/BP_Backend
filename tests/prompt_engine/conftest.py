@@ -62,6 +62,7 @@ def db():
         cur = conn.cursor()
         cur.execute(LEGACY_TABLE)
         cur.execute((ROOT / "deploy/sql/2026-10-13_bp_prompt_registry.sql").read_text())
+        cur.execute((ROOT / "deploy/sql/2026-10-13_bp_prompt_render.sql").read_text())
         cur.close()
     return get_conn
 

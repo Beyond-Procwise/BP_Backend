@@ -239,16 +239,30 @@ def validate_values(variables: List[Dict[str, Any]], values: Dict[str, Any]) -> 
         raise VarType(f"wrong type for: {', '.join(wrong)}")
 
 
+class _Redacted:
+    """Stands where a value was removed by a `redact` obligation."""
+
+    def __repr__(self) -> str:
+        return REDACTED_TEXT
+
+
+REDACTED_TEXT = "[redacted]"
+REDACTED = _Redacted()
+
+
 def _shown(value: Any) -> str:
     if value is None:
         return ""
+    if value is REDACTED:
+        return REDACTED_TEXT
     if isinstance(value, str):
         return value
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (int, float)):
         return repr(value)
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+                      default=lambda o: REDACTED_TEXT if o is REDACTED else str(o))
 
 
 def _fill(parsed: Parsed, values: Dict[str, Any],
@@ -261,7 +275,7 @@ def _fill(parsed: Parsed, values: Dict[str, Any],
             _, root, path = segment
             value = values.get(root)
             for step in path:
-                if value is None:
+                if value is None or value is REDACTED:
                     break
                 if not isinstance(value, dict) or step not in value:
                     raise VarMissing(f"no value for: {root}.{'.'.join(path)}")
@@ -286,4 +300,14 @@ def render_text(template: str, variables: List[Dict[str, Any]], values: Dict[str
     object is written with its keys in order.
     """
     validate_values(variables, values)
+    return _fill(parse(template), dict(values or {}), fragments, inside_fragment=False)
+
+
+def fill(template: str, values: Dict[str, Any], fragments: Dict[Tuple[str, int], str]) -> str:
+    """Fill a template with values that have ALREADY been validated.
+
+    For the renderer, which validates what it was given and then masks what
+    policy told it to redact: the masked values no longer match their declared
+    types, and must not be validated a second time.
+    """
     return _fill(parse(template), dict(values or {}), fragments, inside_fragment=False)

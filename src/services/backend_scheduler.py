@@ -435,6 +435,7 @@ class BackendScheduler:
         self._register_price_outlier_job()
         self._register_value_digest_job()
         self._register_capture_retention_job()
+        self._register_prompt_render_retention_job()
         self._register_sales_calibration_job()
         self._register_style_staging_sweep_job()
         self._register_mailbox_health_job()
@@ -1266,6 +1267,32 @@ class BackendScheduler:
                 )
         except Exception:
             logger.exception("capture retention sweep failed")
+
+    PROMPT_RENDER_RETENTION_JOB_NAME = "prompt-render-retention"
+
+    def _register_prompt_render_retention_job(self) -> None:
+        """Age out stored prompt renders (wording with customer values filled in).
+
+        Registered unconditionally, like the capture sweep and for the same
+        reason. The window is PromptEnginePolicy's manifest_retention_days,
+        counted from a render's last use; with no window stated nothing is
+        deleted and the refusal is logged. The record of which run used which
+        render is kept.
+        """
+        if self.PROMPT_RENDER_RETENTION_JOB_NAME in self._jobs:
+            return
+        self.register_job(
+            self.PROMPT_RENDER_RETENTION_JOB_NAME,
+            self._run_prompt_render_retention,
+            interval=timedelta(days=1),
+        )
+
+    def _run_prompt_render_retention(self) -> None:
+        try:
+            from src.services.prompt_engine import render
+            render.sweep()
+        except Exception:
+            logger.exception("prompt render retention sweep failed")
 
     SALES_CALIBRATION_JOB_NAME = "sales_win_probability_calibration"
 
