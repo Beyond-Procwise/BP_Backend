@@ -358,6 +358,168 @@ def _calculation_tools(*, workflow_id: Optional[str] = None) -> List[Tool]:
     ]
 
 
+_MINER_SLUG = "opportunity_miner"
+
+
+def _opportunity_tools(
+    agent_nick: Any,
+    *,
+    workflow_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> List[Tool]:
+    """The saving levers, as tools: what exists, what a bucket holds, and try one.
+
+    The levers are the detection rules in proc.bp_rule, each bound to a calculation
+    in the Opportunity Miner. An agent chooses which to apply to a supplier and item
+    and explains the result; every figure comes from the calculation, never from
+    the model.
+    """
+    agents = getattr(agent_nick, "agents", None) or {}
+    miner = agents.get(_MINER_SLUG)
+    if miner is None:
+        return []
+
+    def _catalogue() -> Dict[str, Dict[str, Any]]:
+        return miner._get_policy_registry()
+
+    def _levers() -> Any:
+        try:
+            registry = _catalogue()
+        except Exception as exc:  # noqa: BLE001 - e.g. the rule book is unreadable
+            # Not an empty list: "no levers" and "could not read them" differ.
+            return {"levers": None, "note": f"the lever catalogue could not be read: {exc}"}
+        return {
+            "levers": [
+                {
+                    "lever": slug,
+                    "name": cfg.get("policy_name"),
+                    "kind": cfg.get("finding_type"),
+                    "looks_at": cfg.get("scope"),
+                    "needs": list(cfg.get("required_fields") or []),
+                    "thresholds": dict(cfg.get("default_conditions") or {}),
+                }
+                for slug, cfg in registry.items()
+            ],
+            "note": (
+                "Use evaluate_opportunity_lever to apply one to a supplier and item. "
+                "A lever's saving comes from its calculation; do not estimate one."
+            ),
+        }
+
+    def _bucket(supplier_id: str, item_id: str) -> Any:
+        from src.services import opportunity_buckets
+
+        found = opportunity_buckets.get_bucket(str(supplier_id), str(item_id))
+        if found is None:
+            return {
+                "bucket": None,
+                "note": (
+                    "No lever with a unit price and a volume is recorded for this "
+                    "supplier and item. That is not the same as 'no saving exists'."
+                ),
+            }
+        return {"bucket": found}
+
+    def _evaluate(lever: str, supplier_id: str, item_id: Optional[str] = None) -> Any:
+        try:
+            registry = _catalogue()
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"the lever catalogue could not be read: {exc}"}
+        if lever not in registry:
+            return {
+                "found": False,
+                "note": f"No lever is called '{lever}'. Retry with one of 'available'.",
+                "available": sorted(registry),
+            }
+        from agents.base_agent import AgentContext
+
+        conditions: Dict[str, Any] = {"supplier_id": str(supplier_id)}
+        if item_id:
+            conditions["item_id"] = str(item_id)
+        ctx = AgentContext(
+            workflow_id=workflow_id or uuid.uuid4().hex,
+            agent_id=_MINER_SLUG,
+            user_id=user_id,
+            # One lever, one supplier (and item): a scoped run, so it retires nothing.
+            input_data={"workflow": lever, "conditions": conditions},
+        )
+        output = miner.execute(ctx)
+        data = dict(output.data or {})
+        findings = data.get("findings") or []
+        return {
+            "lever": lever,
+            "status": getattr(output.status, "value", str(output.status)),
+            "error": output.error,
+            "found_a_saving": bool(findings),
+            "results": [
+                {
+                    "saving_gbp": f.get("financial_impact_gbp"),
+                    "supplier_id": f.get("supplier_id"),
+                    "item_id": f.get("item_id"),
+                    "working": f.get("calculation_details"),
+                    "evidence": f.get("source_records"),
+                    "previously_rejected": bool(f.get("is_rejected")),
+                }
+                for f in findings
+            ],
+            # Why nothing fired, in the miner's own words (a missing input, a
+            # threshold not met) -- so "no saving" is never a bare empty list.
+            "events": (data.get("policy_events") or [])[-5:],
+        }
+
+    return [
+        Tool(
+            name="list_opportunity_levers",
+            description=(
+                "List the saving levers that exist (price against benchmark, volume "
+                "consolidation, overbilling and so on), what each one needs and its "
+                "thresholds. Call this before choosing levers for a supplier and item."
+            ),
+            parameters={"type": "object", "properties": {}},
+            handler=_levers,
+        ),
+        Tool(
+            name="get_opportunity_bucket",
+            description=(
+                "Fetch the opportunity bucket for one supplier and item: the unit "
+                "price, the volume, and every lever already found on it with its "
+                "saving, its stage, and whether new information is waiting on a "
+                "rejected lever. The bucket's saving is its largest open lever; "
+                "levers overlap and must not be added together."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "supplier_id": {"type": "string"},
+                    "item_id": {"type": "string"},
+                },
+                "required": ["supplier_id", "item_id"],
+            },
+            handler=_bucket,
+        ),
+        Tool(
+            name="evaluate_opportunity_lever",
+            description=(
+                "Apply ONE saving lever to a supplier (and item) and return the "
+                "computed saving with its working and evidence. The lever name must "
+                "come from list_opportunity_levers. The result is recorded on the "
+                "supplier and item's bucket; a lever a person rejected stays rejected "
+                "and is marked for review if the evidence has changed."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "lever": {"type": "string"},
+                    "supplier_id": {"type": "string"},
+                    "item_id": {"type": "string"},
+                },
+                "required": ["lever", "supplier_id"],
+            },
+            handler=_evaluate,
+        ),
+    ]
+
+
 def build_tools(
     agent_nick: Any,
     *,
@@ -366,8 +528,8 @@ def build_tools(
     workflow_id: Optional[str] = None,
     user_id: Optional[str] = None,
 ) -> List[Tool]:
-    """Every tool AgentNick can reach: the agents, governance, the corpus and the
-    registered calculations.
+    """Every tool AgentNick can reach: the agents, governance, the corpus, the
+    registered calculations and the saving levers.
 
     ``exclude`` names tools to leave out — a workflow node's loop, for one,
     must never be handed the tool that sends real email.
@@ -382,6 +544,7 @@ def build_tools(
         + _governance_tools()
         + _corpus_tools(agent_nick)
         + _calculation_tools(workflow_id=workflow_id)
+        + _opportunity_tools(agent_nick, workflow_id=workflow_id, user_id=user_id)
     )
     if exclude:
         blocked = set(exclude)

@@ -7336,15 +7336,12 @@ class OpportunityMinerAgent(BaseAgent):
             return
 
         for finding in findings:
-            info = None
-            for key in (
-                finding.opportunity_id,
-                finding.opportunity_ref_id,
-            ):
-                if key and key in feedback_map:
-                    info = feedback_map[key]
-                    break
-            if not info:
+            # By reference only. opportunity_id is this run's counter (1, 2, 3...),
+            # and feedback is stored against the id of the row a person rejected --
+            # so matching on it handed one opportunity's rejection to whichever
+            # unrelated finding was numbered the same in a later run.
+            info = feedback_map.get(finding.opportunity_ref_id or "")
+            if not info or info.get("opportunity_ref_id") != finding.opportunity_ref_id:
                 continue
 
             finding.feedback_status = info.get("status")
@@ -7542,16 +7539,16 @@ class OpportunityMinerAgent(BaseAgent):
                 conn.autocommit = False
                 cur = conn.cursor()
                 try:
-                    seen_refs = []
+                    seen_ids = []
                     detectors = set()
                     for finding in findings:
                         rec = finding.as_dict()
-                        upsert_opportunity(cur, rec)
-                        seen_refs.append(str(rec.get("opportunity_ref_id")
-                                             or rec.get("opportunity_id")))
+                        # The row it landed on: its subject's, whatever reference
+                        # this run's evidence happens to produce.
+                        seen_ids.append(upsert_opportunity(cur, rec))
                         if rec.get("detector_type"):
                             detectors.add(rec["detector_type"])
-                    retired = (retire_missing(cur, seen_refs, sorted(detectors),
+                    retired = (retire_missing(cur, seen_ids, sorted(detectors),
                                               min_impact=self.min_financial_impact)
                                if may_retire else 0)
                     conn.commit()

@@ -13,6 +13,7 @@ import logging
 from typing import Any, Optional
 
 from src.services.db import get_conn
+from src.services.opportunity_buckets import bucket_id
 
 log = logging.getLogger(__name__)
 
@@ -175,6 +176,7 @@ def detailed_opportunities(cur, limit: int = 100) -> list[dict]:
         "select o.opportunity_id, o.detected_on, o.detector_type, o.category_id, "
         "o.supplier_name, o.supplier_id, o.item_description, o.item_id, "
         "o.financial_impact_gbp, o.stage, o.quote_id, o.deal_id, "
+        "o.review_requested_at, o.review_detail, "
         "(o.deal_id is not null and o.deal_id<>'' "
         " and not exists(select 1 from proc.bp_quote_trgt q where q.deal_id=o.deal_id)) as orphaned "
         "from proc.bp_opportunity o "
@@ -194,6 +196,12 @@ def detailed_opportunities(cur, limit: int = 100) -> list[dict]:
             "stage": r.get("stage"),
             "quoteId": r.get("quote_id"),
             "orphaned": bool(r.get("orphaned")),
+            # The supplier+item this row is a lever on (see opportunity_buckets), and
+            # whether new information is waiting on a rejection.
+            "bucketId": bucket_id(r.get("supplier_id"), r.get("item_id")),
+            "reviewRequested": r.get("review_requested_at") is not None,
+            "whatChanged": (r.get("review_detail")
+                            if r.get("review_requested_at") is not None else None),
         })
     return out
 
