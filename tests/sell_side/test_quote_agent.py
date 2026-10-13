@@ -119,10 +119,19 @@ def test_one_refused_intent_refuses_the_whole_turn():
 
 def test_validity_is_changed_to_a_real_date_that_has_not_passed():
     day = TODAY + dt.timedelta(days=45)
-    out = _turn(_Model({"op": "valid_until", "date": day.isoformat()}))
+    out = _turn(_Model({"op": "valid_until", "date": day.isoformat()}), message="valid for 45 days")
     assert out["change"] == {"validUntil": day.isoformat()}
     for bad in ((TODAY - dt.timedelta(days=1)).isoformat(), "next Tuesday", None):
-        assert _turn(_Model({"op": "valid_until", "date": bad}))["change"] is None
+        assert _turn(_Model({"op": "valid_until", "date": bad}),
+                     message="valid until whenever")["change"] is None
+
+
+def test_a_validity_date_nobody_asked_for_is_dropped():
+    """Seen against the real model: it "set" the date the quote already had."""
+    day = (TODAY + dt.timedelta(days=30)).isoformat()
+    out = _turn(_Model({"op": "markup_all", "percent": 40}, {"op": "valid_until", "date": day}),
+                message="apply 40% markup")
+    assert "validUntil" not in out["change"] and "valid" not in out["summary"].lower()
 
 
 def test_a_new_line_arrives_with_no_price_and_no_cost():
@@ -212,3 +221,180 @@ def test_an_amount_of_money_is_not_turned_into_a_markup():
 def test_a_percentage_the_seller_did_not_type_is_not_proposed():
     out = _turn(_Model({"op": "discount_all", "percent": 7}), message="give them 5% off")
     assert out["change"] is None and out["refused"]
+
+
+# --- filling a template ------------------------------------------------------------
+
+TEMPLATE = {"key": "software_subscription", "name": "Software subscription",
+            "description": "Licences for a period.", "termFields": ["payment", "start", "lengthMonths"],
+            "lines": []}
+BLANK = {"id": "30", "ref": "SQ-30", "status": "draft", "customer": {}, "terms": {},
+         "validUntil": (TODAY + dt.timedelta(days=30)).isoformat(),
+         "lines": [{"id": "s", "tag": "product", "description": "Subscription licences",
+                    "qty": "1", "cost": None, "unitPrice": "0", "discountPct": "0"},
+                   {"id": "o", "tag": "service", "description": "Onboarding and set-up",
+                    "qty": "1", "cost": None, "unitPrice": "0", "discountPct": "0"}]}
+SAID = "For Kestrel Freight (A. Reyes). 340 seats at £200, cost 125. Onboarding 18k. Net 30, 12 months, start 1 November."
+
+
+def _fill(model, message=SAID, quote=BLANK, checks=NO_LIMITS):
+    return qa.propose(quote, message, checks=checks, call=model, template=TEMPLATE,
+                      prompt=lambda: "{template} {quote} {message}")
+
+
+def test_a_template_is_filled_from_the_sellers_words_and_says_what_is_left():
+    out = _fill(_Model(
+        {"op": "set_customer", "name": "Kestrel Freight", "contact": "A. Reyes"},
+        {"op": "set_line", "line_id": "s", "qty": 340, "unit_price": 200, "cost": 125},
+        {"op": "set_line", "line_id": "o", "unit_price": 18000},
+        {"op": "set_term", "field": "payment", "text": "net 30"},
+        {"op": "set_term", "field": "lengthMonths", "number": 12}))
+    assert out["refused"] is None
+    assert out["change"] == {
+        "customer": {"name": "Kestrel Freight", "contact": "A. Reyes"},
+        "terms": {"payment": "Net 30", "lengthMonths": 12},
+        "lines": [{"id": "s", "qty": D(340), "unitPrice": D(200), "cost": D(125),
+                   "markupPct": D("60.0")},
+                  {"id": "o", "unitPrice": D(18000)}]}
+    assert out["missing"] == [{"field": "terms.start", "label": "a start date"}]
+    assert out["summary"].endswith("Still needed: a start date.")
+    assert "the “Software subscription” template" in out["reads"]
+
+
+def test_the_template_turn_uses_the_wider_answer_and_still_sends_no_stored_figure():
+    model = _Model({"op": "set_line", "line_id": "s", "qty": 340})
+    priced = {**BLANK, "lines": [{**BLANK["lines"][0], "cost": "77.7700", "unitPrice": "999.9900"}]}
+    _fill(model, quote=priced)
+    assert model.kwargs[0]["format"] == qa.FILL_SCHEMA
+    assert "Software subscription" in model.prompts[0]
+    assert "77.77" not in model.prompts[0] and "999.99" not in model.prompts[0]
+
+
+@pytest.mark.parametrize("intent, says", [
+    ({"op": "set_line", "line_id": "s", "unit_price": 210}, "a price of 210"),
+    ({"op": "set_line", "line_id": "s", "qty": 350}, "a quantity of 350"),
+    ({"op": "set_line", "line_id": "o", "cost": 9000}, "a cost of 9000"),
+    ({"op": "set_line", "line_id": "s", "percent": 5}, "a discount of 5%"),
+    ({"op": "set_customer", "name": "Kestrel Logistics"}, "Kestrel Logistics"),
+    ({"op": "set_customer", "contact": "B. Smith"}, "B. Smith"),
+    ({"op": "set_term", "field": "payment", "text": "Net 60"}, "Net 60"),
+    ({"op": "set_term", "field": "lengthMonths", "number": 24}, "a length in months of 24"),
+    ({"op": "set_term", "field": "lengthMonths", "number": 1.5}, "a length in months"),
+    ({"op": "set_term", "field": "warranty", "text": "Net 30"}, "a term this quote does not have"),
+    ({"op": "set_line", "line_id": "zz", "qty": 340}, "a line I could not match"),
+])
+def test_a_value_the_seller_did_not_give_is_left_out_and_named(intent, says):
+    """The rest of what they gave is still filled in; the invented value never is."""
+    out = _fill(_Model({"op": "set_line", "line_id": "o", "unit_price": 18000}, intent),
+                message=SAID + " 1.5")
+    assert out["change"] == {"lines": [{"id": "o", "unitPrice": D(18000)}]}
+    assert "I left out" in out["summary"] and says in out["summary"]
+
+
+def test_a_turn_of_nothing_but_invented_values_proposes_nothing():
+    """Seen against the real model: asked to "fill in sensible prices", it offered 500."""
+    out = _fill(_Model({"op": "set_line", "line_id": "s", "unit_price": 500},
+                       {"op": "set_line", "line_id": "o", "unit_price": 1500}),
+                message="Just make it competitive and fill in sensible prices.")
+    assert out["change"] is None
+    assert "a price of 500" in out["refused"] and "a price of 1500" in out["refused"]
+
+
+def test_a_start_date_is_read_from_the_sellers_words_not_the_models():
+    """Seen against the real model: it answered "1 November" where a date was asked for."""
+    year = TODAY.year + (TODAY > dt.date(TODAY.year, 11, 1))
+    for said in ("1 November", f"{year}-11-01", "2031-02-30", None):
+        out = _fill(_Model({"op": "set_term", "field": "start", "date": said}))
+        assert out["change"] == {"terms": {"start": f"{year}-11-01"}}, said
+    out = _fill(_Model({"op": "set_term", "field": "start", "date": "2027-03-09"}),
+                message="start some time in spring")
+    assert out["change"] is None and "a start date" in out["refused"]
+
+
+def test_between_two_typed_dates_the_models_choice_must_be_one_of_them():
+    said = "starts 1 November 2030, first review 1 December 2030"
+    out = _fill(_Model({"op": "set_term", "field": "start", "date": "2030-11-01"}), message=said)
+    assert out["change"] == {"terms": {"start": "2030-11-01"}}
+    out = _fill(_Model({"op": "set_term", "field": "start", "date": "2030-10-01"}), message=said)
+    assert out["change"] is None
+
+
+@pytest.mark.parametrize("message, found", [
+    ("1 November 2030", [dt.date(2030, 11, 1)]), ("3rd of Jan 2031", [dt.date(2031, 1, 3)]),
+    ("2030-11-01", [dt.date(2030, 11, 1)]), ("31 February 2030", []), ("12 months", []),
+    ("May 2030", []),
+])
+def test_only_a_day_and_a_month_is_a_date(message, found):
+    assert qa.typed_dates(message) == found
+
+
+def test_a_zero_from_the_model_means_it_had_nothing_to_give():
+    out = _fill(_Model({"op": "set_line", "line_id": "s", "qty": 340, "unit_price": 0, "cost": 0}))
+    assert out["change"] == {"lines": [{"id": "s", "qty": D(340)}]}
+    assert "left out" not in out["summary"]
+
+
+def test_the_sellers_own_spelling_is_what_is_kept():
+    out = _fill(_Model({"op": "set_customer", "name": "KESTREL   FREIGHT"}))
+    assert out["change"] == {"customer": {"name": "Kestrel Freight"}}
+
+
+def test_a_filled_discount_is_still_tested_against_the_corridor():
+    out = _fill(_Model({"op": "set_line", "line_id": "s", "percent": 15}),
+                message="340 seats with 15% off", checks=CORRIDOR_8)
+    assert out["change"] is None and "outside the 8% corridor" in out["refused"]
+
+
+def test_a_price_on_a_line_that_already_has_a_cost_gets_the_markup_the_two_imply():
+    costed = {**BLANK, "lines": [{**BLANK["lines"][0], "cost": "100"}]}
+    out = _fill(_Model({"op": "set_line", "line_id": "s", "unit_price": 140}),
+                message="seats are 140 each", quote=costed)
+    assert out["change"]["lines"] == [{"id": "s", "unitPrice": D(140), "markupPct": D("40.0")}]
+
+
+def test_without_a_template_nothing_is_filled_in():
+    """A quote that was not started from a template keeps the narrow agent: it is given
+    the narrow answer to fill, and a fill it sends anyway is refused."""
+    model = _Model({"op": "set_line", "line_id": "l1", "unit_price": 200})
+    out = _turn(model, message="seats at 200")
+    assert model.kwargs[0]["format"] == qa.SCHEMA
+    assert out["change"] is None and "not something I can change" in out["refused"]
+
+
+def test_a_turn_that_fills_nothing_says_so_and_still_lists_what_is_missing():
+    out = _fill(_Model({"op": "set_line", "line_id": "s"}), message="hello")
+    assert out["change"] is None and "Nothing in that" in out["refused"]
+    assert [m["field"] for m in out["missing"]][:2] == ["customer.name", "customer.contact"]
+
+
+@pytest.mark.parametrize("message, found", [
+    ("340 seats at £200", [D(340), D(200)]), ("18k and 1.5m", [D(18000), D(18), D(1500000), D("1.5")]),
+    ("£18,000.50", [D("18000.50")]), ("no figures here", []), ("SLA-B v2", []),
+    ("two days of training", [D(2)]), ("someone to attend", []),
+])
+def test_only_a_number_the_seller_typed_is_a_number(message, found):
+    assert qa.stated_numbers(message) == found
+
+
+def test_a_cost_is_taken_only_when_the_seller_was_talking_about_cost():
+    """Seen against the real model: "Monthly fee is 4,200" came back as price AND cost."""
+    out = _fill(_Model({"op": "set_line", "line_id": "s", "unit_price": 4200, "cost": 4200}),
+                message="Monthly fee is 4,200")
+    assert out["change"]["lines"] == [{"id": "s", "unitPrice": D(4200)}]
+    out = _fill(_Model({"op": "set_line", "line_id": "s", "unit_price": 200, "cost": 125}),
+                message="200 each, they cost us 125")
+    assert out["change"]["lines"][0]["cost"] == D(125)
+
+
+def test_a_cost_with_no_price_yet_does_not_get_a_markup_of_minus_a_hundred():
+    out = _fill(_Model({"op": "set_line", "line_id": "s", "cost": 125}), message="they cost us 125")
+    assert out["change"]["lines"] == [{"id": "s", "cost": D(125)}]
+
+
+def test_a_discount_is_not_filed_as_a_term():
+    """Seen against the real model: "5% off" came back as the payment terms."""
+    out = _fill(_Model({"op": "set_line", "line_id": "s", "qty": 200},
+                       {"op": "set_term", "field": "payment", "text": "5% off"}),
+                message="200 units with 5% off")
+    assert out["change"] == {"lines": [{"id": "s", "qty": D(200)}]}
+    assert "reads as a discount" in out["summary"]
