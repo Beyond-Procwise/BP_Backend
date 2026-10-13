@@ -191,6 +191,10 @@ not rewrite it.
 | 13 Oct | A prompt's wording may be shown unaltered on its own screens (not scrubbed by the output-safety layer) provided every read is logged with when it happened, it is internal, and it is a policy decision. | Owner |
 | 13 Oct | How that ruling is met: the two wording reads ask the gate for `prompt.read`, which records every attempt, allowed or refused, before answering; a stated role is required; and `PromptEnginePolicy.wording_read_passthrough` switches the pass-through. Missing, unreadable or false means scrubbed. | Builder |
 | 13 Oct | Roles set in the policy rows: read wording = Buyer or above; save a version = Buyer or above; promote or roll back = Approver or above. These are rows, so they can be changed without a release. | Builder — owner to confirm |
+| 13 Oct | An agent's own instructions go into the registry when the agent is created or edited, and are retired when it is deleted. They are recorded as in use at once (`agent_saved`), not promoted here, because the agent's own draft-and-publish by a second person is what governs their release. | Builder |
+| 13 Oct | A registry failure does not fail an agent's save while agents still read instructions from the older table; it is logged as an error and the import script reconciles. This reverses to "fail the save" when rendering moves to the registry (milestone 5). | Builder |
+| 13 Oct | A prompt can be retired: nothing is in use, its versions and history stay, and a later promotion brings it back. | Builder |
+| 13 Oct | Over HTTP, refusal codes are sent in lower case (`version_not_found`). Error answers are always scrubbed, and the output-safety layer withholds the upper-case form as if it were an environment variable. In-process callers get the contract's exact codes. | Builder |
 
 ## 11. Things that move out of prompt-building code
 

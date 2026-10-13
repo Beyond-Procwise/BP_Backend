@@ -21,6 +21,7 @@ from typing import Any, Dict, Iterable, List, Optional
 from services.db import get_conn
 
 LIVE = "live"
+RETIRED = "retired"
 
 _KEY = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
 _KINDS = ("prompt", "fragment")
@@ -206,7 +207,8 @@ def list_prompts() -> List[Dict[str, Any]]:
         SELECT r.prompt_key, r.kind, r.owner,
                (SELECT max(v.version) FROM proc.bp_prompt_version v
                  WHERE v.prompt_key = r.prompt_key),
-               (SELECT m.to_version FROM proc.bp_prompt_pointer_move m
+               (SELECT CASE WHEN m.change = 'retired' THEN NULL ELSE m.to_version END
+                  FROM proc.bp_prompt_pointer_move m
                  WHERE m.prompt_key = r.prompt_key AND m.pointer = %s
                  ORDER BY m.move_id DESC LIMIT 1)
           FROM proc.bp_prompt_registry r ORDER BY r.prompt_key
@@ -247,21 +249,29 @@ def pointer_history(key: str, pointer: str = LIVE) -> List[Dict[str, Any]]:
     return [dict(zip(_MOVE_COLUMNS, r)) for r in rows]
 
 
-def _current(key: str, pointer: str) -> Optional[int]:
+def _last_move(key: str, pointer: str) -> Optional[tuple]:
     rows = _query(
-        "SELECT to_version FROM proc.bp_prompt_pointer_move "
+        "SELECT to_version, change FROM proc.bp_prompt_pointer_move "
         "WHERE prompt_key = %s AND pointer = %s ORDER BY move_id DESC LIMIT 1",
         (key, pointer))
-    return int(rows[0][0]) if rows else None
+    return (int(rows[0][0]), rows[0][1]) if rows else None
+
+
+def _current(key: str, pointer: str) -> Optional[int]:
+    """The version in use, or None if there never was one or it was retired."""
+    last = _last_move(key, pointer)
+    return None if last is None or last[1] == RETIRED else last[0]
 
 
 def resolve(key: str, pointer: str = LIVE) -> Dict[str, Any]:
     """The version this pointer names. Raises if it names nothing."""
     _check_key(key)
-    current = _current(key, pointer)
-    if current is None:
+    last = _last_move(key, pointer)
+    if last is None:
         raise PointerUnresolved(f"prompt {key!r} has no {pointer!r} version")
-    return get_version(key, current)
+    if last[1] == RETIRED:
+        raise PointerUnresolved(f"prompt {key!r} was retired; nothing is {pointer!r}")
+    return get_version(key, last[0])
 
 
 def _legacy_desc(version: Dict[str, Any]) -> Any:
@@ -339,6 +349,9 @@ def rollback(key: str, *, approved_by: str, note: Optional[str] = None,
     history = pointer_history(key, pointer)
     if not history:
         raise NothingToRollBackTo(f"prompt {key!r} has never had a {pointer!r} version")
+    if history[-1]["change"] == RETIRED:
+        raise NothingToRollBackTo(
+            f"prompt {key!r} was retired; promote a version to bring it back")
     target_number = to_version if to_version is not None else history[-1]["from_version"]
     if target_number is None or target_number == history[-1]["to_version"]:
         raise NothingToRollBackTo(f"prompt {key!r} has no earlier {pointer!r} version")
@@ -347,3 +360,31 @@ def rollback(key: str, *, approved_by: str, note: Optional[str] = None,
             f"version {target_number} of {key!r} was never {pointer!r}; promote it instead")
     return _move(key, get_version(key, int(target_number)), pointer=pointer,
                  change="rolled_back", approved_by=approver, note=note)
+
+
+def adopt(key: str, *, template: str, by: str, change: str, settings: Optional[Dict[str, Any]] = None,
+          note: Optional[str] = None, change_note: Optional[str] = None) -> int:
+    """Record wording that something else has already put in use.
+
+    For the import, and for an agent's own instructions, whose release is
+    governed by the agent's draft-and-publish rather than by a promotion here.
+    Saves it as a new version, kept as it is, and moves the live pointer to it.
+    The older table is not written to: it is where the wording came from.
+    """
+    number = save_version(key, template=template, author=by, syntax="legacy",
+                          settings=settings, change_note=change_note)
+    _move(key, get_version(key, number), pointer=LIVE, change=change,
+          approved_by=by, note=note, mirror=False)
+    return number
+
+
+def retire(key: str, *, by: str, note: Optional[str] = None, pointer: str = LIVE) -> bool:
+    """Take the prompt out of use. Its versions and history stay. Returns whether
+    anything was in use. A later promotion brings it back."""
+    by = _approver(by)
+    current = _current(key, pointer)
+    if current is None:
+        return False
+    _move(key, get_version(key, current), pointer=pointer, change=RETIRED,
+          approved_by=by, note=note, mirror=False)
+    return True

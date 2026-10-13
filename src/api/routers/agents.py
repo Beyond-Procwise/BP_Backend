@@ -17,6 +17,7 @@ os.environ.setdefault("OMP_NUM_THREADS", "8")
 from api.auth import require_user
 from repositories import agent_definition_repo
 from services import rbac
+from services.prompt_engine import agent_prompts
 from api.endpoint_gate import require as gate
 
 logger = logging.getLogger(__name__)
@@ -641,6 +642,10 @@ async def create_agent(
         logger.exception("create_agent: catalogue write failed")
         raise HTTPException(status_code=500, detail=f"could not update agent catalogue: {exc}")
 
+    # The instructions also go into the prompt registry, with who wrote them.
+    # The agent still reads them from bp_prompt, so this cannot fail the create.
+    agent_prompts.record(prompt_name, instructions, by=created_by, linked_agent=gov_slug)
+
     # 3) Reload in-process — same registry-build startup does, same governance
     #    reload POST /agents/reload-governance does — so the new slug runs NOW.
     reload_report: Dict[str, Any] = {}
@@ -980,6 +985,8 @@ async def update_agent(
             logger.exception("update_agent: bp_prompt update failed")
             raise HTTPException(status_code=500, detail=f"could not store instructions: {exc}")
         applied["instructions"] = True
+        # A new version in the prompt registry; the wording it replaces is kept.
+        agent_prompts.record(prompt_name, text, by=editor, linked_agent=gov_slug)
 
     # --- back to draft -----------------------------------------------------
     # An edit changes what the agent does, so it has to be released again: were
@@ -1142,6 +1149,9 @@ async def delete_agent(
     except Exception as exc:
         logger.exception("delete_agent: bp_prompt delete failed")
         raise HTTPException(status_code=500, detail=f"could not remove instructions: {exc}")
+    # The registry keeps every wording the agent ran under; it is retired, not removed.
+    agent_prompts.retire(f"{gov_slug}_instructions",
+                         by=getattr(principal, "subject", None) or None)
 
     # 2) Mark it deleted in the store. The row and its history stay; a copy an
     #    older version left in the catalogue file stays hidden behind it.

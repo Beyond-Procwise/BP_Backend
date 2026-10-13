@@ -106,10 +106,8 @@ def run(apply: bool = False) -> Dict[str, Any]:
             report["already_there" if same else "drifted"].append(key)
             continue
         if apply:
-            number = R.save_version(
-                key, template=item["template"], author=item["author"], syntax="legacy",
-                settings=item["settings"], change_note=item["change_note"])
-            R._move(key, R.get_version(key, number), pointer=R.LIVE, change="imported",
-                    approved_by=IMPORTER, note="in use at the time of import", mirror=False)
+            R.adopt(key, template=item["template"], by=item["author"], change="imported",
+                    settings=item["settings"], change_note=item["change_note"],
+                    note="in use at the time of import")
         report["imported"].append(key)
     return report

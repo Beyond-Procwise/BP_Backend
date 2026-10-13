@@ -126,7 +126,7 @@ def test_the_author_promoting_their_own_version_is_refused(client):
     answer = client.post("/prompts/joshi/promote", json={"version": 1})
 
     assert answer.status_code == 403
-    assert answer.json()["detail"]["code"] == "SELF_APPROVAL"
+    assert answer.json()["code"] == "self_approval"
     assert client.fake.calls == []
 
 
@@ -151,4 +151,4 @@ def test_nobody_signed_in_cannot_change_anything(client, method, path, body):
 def test_a_version_that_is_not_there_is_a_404_with_the_contract_code(client):
     answer = client.get("/prompts/joshi/versions/9")
     assert answer.status_code == 404
-    assert answer.json()["detail"]["code"] == "VERSION_NOT_FOUND"
+    assert answer.json()["code"] == "version_not_found"

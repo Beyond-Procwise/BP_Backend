@@ -86,3 +86,17 @@ def test_the_wording_arrives_unaltered_when_policy_allows(served, policy):
 def test_the_wording_is_scrubbed_when_policy_says_no(served, policy):
     policy["value"] = False
     assert served.get("/prompts/joshi/versions/1").json()["template"] != WORDING
+
+
+def test_a_refusal_keeps_its_code_as_a_field_through_the_real_application(served, monkeypatch):
+    import api.routers.prompts as prompts_mod
+    from services.prompt_engine import registry as R
+
+    def missing(key, n):
+        raise R.VersionNotFound(f"prompt {key!r} has no version {n}")
+
+    monkeypatch.setattr(prompts_mod.registry, "get_version", missing)
+    answer = served.get("/prompts/joshi/versions/9")
+
+    assert answer.status_code == 404
+    assert answer.json()["code"] == "version_not_found"

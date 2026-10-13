@@ -199,3 +199,50 @@ def test_a_prompt_the_older_table_never_had_is_not_added_to_it(key, db):
     _save(key)
     R.promote(key, 1, approved_by="bob")
     assert _legacy_row(db, key) is None
+
+
+# --------------------------------------------------------------------------
+# Wording something else put in use, and taking a prompt out of use
+# --------------------------------------------------------------------------
+def test_adopted_wording_is_in_use_at_once_and_says_how_it_got_there(key):
+    assert R.adopt(key, template="Assess it.", by="ada", change="agent_saved") == 1
+
+    assert R.resolve(key)["template"] == "Assess it."
+    assert R.pointer_history(key)[-1]["change"] == "agent_saved"
+
+
+def test_a_retired_prompt_resolves_to_nothing_but_keeps_its_history(key):
+    R.adopt(key, template="Assess it.", by="ada", change="agent_saved")
+    assert R.retire(key, by="bob", note="agent deleted") is True
+
+    with pytest.raises(R.PointerUnresolved, match="retired"):
+        R.resolve(key)
+    assert R.get_version(key, 1)["template"] == "Assess it."
+    assert [m["change"] for m in R.pointer_history(key)] == ["agent_saved", "retired"]
+    assert next(p for p in R.list_prompts() if p["prompt_key"] == key)["live_version"] is None
+
+
+def test_retiring_what_is_not_in_use_does_nothing(key):
+    _save(key)
+    assert R.retire(key, by="bob") is False
+    assert R.pointer_history(key) == []
+
+
+def test_a_retired_prompt_cannot_be_rolled_back_but_can_be_promoted_again(key):
+    _save(key, author="ada")
+    R.promote(key, 1, approved_by="bob")
+    R.retire(key, by="bob")
+    with pytest.raises(R.NothingToRollBackTo, match="retired"):
+        R.rollback(key, approved_by="bob")
+
+    R.promote(key, 1, approved_by="bob")
+    assert R.resolve(key)["version"] == 1
+
+
+def test_an_unknown_kind_of_move_is_refused_by_the_database(key, db):
+    _save(key)
+    with pytest.raises(Exception, match="change_check"):
+        with db() as conn:
+            conn.cursor().execute(
+                "INSERT INTO proc.bp_prompt_pointer_move (prompt_key, to_version, change, "
+                "approved_by) VALUES (%s, 1, 'whatever', 'x')", (key,))

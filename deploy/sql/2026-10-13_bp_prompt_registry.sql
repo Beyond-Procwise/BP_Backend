@@ -79,13 +79,27 @@ CREATE TABLE IF NOT EXISTS proc.bp_prompt_pointer_move (
     pointer       TEXT NOT NULL DEFAULT 'live' CHECK (pointer ~ '^[a-z][a-z0-9_-]*$'),
     from_version  INTEGER,
     to_version    INTEGER NOT NULL,
-    change        TEXT NOT NULL CHECK (change IN ('promoted', 'rolled_back', 'imported')),
+    change        TEXT NOT NULL,
     approved_by   TEXT NOT NULL,
     note          TEXT,
     moved_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     FOREIGN KEY (prompt_key, to_version)
         REFERENCES proc.bp_prompt_version (prompt_key, version)
 );
+-- What kind of move it was. Dropped and re-added so this file can be re-applied
+-- when a kind is added.
+--   promoted     a second person put a version into use
+--   rolled_back  the pointer went back to a version it held before
+--   imported     the registry recorded what was already in use
+--   agent_saved  an agent's own instructions, written with the agent; the agent's
+--                draft-and-publish is what governs its release
+--   retired      nothing is in use any more (to_version is the one that was)
+ALTER TABLE proc.bp_prompt_pointer_move
+    DROP CONSTRAINT IF EXISTS bp_prompt_pointer_move_change_check;
+ALTER TABLE proc.bp_prompt_pointer_move
+    ADD CONSTRAINT bp_prompt_pointer_move_change_check
+    CHECK (change IN ('promoted', 'rolled_back', 'imported', 'agent_saved', 'retired'));
+
 CREATE INDEX IF NOT EXISTS ix_bp_prompt_pointer_move_latest
     ON proc.bp_prompt_pointer_move (prompt_key, pointer, move_id DESC);
 

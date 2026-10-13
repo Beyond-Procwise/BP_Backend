@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from api.auth import require_user
@@ -33,9 +34,20 @@ _STATUS = {
 }
 
 
-def _refused(exc: registry.RegistryError) -> HTTPException:
-    return HTTPException(status_code=_STATUS.get(type(exc), 400),
-                         detail={"code": exc.code, "message": str(exc)})
+def _refused(exc: registry.RegistryError) -> JSONResponse:
+    """The refusal, with the contract's code.
+
+    Returned, not raised: the application's handler for HTTPException turns a
+    structured ``detail`` into its text form, and the code would arrive as part
+    of a sentence instead of a field.
+
+    The code is sent in lower case. Error answers are always scrubbed by the
+    output-safety layer, and it withholds a word like VERSION_NOT_FOUND as if
+    it were an environment variable. In-process callers get the exception and
+    its code exactly as the contract spells it.
+    """
+    return JSONResponse(status_code=_STATUS.get(type(exc), 400),
+                        content={"code": exc.code.lower(), "message": str(exc)})
 
 
 def _named(principal: Any, what: str) -> str:
@@ -93,7 +105,7 @@ def read_prompt(key: str, principal=Depends(require_user)):
             "pointer_history": registry.pointer_history(key),
         }
     except registry.RegistryError as exc:
-        raise _refused(exc)
+        return _refused(exc)
 
 
 @router.get("/{key}/versions/{version}")
@@ -103,7 +115,7 @@ def read_version(key: str, version: int, principal=Depends(require_user)):
     try:
         return registry.get_version(key, version)
     except registry.RegistryError as exc:
-        raise _refused(exc)
+        return _refused(exc)
 
 
 @router.post("/{key}/versions", status_code=201)
@@ -117,7 +129,7 @@ def save_version(key: str, body: SaveBody, principal=Depends(require_user)):
             variables=body.variables, fragment_refs=body.fragment_refs,
             settings=body.settings, change_note=body.change_note)
     except registry.RegistryError as exc:
-        raise _refused(exc)
+        return _refused(exc)
     return {"prompt_key": key, "version": number, "in_use": False}
 
 
@@ -129,7 +141,7 @@ def promote(key: str, body: PromoteBody, principal=Depends(require_user)):
     try:
         now = registry.promote(key, body.version, approved_by=approver, note=body.note)
     except registry.RegistryError as exc:
-        raise _refused(exc)
+        return _refused(exc)
     return {"prompt_key": key, "live_version": now}
 
 
@@ -142,5 +154,5 @@ def rollback(key: str, body: RollbackBody, principal=Depends(require_user)):
         now = registry.rollback(key, approved_by=approver, note=body.note,
                                 to_version=body.to_version)
     except registry.RegistryError as exc:
-        raise _refused(exc)
+        return _refused(exc)
     return {"prompt_key": key, "live_version": now}
