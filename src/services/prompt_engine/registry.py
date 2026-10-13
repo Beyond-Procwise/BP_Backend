@@ -19,6 +19,7 @@ import re
 from typing import Any, Dict, Iterable, List, Optional
 
 from services.db import get_conn
+from services.prompt_engine import templates
 
 LIVE = "live"
 RETIRED = "retired"
@@ -125,6 +126,33 @@ def _kind_of(key: str) -> Optional[str]:
     return rows[0][0] if rows else None
 
 
+def _fragment_version(key: str, version: int) -> Optional[Dict[str, Any]]:
+    """That version of a fragment, or None if there is no such fragment version."""
+    rows = _query(
+        """
+        SELECT v.template, v.variables
+          FROM proc.bp_prompt_version v
+          JOIN proc.bp_prompt_registry r USING (prompt_key)
+         WHERE r.kind = 'fragment' AND v.prompt_key = %s AND v.version = %s
+        """, (key, int(version)))
+    if not rows:
+        return None
+    return {"template": rows[0][0], "variables": _loaded(rows[0][1])}
+
+
+def used_by(fragment_key: str, version: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Every prompt version that uses this fragment (at this version, if given)."""
+    _check_key(fragment_key)
+    probe: Dict[str, Any] = {"key": fragment_key}
+    if version is not None:
+        probe["version"] = int(version)
+    rows = _query(
+        "SELECT prompt_key, version FROM proc.bp_prompt_version "
+        "WHERE fragment_refs @> %s::jsonb ORDER BY prompt_key, version",
+        (_json([probe]),))
+    return [{"prompt_key": k, "version": v} for k, v in rows]
+
+
 def _approver(approved_by: Any) -> str:
     name = approved_by.strip() if isinstance(approved_by, str) else ""
     if not name:
@@ -166,6 +194,15 @@ def save_version(
     variables = list(variables or [])
     fragment_refs = list(fragment_refs or [])
     settings = dict(settings or {})
+    if syntax == "v1":
+        # A typed template is checked before it is saved, because a saved
+        # version can never be corrected, only superseded. Which fragments it
+        # uses is read from the template itself, not taken on the caller's word.
+        problems = templates.problems_on_save(
+            template, variables, _fragment_version, is_fragment=(kind == "fragment"))
+        if problems:
+            raise templates.TemplateInvalid(problems)
+        fragment_refs = templates.parse(template).fragment_refs
     digest = content_hash(syntax=syntax, template=template, variables=variables,
                           fragment_refs=fragment_refs, settings=settings)
 

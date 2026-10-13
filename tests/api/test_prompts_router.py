@@ -152,3 +152,17 @@ def test_a_version_that_is_not_there_is_a_404_with_the_contract_code(client):
     answer = client.get("/prompts/joshi/versions/9")
     assert answer.status_code == 404
     assert answer.json()["code"] == "version_not_found"
+
+
+def test_a_malformed_template_is_refused_with_each_problem_named(client, monkeypatch):
+    from services.prompt_engine import templates as T
+
+    def save(key, **kw):
+        raise T.TemplateInvalid(["blank 'supplier' is not declared"])
+
+    monkeypatch.setattr(prompts_mod.registry, "save_version", save)
+    answer = client.post("/prompts/joshi/versions", json={"template": "Rank {{supplier}}."})
+
+    assert answer.status_code == 422
+    assert answer.json()["code"] == "template_invalid"
+    assert answer.json()["problems"] == ["blank 'supplier' is not declared"]

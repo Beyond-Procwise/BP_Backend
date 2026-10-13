@@ -1,7 +1,8 @@
 # Prompt engine, phase 1 — design note
 
-13 Oct 2026. Status: **building. Milestone 2: registry tables and import applied to both databases;
-routes, permissions and policy rows built.**
+13 Oct 2026. Status: **building. Milestones 2 (registry, import, routes, policies, agent
+instructions) and 3 (typed templates and fragments) are done. Next: milestone 4, render
+and the manifest store.**
 Built on the Step 0 reuse audit of the same date and the owner's seven answers.
 
 ## 1. What is being built
@@ -195,6 +196,12 @@ not rewrite it.
 | 13 Oct | A registry failure does not fail an agent's save while agents still read instructions from the older table; it is logged as an error and the import script reconciles. This reverses to "fail the save" when rendering moves to the registry (milestone 5). | Builder |
 | 13 Oct | A prompt can be retired: nothing is in use, its versions and history stay, and a later promotion brings it back. | Builder |
 | 13 Oct | Over HTTP, refusal codes are sent in lower case (`version_not_found`). Error answers are always scrubbed, and the output-safety layer withholds the upper-case form as if it were an environment variable. In-process callers get the contract's exact codes. | Builder |
+| 13 Oct | Milestone 3. A fragment cannot use another fragment, and a prompt cannot be used as a fragment. Keeps "which wording does this prompt contain" a one-step answer. | Builder |
+| 13 Oct | A fragment's own blanks must be declared, with the same type, by every prompt that uses it; checked when the prompt is saved. | Builder |
+| 13 Oct | Which fragments a version uses is read from its template, not taken from the caller. | Builder |
+| 13 Oct | A value put into a blank is never read again as template, so text from a supplier or a document cannot become instructions. | Builder |
+| 13 Oct | A refusal names the variable and the expected type, never the value: values are customer data and refusals reach logs. | Builder |
+| 13 Oct | A blank declared `required: false` and left out renders as nothing. | Builder |
 
 ## 11. Things that move out of prompt-building code
 

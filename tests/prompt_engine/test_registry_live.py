@@ -246,3 +246,57 @@ def test_an_unknown_kind_of_move_is_refused_by_the_database(key, db):
             conn.cursor().execute(
                 "INSERT INTO proc.bp_prompt_pointer_move (prompt_key, to_version, change, "
                 "approved_by) VALUES (%s, 1, 'whatever', 'x')", (key,))
+
+
+# --------------------------------------------------------------------------
+# Typed templates and fragments are checked before they are saved
+# --------------------------------------------------------------------------
+from services.prompt_engine import templates as T  # noqa: E402
+
+SUPPLIER = {"name": "supplier", "type": "string"}
+
+
+def test_a_template_with_an_undeclared_blank_is_not_saved(key):
+    with pytest.raises(T.TemplateInvalid) as e:
+        _save(key, "Rank {{supplier}}.")
+    assert e.value.problems == ["blank 'supplier' is not declared"]
+    with pytest.raises(R.PromptNotFound):
+        R.get_version(key, 1)
+
+
+def test_a_reference_to_a_fragment_that_does_not_exist_is_not_saved(key):
+    with pytest.raises(T.TemplateInvalid, match="does not exist"):
+        _save(key, "{{> %s_voice@1}} Hello." % key)
+
+
+def test_the_fragments_a_version_uses_are_read_from_the_template_and_tracked(key):
+    voice = f"{key}_voice"
+    _save(voice, "Be brief with {{supplier}}.", kind="fragment", variables=[SUPPLIER])
+    _save(voice, "Be warm with {{supplier}}.", kind="fragment", variables=[SUPPLIER])
+    _save(key, "{{> %s@1}} Rank {{supplier}}." % voice, variables=[SUPPLIER],
+          fragment_refs=[{"key": "something-else", "version": 9}])
+
+    assert R.get_version(key, 1)["fragment_refs"] == [{"key": voice, "version": 1}]
+    assert R.used_by(voice) == [{"prompt_key": key, "version": 1}]
+    assert R.used_by(voice, 1) == [{"prompt_key": key, "version": 1}]
+    assert R.used_by(voice, 2) == []
+
+
+def test_a_prompt_cannot_be_used_as_a_fragment(key):
+    other = f"{key}_other"
+    _save(other, "Just a prompt.")
+    with pytest.raises(T.TemplateInvalid, match="does not exist"):
+        _save(key, "{{> %s@1}}" % other)
+
+
+def test_a_fragment_cannot_use_another_fragment(key):
+    inner = f"{key}_inner"
+    _save(inner, "Inner.", kind="fragment")
+    with pytest.raises(T.TemplateInvalid, match="cannot use another fragment"):
+        _save(f"{key}_outer", "{{> %s@1}}" % inner, kind="fragment")
+
+
+def test_imported_wording_is_not_held_to_the_template_rules(key):
+    """It is kept exactly as it was, braces and all."""
+    assert R.save_version(key, template="Rank {supplier} {{anything | goes}}.",
+                          author="ada", syntax="legacy") == 1

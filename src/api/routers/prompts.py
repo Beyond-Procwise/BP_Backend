@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from api.auth import require_user
 from api.endpoint_gate import require as gate
-from services.prompt_engine import registry
+from services.prompt_engine import registry, templates
 
 router = APIRouter(prefix="/prompts", tags=["Prompts"])
 
@@ -128,6 +128,11 @@ def save_version(key: str, body: SaveBody, principal=Depends(require_user)):
             key, template=body.template, author=author, kind=body.kind, owner=body.owner,
             variables=body.variables, fragment_refs=body.fragment_refs,
             settings=body.settings, change_note=body.change_note)
+    except templates.TemplateInvalid as exc:
+        # Each problem names a blank or a fragment, never a value.
+        return JSONResponse(status_code=422, content={
+            "code": exc.code.lower(), "message": "the template was not saved",
+            "problems": exc.problems})
     except registry.RegistryError as exc:
         return _refused(exc)
     return {"prompt_key": key, "version": number, "in_use": False}
