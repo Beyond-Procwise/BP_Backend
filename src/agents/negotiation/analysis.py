@@ -37,7 +37,10 @@ def extract_negotiation_signals(*,
     market: Dict[str, Any],
     performance: Dict[str, Any],
 ) -> Dict[str, Any]:
-    text = " ".join([t for t in ([supplier_message] + snippets) if t])[:8000]
+    # Only what the supplier wrote: the quoted copy of our own email underneath is not their signal.
+    from src.services.negotiation.reply_offer import own_words
+
+    text = " ".join([t for t in ([own_words(supplier_message)] + snippets) if t])[:8000]
     signals: Dict[str, Any] = {
         "finality_hint": False,
         "capacity_tight": False,
@@ -65,7 +68,8 @@ def extract_negotiation_signals(*,
         signals["delivery_flex"] = "possible"
     if any(x in lowered for x in ("alternate", "alternative", "equivalent", "substitute", "brand b")):
         signals["alt_part_offered"] = True
-    if any(x in lowered for x in ("cannot go lower", "final", "last price", "our best price", "rock bottom")):
+    # The governed final-offer phrases, the same ones detect_final_offer reads -- not the bare word "final".
+    if any(p in lowered for p in FINAL_OFFER_PHRASES()):
         signals["finality_hint"] = True
         signals["tone"] = "firm"
 
@@ -87,6 +91,10 @@ def extract_negotiation_signals(*,
                 parsed = json.loads(content)
                 if isinstance(parsed, dict):
                     for key in signals:
+                        # Finality is a governed reading: the model alone called a complaint about our tone a final
+                        # offer (live, 2026-10-14) and the plan switched to a stock package trade.
+                        if key == "finality_hint":
+                            continue
                         if key in parsed and parsed[key] is not None:
                             signals[key] = parsed[key]
         except Exception:

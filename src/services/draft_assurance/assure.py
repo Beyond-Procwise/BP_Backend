@@ -140,6 +140,9 @@ class Inputs:
         verified = self._verified_numbers()
         verified |= {Decimal(int(self.data.get("round") or 1))}   # "round 2" is not a claim
         unverified = sorted(str(n) for n in V.figures_in(text) - verified)
+        # Of those, the ones no person wrote either: the agent's own words, or the model's. A person answers each.
+        asked = set().union(*(V.numbers_in(t) for t in list(self.request_texts) + list(self.asserted_texts)))
+        unsourced = [n for n in unverified if Decimal(n) not in asked]
         # Dates likewise: one that no fact or reasoned value holds is the person's own, and is listed as written.
         known_dates = self._verified_dates()
         unverified_dates = [raw for raw, k in V.dates_written(text) if not any(V._same_date(k, d) for d in known_dates)]
@@ -163,6 +166,7 @@ class Inputs:
             "assumptions": self.assumptions,
             "request_text": (self.data.get("prompt") or "")[:2000] if isinstance(self.data.get("prompt"), str) else None,
             "unverified_figures": unverified,
+            "unsourced_figures": unsourced,
             "unverified_dates": unverified_dates,
             "violations": violations,
             "checked_at": datetime.now(timezone.utc).isoformat(),
@@ -310,6 +314,12 @@ def stage_fields(extras: Dict[str, Any], record: Dict[str, Any], reasoned: Dict[
         items.append({"id": f"claim:{c['fact']}", "key": f"claim.{c['fact']}",
                       "text": f"{c['label']} was read from the supplier's email by software and has not been confirmed by a person. "
                               "Confirm it, or give the right value.", "resolution": None})
+    # A figure in the email that no fact, reasoned value or person's own words hold -- the agent's or the model's own --
+    # is answered by a person before the draft is ready (live, 2026-10-14: "tiered price @ 100/250/500" went out as ready).
+    for n in record.get("unsourced_figures") or []:
+        items.append({"id": f"figure:{n}", "key": f"figure.{n}",
+                      "text": f"The figure {n} in this email does not come from the deal's data or from anything a person "
+                              "wrote. Confirm it is right, or reject it.", "resolution": None})
     # New or changed bank/payment details: a person must look, whatever the family or its mode (ruling 2026-10-09).
     if record.get("payment_details_hold"):
         items.append({"id": "payment_details", "key": "payment_details",

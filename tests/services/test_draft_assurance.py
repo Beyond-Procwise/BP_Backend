@@ -620,3 +620,30 @@ def test_with_no_deadline_the_counter_writer_is_told_not_to_invent_one(monkeypat
     agent, seen = _wrapped(monkeypatch, "Subject: Re\n" + GOOD)
     agent.from_decision(dict(DECISION))
     assert "Ask the supplier to reply by" not in seen[0] and "Do not give a reply date" in seen[0]
+
+
+# --- a figure nobody gave ----------------------------------------------------------
+# Live, 2026-10-14: the negotiation agent's stock asks put "tiered price @ 100/250/500" and "Net45/60" into a counter.
+# The figures were listed as unverified, but readiness looked only at the assumption items, so the draft counted as
+# ready to send. A figure no fact, no reasoned value and no person's own words hold is now an item a person answers.
+
+def test_a_figure_from_nowhere_must_be_answered_before_the_draft_is_ready(family):
+    inp = _inputs(family, asks=["confirm revised pricing", "Confirm tiered price @ 100/250/500"])
+    out = inp.finalize(GOOD + " Please also quote at 100, 250 and 500 units.", ["a@x.test"], ["a@x.test"])
+    ids = {a["id"] for a in out["assumption_items"]}
+    assert {"figure:100", "figure:250", "figure:500"} <= ids
+    assert out["ready"] is False
+
+
+def test_a_figure_the_person_typed_is_not_asked_about_again(family):
+    inp = _inputs(family)
+    inp.request_texts = ["Ask them to quote at 100 units as well"]
+    out = inp.finalize(GOOD + " Please also quote at 100 units.", ["a@x.test"], ["a@x.test"])
+    assert "figure:100" not in {a["id"] for a in out["assumption_items"]}
+    assert out["unverified_figures"] == ["100"]          # still listed, as before
+
+
+def test_a_clean_draft_has_no_figure_items(family):
+    out = _inputs(family).finalize(GOOD, ["a@x.test"], ["a@x.test"])
+    assert not [a for a in out["assumption_items"] if a["id"].startswith("figure:")]
+    assert out["ready"] is True

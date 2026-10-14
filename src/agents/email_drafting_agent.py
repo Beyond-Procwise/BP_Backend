@@ -1590,6 +1590,13 @@ class EmailDraftingAgent(BaseAgent):
             lines.append("- Do not give a reply date: none has been set.")
         lines.append("- Do not state any price, date, quantity, lead time or term that is not given above or in the "
                      "context: no tax, delivery or payment terms of your own.")
+        from src.services.negotiation.reply_offer import own_words
+
+        said = own_words(data.get("supplier_message") if isinstance(data.get("supplier_message"), str) else None)
+        if said:
+            lines.append("- The supplier wrote, in their latest reply:\n\"\"\"\n" + said[:1500] + "\n\"\"\"\n"
+                         "  Open by answering what they raised, plainly and courteously, before restating the position. "
+                         "Do not agree to anything on our behalf that is not in the position above.")
         return "\n".join(lines)
 
     def from_decision(self, decision: Dict[str, Any]) -> Dict[str, Any]:
@@ -1605,11 +1612,8 @@ class EmailDraftingAgent(BaseAgent):
         receiver = to_list[0] if to_list else None
         sender = decision_data.get("sender") or self.agent_nick.settings.ses_default_sender
 
-        existing_unique = self._normalise_tracking_value(decision_data.get("unique_id"))
         workflow_hint = decision_data.get("workflow_id") or decision_data.get("workflow_ref")
-        unique_id = existing_unique or self._generate_unique_identifier(
-            workflow_hint, supplier_id
-        )
+        unique_id = self._unique_id_for_new_draft(decision_data.get("unique_id"), workflow_hint, supplier_id)
 
         asks_raw = decision_data.get("asks") or decision_data.get("counter_points") or []
         if isinstance(asks_raw, str):
@@ -1909,10 +1913,7 @@ class EmailDraftingAgent(BaseAgent):
                 supplier_id = supplier_payload.get("id")
         supplier_id = self._coerce_text(supplier_id)
         workflow_hint = context.get("workflow_id") if isinstance(context, dict) else None
-        existing_unique = self._normalise_tracking_value(context.get("unique_id"))
-        unique_id = existing_unique or self._generate_unique_identifier(
-            workflow_hint, supplier_id
-        )
+        unique_id = self._unique_id_for_new_draft(context.get("unique_id"), workflow_hint, supplier_id)
 
         # The person's own words may name what to look up; any figure they contain is
         # carried and reported unverified, never treated as a fact.
@@ -4970,6 +4971,33 @@ class EmailDraftingAgent(BaseAgent):
         supplier_hint = self._normalise_tracking_value(supplier_id)
         return generate_unique_email_id(workflow_hint, supplier_hint)
 
+    def _unique_id_for_new_draft(self, existing: Optional[Any], workflow_id: Optional[Any],
+                                 supplier_id: Optional[Any]) -> str:
+        """The id a new draft is stored and tracked under: the one it was handed, unless an email already sent carries it.
+
+        The negotiation agent hands over the conversation's reference -- the id of the email the supplier
+        replied to. Reused, the save overwrote that sent email with the next counter and the old reply counted
+        as an answer to it (live, 2026-10-14). If the table cannot be read, the draft gets its own id: a spare
+        row is harmless, an overwritten sent email is not.
+        """
+
+        existing_value = self._normalise_tracking_value(existing)
+        if existing_value:
+            try:
+                with self.agent_nick.get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT 1 FROM proc.draft_rfq_emails WHERE unique_id = %s AND sent IS TRUE LIMIT 1",
+                                    (existing_value,))
+                        already_sent = cur.fetchone() is not None
+            except Exception:  # noqa: BLE001
+                logger.warning("could not check whether %s was already sent; drafting under a new id", existing_value,
+                               exc_info=True)
+                already_sent = True
+            if not already_sent:
+                return existing_value
+            logger.info("%s has already been sent; the new draft gets its own id", existing_value)
+        return self._generate_unique_identifier(self._normalise_tracking_value(workflow_id), supplier_id)
+
     def _resolve_unique_id(
         self,
         *,
@@ -5295,6 +5323,11 @@ class EmailDraftingAgent(BaseAgent):
                 payload = json.dumps(persisted_draft, default=str)
 
                 with conn.cursor() as cur:
+                    # An email that has gone out stays as it went out (live, 2026-10-14: a counter was saved over one).
+                    cur.execute("SELECT 1 FROM proc.draft_rfq_emails WHERE unique_id = %s AND workflow_id = %s "
+                                "AND sent IS TRUE LIMIT 1", (unique_id, workflow_id))
+                    if cur.fetchone() is not None:
+                        raise RuntimeError(f"draft {unique_id} not stored: an email with that id has already been sent")
                     cur.execute(
                         """
                         INSERT INTO proc.draft_rfq_emails
@@ -5338,6 +5371,7 @@ class EmailDraftingAgent(BaseAgent):
                             style_fallback_level = EXCLUDED.style_fallback_level,
                             style_exemplar_ids = EXCLUDED.style_exemplar_ids,
                             style_exemplar_set_hash = EXCLUDED.style_exemplar_set_hash
+                        WHERE proc.draft_rfq_emails.sent IS NOT TRUE
                         RETURNING id
                         """,
                         (

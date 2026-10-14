@@ -291,7 +291,7 @@ def plan_counter(ctx: NegotiationContext, signals: SupplierSignals) -> Dict[str,
 
     if ctx.current_offer <= 0 or ctx.target_price <= 0:
         message = "Offer or target missing/invalid; request structured pricing."
-        asks.append("Confirm unit price, currency, tiered price @ 100/250/500.")
+        asks.append("Confirm the unit price and currency for each item you quoted.")
         log.append("Invalid numeric input detected while planning counter.")
         return {
             "decision": "clarify",
@@ -1231,7 +1231,7 @@ def decide_strategy(
         return {
             "strategy": "clarify",
             "counter_price": None,
-            "asks": ["Confirm unit price, currency, tiered price @ 100/250/500."],
+            "asks": ["Confirm the unit price and currency for each item you quoted."],
             "lead_time_request": None,
             "rationale": "Price missing; request structured quote.",
         }
@@ -1256,7 +1256,7 @@ def decide_strategy(
         return {
             "strategy": "clarify",
             "counter_price": None,
-            "asks": ["Confirm unit price, currency, tiered price @ 100/250/500."],
+            "asks": ["Confirm the unit price and currency for each item you quoted."],
             "lead_time_request": None,
             "rationale": "Pricing inputs failed validation; request a structured quote.",
             "decision_origin": "contract_refused",
@@ -1708,6 +1708,29 @@ class NegotiationAgent(BaseAgent):
                 shared.update(candidate)
 
         return batch, shared
+
+    def _last_stated_offer(self, workflow_id: Optional[str], supplier_id: Optional[str]
+                           ) -> Tuple[Optional[float], Optional[str]]:
+        """The most recent price this supplier stated on this workflow, as stored with their replies."""
+
+        if not workflow_id or not supplier_id:
+            return None, None
+        try:
+            with self.agent_nick.get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT price, currency FROM proc.supplier_response "
+                        "WHERE workflow_id = %s AND supplier_id = %s AND price IS NOT NULL "
+                        "ORDER BY id DESC LIMIT 1",
+                        (workflow_id, supplier_id),
+                    )
+                    row = cur.fetchone()
+        except Exception:  # noqa: BLE001
+            logger.warning("could not read the last stated offer for %s/%s", workflow_id, supplier_id, exc_info=True)
+            return None, None
+        if not row:
+            return None, None
+        return self._coerce_float(row[0]), (str(row[1]).strip().upper() if row[1] else None)
 
     @staticmethod
     def _with_stated_offer(response: Dict[str, Any]) -> Dict[str, Any]:
@@ -4712,6 +4735,11 @@ class NegotiationAgent(BaseAgent):
         target_price = normalised_inputs.get("target_price")
         walkaway_price = normalised_inputs.get("walkaway_price")
         currency = normalised_inputs.get("currency")
+        if price is None:
+            # A reply that states no price leaves the supplier's last stated offer standing.
+            on_file, on_file_currency = self._last_stated_offer(workflow_id, supplier)
+            if on_file is not None and (currency is None or on_file_currency in (None, currency)):
+                price, currency = on_file, currency or on_file_currency
         lead_weeks = normalised_inputs.get("lead_time_weeks")
         volume_units = normalised_inputs.get("volume_units")
         term_days = normalised_inputs.get("term_days")
