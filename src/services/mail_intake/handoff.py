@@ -59,6 +59,19 @@ _SUFFIX_FOR_MIME: Dict[str, str] = {
 }
 
 
+def suffix_for(detected_mime: Optional[str], filename: Optional[str]) -> str:
+    """The file extension extraction's parser router will dispatch on.
+
+    From the DETECTED type; the sender's filename is only a bounded tiebreak.
+    See deliver_to_extraction for why.
+    """
+    suffix = _SUFFIX_FOR_MIME.get(detected_mime or "")
+    if suffix is None:
+        candidate = os.path.splitext(filename or "")[1].lower()
+        suffix = candidate if 0 < len(candidate) <= 8 and candidate.isascii() else ".bin"
+    return suffix
+
+
 def deliver_to_extraction(
     *,
     artifact_id: str,
@@ -91,10 +104,7 @@ def deliver_to_extraction(
     # `quote.csv` would otherwise be routed to the CSV parser. `typing_` already
     # ignores the filename for the same reason. It is used only as a tiebreak
     # when the detected type maps to several extensions, and bounded either way.
-    suffix = _SUFFIX_FOR_MIME.get(detected_mime or "")
-    if suffix is None:
-        candidate = os.path.splitext(filename or "")[1].lower()
-        suffix = candidate if 0 < len(candidate) <= 8 and candidate.isascii() else ".bin"
+    suffix = suffix_for(detected_mime, filename)
 
     # mkstemp already creates the file owner-only (0o600 before umask, and
     # umask can only clear bits, never add them). The explicit fchmod is

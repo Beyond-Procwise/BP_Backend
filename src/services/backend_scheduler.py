@@ -419,6 +419,10 @@ class BackendScheduler:
     ANALYSIS_SWEEP_JOB_NAME = "analysis-sweep"
     ANALYSIS_SWEEP_LANE = "analysis"
     MAIL_INTAKE_SWEEP_JOB_NAME = "mail-intake-sweep"
+    MAIL_INTAKE_POLL_JOB_NAME = "mail-intake-poll"
+    # Its own lane: reading a document's type runs the L0 parser (OCR on a scan),
+    # which must not hold up the shared lane.
+    MAIL_INTAKE_POLL_LANE = "mail-intake"
 
     def _register_default_jobs(self) -> None:
         self._sync_training_job()
@@ -442,6 +446,7 @@ class BackendScheduler:
         self._register_mailbox_health_job()
         self._register_style_feedback_job()
         self._register_mail_intake_sweep_job()
+        self._register_mail_intake_poll_job()
         self._register_triage_job()
         self._register_playbook_sweep_job()
         self._register_contract_link_job()
@@ -1393,6 +1398,71 @@ class BackendScheduler:
             interval=timedelta(seconds=60),
             initial_delay=timedelta(seconds=30),
         )
+
+    def _register_mail_intake_poll_job(self) -> None:
+        """Fetch relay mail, ingest it, and hand cleared attachments to the upload queue.
+
+        ON unless MAIL_INTAKE_POLL=off; a no-op until a relay intake binding is
+        active. Every MAIL_INTAKE_POLL_SECONDS (default 60). Three steps, each
+        safe to repeat: mail_intake.poll (stage 0), mail_handover.hand_over
+        (READY -> process_monitor, or held when the type is not settled) and
+        mail_handover.settle (close hand-overs the watcher has finished).
+        """
+        import os
+        if os.environ.get("MAIL_INTAKE_POLL", "on").strip().lower() in ("off", "0", "false"):
+            logger.info("mail intake poll not registered (MAIL_INTAKE_POLL=off)")
+            return
+        if self.MAIL_INTAKE_POLL_JOB_NAME in self._jobs:
+            return
+        if not self._mail_intake_tables_present():
+            return
+        try:
+            seconds = int(os.environ.get("MAIL_INTAKE_POLL_SECONDS", "60"))
+        except ValueError:
+            seconds = 60
+        self.register_job(
+            self.MAIL_INTAKE_POLL_JOB_NAME,
+            self._run_mail_intake_poll,
+            interval=timedelta(seconds=max(15, seconds)),
+            initial_delay=timedelta(seconds=45),
+            lane=self.MAIL_INTAKE_POLL_LANE,
+        )
+
+    def _run_mail_intake_poll(self) -> None:
+        import os
+
+        from config.settings import Settings
+        from src.services import mail_handover
+        from src.services.mail_intake import poll
+        from src.services.mail_intake.pipeline import IngestPipeline
+        from src.services.mail_intake.sources.relay import RelayMailSource
+        from src.services.mail_intake.store import ObjectStore
+        from src.services.sell_side._db import transactional_conn
+
+        bucket = Settings().s3_bucket_name
+        store = ObjectStore(bucket)
+        relay_bucket = os.environ.get("SES_INBOUND_BUCKET") or bucket
+        relay_prefix = os.environ.get("SES_INBOUND_PREFIX", "emails/")
+        # The MTA that writes the relay prefix is SES; its Authentication-Results
+        # header is the only one the relay path can trust (sender_auth, spec §4.1).
+        pipeline = IngestPipeline(
+            store, bucket,
+            trusted_asserter=os.environ.get("MAIL_INTAKE_TRUSTED_ASSERTER", "amazonses.com"),
+        )
+        for step in ("poll", "hand_over", "settle"):
+            try:
+                with transactional_conn() as conn:
+                    if step == "poll":
+                        result = poll.poll_all(
+                            conn, lambda b: RelayMailSource(relay_bucket, relay_prefix), pipeline)
+                    elif step == "hand_over":
+                        result = mail_handover.hand_over(conn, store)
+                    else:
+                        result = mail_handover.settle(conn)
+                if any(v for k, v in result.items() if k != "bindings"):
+                    logger.info("mail intake %s: %s", step, result)
+            except Exception:
+                logger.exception("mail intake %s failed", step)
 
     def _run_mail_intake_sweep(self) -> None:
         try:
