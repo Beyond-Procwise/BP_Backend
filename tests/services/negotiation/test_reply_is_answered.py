@@ -117,3 +117,14 @@ def test_no_offer_on_file_is_none():
     agent, _ = _negotiator(None)
 
     assert agent._last_stated_offer("wf-1", "SUP-1") == (None, None)
+
+
+def test_the_reply_text_reaches_the_negotiation_under_the_name_it_is_handed_over():
+    """The supplier agent hands replies over as ``response_text`` / ``body_text``; nothing read those names, so on
+    2026-10-14 the negotiation ran with no supplier message at all and the counter could not answer it."""
+
+    from agents.negotiation.rounds import extract_message_from_response
+
+    assert extract_message_from_response({"response_text": "I find your tone rude."}) == "I find your tone rude."
+    assert extract_message_from_response({"body_text": "Too short."}) == "Too short."
+    assert extract_message_from_response({"message": "first", "response_text": "second"}) == "first"

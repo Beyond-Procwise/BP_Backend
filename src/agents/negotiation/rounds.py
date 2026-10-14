@@ -206,7 +206,8 @@ def run_async_task(coro: Awaitable[Any]) -> Any:
 def extract_message_from_response(response: Dict[str, Any]) -> Optional[str]:
     """Extract plain text content from a supplier response."""
 
-    for key in ("message", "message_text", "body", "text", "content"):
+    # response_text / body_text: the names SupplierInteractionAgent hands replies over under.
+    for key in ("message", "message_text", "body", "text", "content", "response_text", "body_text"):
         value = response.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
