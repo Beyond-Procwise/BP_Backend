@@ -93,8 +93,18 @@ unpacked:
 | Unsupported formats | Anything else we do not read — installers, shortcut files, and similar — is held for a person rather than guessed at |
 | Documents containing hidden text | Text present in the file but invisible to a reader — a known method of attempting to influence automated document reading. Checked in PDF, Word and Excel files only; see the note below for what this does and does not cover |
 
-Held items are retained with the reason recorded. An authorised person can
-release one, and that release is itself recorded.
+Held items are retained with the reason recorded. There is not yet a screen
+for releasing one; today a release is a support request.
+
+**Documents whose type cannot be read from the page are also held.** An upload
+is labelled by the person uploading it; an email has no such person. So the
+system reads the document's own wording ("Quotation", "Invoice", …) and only
+routes it when that settles the type. When it does not, the document waits for
+a person rather than being read as a guess. The reason is recorded.
+
+Once a document's type is settled it is read exactly as an upload is: the same
+duplicate check against uploaded documents, the same validation, the same deal
+linking, and it appears in the same places.
 
 ## A note on hidden text, and what it does not cover
 
@@ -132,18 +142,21 @@ it runs and it has no route to alter them.
 We would rather state this precisely than let a reviewer infer more than is
 true.
 
-**Enforced for email attachments.** The document reader is never given a
-storage location it could vary. It receives the file itself, written to a
-temporary location we control and deleted immediately afterwards, so there is
-no address it could substitute and no way for it to reach material it was not
-handed — including the quarantine area holding rejected files.
+**What the document reader is given for an email attachment.** Only files
+that passed every check above. A cleared file is copied to the same storage
+area as uploaded documents, under a name the system builds from the file's
+internal identifier and its detected type — the sender's filename contributes
+only a cleaned-up label, and cannot place the file anywhere else. The reader is
+handed that location. It is never given the location of the quarantine area or
+of the original raw message, and a held file is never copied out of quarantine.
 
-**Not enforced in general.** The document reader is also used by other parts of
-the product that do pass it a storage location, and it can fetch from storage
-when they do. So it is not, today, a component that is *incapable* of network
-access — it is one that is never *given* the means to misuse it on this path.
-An automated check records the one place this happens and fails the build if a
-new one appears, so the gap cannot widen quietly.
+**Not enforced in general.** The document reader fetches documents from
+storage by location, for email attachments and uploads alike, and its storage
+access is broad enough that it *could* read the quarantine area if it were ever
+pointed there. What keeps quarantined files away from it is that it is only
+ever handed the location of a cleared copy, not that it is unable to reach
+them. An automated check records the one place the reader reaches storage and
+fails the build if a new route appears, so the gap cannot widen quietly.
 
 Closing it completely means running the document reader as a separate process
 with no network route and a read-only database role. That is a deployment
