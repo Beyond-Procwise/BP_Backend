@@ -6,6 +6,7 @@ import pytest
 
 from src.services import mail_handover
 from src.services.mail_intake import poll
+from src.services.mail_intake.pipeline import IngestOutcome
 from src.services.mail_intake.sources.base import RawMessage
 
 
@@ -86,7 +87,9 @@ class FakePipeline:
         if message.provider_message_id in self.fail_on:
             raise RuntimeError("database went away")
         self.seen.append(message.provider_message_id)
-        return SimpleNamespace(ready=("a",), quarantined=(), duplicates=())
+        # The real result type: a SimpleNamespace here let a wrong field name
+        # (outcome.ready) pass every test and fail on the first live message.
+        return IngestOutcome("b", ("a",), (), ())
 
 
 BINDING = {"binding_id": 7, "owner_ref": "owner-1", "last_sync_at": T0}

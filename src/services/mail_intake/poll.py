@@ -101,7 +101,7 @@ def poll_binding(conn: Any, binding: Mapping[str, Any], source: Any,
             )
             continue
         counts["messages"] += 1
-        counts["ready"] += len(outcome.ready)
+        counts["ready"] += len(outcome.artifact_ids)
         counts["quarantined"] += len(outcome.quarantined)
         counts["duplicates"] += len(outcome.duplicates)
     return counts

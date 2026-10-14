@@ -237,6 +237,15 @@ def _scan_pdf(content: bytes) -> Tuple[HiddenTextHit, ...]:
                 chars = len(span.get("chars") or ())
                 if chars == 0:
                     continue
+                # Whitespace renders nothing and says nothing, so it cannot hide
+                # an instruction. Word leaves 0.48pt spaces in empty table cells,
+                # and flagging those quarantined the first real quote sent
+                # through the relay (2026-10-14). A span with any visible
+                # character is still judged in full.
+                # A glyph with no Unicode mapping (code -1) is NOT whitespace: it
+                # renders something we cannot read, so it stays in scope.
+                if all(c[0] >= 0 and chr(c[0]).isspace() for c in span["chars"]):
+                    continue
                 technique: Optional[str] = None
 
                 if span.get("type") == 3:

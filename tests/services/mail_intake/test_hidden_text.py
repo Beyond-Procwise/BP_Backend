@@ -347,3 +347,31 @@ def test_workbook_claiming_excel_but_carrying_no_workbook_part_fails_closed():
         zf.writestr("decoy/readme.txt", "nothing to see")
     hits = hidden_text.scan(buf.getvalue(), EXCEL_MIME)
     assert any(h.technique == "unreadable" for h in hits)
+
+
+def test_tiny_spaces_from_a_real_word_export_are_not_hidden_text():
+    """Measured live, 2026-10-14: the first real quote sent through the relay was
+    quarantined for three 0.48pt SPACES that Word leaves in empty table cells.
+    A space carries no instruction. Flagging it quarantines ordinary quotes."""
+    real = FIXTURES / "word_export_tiny_spaces.pdf"   # documents/quote/QUOTE_WSG100025
+    # Precondition: the tiny spaces really are in this file, so the test is not
+    # passing on a document that never reached the check.
+    import fitz
+
+    with fitz.open(real) as doc:
+        tiny = [s for p in doc for s in p.get_texttrace()
+                if s["size"] < hidden_text.TINY_FONT_PT]
+    assert tiny and all(chr(c[0]).isspace() for s in tiny for c in s["chars"])
+
+    assert hidden_text.scan(real.read_bytes(), "application/pdf") == ()
+
+
+def test_tiny_text_mixed_with_spaces_is_still_detected():
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "normal line", fontsize=11)
+    page.insert_text((72, 200), " a ", fontsize=0.4)
+    hits = hidden_text.scan(doc.write(), "application/pdf")
+    assert any(h.technique == "tiny_font" for h in hits)
