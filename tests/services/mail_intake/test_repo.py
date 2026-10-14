@@ -151,8 +151,10 @@ def test_a_quarantined_copy_is_never_the_original_a_clean_arrival_duplicates():
     cur = FakeCursor([])
     repo.find_existing_artifact(cur, "user-7", "abc", None)
     sql, params = cur.calls[0]
-    assert "AND state <> %s" in sql
-    assert "quarantined" in params
+    # Only an original that was handed to extraction counts — the same set the
+    # unique index ix_bp_ingest_artifact_owner_sha covers (2026-10-14 migration).
+    assert "AND state = ANY(%s)" in sql
+    assert ["ready_for_extraction", "extraction_complete"] in params
 
 
 def test_mark_duplicate_validates_the_state_it_is_given():

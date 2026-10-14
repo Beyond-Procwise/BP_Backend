@@ -304,6 +304,11 @@ def record_arrival(cur, artifact_id: str, bundle_id: str) -> None:
     )
 
 
+# The states an artifact is in once it is THE copy of its content that gets read.
+ORIGINAL_STATES = (ArtifactState.READY_FOR_EXTRACTION.value,
+                   ArtifactState.EXTRACTION_COMPLETE.value)
+
+
 def find_existing_artifact(cur, owner_ref: str, digest: str,
                            logical: Optional[str],
                            exclude_artifact_id: Optional[str] = None) -> Optional[str]:
@@ -321,14 +326,16 @@ def find_existing_artifact(cur, owner_ref: str, digest: str,
         """
         SELECT artifact_id FROM proc.bp_ingest_artifact
          WHERE owner_ref = %s AND sha256 = %s AND duplicate_of_artifact_id IS NULL
-           AND state <> %s
+           AND state = ANY(%s)
            AND (%s::uuid IS NULL OR artifact_id <> %s::uuid)
          ORDER BY created_at
          LIMIT 1
         """,
-        # Never a quarantined copy: the arrival being checked has passed the
-        # gate, and "duplicate of something never read" loses it silently.
-        (owner_ref, digest, ArtifactState.QUARANTINED.value,
+        # Only an original that was handed to extraction. Never a quarantined
+        # copy (the arrival being checked has passed the gate, and "duplicate of
+        # something never read" loses it silently) nor one still in flight. The
+        # unique index ix_bp_ingest_artifact_owner_sha covers this same set.
+        (owner_ref, digest, list(ORIGINAL_STATES),
          exclude_artifact_id, exclude_artifact_id),
     )
     row = cur.fetchone()

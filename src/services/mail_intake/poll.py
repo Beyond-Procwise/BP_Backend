@@ -78,7 +78,14 @@ def poll_binding(conn: Any, binding: Mapping[str, Any], source: Any,
         conn.commit()
         return counts
 
-    for message in source.iter_messages(binding, since):
+    # Arrival order, not listing order: the relay lists by key, and the cursor
+    # is "newest committed arrival", so committing a later message before an
+    # earlier one would carry the cursor past the earlier one.
+    messages = sorted(
+        source.iter_messages(binding, since),
+        key=lambda m: m.received_at or since,
+    )
+    for message in messages:
         try:
             with conn.cursor() as cur:
                 outcome = pipeline.ingest(cur, binding, message)
@@ -96,10 +103,15 @@ def poll_binding(conn: Any, binding: Mapping[str, Any], source: Any,
             conn.rollback()
             counts["failed"] += 1
             log.exception(
-                "mail_intake.poll failed binding=%s message=%s",
+                "mail_intake.poll failed binding=%s message=%s; stopping this "
+                "binding's pass so the cursor stays before it and it is retried",
                 binding["binding_id"], message.provider_message_id,
             )
-            continue
+            # Stop, do not continue: a later message committing would move the
+            # cursor past this one and it would never be fetched again. A
+            # message that keeps failing holds the binding and says so every
+            # pass, which is loud; skipping it would be silent.
+            break
         counts["messages"] += 1
         counts["ready"] += len(outcome.artifact_ids)
         counts["quarantined"] += len(outcome.quarantined)

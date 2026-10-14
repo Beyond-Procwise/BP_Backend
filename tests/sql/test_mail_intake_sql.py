@@ -133,3 +133,15 @@ def test_binding_role_constraint_includes_intake():
         SQL,
         re.S
     ), "role constraint must include 'intake'"
+
+
+def test_the_dedup_index_covers_exactly_the_original_states():
+    """The unique index and find_existing_artifact must name the same states, or
+    a second arrival raises at insert (the 2026-10-14 live failure) or two
+    originals of one file both reach extraction."""
+    from src.services.mail_intake.repo import ORIGINAL_STATES
+
+    fix = pathlib.Path("scripts/migrations/2026-10-14-mail-intake-dedup-index.sql").read_text()
+    match = re.search(r"CREATE UNIQUE INDEX ix_bp_ingest_artifact_owner_sha.*?state IN \((.*?)\);", fix, re.S)
+    assert match, "the replacement index must be created"
+    assert set(re.findall(r"'([a-z_]+)'", match.group(1))) == set(ORIGINAL_STATES)

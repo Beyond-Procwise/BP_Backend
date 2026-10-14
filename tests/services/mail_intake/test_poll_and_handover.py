@@ -124,14 +124,33 @@ def test_each_message_is_ingested_and_committed_and_the_cursor_follows_it():
     assert cursor_moves == [T0 + timedelta(minutes=1), T0 + timedelta(minutes=2)]
 
 
-def test_a_failing_message_is_rolled_back_and_the_rest_still_ingest():
-    pipeline = FakePipeline(fail_on={"emails/m1"})
+def test_a_failing_message_is_rolled_back_after_earlier_ones_commit():
+    pipeline = FakePipeline(fail_on={"emails/m2"})
     conn = FakeConn()
     source = FakeSource([_msg(1, T0 + timedelta(minutes=1)), _msg(2, T0 + timedelta(minutes=2))])
     counts = poll.poll_binding(conn, BINDING, source, pipeline)
     assert counts["failed"] == 1 and counts["messages"] == 1
-    assert pipeline.seen == ["emails/m2"]
-    assert conn.rollbacks == 1
+    assert pipeline.seen == ["emails/m1"]
+    assert conn.commits == 1 and conn.rollbacks == 1
+
+
+def test_messages_are_ingested_in_arrival_order_not_key_order():
+    pipeline = FakePipeline()
+    late, early = _msg(1, T0 + timedelta(minutes=5)), _msg(2, T0 + timedelta(minutes=1))
+    poll.poll_binding(FakeConn(), BINDING, FakeSource([late, early]), pipeline)
+    assert pipeline.seen == ["emails/m2", "emails/m1"]
+
+
+def test_a_failure_stops_the_pass_so_the_cursor_never_skips_past_it():
+    """The cursor is the newest arrival committed. Carrying on after a failure let
+    a LATER message move it past the failed one, which was then never fetched
+    again — lost, with only a log line to show for it."""
+    pipeline = FakePipeline(fail_on={"emails/m1"})
+    conn = FakeConn()
+    source = FakeSource([_msg(1, T0 + timedelta(minutes=1)), _msg(2, T0 + timedelta(minutes=2))])
+    counts = poll.poll_binding(conn, BINDING, source, pipeline)
+    assert counts["failed"] == 1 and pipeline.seen == []
+    assert not conn.sql("AND last_sync_at < %s")
 
 
 def test_poll_all_reads_only_active_relay_intake_bindings_and_owner_is_user_ref():
