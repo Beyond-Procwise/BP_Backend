@@ -1,0 +1,65 @@
+{
+ "id": "004-multiple-matching-records",
+ "family": "negotiation_counter",
+ "description": "Two replies match with no ordering rule: the fact is ambiguous and is never guessed.",
+ "run": {
+  "path": "counter",
+  "payload": {
+   "supplier_id": "S-1",
+   "workflow_id": "wf-1",
+   "supplier_name": "Acme Ltd",
+   "recipients": [
+    "alex@acme.test"
+   ],
+   "current_offer": 47.5,
+   "currency": "GBP",
+   "counter_price": 44.8,
+   "response_deadline": "30 October 2026",
+   "asks": [
+    "Confirm revised pricing"
+   ],
+   "rationale": "Anchor below their offer",
+   "reasoned_basis": {
+    "response_deadline": [
+     "email_thread_summary"
+    ]
+   }
+  }
+ },
+ "policy_patch": [
+  {
+   "policy": "EmailFamily_negotiation_counter",
+   "path": [
+    "fact_sources",
+    "supplier_current_offer",
+    "order_by"
+   ],
+   "value": null
+  }
+ ],
+ "model": {
+  "compose": "Subject: Re: Pricing for your quotation\nDear Alex Morgan,\n\nThank you for your latest offer of 47.50 GBP. We would like to propose 44.80 GBP for this order. Could you please confirm whether you can agree this price by 30 October 2026?\n\nKind regards,\nProcurement Team",
+  "judge": {
+   "scores": {
+    "ask_is_specific": 5,
+    "position_follows_from_offer": 4,
+    "deadline_stated": 5,
+    "tone_matches_escalation_level": 4,
+    "concise": 4
+   },
+   "rationale": "clear"
+  }
+ },
+ "expect": {
+  "rec.unresolved[*].fact": {
+   "has": "supplier_current_offer"
+  },
+  "rec.unresolved[*].reason": {
+   "has": "multiple"
+  },
+  "rec.facts.supplier_current_offer": {
+   "null": true
+  },
+  "rec.status": "needs_review"
+ }
+}

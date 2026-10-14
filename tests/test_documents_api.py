@@ -110,11 +110,28 @@ def api_app(tmp_path):
     app.include_router(documents_router)
     app.state.agent_nick = _DummyAgentNick(objects, db_path)
 
+    # Both endpoints here take Depends(require_user), which with no configured
+    # Cognito pool answers 503 -- so every test in this file had been failing
+    # since authentication landed, without saying anything about documents.
+    # Overridden to an unauthenticated caller, which is what these tests were
+    # written against: test_embed_document_without_user_id asserts that a
+    # request naming nobody records no uploader, and a principal would make that
+    # assertion vacuous.
+    from api.routers import documents as _documents_module
+
+    app.dependency_overrides[_documents_module.require_user] = lambda: None
+
     client = TestClient(app)
     return client, db_path, objects
 
 
-def test_extract_document_from_s3_endpoint(api_app):
+def test_extract_document_from_s3_endpoint(api_app, monkeypatch):
+    # The gate audits every attempt through record_action_or_fail, whose INSERT
+    # the in-memory fake connection does not know -- so this test has been
+    # erroring on the audit write rather than on anything about extraction. The
+    # gate is covered by tests/guardrails; here it is stubbed out of the way.
+    monkeypatch.setattr("api.routers.documents.gate", lambda *a, **k: None)
+
     client, db_path, objects = api_app
     s3_path = "incoming/april/"
 
@@ -148,6 +165,16 @@ def test_extract_document_from_s3_endpoint(api_app):
 
 def test_embed_document_without_user_id(api_app, monkeypatch):
     client, *_ = api_app
+
+    # Intake limits are policy now (P4) and a missing one refuses. This suite
+    # has no governance database, so it states the limits it is uploading under
+    # rather than relying on a refusal being skipped.
+    monkeypatch.setattr(
+        "api.routers.documents._intake_policy",
+        lambda: {"details": {"rules": {"max_files_per_request": 10,
+                                       "max_bytes_per_file": 1_000_000}}},
+    )
+    monkeypatch.setattr("api.routers.documents.gate", lambda *a, **k: None)
 
     class DummyRAGService:
         def __init__(self) -> None:

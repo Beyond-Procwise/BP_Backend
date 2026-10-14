@@ -37,6 +37,17 @@ class Phi4HumanizationFineTuner:
         self.artifacts_dir = Path(
             getattr(self.settings, "phi4_artifacts_dir", "artifacts/phi4-joshi")
         )
+        # Where the humanisation plan is read from. The default is the path this
+        # has always used -- but that file is in .gitignore, so it exists only on
+        # the machine that wrote it: in a fresh clone, or any git worktree, there
+        # is no plan and _record_plan records nothing. Nameable so a caller (and
+        # the test) can say which plan it means instead of inheriting whatever
+        # the filesystem happens to hold.
+        self.plan_path = Path(
+            getattr(self.settings, "phi4_plan_path", None)
+            or Path(__file__).resolve().parent.parent
+            / "docs" / "model_tuning" / "phi4_humanization_plan.md"
+        )
         self._builder = FineTuneDatasetBuilder(
             getattr(agent_nick, "learning_repository", None),
             rag_service=self.rag_service,
@@ -213,11 +224,24 @@ class Phi4HumanizationFineTuner:
         return point_id
 
     def _load_plan_text(self) -> str:
-        plan_path = Path(__file__).resolve().parent.parent / "docs" / "model_tuning" / "phi4_humanization_plan.md"
+        """The plan text, or "" when there is no plan to read.
+
+        Empty means _record_plan records nothing, which is the honest outcome:
+        the plan is a document somebody wrote, and a plan nobody wrote is not one
+        this run should invent. A missing file is therefore a warning naming the
+        path, not a traceback -- it is a state this deployment can legitimately
+        be in (the file is git-ignored), and a stack trace said otherwise.
+        """
         try:
-            return plan_path.read_text(encoding="utf-8").strip()
+            return self.plan_path.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            logger.warning(
+                "No phi4 humanisation plan at %s; no plan will be recorded for "
+                "this run", self.plan_path)
+            return ""
         except Exception:
-            logger.exception("Unable to read phi4 humanisation plan from %s", plan_path)
+            logger.exception("Unable to read phi4 humanisation plan from %s",
+                             self.plan_path)
             return ""
 
     # ------------------------------------------------------------------

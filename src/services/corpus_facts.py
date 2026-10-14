@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import re
 from typing import Any, Dict, List, Optional
+from src.services.version_collapse import latest_quote_pred
 
 logger = logging.getLogger(__name__)
 
@@ -141,9 +142,12 @@ def _fetch(cur, intent: str) -> Dict[str, Any]:
     if intent == "deals":
         return {
             "deals": _rows(cur, """
-                SELECT deal_id, deal_name, supplier_name, deal_date, quote_count
-                  FROM proc.bp_deal_overview
-                 ORDER BY deal_date DESC NULLS LAST
+                SELECT deal_id, deal_name, supplier_name, deal_date, quote_count,
+                       to_jsonb(o)->>'bid_count' AS bid_count
+                  FROM proc.bp_deal_overview o
+                 -- deal_date is empty on every row, so ordering on it alone handed the
+                 -- model an arbitrary sample; latest activity is what "recent" means.
+                 ORDER BY COALESCE(deal_date, last_activity_date) DESC NULLS LAST, deal_id
                  LIMIT %s"""),
             "documents_in_deals": _rows(cur, """
                 SELECT deal_id, doc_type, doc_number, doc_date
@@ -270,6 +274,15 @@ def _fetch(cur, intent: str) -> Dict[str, Any]:
 
     if intent == "quotes":
         return {
+            # As for purchase orders: "how many quotes are in the system" was
+            # answered "10" off the sample below, against a true 21,054.
+            # quotes_total counts QUOTES -- each bid once, at its latest version -- not every
+            # version row; quote_documents_total is the row count.
+            "totals": _one(cur, f"""
+                SELECT COUNT(*) FILTER (WHERE {latest_quote_pred('q')})::int AS quotes_total,
+                       COUNT(*)::int AS quote_documents_total,
+                       COUNT(DISTINCT q.supplier_id)::int AS suppliers_quoting
+                  FROM proc.bp_quote_trgt q"""),
             "quotes": _rows(cur, """
                 SELECT q.quote_id, s.supplier_name, q.total_amount, q.currency, q.quote_date
                   FROM proc.bp_quote_trgt q
@@ -280,6 +293,15 @@ def _fetch(cur, intent: str) -> Dict[str, Any]:
 
     if intent == "purchase_orders":
         return {
+            # Asked "how many purchase orders are in the system" the model was
+            # handed only the sample below and answered "There are 10" -- the
+            # length of the list. The true figure was 5,042. Same rule as
+            # invoices above: if a number can be counted in SQL, it is counted
+            # here rather than left to be inferred from a top-N.
+            "totals": _one(cur, """
+                SELECT COUNT(*)::int AS purchase_orders_total,
+                       COUNT(DISTINCT supplier_id)::int AS suppliers_ordered_from
+                  FROM proc.bp_purchase_order_trgt"""),
             "purchase_orders": _rows(cur, """
                 SELECT p.po_id, s.supplier_name, p.total_amount, p.currency, p.order_date
                   FROM proc.bp_purchase_order_trgt p

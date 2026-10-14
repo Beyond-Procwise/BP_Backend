@@ -18,7 +18,8 @@ from typing import Any, Callable, Optional, TypedDict
 import fitz
 import numpy as np
 import pytesseract
-import requests
+from src.services import egress
+from src.services import ollama_client
 import spacy
 from docx import Document
 from PIL import Image, ImageFilter, ImageEnhance, ImageOps
@@ -508,16 +509,21 @@ def _call_nuextract_invoice(text: str) -> dict:
 {template_str}
 <|output|>"""
 
-    response = requests.post(
+    response = egress.post(
         f"{OLLAMA_BASE_URL}/api/generate",
+        purpose=egress.Purpose.MODEL_INFERENCE,
+        require_global=False,   # the model daemon is on localhost by design
         json={
             "model": NUEXTRACT_MODEL,
             "prompt": prompt,
             "stream": False,
+            # The GPU pin is shared, not named here: when the card refuses the
+            # whole model, every caller has to ask for less at the same time or
+            # Ollama loads a second copy of it.
             "options": {
                 "temperature": 0,
                 "num_predict": 2048,
-                "num_gpu": 99,
+                **ollama_client.gpu_options(),
             },
         },
         timeout=300,
@@ -607,16 +613,21 @@ def _call_nuextract_po(text: str) -> dict:
 {template_str}
 <|output|>"""
 
-    response = requests.post(
+    response = egress.post(
         f"{OLLAMA_BASE_URL}/api/generate",
+        purpose=egress.Purpose.MODEL_INFERENCE,
+        require_global=False,   # the model daemon is on localhost by design
         json={
             "model": NUEXTRACT_MODEL,
             "prompt": prompt,
             "stream": False,
+            # The GPU pin is shared, not named here: when the card refuses the
+            # whole model, every caller has to ask for less at the same time or
+            # Ollama loads a second copy of it.
             "options": {
                 "temperature": 0,
                 "num_predict": 2048,
-                "num_gpu": 99,
+                **ollama_client.gpu_options(),
             },
         },
         timeout=300,
@@ -4265,10 +4276,13 @@ def _ai_identify_supplier(text: str, extracted_name: str = "") -> str:
         prompt += f"A previous extraction attempt found this name: '{extracted_name}'. Verify or correct it.\n\n"
     prompt += f"Document text:\n{text_snippet}\n\nSupplier name:"
     try:
-        response = requests.post(
+        response = egress.post(
             f"{OLLAMA_BASE_URL}/api/generate",
+            purpose=egress.Purpose.MODEL_INFERENCE,
+            require_global=False,
             json={"model": AGENT_NICK_MODEL, "prompt": prompt, "stream": False,
-                  "options": {"temperature": 0, "num_predict": 100, "num_gpu": 99}},
+                  "options": {"temperature": 0, "num_predict": 100,
+                              **ollama_client.gpu_options()}},
             timeout=180,
         )
         response.raise_for_status()
@@ -4815,16 +4829,21 @@ def _call_nuextract_quote(text: str) -> dict:
 <|template|>
 {template_str}
 <|output|>"""
-    response = requests.post(
+    response = egress.post(
         f"{OLLAMA_BASE_URL}/api/generate",
+        purpose=egress.Purpose.MODEL_INFERENCE,
+        require_global=False,   # the model daemon is on localhost by design
         json={
             "model": NUEXTRACT_MODEL,
             "prompt": prompt,
             "stream": False,
+            # The GPU pin is shared, not named here: when the card refuses the
+            # whole model, every caller has to ask for less at the same time or
+            # Ollama loads a second copy of it.
             "options": {
                 "temperature": 0,
                 "num_predict": 2048,
-                "num_gpu": 99,
+                **ollama_client.gpu_options(),
             },
         },
         timeout=300,

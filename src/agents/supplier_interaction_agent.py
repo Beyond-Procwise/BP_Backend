@@ -301,6 +301,7 @@ class SupplierInteractionAgent(BaseAgent):
                 "workflow_id": workflow_id,
                 "unique_id": unique_id,
                 "price": row.get("price"),
+                "currency": row.get("currency"),
                 "lead_time": row.get("lead_time"),
                 "received_time": received_at,
             },
@@ -338,6 +339,7 @@ class SupplierInteractionAgent(BaseAgent):
             "from_addr": row.get("from_addr"),
             "received_at": row.get("received_time"),
             "price": row.get("price"),
+            "currency": row.get("currency"),
             "lead_time": row.get("lead_time"),
         }
 
@@ -925,195 +927,6 @@ class SupplierInteractionAgent(BaseAgent):
             "expected_count": len(expected_ids),
         }
 
-    def _await_dispatch_gate(
-        self,
-        workflow_id: str,
-        *,
-        timeout: Optional[int],
-        poll_interval: Optional[int],
-    ) -> Dict[str, Any]:
-        """Ensure all expected supplier dispatches have been sent."""
-
-        workflow_key = self._coerce_text(workflow_id)
-        summary: Dict[str, Any] = {
-            "complete": False,
-            "expected_count": 0,
-            "unique_ids": [],
-            "rows": [],
-        }
-
-        if not workflow_key:
-            return summary
-
-        try:
-            total_timeout = float(timeout) if timeout is not None else 0.0
-        except Exception:
-            total_timeout = 0.0
-
-        if total_timeout < 0:
-            total_timeout = 0.0
-
-        interval = self._normalise_poll_interval(poll_interval)
-        if interval <= 0:
-            interval = 1.0
-
-        start = time.monotonic()
-        deadline = start + total_timeout if total_timeout > 0 else None
-
-        while True:
-            expectations = self._expected_dispatch_context(workflow_key)
-            expected_ids: Set[str] = expectations.get("expected_unique_ids", set())
-
-            try:
-                workflow_email_tracking_repo.init_schema()
-                rows = workflow_email_tracking_repo.load_workflow_rows(
-                    workflow_id=workflow_key
-                )
-            except Exception:  # pragma: no cover - defensive logging
-                logger.exception(
-                    "Failed to load dispatch metadata while gating workflow=%s",
-                    workflow_key,
-                )
-                rows = []
-
-            dispatched_rows = [
-                row
-                for row in rows
-                if getattr(row, "message_id", None)
-                and getattr(row, "dispatched_at", None)
-            ]
-            dispatched_ids = {
-                self._coerce_text(getattr(row, "unique_id", None))
-                for row in dispatched_rows
-                if self._coerce_text(getattr(row, "unique_id", None))
-            }
-
-            if not expected_ids and dispatched_ids:
-                expected_ids = set(dispatched_ids)
-
-            expected_total = max(len(expected_ids), expectations.get("expected_count", 0))
-
-            summary.update(
-                {
-                    "expected_count": expected_total,
-                    "unique_ids": sorted(expected_ids),
-                    "rows": dispatched_rows,
-                }
-            )
-
-            if expected_total == 0 and not dispatched_rows:
-                logger.debug(
-                    "No dispatch expectations recorded for workflow=%s", workflow_key
-                )
-                if deadline is not None and time.monotonic() >= deadline:
-                    return summary
-            elif expected_ids.issubset(dispatched_ids) and len(dispatched_ids) >= expected_total:
-                summary["complete"] = True
-                return summary
-
-            if deadline is not None and time.monotonic() >= deadline:
-                logger.info(
-                    "Dispatch gate timed out for workflow=%s after %.1fs", workflow_key, time.monotonic() - start
-                )
-                return summary
-
-            time.sleep(min(interval, 5.0))
-
-    def _await_response_gate(
-        self,
-        workflow_id: str,
-        *,
-        expected_unique_ids: Sequence[str],
-        expected_count: int,
-        timeout: Optional[int],
-    ) -> Dict[str, Any]:
-        """Wait for all supplier responses corresponding to dispatches."""
-
-        workflow_key = self._coerce_text(workflow_id)
-        gate_summary: Dict[str, Any] = {
-            "complete": False,
-            "responses": [],
-            "collected_count": 0,
-        }
-
-        if not workflow_key:
-            return gate_summary
-
-        expected_set: Set[str] = {
-            self._coerce_text(uid)
-            for uid in expected_unique_ids
-            if self._coerce_text(uid)
-        }
-
-        if expected_count <= 0 and not expected_set:
-            gate_summary["complete"] = True
-            gate_summary["responses"] = []
-            return gate_summary
-
-        try:
-            total_timeout = float(timeout) if timeout is not None else 0.0
-        except Exception:
-            total_timeout = 0.0
-
-        if total_timeout < 0:
-            total_timeout = 0.0
-
-        start = time.monotonic()
-        deadline = start + total_timeout if total_timeout > 0 else None
-
-        interval = max(float(self.RESPONSE_GATE_POLL_SECONDS), 1.0)
-
-        supplier_response_repo.init_schema()
-
-        while True:
-            pending_rows = supplier_response_repo.fetch_pending(
-                workflow_id=workflow_key, include_processed=False
-            )
-            pending_ids = {
-                self._coerce_text(row.get("unique_id"))
-                for row in pending_rows
-                if self._coerce_text(row.get("unique_id"))
-            }
-
-            if expected_count > 0:
-                ready = expected_set.issubset(pending_ids) and len(pending_ids) >= expected_count
-            else:
-                ready = bool(pending_ids)
-
-            if ready:
-                responses = self._process_responses_concurrently(pending_rows)
-                gate_summary.update(
-                    {
-                        "complete": True,
-                        "responses": responses,
-                        "collected_count": len(responses),
-                    }
-                )
-                return gate_summary
-
-            if deadline is not None and time.monotonic() >= deadline:
-                logger.info(
-                    "Response gate timed out for workflow=%s after %.1fs",
-                    workflow_key,
-                    time.monotonic() - start,
-                )
-                gate_summary["responses"] = self._process_responses_concurrently(
-                    pending_rows
-                )
-                gate_summary["collected_count"] = len(gate_summary["responses"])
-                return gate_summary
-
-            if deadline is None:
-                time.sleep(interval)
-            else:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    gate_summary["responses"] = self._process_responses_concurrently(
-                        pending_rows
-                    )
-                    gate_summary["collected_count"] = len(gate_summary["responses"])
-                    return gate_summary
-                time.sleep(min(interval, remaining))
 
     def _await_full_response_batch(
         self,
@@ -1458,7 +1271,13 @@ class SupplierInteractionAgent(BaseAgent):
             else:
                 context_ids = context_expectations.get("expected_unique_ids", set()) if isinstance(context_expectations, dict) else set()
                 if context_ids:
-                    expected_ids = [self._coerce_text(uid) for uid in context_ids if self._coerce_text(uid)]
+                    # sorted, because context_ids is a SET: Python randomises
+                    # string hashing per process, so the order of the ids this
+                    # gate reports (and the order every caller then dispatches
+                    # in) changed from run to run. The gate's own test failed on
+                    # 5 of 8 hash seeds.
+                    expected_ids = [self._coerce_text(uid) for uid in sorted(context_ids)
+                                    if self._coerce_text(uid)]
                     expected_ids = [uid for uid in expected_ids if uid]
                     if expected_ids:
                         count_hint = max(count_hint, len(expected_ids), context_expectations.get("expected_count", 0))
@@ -1542,7 +1361,7 @@ class SupplierInteractionAgent(BaseAgent):
                     if context_ids:
                         expected_ids = [
                             self._coerce_text(uid)
-                            for uid in context_ids
+                            for uid in sorted(context_ids)  # a set: see above
                             if self._coerce_text(uid)
                         ]
                         expected_ids = [uid for uid in expected_ids if uid]
@@ -3858,6 +3677,7 @@ class SupplierInteractionAgent(BaseAgent):
         supplier_id: Optional[str],
         drafts: Optional[List[Dict[str, Any]]] = None,
     ) -> Optional[Dict[str, Any]]:
+        model_name: Optional[str] = None
         prompt_payload = {
             "subject": subject or "",
             "rfq_id": rfq_id or "",
@@ -3942,7 +3762,12 @@ class SupplierInteractionAgent(BaseAgent):
             logger.debug("LLM response was not valid JSON: %s", content)
             return None
 
-        return parsed if isinstance(parsed, dict) else None
+        if isinstance(parsed, dict):
+            parsed["_model"] = model_name          # which model answered: recorded as provenance, never read as a value
+            return parsed
+        return None
+
+    EXTRACTION_PROMPT_VERSION = "inline:supplier_interaction_agent._analyze_response_with_llm"
 
     def _parse_response(
         self,
@@ -3957,6 +3782,11 @@ class SupplierInteractionAgent(BaseAgent):
         lead_match = re.search(r"(\d+)\s*days", text, re.IGNORECASE)
         price = float(price_match.group(1).replace(',', '')) if price_match else None
         lead_time = lead_match.group(1) if lead_match else None
+        # HOW each value was read, recorded with the row: the first number in an email being stored as a price is the thing a reader
+        # needs to know happened. The values and the choice between them are unchanged.
+        price_method = "regex_first_number" if price is not None else None
+        lead_method = "regex_days" if lead_time is not None else None
+        used_model: Optional[str] = None
 
         llm_payload = self._analyze_response_with_llm(
             subject=subject,
@@ -3972,6 +3802,8 @@ class SupplierInteractionAgent(BaseAgent):
                 llm_price = self._coerce_float(llm_payload.get("price_gbp"))
             if llm_price is not None:
                 price = llm_price
+                price_method = "llm"
+                used_model = llm_payload.get("_model")
 
             lead_candidate = llm_payload.get("lead_time_days") or llm_payload.get(
                 "lead_time"
@@ -3979,11 +3811,15 @@ class SupplierInteractionAgent(BaseAgent):
             if lead_candidate is not None:
                 if isinstance(lead_candidate, (int, float)):
                     lead_time = str(int(lead_candidate))
+                    lead_method = "llm"
+                    used_model = used_model or llm_payload.get("_model")
                 else:
                     lead_text = str(lead_candidate)
                     lead_digits = re.search(r"(\d+)", lead_text)
                     if lead_digits:
                         lead_time = lead_digits.group(1)
+                        lead_method = "llm"
+                        used_model = used_model or llm_payload.get("_model")
 
             summary_text = llm_payload.get("summary") or llm_payload.get("context")
             if isinstance(summary_text, str) and summary_text.strip():
@@ -3997,10 +3833,28 @@ class SupplierInteractionAgent(BaseAgent):
             "price": price,
             "lead_time": lead_time,
             "response_text": text,
+            "extraction": {"price_method": price_method, "lead_time_method": lead_method, "model": used_model,
+                           "prompt_version": self.EXTRACTION_PROMPT_VERSION},
         }
         if summary:
             payload["context_summary"] = summary
         return payload
+
+    def _record_extraction_provenance(self, workflow_id, unique_id, message_id, parsed) -> None:
+        """Stamp HOW the stored price / lead time were read. Best-effort: a failure here never costs a reply."""
+
+        try:
+            info = (parsed or {}).get("extraction")
+            if not isinstance(info, dict):
+                return
+            method = info.get("price_method") or info.get("lead_time_method")
+            if not method:
+                return                                            # nothing was extracted, so there is nothing to describe
+            supplier_response_repo.record_extraction(
+                workflow_id=workflow_id, unique_id=unique_id, response_message_id=message_id, method=method,
+                model=info.get("model"), prompt_version=info.get("prompt_version"))
+        except Exception:  # noqa: BLE001
+            logger.debug("could not record extraction provenance", exc_info=True)
 
     def _store_response(
         self,
@@ -4248,3 +4102,5 @@ class SupplierInteractionAgent(BaseAgent):
                 workflow_key,
                 unique_key,
             )
+        else:
+            self._record_extraction_provenance(workflow_key, unique_key, message_id, parsed)

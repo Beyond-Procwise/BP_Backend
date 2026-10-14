@@ -26,6 +26,8 @@ ALLOWLIST_POLICY = {
         "required_role": "Approver",
         "applies_to": ["email.send"],
         "rules": {
+            # This policy is what PERMITS a send; a permit must now be stated.
+            "effect": "allow",
             "match": "exact_casefold",
             "on_unknown_recipient": "deny_and_raise_review",
             "allow_recipients_from_email_body": False,
@@ -42,6 +44,7 @@ APPROVAL_POLICY = {
         "required_role": "Approver",
         "applies_to": ["email.send"],
         "rules": {
+            "effect": "allow",
             "approval_required": True,
             "require_actioned_by": True,
             "trust_input_payload": False,

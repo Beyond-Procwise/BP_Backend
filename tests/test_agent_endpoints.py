@@ -60,7 +60,7 @@ class DummyOrchestrator:
     def __init__(self):
         self.agent_nick = SimpleNamespace(process_routing_service=DummyPRS())
 
-    def execute_workflow(self, workflow_name, input_data):
+    def execute_workflow(self, workflow_name, input_data, user_id=None):
         if workflow_name == "email_drafting":
             output = {
                 **input_data,
@@ -94,6 +94,11 @@ def test_agent_execute_endpoint():
     orchestrator = DummyOrchestrator()
     app.state.orchestrator = orchestrator
     app.state.agent_nick = orchestrator.agent_nick
+    # /agents/execute now resolves the caller (P8 phase 2). This test is about
+    # the execution, not authentication, so it pins the principal the way
+    # test_reload_governance_reloads_both_engines below already does:
+    # require_user's global `_mode` is test-order-sensitive.
+    app.dependency_overrides[require_user] = lambda: None
     client = TestClient(app)
 
     resp = client.post(
@@ -333,6 +338,43 @@ def test_email_workflow_marks_failed_dispatch(monkeypatch):
     assert prs.updated_details["status"] == "failed"
 
 
+def test_a_send_the_guard_refuses_answers_with_the_guards_reason(monkeypatch):
+    """A refusal is a 403 carrying why, not a 500 the person cannot act on.
+
+    The send guard raises ``DispatchDenied``; the route used to let its catch-all turn
+    that into a server error, so "the draft changed since it was approved; it must be
+    approved again" reached nobody.
+    """
+    from src.services import guardrail
+    from src.services.email_dispatch_guard import DispatchDenied
+
+    reason = "the draft changed since it was approved; it must be approved again"
+    app = FastAPI()
+    app.include_router(workflows_router)
+    _authorize_as_approver(app)
+    orchestrator = DummyOrchestrator()
+    app.state.orchestrator = orchestrator
+    app.state.agent_nick = orchestrator.agent_nick
+    client = TestClient(app)
+
+    class StubDispatchRefused:
+        def __init__(self, agent_nick):
+            self.agent_nick = agent_nick
+
+        def resolve_workflow_id(self, identifier):
+            return f"wf-{identifier}" if identifier else None
+
+        def send_draft(self, identifier, **kwargs):
+            raise DispatchDenied(guardrail.Decision(allowed=False, reason=reason))
+
+    monkeypatch.setattr("api.routers.workflows.EmailDispatchService", StubDispatchRefused)
+
+    resp = client.post("/workflows/email", data={"rfq_id": "RFQ-456", "action_id": "workflow-action"})
+
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == reason
+
+
 def test_email_dispatch_without_workflow_is_rejected(monkeypatch):
     app = FastAPI()
     app.include_router(workflows_router)
@@ -395,7 +437,7 @@ def test_email_dispatch_detects_workflow_mismatch(monkeypatch):
     assert detail["stored_workflow_id"] == "wf-stored"
 
 
-def test_reload_governance_reloads_both_engines():
+def test_reload_governance_reloads_both_engines(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from types import SimpleNamespace
@@ -414,6 +456,13 @@ def test_reload_governance_reloads_both_engines():
 
     app = FastAPI()
     app.include_router(agents_router.router)
+    # Reloading governance is now a `prompt.write`, so the endpoint resolves a
+    # principal and asks the gate. Both are pinned here the way the dispatch
+    # test below already does it: require_user's global `_mode` is
+    # test-order-sensitive, and the gate has its own suite
+    # (tests/guardrails/test_endpoint_gate.py). This test is about the reload.
+    app.dependency_overrides[require_user] = lambda: None
+    monkeypatch.setattr(agents_router, "gate", lambda *a, **k: None)
     app.state.agent_nick = SimpleNamespace(
         prompt_engine=prompt_engine,
         policy_engine=policy_engine,

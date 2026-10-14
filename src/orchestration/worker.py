@@ -44,7 +44,7 @@ class AgentWorker:
             context = AgentContext(
                 workflow_id=task.context.get("workflow_id", ""),
                 agent_id=task.context.get("agent_id", task.agent_type),
-                user_id=task.context.get("user_id", ""),
+                user_id=task.context.get("user_id") or None,
                 input_data=task.context.get("input_data", {}),
                 policy_context=task.context.get("policy_context", []),
                 knowledge_base=task.context.get("knowledge_base", {}),

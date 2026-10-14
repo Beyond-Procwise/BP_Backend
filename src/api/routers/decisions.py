@@ -30,10 +30,18 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from api.auth import require_user
+from api.endpoint_gate import require as gate
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/decisions", tags=["Decisions"])
+
+#: Never served by the generic decision reads: their facts carry an agent tool call's raw
+#: arguments, context and reason. /agent-policies/approvals reads them with per-caller masking.
+#: Policy and live conflict cases (stage 4) quote the action's condition values and the
+#: overlap example: /agent-policies/conflicts and the approval card read them, masked per caller.
+HIDDEN_SUBJECT_TYPES = ("agent_policy_approval", "agent_policy_replay", "policy_conflict", "live_conflict")
+_HIDDEN_CLAUSE = "d.subject_type NOT IN (" + ", ".join(f"'{t}'" for t in HIDDEN_SUBJECT_TYPES) + ")"
 
 
 def get_agent_nick(request: Request):
@@ -57,6 +65,20 @@ def _actor(principal: Any) -> str:
             status_code=401, detail="this action must be attributed to a person"
         )
     return subject
+
+
+def _reader(principal: Any) -> None:
+    """Gate a read. Unlike a write, a read records no actor, so it needs no name.
+
+    ``require_user`` has already refused an unidentified caller when auth is
+    enforced; it returns ``None`` only when auth is switched off by
+    configuration. Demanding a name there (via ``_actor``) refused every read,
+    and the Action Centre showed "Supplier replies could not be loaded" instead
+    of the queue. A principal that IS present must still carry a subject.
+    """
+
+    if principal is not None:
+        _actor(principal)
 
 
 class DecideRequest(BaseModel):
@@ -138,6 +160,14 @@ def act_on_finding(
     finding, so what the document actually said stays intact.
     """
     actor = _actor(principal)
+
+    # `finding.resolve` was gated on the REPORTS router only, which left the Action
+    # Centre -- the surface the name was written for, and the one every finding card
+    # posts to -- governed by nothing but authentication. Same name, because it is the
+    # same act: closing a finding. The engine still advises rather than vetoes; this
+    # decides only whether the caller may act at all.
+    gate("finding.resolve", principal, agent="decisions_api",
+         context={"finding_id": finding_id, "action": body.action})
 
     from engines.decision_engine import DecisionEngine
 
@@ -275,7 +305,7 @@ def get_email_reply_message(
     gates this route -- no capability check on top of it, which would lock out
     roles that legitimately need visibility.
     """
-    _actor(principal)  # authenticated caller required; no capability check for a read
+    _reader(principal)  # no capability check, and no actor: a read records nothing
 
     # Taken from the engine rather than repeated as a literal here: the scoping value
     # and the value the decision was WRITTEN with must be the same string, always.
@@ -412,9 +442,13 @@ def list_decisions(
     Reading the queue is not an approval-class action: authentication alone
     gates this route, no capability check.
     """
-    _actor(principal)  # authenticated caller required; no capability check for a read
+    _reader(principal)  # no capability check, and no actor: a read records nothing
 
-    where = ["d.resolution = 'escalated'"]
+    # Agent-policy approval and replay rows carry the tool's raw arguments in `facts`; they are
+    # read only through /agent-policies/approvals, which masks them per caller.
+    # The names are this module's constants, inlined so the bound parameters stay exactly as
+    # before (subject_type, status, limit).
+    where = ["d.resolution = 'escalated'", _HIDDEN_CLAUSE]
     params: List[Any] = []
     if subject_type:
         where.append("d.subject_type = %s")
@@ -490,11 +524,12 @@ def get_decision(
     Reading a decision is not an approval-class action: authentication alone
     gates this route, no capability check.
     """
-    _actor(principal)  # authenticated caller required; no capability check for a read
+    _reader(principal)  # no capability check, and no actor: a read records nothing
 
     from engines.decision_engine import DecisionEngine
 
     row = DecisionEngine(agent_nick).trace(decision_id)
-    if not row:
+    # an agent-policy approval/replay row is answered as absent (its facts hold raw arguments)
+    if not row or row.get("subject_type") in HIDDEN_SUBJECT_TYPES:
         raise HTTPException(status_code=404, detail=f"decision {decision_id} not found")
     return row

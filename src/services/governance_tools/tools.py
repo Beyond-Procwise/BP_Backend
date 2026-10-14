@@ -29,14 +29,46 @@ def _engines():
     return _pe, _pol
 
 
-def refresh() -> None:
-    """Reload governance so edits + /agents/reload-governance are reflected."""
+def refresh(strict: bool = False) -> None:
+    """Reload governance so edits + /agents/reload-governance are reflected.
+
+    ``strict`` is for callers that must not proceed on governance they cannot
+    prove is current. The default stays fail-open: a tool-call that cannot
+    refresh should still answer from what it has, and AgentNick asking for a
+    policy is not an authority decision.
+
+    A failed reload leaves the engines holding whatever they last loaded, which
+    is why a caller that cares has to be told rather than left to infer it from
+    a result that looks entirely normal.
+    """
     pe, pol = _engines()
     try:
         pe.refresh()
         pol.reload_policies()
     except Exception:  # noqa: BLE001
+        if strict:
+            raise
         log.debug("governance_tools.refresh failed", exc_info=True)
+
+
+def active_policy_count() -> int:
+    """How many active policies the policy engine is currently holding.
+
+    The only signal that separates "the store answered, and nothing governs
+    this agent" from "the store did not answer". ``PolicyEngine`` logs
+    "Failed to load policies from database" and returns ``[]`` rather than
+    raising, so there is no exception for a caller to catch — an outage and an
+    empty governance set are the same value everywhere above it.
+
+    Zero is treated as an outage by the callers that fail closed. This product
+    has thirty-one active policies; it has never legitimately had none, and a
+    deployment that genuinely has none has not been configured yet.
+    """
+    _, pol = _engines()
+    try:
+        return len(pol.list_policies() or [])
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def _prompt_row(p: dict) -> dict:

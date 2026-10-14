@@ -13,10 +13,11 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from api.auth import require_user
+from api.endpoint_gate import require as gate
 from src.services import approval_store, guardrail, rbac
 from src.services.agent_actions import record_action_or_fail
 from src.services.approval_content import content_hash
@@ -38,6 +39,12 @@ _REVOKE_SCOPE_OWN_ONLY = "own_only"
 _REVOKE_SCOPE_OWN_OR_HIGHER = "own_or_higher_rank"
 _REVOKE_SCOPES = {_REVOKE_SCOPE_ANY, _REVOKE_SCOPE_OWN_ONLY, _REVOKE_SCOPE_OWN_OR_HIGHER}
 
+# self_approval values EmailApprovalCapabilityPolicy may set. Absent, unreadable
+# or unrecognised all mean deny -- see _self_approval_rule.
+_SELF_APPROVAL_DENY = "deny"
+_SELF_APPROVAL_ALLOW = "allow"
+_SELF_APPROVAL_VALUES = {_SELF_APPROVAL_DENY, _SELF_APPROVAL_ALLOW}
+
 # _required_role_rank's fail-restrictive sentinel: higher than any real
 # role's rank can ever be, so `role_rank(role) > _RANK_DENY_ALL` is False for
 # every role and own_or_higher_rank's override never fires. An unreadable
@@ -50,10 +57,22 @@ class ApproveRequest(BaseModel):
     """What is being approved. Deliberately carries no actor field."""
 
     reason: Optional[str] = None
+    # The version the approver read (``content_hash`` from GET /approvals/drafts/...).
+    # When given, an approval of a draft that has changed since is refused, so nobody
+    # approves words they did not see. Absent, the draft as it stands is approved.
+    content_hash: Optional[str] = None
 
 
 class RevokeRequest(BaseModel):
     reason: Optional[str] = None
+
+
+class FinalOfferDecisionRequest(BaseModel):
+    # "accept" or "decline": what the person has decided about the supplier's final offer.
+    decision: str
+    # The version of the email the person was looking at. When given, a draft that has
+    # changed since is refused, so a decision is never applied to words they did not see.
+    content_hash: Optional[str] = None
 
 
 def _load_draft(unique_id: str, conn: Any = None) -> Optional[Dict[str, Any]]:
@@ -154,11 +173,94 @@ def _require_capability(
             "policy_version": decision.policy_version,
             "decision": "allow" if decision.allowed else "deny",
             "evidence": decision.evidence,
+            # Allowed or not: which groups the sign-in carried and any direct grant.
+            # An allow that rests on a stop-gap grant looks the same as one that
+            # rests on the person's real groups unless this says which it was.
+            "role_from": rbac.role_basis(principal, policy_engine=engine),
         },
     )
     if not decision.allowed:
         raise HTTPException(status_code=403, detail=decision.reason)
     return decision
+
+
+def _self_approval_rule(policy_engine: Any) -> str:
+    """Whether a person may approve their own request. A policy row, not code.
+
+    Absent, unreadable and unrecognised all resolve to ``deny`` — the rule this
+    surface already applies to ``revoke_scope``, for the same reason. The August
+    migration ``i6_fix_remove_self_approval_allowed`` removed a key nothing read;
+    if a missing key meant permission, every deployment that had not yet run the
+    migration adding it back would silently be running without the bar, and the
+    guard would look identical to one that works.
+    """
+
+    policy = _capability_policy(policy_engine)
+    rules = ((policy or {}).get("details") or {}).get("rules") or {}
+    value = str(rules.get("self_approval") or "").strip().lower()
+    return value if value in _SELF_APPROVAL_VALUES else _SELF_APPROVAL_DENY
+
+
+def _refuse_self_approval(
+    policy_engine: Any,
+    *,
+    approver: str,
+    requester: Optional[str],
+    context: Dict[str, Any],
+) -> None:
+    """Refuse when the person signing is the person who asked (M18.72).
+
+    ``requester`` must come from the STORED record — the draft row, the workflow
+    row. Never from the request body: a caller who can name the requester can
+    name somebody else and approve freely, which is the same forgery the
+    approver field was locked down to prevent, one field along.
+
+    A requester that is absent is not a match. Agents draft most of these and an
+    agent-created draft has no human requester to collide with; treating unknown
+    as a collision would make every such draft unapprovable, which is not a
+    stricter version of this rule, it is a broken surface.
+    """
+
+    if _self_approval_rule(policy_engine) == _SELF_APPROVAL_ALLOW:
+        return
+
+    requested_by = str(requester or "").strip()
+    if not requested_by or requested_by != str(approver or "").strip():
+        return
+
+    policy = _capability_policy(policy_engine) or {}
+    raw_row = policy.get("raw_row") or {}
+    decision = guardrail.Decision(
+        allowed=False,
+        reason=(
+            "an approval cannot be signed by the person who requested it; "
+            "someone else must approve this"
+        ),
+        policy_id=_CAPABILITY_POLICY_SLUG,
+        policy_name=policy.get("policyName") or "EmailApprovalCapabilityPolicy",
+        policy_version=raw_row.get("version") if isinstance(raw_row, dict) else None,
+        evidence={"rule": "self_approval", "requested_by": requested_by,
+                  "actioned_by": approver},
+    )
+    record_action_or_fail(
+        phase="approve",
+        action_type=_ACTION,
+        agent="ApprovalsRouter",
+        status="denied",
+        summary=decision.reason,
+        details={
+            **context,
+            "principal": approver,
+            "policy_id": decision.policy_id,
+            "policy_name": decision.policy_name,
+            "policy_version": decision.policy_version,
+            "decision": "deny",
+            "evidence": decision.evidence,
+        },
+    )
+    logger.info("self-approval refused: %s tried to approve their own request (%s)",
+                approver, context)
+    raise HTTPException(status_code=403, detail=decision.reason)
 
 
 def _subject(principal: Any) -> str:
@@ -185,6 +287,213 @@ def list_pending(principal=Depends(require_user)) -> Dict[str, Any]:
     return {"pending": rows, "count": len(rows)}
 
 
+def _describe_draft(
+    draft: Dict[str, Any],
+    approval: Optional[Dict[str, Any]],
+    *,
+    viewer: str,
+    created_on: Any = None,
+    with_text: bool = False,
+) -> Dict[str, Any]:
+    """One unsent draft as an approver needs to see it.
+
+    Everything is read off what a send with no overrides would transmit right now --
+    the same resolution the approval and the send guard both hash -- so the subject,
+    recipients and words shown are the ones the approval will be bound to.
+    """
+
+    effective = resolve_effective_content(draft)
+    digest = content_hash(effective)
+    requested_by = str(draft.get("requested_by") or "").strip() or None
+
+    state: Optional[Dict[str, Any]] = None
+    if approval:
+        grounding = approval.get("grounding")
+        approved_hash = grounding.get("content_hash") if isinstance(grounding, dict) else None
+        state = {
+            "approval_id": approval.get("approval_id"),
+            "actioned_by": approval.get("actioned_by"),
+            "actioned_at": approval.get("actioned_at"),
+            # The send guard refuses an approval whose recorded content is not the
+            # content about to go. Said here so a screen can ask for a fresh approval
+            # instead of offering a Send that will be refused.
+            "covers_this_version": bool(approved_hash) and approved_hash == digest,
+        }
+
+    out: Dict[str, Any] = {
+        "unique_id": draft.get("unique_id"),
+        "workflow_id": draft.get("workflow_id"),
+        "supplier_id": draft.get("supplier_id"),
+        "supplier_name": draft.get("supplier_name"),
+        "recipients": effective["recipients"],
+        "subject": effective["subject"],
+        "created_on": created_on,
+        "requested_by": requested_by,
+        # Self-approval is refused on the stored requester; a screen says so up front.
+        "requested_by_you": bool(requested_by) and requested_by == viewer,
+        "content_hash": digest,
+        "approval": state,
+        # A reply to a supplier's final offer: whether the price is within the
+        # limit on record, and why, so the approver is not shown a holding email
+        # with no reason for it.
+        "final_offer": draft.get("final_offer") if isinstance(draft.get("final_offer"), dict) else None,
+    }
+    if with_text:
+        attachments = effective.get("attachments")
+        out["body_text"] = _email_text(effective["body"])
+        out["attachment_count"] = len(attachments) if isinstance(attachments, list) else 0
+    return out
+
+
+def _email_text(body: Optional[str]) -> str:
+    """The email's words, one paragraph per line: no markup, no hidden marker."""
+
+    from src.services.draft_assurance.capture import plain
+
+    lines = (line.strip() for line in plain(body).splitlines())
+    return "\n".join(line for line in lines if line)
+
+
+@router.get("/drafts")
+def list_drafts(principal=Depends(require_user)) -> Dict[str, Any]:
+    """Every unsent draft: waiting for approval, or approved and waiting to be sent."""
+
+    viewer = str(getattr(principal, "subject", "") or "")
+    _require_capability(principal, {"action": "list_drafts"}, actioned_by=viewer or None)
+    rows = [
+        _describe_draft(
+            entry["draft"], entry.get("approval"),
+            viewer=viewer, created_on=entry.get("created_on"),
+        )
+        for entry in approval_store.list_unsent_drafts(limit=200)
+    ]
+    return {"drafts": rows, "count": len(rows)}
+
+
+@router.get("/drafts/{unique_id}")
+def read_draft(unique_id: str, principal=Depends(require_user)) -> Dict[str, Any]:
+    """One unsent draft in full, as the words the supplier would receive."""
+
+    viewer = str(getattr(principal, "subject", "") or "")
+    _require_capability(
+        principal, {"action": "read_draft", "unique_id": unique_id}, actioned_by=viewer or None
+    )
+    draft = _load_draft(unique_id)
+    if draft is None:
+        raise HTTPException(
+            status_code=404, detail=f"no unsent draft with unique_id {unique_id}"
+        )
+    approval = approval_store.find_dispatch_approval(
+        rfq_id=draft.get("rfq_id"),
+        workflow_id=draft.get("workflow_id"),
+        unique_id=draft.get("unique_id"),
+    )
+    return _describe_draft(draft, approval, viewer=viewer, with_text=True)
+
+
+def _drafting_agent(request: Request) -> Any:
+    """The email drafting agent, which owns how a draft is assured and stored."""
+
+    agent_nick = getattr(request.app.state, "agent_nick", None)
+    if not agent_nick:
+        raise HTTPException(status_code=503, detail="the drafting service is not available")
+    from agents.email_drafting_agent import EmailDraftingAgent
+
+    return EmailDraftingAgent(agent_nick)
+
+
+@router.post("/drafts/{unique_id}/final-offer")
+def decide_final_offer(
+    unique_id: str,
+    body: FinalOfferDecisionRequest,
+    request: Request,
+    principal=Depends(require_user),
+) -> Dict[str, Any]:
+    """A person accepts or declines a supplier's final offer; the waiting reply becomes their answer.
+
+    When the agent escalates a final offer it leaves a holding reply that commits to
+    nothing. This turns that same draft into the acceptance or the decline, in fixed
+    wording, and sends NOTHING: the email still has to be approved and sent like any
+    other. The person deciding is recorded as the one who asked for it, taken from
+    their sign-in, so the existing rule on approving your own request applies to it.
+    """
+
+    from src.services.negotiation import final_offer
+
+    decided_by = _subject(principal)
+    decision = str(body.decision or "").strip().lower()
+    if decision not in final_offer.DECISIONS:
+        raise HTTPException(status_code=422, detail="the decision must be accept or decline")
+
+    gate("email.draft", principal, agent="approvals_api",
+         context={"unique_id": unique_id, "final_offer_decision": decision})
+
+    draft = _load_draft(unique_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail=f"no unsent draft with unique_id {unique_id}")
+    advice = draft.get("final_offer")
+    if not isinstance(advice, dict):
+        raise HTTPException(
+            status_code=409,
+            detail="this email is not a reply to a supplier's final offer, so there is nothing to decide here",
+        )
+    if body.content_hash and body.content_hash != content_hash(resolve_effective_content(draft)):
+        raise HTTPException(
+            status_code=409,
+            detail="this email changed after you opened it; read it again before deciding",
+        )
+
+    agent = _drafting_agent(request)
+    supplier_id = draft.get("supplier_id")
+    contact = agent._master_contact(supplier_id)
+    try:
+        html = final_offer.decision_html(
+            decision, offer=advice.get("offer"), currency=advice.get("currency"),
+            contact_name=getattr(contact, "name", None),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    recipients = list(draft.get("recipients") or [])
+    blocked, assurance = agent.assure_final_offer_reply(
+        {"current_offer": advice.get("offer"), "currency": advice.get("currency"),
+         "target_price": advice.get("limit") if advice.get("limit_kind") == "target" else None,
+         "walkaway_price": advice.get("limit") if advice.get("limit_kind") == "walk-away" else None,
+         "contact_name": getattr(contact, "name", None)},
+        text=html, recipients=recipients, supplier_id=supplier_id, workflow_id=draft.get("workflow_id"),
+        requested_by=decided_by,
+    )
+    if blocked:
+        raise HTTPException(status_code=409, detail=blocked)
+
+    from datetime import datetime, timezone
+
+    decided = dict(draft)
+    decided["body"] = html
+    decided["requested_by"] = decided_by
+    decided["assurance"] = assurance
+    decided["final_offer"] = {
+        **advice,
+        "decision": {"decision": decision, "decided_by": decided_by,
+                     "decided_at": datetime.now(timezone.utc).isoformat()},
+    }
+    decided.pop("draft_record_id", None)
+    try:
+        agent._store_draft(decided)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if decided.get("draft_record_id") is None:
+        # _store_draft logs and swallows database errors; the id is stamped only on a commit.
+        raise HTTPException(status_code=500, detail="the decision could not be saved; the email is unchanged")
+
+    logger.info("final offer decided: unique_id=%s decision=%s by=%s", unique_id, decision, decided_by)
+    stored = _load_draft(unique_id) or decided
+    approval = approval_store.find_dispatch_approval(
+        rfq_id=stored.get("rfq_id"), workflow_id=stored.get("workflow_id"), unique_id=stored.get("unique_id"),
+    )
+    return _describe_draft(stored, approval, viewer=decided_by, with_text=True)
+
+
 @router.post("/dispatch/{unique_id}")
 def approve_dispatch(
     unique_id: str,
@@ -204,10 +513,25 @@ def approve_dispatch(
             status_code=404, detail=f"no unsent draft with unique_id {unique_id}"
         )
 
+    # Who asked for this draft, off the stored row. `POST /workflows/email/prepare`
+    # lets a person persist an edited email; without this, the same person could
+    # then approve it.
+    _refuse_self_approval(
+        rbac.policy_engine(),
+        approver=actioned_by,
+        requester=draft.get("requested_by"),
+        context={"unique_id": unique_id},
+    )
+
     # Hash the resolved material a send with no overrides would transmit
     # right now -- the same computation the send path uses (see C1), so an
     # unedited draft's approval and its eventual send agree (see C2).
     digest = content_hash(resolve_effective_content(draft))
+    if body.content_hash and body.content_hash != digest:
+        raise HTTPException(
+            status_code=409,
+            detail="this email changed after you opened it; read it again before approving",
+        )
     approval_id = approval_store.record_approval(
         rfq_id=draft.get("rfq_id"),
         workflow_id=draft.get("workflow_id"),
@@ -257,6 +581,16 @@ def approve_round(
         raise HTTPException(
             status_code=404, detail=f"no negotiation workflow {workflow_id}"
         )
+
+    # A round carries no artefact, so the workflow's recorded initiator is the
+    # requester. See approval_store.workflow_initiator for why this cannot fire
+    # yet, and why it is still resolved from the record rather than assumed.
+    _refuse_self_approval(
+        rbac.policy_engine(),
+        approver=actioned_by,
+        requester=approval_store.workflow_initiator(workflow_id),
+        context={"workflow_id": workflow_id, "round": int(round_num)},
+    )
 
     approval_id = approval_store.record_approval(
         rfq_id=None,

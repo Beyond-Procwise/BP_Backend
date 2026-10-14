@@ -1,11 +1,11 @@
-"""The weekly value digest — what we found, and what came back.
+"""The weekly value digest — what we found, and what was saved.
 
-One email a week: value found this week, recovered this week, the top three open findings
+One email a week: value found this week, saved this week, the top three open findings
 by amount with their age, and one link into the drawer.
 
 The rule that matters most is the one about NOT sending. A digest that arrives every week
 saying nothing is a digest people stop opening, and then the week it does matter they miss
-it. So an empty week — nothing found in the last seven days AND nothing recovered — sends
+it. So an empty week — nothing found in the last seven days AND nothing saved — sends
 nothing at all.
 
 Composed from the same GET /spendiq/value-summary data every surface uses, so the email
@@ -17,8 +17,11 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
+
+from src.services import guardrail
 
 logger = logging.getLogger(__name__)
 
@@ -81,17 +84,40 @@ def _live(summary: dict) -> list[dict]:
             if f and not f.get("superseded_by")]
 
 
+def saved_window(now: datetime) -> tuple[date, date]:
+    """The week "saved this week" covers: the last WINDOW_DAYS calendar days, today
+    included, as inclusive valid_from dates -- the same shape as the exec summary's
+    period (valid_from BETWEEN start AND end)."""
+    today = now.date()
+    return today - timedelta(days=WINDOW_DAYS - 1), today
+
+
+def saved_this_week(ledger_rows: list, now: datetime) -> float:
+    """R18(2): saved money comes from the ledger through ledger_totals -- the one function
+    that owns the rules (current state only, corrections replace what they supersede,
+    avoided + recovered + realised, unpriced rows in no total) -- windowed by valid_from."""
+    from src.services.value_summary_service import ledger_totals
+    since, until = saved_window(now)
+    return ledger_totals(list(ledger_rows or []), since=since, until=until)["saved_gbp"]
+
+
 def compose_digest(summary: Optional[dict], now: datetime) -> Optional[dict]:
-    """{'subject', 'body'} — or None when the week has nothing to report."""
+    """{'subject', 'body'} — or None when the week has nothing to report.
+
+    ``summary["ledger_rows"]`` (attached by _load_summary) is the ledger the saved figure
+    is read from."""
     if not summary:
         return None
     since = now - timedelta(days=WINDOW_DAYS)
     live = _live(summary)
 
     found_this_week = [f for f in live if _within(f.get("found_at"), since)]
-    recovered_this_week = [f for f in live
-                           if f.get("recovered_gbp") and _within(f.get("resolved_at"), since)]
-    if not found_this_week and not recovered_this_week:
+    # R8: "recovered this week" became "saved this week" -- avoided and realised savings
+    # are just as much this week's news as a recovered credit. R18(2): the figure is the
+    # ledger's own (ledger_totals over this week), not a sum over findings, so the digest,
+    # the drawer and the exec summary cannot disagree.
+    saved_total = saved_this_week(summary.get("ledger_rows"), now)
+    if not found_this_week and not saved_total:
         return None
 
     # A finding whose amount could not be converted is real but unpriced. It is counted,
@@ -100,8 +126,6 @@ def compose_digest(summary: Optional[dict], now: datetime) -> Optional[dict]:
     valued = [f for f in found_this_week if f.get("amount_gbp") is not None]
     unvalued = len(found_this_week) - len(valued)
     found_total = sum(f["amount_gbp"] for f in valued)
-    recovered_total = sum(f["recovered_gbp"] for f in recovered_this_week
-                          if f.get("recovered_gbp") is not None)
     found_headline = _money(found_total) if valued else _count(found_this_week)
 
     # The list is what somebody can still act on — a resolved finding is not a to-do. It
@@ -111,7 +135,7 @@ def compose_digest(summary: Optional[dict], now: datetime) -> Optional[dict]:
         key=lambda f: f["amount_gbp"], reverse=True)[:TOP_N]
 
     subject = (f"{SUBJECT_PREFIX}: {found_headline}"
-               f" · {_money(recovered_total)} recovered")
+               f" · {_money(saved_total)} saved")
 
     found_line = (f"{_money(found_total)} value found this week across "
                   f"{_count(found_this_week)}." if valued
@@ -123,7 +147,7 @@ def compose_digest(summary: Optional[dict], now: datetime) -> Optional[dict]:
                        f"not in that total.")
     lines = [
         found_line,
-        f"{_money(recovered_total)} recovered this week.",
+        f"{_money(saved_total)} saved this week.",
         "",
     ]
     if actionable:
@@ -162,9 +186,70 @@ def recipients() -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
+@dataclass(frozen=True)
+class _DigestPrincipal:
+    """Who the digest sends as.
+
+    Carries a subject and NOTHING else — deliberately no ``claims``. rbac
+    resolves a principal's roles from two places: identity-provider group
+    claims on a token, and a direct grant in ``proc.bp_role_assignment``.
+    A principal built from configuration must not supply claims, because a
+    group claim written into an environment variable is a role the
+    configuration granted itself. With subject alone, the only thing that can
+    give this identity permission is a row in the governed grant table.
+    """
+
+    subject: str
+
+
+def sent_as() -> Optional[_DigestPrincipal]:
+    """The configured sending identity, or None when nobody is accountable.
+
+    A scheduled job has no authenticated caller. ``guardrail.authorize`` would
+    refuse a ``None`` principal for an irreversible class anyway, but relying on
+    that leaves the digest one policy edit away from sending unattributed mail.
+    This refuses explicitly instead, so the reason in the log names the missing
+    configuration rather than a generic policy denial.
+    """
+    subject = os.environ.get("VALUE_DIGEST_SENT_AS", "").strip()
+    return _DigestPrincipal(subject=subject) if subject else None
+
+
+def _sender_domain() -> str:
+    sender = os.environ.get("SES_DEFAULT_SENDER", "").strip()
+    return sender.partition("@")[2].strip().lower()
+
+
+def _external(addresses: list[str]) -> list[str]:
+    """Recipients outside the sending domain.
+
+    The digest body names suppliers and the amounts we believe they over-billed.
+    That is internal commercial analysis, and an address outside our own domain
+    is not a typo worth delivering — it is the whole finding set leaving.
+
+    With no sending domain configured we cannot tell internal from external, so
+    every address counts as external and the digest does not send. Failing the
+    other way would make a missing environment variable into a broadcast.
+    """
+    domain = _sender_domain()
+    if not domain:
+        return list(addresses)
+    return [a for a in addresses if a.partition("@")[2].strip().lower() != domain]
+
+
 def _load_summary() -> dict:
-    from src.services.value_summary_service import build_value_summary
-    return build_value_summary()
+    """The summary every surface uses, plus the ledger rows the saved figure is read
+    from -- both on one connection, so they describe the same moment."""
+    from src.services.db import get_conn
+    from src.services.value_summary_service import _load_ledger, build_value_summary
+    with get_conn() as conn:
+        summary = build_value_summary(conn=conn)
+        cur = conn.cursor()
+        try:
+            summary["ledger_rows"] = _load_ledger(cur)
+        finally:
+            cur.close()
+    return summary
 
 
 def _send_email(*, to: list[str], subject: str, body: str, agent_nick=None) -> bool:
@@ -194,13 +279,56 @@ def run_weekly_digest(agent_nick=None) -> int:
     if not to:
         logger.info("value digest: no VALUE_DIGEST_RECIPIENTS configured — skipping")
         return 0
+
+    # --- who is this being sent as -------------------------------------
+    principal = sent_as()
+    if principal is None:
+        logger.warning(
+            "value digest: VALUE_DIGEST_SENT_AS is not set, so no identity is "
+            "accountable for this mail — not sending. Set it to a subject that "
+            "holds a send grant in proc.bp_role_assignment."
+        )
+        return 0
+
+    # --- who is it going to --------------------------------------------
+    # Checked before the summary is built: there is no reason to assemble a
+    # corpus-wide findings list for a send that is already refused.
+    outside = _external(to)
+    if outside:
+        logger.warning(
+            "value digest: %d recipient(s) outside the sending domain (%s) — "
+            "not sending. The digest names suppliers and disputed amounts.",
+            len(outside), ", ".join(outside),
+        )
+        return 0
+
+    # --- may this identity send at all ---------------------------------
+    # Same call value_query_service makes. NOT email_dispatch_guard: that path
+    # requires a stored approved draft and recipients on the supplier master,
+    # and this is internal mail with neither.
+    try:
+        decision = guardrail.authorize(
+            "email.send",
+            "communicate",
+            principal,
+            {"recipients": to, "purpose": "value_digest"},
+        )
+    except Exception:
+        # authorize() is written not to raise, but a gate that fails open
+        # because of an unexpected error is not a gate.
+        logger.exception("value digest: authorization raised — not sending")
+        return 0
+    if not decision.allowed:
+        logger.warning("value digest: refused by policy — %s", decision.reason)
+        return 0
+
     try:
         digest = compose_digest(_load_summary(), datetime.now(timezone.utc))
     except Exception:
         logger.exception("value digest: could not build the summary")
         return 0
     if digest is None:
-        logger.info("value digest: nothing found or recovered this week — not sending")
+        logger.info("value digest: nothing found or saved this week — not sending")
         return 0
     try:
         if not _send_email(to=to, subject=digest["subject"], body=digest["body"],

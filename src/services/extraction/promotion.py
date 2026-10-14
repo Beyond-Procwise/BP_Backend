@@ -19,6 +19,8 @@ import psycopg2
 
 from config.settings import Settings
 from src.services.db import get_conn
+from src.services.extraction.persistence import normalise_source_file
+from src.services.linking_engine import _table_columns as _cached_table_columns
 
 log = logging.getLogger(__name__)
 
@@ -27,13 +29,18 @@ _RAW_TO_STG = {
     "purchase_order": ("proc.bp_purchase_order_raw", "proc.bp_purchase_order_stg"),
     "quote": ("proc.bp_quote_raw", "proc.bp_quote_stg"),
     "contract": ("proc.bp_contract_raw", "proc.bp_contracts"),
+    "goods_receipt": ("proc.bp_goods_receipt_raw", "proc.bp_goods_receipt_stg"),
 }
 
-# Line-item table promotion pairs (raw → stg). Contract has no line items.
+# Line-item table promotion pairs (raw → stg). A contract's lines (its rate card)
+# promote straight to the final table, as its header does.
 _LINE_RAW_TO_STG = {
     "invoice": ("proc.bp_invoice_line_items_raw", "proc.bp_invoice_line_items_stg"),
     "purchase_order": ("proc.bp_po_line_items_raw", "proc.bp_po_line_items_stg"),
     "quote": ("proc.bp_quote_line_items_raw", "proc.bp_quote_line_items_stg"),
+    "contract": ("proc.bp_contract_line_items_raw", "proc.bp_contract_line_items"),
+    "goods_receipt": ("proc.bp_goods_receipt_line_items_raw",
+                      "proc.bp_goods_receipt_line_items_stg"),
 }
 
 # Line-item PK column name in _stg per doc_type (TEXT NOT NULL — promote
@@ -42,12 +49,16 @@ _LINE_STG_PK = {
     "invoice": "invoice_line_id",
     "purchase_order": "po_line_id",
     "quote": "quote_line_id",
+    "contract": "contract_line_id",
+    "goods_receipt": "goods_receipt_line_id",
 }
 # Line-no column name on _stg (matches the index column on _raw).
 _LINE_STG_INDEX = {
     "invoice": "line_no",
     "purchase_order": "line_number",
     "quote": "line_number",
+    "contract": "line_number",
+    "goods_receipt": "line_no",
 }
 
 # The column that uniquely identifies a document in _stg (used by ON CONFLICT).
@@ -58,6 +69,7 @@ _STG_PK = {
     "purchase_order": "po_id",
     "quote": "quote_id",
     "contract": "contract_id",
+    "goods_receipt": "grn_id",
 }
 
 # Control columns on _raw that must NOT be copied to _stg
@@ -106,13 +118,15 @@ def _snapshot_parts(ps: Any) -> tuple[str, dict[str, Any]]:
 
 
 def _stg_columns(cur, stg_table: str) -> list[str]:
-    schema, table = stg_table.split(".")
-    cur.execute(
-        """SELECT column_name FROM information_schema.columns
-            WHERE table_schema=%s AND table_name=%s""",
-        (schema, table),
-    )
-    return [r[0] for r in cur.fetchall()]
+    """Column names of a _stg table, cached for the life of the connection.
+
+    promote() asks twice per document (header table, then line-item table),
+    so without the cache a run over N documents is 2N identical catalogue
+    queries against a schema that cannot change mid-run. The cache lives in
+    linking_engine and is keyed by connection object, so one database's
+    columns never answer for another's.
+    """
+    return _cached_table_columns(cur, stg_table)
 
 
 def _table_columns(cur, qualified_table: str) -> list[str]:
@@ -120,14 +134,9 @@ def _table_columns(cur, qualified_table: str) -> list[str]:
 
     Used as an identifier allowlist before interpolating column names
     into SQL (SQL-injection defence for HITL-supplied field_name values).
+    Same per-connection cache as _stg_columns; see there.
     """
-    schema, table = qualified_table.split(".")
-    cur.execute(
-        """SELECT column_name FROM information_schema.columns
-            WHERE table_schema=%s AND table_name=%s""",
-        (schema, table),
-    )
-    return [r[0] for r in cur.fetchall()]
+    return _cached_table_columns(cur, qualified_table)
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +239,37 @@ _TAX_PERCENT_TRIPLE = {
     "purchase_order": ("total_amount", "tax_percent", "tax_amount"),
     "quote": ("total_amount", "tax_percent", "tax_amount"),
 }
+
+# A re-read of the same document REFRESHES its open finding rather than stacking
+# a second one: the open finding is unique on (doc_type, doc_pk, source_file,
+# issue_type, field_name) -- ix_bp_extraction_discrepancy_open_key -- and a plain
+# INSERT raised UniqueViolation there, failing the whole promotion and leaving the
+# stale first read in _trgt. Same identity and refresh as
+# persistence.write_discrepancies -- and it must STAY the same: the clause and the
+# index are matched by shape, so if these two sites ever disagree, Postgres rejects
+# every write here with "there is no unique or exclusion constraint matching the ON
+# CONFLICT specification" rather than warning.
+_DISCREPANCY_UPSERT = """
+    INSERT INTO proc.bp_extraction_discrepancy
+        (doc_type, raw_id, source_file, doc_pk_candidate,
+         field_name, raw_value, expected_value, computed_value,
+         issue_type, severity, status, notes, blocks_promotion)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    ON CONFLICT (doc_type, coalesce(doc_pk_candidate, ''),
+                 coalesce(source_file, ''),
+                 issue_type, coalesce(field_name, ''))
+    WHERE coalesce(status, 'open') <> 'resolved'
+    DO UPDATE SET
+      raw_id = EXCLUDED.raw_id,
+      source_file = EXCLUDED.source_file,
+      raw_value = EXCLUDED.raw_value,
+      expected_value = EXCLUDED.expected_value,
+      computed_value = EXCLUDED.computed_value,
+      severity = EXCLUDED.severity,
+      notes = EXCLUDED.notes,
+      blocks_promotion = EXCLUDED.blocks_promotion
+"""
+
 _DEFAULT_DISCREPANCY_TOLERANCE = Decimal("0.50")
 
 
@@ -302,19 +342,13 @@ def _log_derived_money(
         return 0
     pk_col = _STG_PK.get(doc_type)
     doc_pk = derived.get(pk_col) if pk_col else None
-    source_file = derived.get("source_file")
+    source_file = normalise_source_file(derived.get("source_file"))
     n = 0
     for f in fields:
         present = derived.get(f) not in (None, "")
         if present and not _money_on_page(derived.get(f), full_text):
             cur.execute(
-                """
-                INSERT INTO proc.bp_extraction_discrepancy
-                    (doc_type, raw_id, source_file, doc_pk_candidate,
-                     field_name, raw_value, expected_value, computed_value,
-                     issue_type, severity, status, notes, blocks_promotion)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
+                _DISCREPANCY_UPSERT,
                 (
                     doc_type, raw_id, source_file, str(doc_pk) if doc_pk else None,
                     f, None, None, str(derived.get(f)),
@@ -365,7 +399,7 @@ def _log_imprecise_dates(
         return 0
     pk_col = _STG_PK.get(doc_type)
     doc_pk = row.get(pk_col) if pk_col else None
-    source_file = row.get("source_file")
+    source_file = normalise_source_file(row.get("source_file"))
     months = {(m.group(1)[:3].lower(), m.group(2)) for m in _MONTH_ONLY.finditer(full_text)}
     if not months:
         return 0
@@ -391,13 +425,7 @@ def _log_imprecise_dates(
                                         f"1 {calendar.month_name[mth]} {y}")):
             continue
         cur.execute(
-            """
-            INSERT INTO proc.bp_extraction_discrepancy
-                (doc_type, raw_id, source_file, doc_pk_candidate,
-                 field_name, raw_value, expected_value, computed_value,
-                 issue_type, severity, status, notes, blocks_promotion)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
+            _DISCREPANCY_UPSERT,
             (
                 doc_type, raw_id, source_file, str(doc_pk) if doc_pk else None,
                 f, str(v), f"{calendar.month_name[mth]} {y}", iso,
@@ -432,18 +460,12 @@ def _check_tax_total_consistency(
     n_logged = 0
     pk_col = _STG_PK.get(doc_type)
     doc_pk = row.get(pk_col) if pk_col else None
-    source_file = row.get("source_file")
+    source_file = normalise_source_file(row.get("source_file"))
 
     def _log(field_name: str, issue: str, expected, computed, notes,
              severity: str = "warning"):
         cur.execute(
-            """
-            INSERT INTO proc.bp_extraction_discrepancy
-                (doc_type, raw_id, source_file, doc_pk_candidate,
-                 field_name, raw_value, expected_value, computed_value,
-                 issue_type, severity, status, notes, blocks_promotion)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
+            _DISCREPANCY_UPSERT,
             (
                 doc_type, raw_id, source_file, str(doc_pk) if doc_pk else None,
                 field_name,
@@ -564,7 +586,7 @@ def _carry_pm_deal(cur, raw_data: dict[str, Any]) -> None:
 
 def promote(raw_id: int, doc_type: str, *,
             hitl_fields: Optional[Iterable[str]] = None) -> dict[str, Any]:
-    """Copy _raw flat columns into _stg, delete _raw, update audit cols.
+    """Copy _raw flat columns into _stg, keep _raw (marked promoted), update audit cols.
 
     Resolves supplier_name → supplier_id via the existing
     supplier_resolver when supplier_id is unset and supplier_name is present.
@@ -609,6 +631,28 @@ def promote(raw_id: int, doc_type: str, *,
             # raw_id (e.g. a replayed NOTIFY). Used below to tag provenance rows
             # with the correct attempt rather than silently duplicating attempt=1.
             _already_promoted = raw_data.get("promotion_status") == "promoted"
+
+            # Only the newest read of a document may write _stg. On 2026-07-30 nineteen
+            # documents were read twice, an older pipeline at 18:25 (every figure missed,
+            # held by a blocking missing_required) and a fixed one at 19:41 (right, promoted).
+            # At 20:40 a dedup clean-up dismissed the older reads' blockers as duplicates of
+            # the newer reads', which released them here, and each overwrote its newer, good
+            # _stg row with nothing. A read whose document already has a NEWER promoted read
+            # is superseded: it is left as it is and does not promote. (Its row keeps its
+            # status; the CHECK constraint has no 'superseded' value.)
+            _doc_pk = raw_data.get("doc_pk_candidate")
+            if _doc_pk:
+                cur.execute(
+                    f"SELECT raw_id FROM {raw_t} WHERE doc_pk_candidate = %s AND raw_id > %s "
+                    f"AND promotion_status = 'promoted' ORDER BY raw_id DESC LIMIT 1",
+                    (_doc_pk, raw_id))
+                _newer = cur.fetchone()
+                if _newer:
+                    conn.rollback()
+                    log.info("promote: raw_id=%s (%s %s) superseded by newer promoted read raw_id=%s; "
+                             "not promoting", raw_id, doc_type, _doc_pk, _newer[0])
+                    return {"ok": False, "doc_pk": _doc_pk, "reason": "superseded_by_newer_read",
+                            "newer_raw_id": _newer[0]}
 
             # Safety net: guarantee COMPUTABLE columns (exchange_rate_to_usd,
             # converted_amount_usd, tax_amount, *_total_incl_tax) are populated
@@ -968,6 +1012,11 @@ def promote(raw_id: int, doc_type: str, *,
             except Exception:
                 log.exception("promote: provenance write failed (non-fatal)")
 
+            # A promoted contract asks which contract it sits under. Scoped to
+            # this document, governed, and wrapped so it can never fail the
+            # promotion — see propose_contract_parent.
+            propose_contract_parent(doc_type, raw_data.get("doc_pk_candidate"))
+
             # AgentNick audit trail — one structured INFO line per row, so
             # the operator can grep journalctl for the agent's activity.
             log.info(
@@ -993,6 +1042,69 @@ def promote(raw_id: int, doc_type: str, *,
             log.exception("promotion failed for raw_id=%s doc_type=%s: %s",
                           raw_id, doc_type, exc)
             return {"ok": False, "reason": str(exc)}
+
+
+# --------------------------------------------------------------------------
+# A promoted contract asks which contract it sits under.
+#
+# This is the seam the contract-structures work deliberately left empty: the
+# proposer was built, tested and live-verified, and NOTHING CALLED IT, so a
+# contract's parent was proposed only when a person ran a function by hand
+# (specs/2026-10-02-contract-structures-design.md §8, corrected 2026-10-03).
+# The cadence question that blocked it -- whether proposals may appear in a
+# buyer's queue unprompted -- was settled on 2026-10-04: yes, on promotion,
+# scoped to the document that just promoted.
+#
+# It lives HERE, in promote(), for the same reason field provenance does:
+# promote() is the one funnel all three promotion paths go through (dispatch's
+# inline call, the HITL NOTIFY listener, the promote_pending sweep), so the
+# proposal happens once per promoted contract however it arrived, rather than
+# at each caller where the next caller would forget.
+# --------------------------------------------------------------------------
+
+def _proposals_enabled() -> bool:
+    """Whether a promotion may write a parent proposal into a person's queue.
+
+    Governed by AutonomousOperationPolicy, like the duplicate-invoice detector
+    beside it: a control that decides what appears in front of a buyer with no
+    one asking belongs in policy, not in an environment variable nobody audits.
+    """
+    from src.services.governed_limits import limit as _governed_limit
+    return bool(_governed_limit("autonomous_operation",
+                                "contract_parent_proposals_enabled",
+                                env="CONTRACT_PARENT_PROPOSALS_ENABLED",
+                                cast=bool))
+
+
+def propose_contract_parent(doc_type: str, doc_pk: Optional[str]) -> None:
+    """Ask for this contract's parent, now that it is promoted. Never link it.
+
+    Best-effort by construction, exactly like the provenance write above it: the
+    _stg row is already committed when this runs, and a proposal is evidence
+    ABOUT the document rather than part of it. A proposer that throws must not
+    undo a promotion that succeeded.
+
+    Fails CLOSED on an unreadable policy -- it writes rows a person works
+    through, and "the policy could not be read" must not read as "so go ahead".
+    """
+    if doc_type != "contract" or not doc_pk:
+        return
+    try:
+        if not _proposals_enabled():
+            log.debug("contract parent proposals disabled by policy; %s not scored",
+                      doc_pk)
+            return
+    except Exception as exc:
+        log.warning("contract parent proposals: policy unreadable (%s); proposing "
+                    "nothing for %s", exc, doc_pk)
+        return
+    try:
+        from src.services import contract_links
+        result = contract_links.propose_parent_links(contract_id=str(doc_pk))
+        log.info("contract parent proposal for %s: %s", doc_pk,
+                 {k: v for k, v in result.items() if k != "details"})
+    except Exception:
+        log.exception("contract parent proposal failed for %s (non-fatal)", doc_pk)
 
 
 def _detect_doc_type(raw_id: int) -> Optional[str]:

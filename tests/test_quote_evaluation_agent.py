@@ -435,7 +435,7 @@ class DummyOrchestrator:
     def __init__(self, agent):
         self.agent = agent
 
-    def execute_workflow(self, workflow_name, input_data):
+    def execute_workflow(self, workflow_name, input_data, user_id=None):
         assert workflow_name == "quote_evaluation"
         context = AgentContext(
             workflow_id="wf2",
@@ -452,9 +452,15 @@ def test_quote_evaluation_endpoint(monkeypatch):
     agent = QuoteEvaluationAgent(nick)
     monkeypatch.setattr(agent, "_fetch_quotes_from_database", lambda *_, **__: [])
     monkeypatch.setattr(agent, "_fetch_quotes", _mock_quotes)
+    from api.auth import require_user
+
     app = FastAPI()
     app.include_router(router)
     app.state.orchestrator = DummyOrchestrator(agent)
+    # The endpoint resolves the caller (P8 phase 2) and this app configures no
+    # auth, so require_user answers 503 -- and its global mode is set by
+    # whichever test ran first. This test is about the evaluation: pin nobody.
+    app.dependency_overrides[require_user] = lambda: None
     client = TestClient(app)
     resp = client.post("/workflows/quotes/evaluate", json={})
     assert resp.status_code == 200
@@ -882,3 +888,37 @@ def test_process_handles_empty_product_type(monkeypatch):
     )
     agent.run(context)
     assert capture_fetch.captured is None
+
+
+def test_supplier_responses_are_read_from_the_table_replies_are_filed_in():
+    """Supplier replies are stored in proc.supplier_response (the email
+    watcher's table). The agent read proc.supplier_responses, which has never
+    existed, so every RFQ evaluated as if no supplier had answered."""
+    nick = DummyNick()
+    conn = build_quote_connection([], [], [], [])
+    nick.get_db_connection = lambda: conn
+    agent = QuoteEvaluationAgent(nick)
+
+    agent._get_responses_from_db("RFQ-1")
+
+    sql, params = conn.queries[-1]
+    assert "FROM proc.supplier_response " in sql + " "
+    assert "supplier_responses" not in sql
+    assert params == ("RFQ-1",)
+
+
+def test_a_supplier_is_represented_by_its_latest_version_not_its_cheapest():
+    # C's V3 went UP after it added scope. Sorting the supplier's quotes by cost and taking the
+    # first presented a withdrawn V1 as C's offer.
+    nick = DummyNick()
+    agent = QuoteEvaluationAgent(nick)
+    quotes = [
+        {"quote_id": "C-1", "supplier_id": "SC", "supplier_name": "C", "total_cost": 120000},
+        {"quote_id": "C-1 (V2)", "supplier_id": "SC", "supplier_name": "C", "total_cost": 115000},
+        {"quote_id": "C-1 (V3)", "supplier_id": "SC", "supplier_name": "C", "total_cost": 125000},
+        {"quote_id": "A-1 (V2)", "supplier_id": "SA", "supplier_name": "A", "total_cost": 90000},
+        {"quote_id": "A-1", "supplier_id": "SA", "supplier_name": "A", "total_cost": 100000},
+    ]
+    ranked = agent._order_quotes_by_rank(quotes, [{"supplier_id": "SC"}, {"supplier_id": "SA"}])
+    assert [q["quote_id"] for q in ranked] == ["C-1 (V3)", "A-1 (V2)"]
+    assert [q["quote_id"] for q in agent._order_quotes_by_rank(quotes, [])] == ["C-1 (V3)", "A-1 (V2)"]

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from src.services.governed_limits import limit as _governed_limit
 import math
 import os
 import re
@@ -24,6 +25,13 @@ from html import escape
 from email.utils import parsedate_to_datetime
 
 from agents.base_agent import BaseAgent, AgentContext, AgentOutput, AgentStatus
+from agents.negotiation import (
+    analysis as _analysis,
+    email_shaping as _email_shaping,
+    parsing as _parsing,
+    prose as _prose,
+    rounds as _rounds,
+)
 from agents.email_drafting_agent import EmailDraftingAgent, DEFAULT_NEGOTIATION_SUBJECT
 from repositories import (
     supplier_response_repo,
@@ -43,6 +51,8 @@ from utils.email_markers import attach_hidden_marker
 from pathlib import Path
 
 from services.redis_client import get_workflow_redis_client
+from src.services.formulas import ensure_registered, evaluate
+from src.services.negotiation import final_offer as _final_offer
 # Play ranking lives in negotiation_advice: it is pure scoring and the advisor needs
 # it without instantiating an agent. TRADE_OFF_HINTS is imported rather than
 # redefined so the hints cannot drift between the two callers.
@@ -55,79 +65,54 @@ from services.negotiation_advice.ranking import (
 
 logger = logging.getLogger(__name__)
 
-# -----------------------------
-# Tunables & feature toggles
-# -----------------------------
-MAX_SUPPLIER_REPLIES = int(os.getenv("NEG_MAX_SUPPLIER_REPLIES", "3"))
-LLM_ENABLED = os.getenv("NEG_ENABLE_LLM", "1").strip() not in {"0", "false", "False"}
-# AgentNick, like every other non-extraction caller. The old default was
-# "llama3.2:latest", which is not a model this host has ever had installed, so the one
-# call that uses it (_llm_* in the counter composer) answered 404 on every attempt,
-# retried three times, and fell through to the non-LLM path -- silently, because the
-# fallback looks like an ordinary result. NEG_LLM_MODEL still overrides, and
-# AGENTNICK_MODEL is the same knob src/services/tool_runtime.py reads.
-LLM_MODEL = os.getenv("NEG_LLM_MODEL") or os.getenv(
-    "AGENTNICK_MODEL", "BeyondProcwise/AgentNick:unified"
-)
-COST_OF_CAPITAL_APR = float(os.getenv("NEG_COST_OF_CAPITAL_APR", "0.12"))
-LEAD_TIME_VALUE_PCT_PER_WEEK = float(os.getenv("NEG_LT_VALUE_PCT_PER_WEEK", "0.01"))
-def _resolve_thread_transcript_limit() -> Optional[int]:
-    """Return the configured transcript limit or ``None`` for full history."""
+#: Advisory-lock ids the current thread already holds (see ``_session_lock``).
+_SESSION_LOCKS_HELD = threading.local()
 
-    raw_limit = os.getenv("NEG_THREAD_TRANSCRIPT_LIMIT")
-    if raw_limit is None:
-        return None
-
-    raw_limit = raw_limit.strip()
-    if not raw_limit:
-        return None
-
-    try:
-        parsed = int(raw_limit)
-    except ValueError:
-        logger.warning(
-            "Invalid NEG_THREAD_TRANSCRIPT_LIMIT=%s; defaulting to full history",
-            raw_limit,
-        )
-        return None
-
-    if parsed <= 0:
-        return None
-
-    return parsed
-
-
-THREAD_HISTORY_TRANSCRIPT_LIMIT = _resolve_thread_transcript_limit()
-AGGRESSIVE_FIRST_COUNTER_PCT = float(os.getenv("NEG_FIRST_COUNTER_AGGR_PCT", "0.12"))
-FINAL_OFFER_PATTERNS = (
-    "best and final",
-    "best final",
-    "best offer we can",
-    "best price we can",
-    "cannot go lower",
-    "final offer",
-    "final price",
-    "final quotation",
-    "last price",
-    "lowest we can do",
-    "our best price",
-    "rock bottom",
-    "take it or leave it",
-    "ultimatum",
+# Tunables, feature toggles and the governed bounds now live beside the helpers
+# that read them. Re-exported here because callers -- and the P9 governance tests --
+# reach for them on this module by name.
+# The value types moved next to the helpers that build them. Re-exported because
+# NegotiationIdentifier is imported from this module by name elsewhere.
+from agents.negotiation.models import (  # noqa: F401
+    EmailHistoryEntry,
+    EmailThreadState,
+    NegotiationContext,
+    NegotiationIdentifier,
+    NegotiationPositions,
+    SupplierSignals,
+    UniqueConstraintInfo,
 )
 
-# LEVER_CATEGORIES and TRADE_OFF_HINTS now live in
-# services.negotiation_advice.ranking, next to the scoring that uses them.
+from agents.negotiation.config import (  # noqa: F401
+    AGGRESSIVE_FIRST_COUNTER_PCT,
+    AUTHORITY_AGENT_KEY,
+    BATCH_EXCLUDE_KEYS,
+    BATCH_INPUT_KEYS,
+    BATCH_SHARED_KEYS,
+    COST_OF_CAPITAL_APR,
+    CLOSING_MIN_ABS_BUFFER,
+    CLOSING_RISK_BUFFER_PCT,
+    CLOSING_STEP_PCT_OF_GAP,
+    DEFAULT_NEGOTIATION_MESSAGE_TEMPLATE,
+    FINAL_OFFER_PHRASES,
+    LEAD_TIME_VALUE_PCT_PER_WEEK,
+    LLM_ENABLED,
+    LLM_MODEL,
+    MARKET_ESCALATION_THRESHOLD,
+    MARKET_REVIEW_THRESHOLD,
+    MAX_ROUNDS,
+    MAX_SUPPLIER_REPLIES,
+    MAX_TERM_DAYS,
+    MAX_VOLUME_LIMIT,
+    ROUND1_ANCHOR_GAP_PCT,
+    ROUND2_GAP_SHARE,
+    TERMINAL_STRATEGIES,
+    _resolve_thread_transcript_limit,
+)
 # TRADE_OFF_HINTS is imported above; it is still read by
 # _append_playbook_recommendations, which stays on this agent.
 
 
-@dataclass(frozen=True)
-class UniqueConstraintInfo:
-    columns: Tuple[str, ...]
-    constraint_name: Optional[str] = None
-    predicate: Optional[str] = None
-    index_name: Optional[str] = None
 
 
 class NegotiationEmailHTMLShellBuilder:
@@ -264,35 +249,13 @@ class NegotiationEmailHTMLShellBuilder:
         )
 
 
-@dataclass
-class NegotiationContext:
-    current_offer: float
-    target_price: float
-    round_index: int = 1
-    currency: Optional[str] = None
-    aggressiveness: float = 0.5
-    leverage: float = 0.5
-    urgency: float = 0.5
-    risk_buffer_pct: float = 0.05
-    min_abs_buffer: float = 0.0
-    step_pct_of_gap: float = 0.1
-    min_abs_step: float = 1.0
-    max_rounds: int = 3
-    walkaway_price: Optional[float] = None
-    ask_early_pay_disc: Optional[float] = None
-    ask_lead_time_keep: bool = True
 
 
-@dataclass
-class SupplierSignals:
-    offer_prev: Optional[float] = None
-    offer_new: Optional[float] = None
-    message_text: str = ""
 
 
 def _detect_finality(message: str) -> bool:
     lowered = (message or "").lower()
-    return any(pattern in lowered for pattern in FINAL_OFFER_PATTERNS)
+    return any(pattern in lowered for pattern in FINAL_OFFER_PHRASES())
 
 
 def _format_currency(amount: float, currency: Optional[str]) -> str:
@@ -328,7 +291,7 @@ def plan_counter(ctx: NegotiationContext, signals: SupplierSignals) -> Dict[str,
 
     if ctx.current_offer <= 0 or ctx.target_price <= 0:
         message = "Offer or target missing/invalid; request structured pricing."
-        asks.append("Confirm unit price, currency, tiered price @ 100/250/500.")
+        asks.append("Confirm the unit price and currency for each item you quoted.")
         log.append("Invalid numeric input detected while planning counter.")
         return {
             "decision": "clarify",
@@ -411,9 +374,12 @@ def plan_counter(ctx: NegotiationContext, signals: SupplierSignals) -> Dict[str,
     counter_price: float
 
     if round_no <= 1:
-        if gap_pct is not None and gap_pct > 0.10:
-            counter_price = max(target_price, current_offer * 0.88)
-            log.append("Round 1 anchor strategy applied with ~12% reduction from supplier offer.")
+        if gap_pct is not None and gap_pct > ctx.anchor_gap_pct:
+            counter_price = max(target_price, current_offer * (1 - ctx.anchor_reduction_pct))
+            log.append(
+                f"Round 1 anchor strategy applied with ~{ctx.anchor_reduction_pct * 100:.0f}% "
+                "reduction from supplier offer."
+            )
             asks.extend(
                 [
                     "Volume-based discount for 250/500 unit tiers?",
@@ -423,7 +389,9 @@ def plan_counter(ctx: NegotiationContext, signals: SupplierSignals) -> Dict[str,
             )
         else:
             counter_price = (current_offer + target_price) / 2
-            log.append("Round 1 gap within 10%; proposing midpoint counter.")
+            log.append(
+                f"Round 1 gap within {ctx.anchor_gap_pct * 100:.0f}%; proposing midpoint counter."
+            )
             asks.extend(
                 [
                     "Hold quoted price for the full project timeline.",
@@ -432,14 +400,15 @@ def plan_counter(ctx: NegotiationContext, signals: SupplierSignals) -> Dict[str,
             )
         message_intro = "Round 1 plan"
     elif round_no == 2:
-        if gap_pct is not None and gap_pct <= 0.10:
+        if gap_pct is not None and gap_pct <= ctx.anchor_gap_pct:
             counter_price = (current_offer + target_price) / 2
             log.append("Round 2 midpoint strategy: splitting difference with supplier.")
         else:
-            step = gap_value * 0.6
+            step = gap_value * ctx.round2_gap_share
             counter_price = current_offer - step
             log.append(
-                "Round 2 assertive push: capturing ~60% of remaining gap to accelerate convergence."
+                f"Round 2 assertive push: capturing ~{ctx.round2_gap_share * 100:.0f}% of "
+                "remaining gap to accelerate convergence."
             )
         message_intro = "Round 2 plan"
     else:
@@ -481,154 +450,10 @@ def plan_counter(ctx: NegotiationContext, signals: SupplierSignals) -> Dict[str,
 # PLAYBOOK_PATH moved to services.negotiation_advice.ranking with the loader that
 # reads it (re-rooted there: parents[2], not parent.parent).
 
-MARKET_REVIEW_THRESHOLD = float(os.getenv("NEG_MARKET_REVIEW_PCT", "0.2"))
-MARKET_ESCALATION_THRESHOLD = float(os.getenv("NEG_MARKET_ESCALATION_PCT", "0.4"))
-MAX_VOLUME_LIMIT = float(os.getenv("NEG_MAX_VOLUME_LIMIT", "1000"))
-MAX_TERM_DAYS = int(os.getenv("NEG_MAX_TERM_DAYS", "120"))
-
-DEFAULT_NEGOTIATION_MESSAGE_TEMPLATE = "{header}\n{details}{context_sections}"
-
-BATCH_INPUT_KEYS = ("negotiation_batch", "supplier_responses_batch", "batch_responses")
-BATCH_SHARED_KEYS = (
-    "shared_context",
-    "shared_payload",
-    "batch_defaults",
-    "shared_fields",
-    "defaults",
-)
-BATCH_EXCLUDE_KEYS = {
-    "negotiation_batch",
-    "supplier_responses_batch",
-    "batch_responses",
-    "shared_context",
-    "shared_payload",
-    "batch_defaults",
-    "shared_fields",
-    "defaults",
-    "batch_metadata",
-    "batch_results",
-    "batch_summary",
-    "agentic_plan",
-    "pass_fields",
-    "results",
-    "drafts",
-    "supplier_responses",
-}
 
 
-@dataclass
-class NegotiationIdentifier:
-    workflow_id: str
-    session_reference: str
-    supplier_id: str
-    round_number: int = 1
-    # True when nothing in the caller's payload named a supplier and the id below
-    # was minted here purely to key the lock and the session. It is not a real
-    # counterparty, and nothing may be sent to it.
-    supplier_synthesised: bool = False
-
-    def __post_init__(self) -> None:
-        self.workflow_id = self._normalise(self.workflow_id, fallback_prefix="WF")
-        self.session_reference = self._normalise(
-            self.session_reference, fallback_prefix="WF"
-        )
-        self.supplier_id = self._normalise(self.supplier_id, fallback_prefix="SUP")
-        try:
-            self.round_number = int(self.round_number) if self.round_number else 1
-        except Exception:
-            self.round_number = 1
-
-    @staticmethod
-    def _normalise(value: Optional[str], *, fallback_prefix: str = "") -> str:
-        if isinstance(value, str):
-            token = value.strip()
-        elif value is None:
-            token = ""
-        else:
-            token = str(value).strip()
-        if not token:
-            return f"{fallback_prefix}-{uuid.uuid4().hex[:12].upper()}" if fallback_prefix else ""
-        return token
-
-    @property
-    def unique_key(self) -> str:
-        return f"{self.workflow_id}:{self.supplier_id}:{self.round_number}"
-
-    @property
-    def thread_key(self) -> str:
-        return f"{self.workflow_id}:{self.supplier_id}"
 
 
-@dataclass
-class EmailThreadState:
-    thread_id: str
-    in_reply_to: Optional[str] = None
-    references: List[str] = field(default_factory=list)
-    subject_base: str = ""
-
-    def to_headers(self, round_number: int) -> Dict[str, Any]:
-        message_id = f"<{uuid.uuid4()}@procwise.co.uk>"
-        headers: Dict[str, Any] = {"Message-ID": message_id}
-        if self.references:
-            headers["References"] = " ".join(self.references[-10:])
-        if self.in_reply_to:
-            headers["In-Reply-To"] = self.in_reply_to
-        subject = self.subject_base or DEFAULT_NEGOTIATION_SUBJECT
-        if round_number > 1 and subject:
-            if subject.lower().startswith("re:"):
-                headers["Subject"] = subject
-            else:
-                headers["Subject"] = f"Re: {subject}".strip()
-        elif subject:
-            headers["Subject"] = subject
-        return headers
-
-    def update_after_send(self, message_id: Optional[str]) -> None:
-        token = self._normalise_token(message_id)
-        if not token:
-            return
-        if not self.thread_id:
-            self.thread_id = token
-        if token not in self.references:
-            self.references.append(token)
-        self.in_reply_to = token
-
-    def update_after_receive(self, message_id: Optional[str]) -> None:
-        token = self._normalise_token(message_id)
-        if not token:
-            return
-        if token not in self.references:
-            self.references.append(token)
-        self.in_reply_to = token
-
-    def as_dict(self) -> Dict[str, Any]:
-        return {
-            "thread_id": self.thread_id,
-            "in_reply_to": self.in_reply_to,
-            "references": list(self.references),
-            "subject_base": self.subject_base,
-        }
-
-    @staticmethod
-    def from_dict(data: Dict[str, Any], *, fallback_subject: str) -> "EmailThreadState":
-        thread_id = str(data.get("thread_id") or f"<{uuid.uuid4()}@procwise.co.uk>")
-        references = data.get("references") if isinstance(data.get("references"), list) else []
-        return EmailThreadState(
-            thread_id=thread_id,
-            in_reply_to=data.get("in_reply_to"),
-            references=[str(item) for item in references if item],
-            subject_base=str(data.get("subject_base") or fallback_subject or DEFAULT_NEGOTIATION_SUBJECT),
-        )
-
-    @staticmethod
-    def _normalise_token(token: Optional[str]) -> Optional[str]:
-        if isinstance(token, str):
-            value = token.strip()
-        elif token is None:
-            value = ""
-        else:
-            value = str(token).strip()
-        return value or None
 
 
 class ResponseMatcher:
@@ -693,73 +518,6 @@ class ResponseMatcher:
             return len(bucket)
 
 
-@dataclass
-class EmailHistoryEntry:
-    email_id: str
-    round_number: int
-    supplier_id: str
-    supplier_name: Optional[str]
-    subject: str
-    body_text: str
-    body_html: str
-    sender: str
-    recipients: List[str]
-    sent_at: datetime
-    message_id: Optional[str]
-    thread_headers: Dict[str, Any]
-    metadata: Dict[str, Any]
-    decision: Dict[str, Any]
-    negotiation_context: Dict[str, Any]
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "email_id": self.email_id,
-            "round_number": self.round_number,
-            "supplier_id": self.supplier_id,
-            "supplier_name": self.supplier_name,
-            "subject": self.subject,
-            "body_text": self.body_text,
-            "body_html": self.body_html,
-            "sender": self.sender,
-            "recipients": list(self.recipients),
-            "sent_at": self.sent_at.isoformat()
-            if isinstance(self.sent_at, datetime)
-            else self.sent_at,
-            "message_id": self.message_id,
-            "thread_headers": dict(self.thread_headers),
-            "metadata": dict(self.metadata),
-            "decision": dict(self.decision),
-            "negotiation_context": dict(self.negotiation_context),
-        }
-
-    @staticmethod
-    def from_dict(data: Dict[str, Any]) -> "EmailHistoryEntry":
-        sent_at = data.get("sent_at")
-        if isinstance(sent_at, str):
-            try:
-                sent_at = datetime.fromisoformat(sent_at)
-            except Exception:
-                sent_at = datetime.now(timezone.utc)
-        elif not isinstance(sent_at, datetime):
-            sent_at = datetime.now(timezone.utc)
-
-        return EmailHistoryEntry(
-            email_id=data.get("email_id") or str(uuid.uuid4()),
-            round_number=int(data.get("round_number", 1)),
-            supplier_id=str(data.get("supplier_id") or ""),
-            supplier_name=data.get("supplier_name"),
-            subject=data.get("subject", ""),
-            body_text=data.get("body_text", ""),
-            body_html=data.get("body_html", ""),
-            sender=data.get("sender", ""),
-            recipients=list(data.get("recipients") or []),
-            sent_at=sent_at,
-            message_id=data.get("message_id"),
-            thread_headers=dict(data.get("thread_headers") or {}),
-            metadata=dict(data.get("metadata") or {}),
-            decision=dict(data.get("decision") or {}),
-            negotiation_context=dict(data.get("negotiation_context") or {}),
-        )
 
 
 class EmailThreadManager:
@@ -1404,64 +1162,6 @@ class NegotiationEmailHTMLBuilder:
         """
 
 
-@dataclass
-class NegotiationPositions:
-    start: Optional[float]
-    desired: Optional[float]
-    no_deal: Optional[float]
-    supplier_offer: Optional[float] = None
-    history: List[Dict[str, Any]] = field(default_factory=list)
-
-    def serialise(self) -> Dict[str, Any]:
-        return {
-            "start": self.start,
-            "desired": self.desired,
-            "no_deal": self.no_deal,
-            "supplier_offer": self.supplier_offer,
-            "history": list(self.history),
-        }
-
-    def snapshot_for_next_round(
-        self, counter_price: Optional[float], round_no: int
-    ) -> Dict[str, Any]:
-        history = list(self.history)
-
-        def _append(entry_type: str, value: Optional[float]) -> None:
-            if value is None:
-                return
-            record = {
-                "round": round_no,
-                "type": entry_type,
-                "value": value,
-            }
-            if not any(
-                existing.get("round") == record["round"]
-                and existing.get("type") == record["type"]
-                and self._is_close(existing.get("value"), record["value"])
-                for existing in history
-            ):
-                history.append(record)
-
-        _append("supplier_offer", self.supplier_offer)
-        _append("counter", counter_price)
-
-        next_start = counter_price if counter_price is not None else self.start
-
-        return {
-            "start": next_start,
-            "desired": self.desired,
-            "no_deal": self.no_deal,
-            "supplier_offer": self.supplier_offer,
-            "history": history,
-            "last_counter": counter_price if counter_price is not None else next_start,
-        }
-
-    @staticmethod
-    def _is_close(value_a: Any, value_b: Any, *, tolerance: float = 1e-6) -> bool:
-        try:
-            return abs(float(value_a) - float(value_b)) <= tolerance
-        except (TypeError, ValueError):
-            return False
 
 
 def compute_decision(
@@ -1493,11 +1193,16 @@ def compute_decision(
         aggressiveness=0.75,
         leverage=0.6,
         urgency=0.3,
-        risk_buffer_pct=0.06,
-        min_abs_buffer=3.0,
-        step_pct_of_gap=0.12,
+        # Governed (NegotiationBoundsPolicy), not hardwired: these figures decide
+        # what the agent offers, and a missing one refuses rather than assuming.
+        risk_buffer_pct=CLOSING_RISK_BUFFER_PCT(),
+        min_abs_buffer=CLOSING_MIN_ABS_BUFFER(),
+        step_pct_of_gap=CLOSING_STEP_PCT_OF_GAP(),
         min_abs_step=4.0,
-        max_rounds=int(payload.get("max_rounds", 3)),
+        max_rounds=int(payload.get("max_rounds") or MAX_ROUNDS()),
+        anchor_gap_pct=ROUND1_ANCHOR_GAP_PCT(),
+        anchor_reduction_pct=AGGRESSIVE_FIRST_COUNTER_PCT(),
+        round2_gap_share=ROUND2_GAP_SHARE(),
         walkaway_price=walkaway,
         ask_early_pay_disc=ask_disc,
         ask_lead_time_keep=bool(payload.get("ask_lead_time_keep", True)),
@@ -1526,12 +1231,36 @@ def decide_strategy(
         return {
             "strategy": "clarify",
             "counter_price": None,
-            "asks": ["Confirm unit price, currency, tiered price @ 100/250/500."],
+            "asks": ["Confirm the unit price and currency for each item you quoted."],
             "lead_time_request": None,
             "rationale": "Price missing; request structured quote.",
         }
 
-    plan = compute_decision(payload, supplier_message_text=supplier_message or "", offer_prev=offer_prev)
+    ensure_registered()
+    plan = evaluate("negotiation.counter_plan", {
+        "current_offer": payload.get("current_offer"),
+        "target_price": payload.get("target_price"),
+        "round": payload.get("round"),
+        "max_rounds": payload.get("max_rounds"),
+        "walkaway_price": payload.get("walkaway_price"),
+        "currency": payload.get("currency"),
+        "ask_early_pay_disc": payload.get("ask_early_pay_disc"),
+        "ask_lead_time_keep": payload.get("ask_lead_time_keep"),
+        "supplier_message_text": supplier_message or "",
+        "offer_prev": offer_prev,
+    }).or_else(None)
+    if plan is None:
+        # The contract refused the payload -- a negative price, a round below 1.
+        # Ask for structured pricing rather than countering at a number derived
+        # from an input we would not accept.
+        return {
+            "strategy": "clarify",
+            "counter_price": None,
+            "asks": ["Confirm the unit price and currency for each item you quoted."],
+            "lead_time_request": None,
+            "rationale": "Pricing inputs failed validation; request a structured quote.",
+            "decision_origin": "contract_refused",
+        }
 
     decision: Dict[str, Any] = {
         "strategy": plan.get("decision", "counter"),
@@ -1649,40 +1378,14 @@ class NegotiationAgent(BaseAgent):
         except Exception:
             logger.debug("Failed to clear negotiation session state", exc_info=True)
 
-    def _log_round_event(
-        self,
-        *,
-        workflow_id: Optional[str],
-        round_number: Optional[int],
-        supplier_id: Optional[str],
-        status: str,
-        **extra: Any,
-    ) -> None:
-        payload: Dict[str, Any] = {
-            "workflow_id": workflow_id,
-            "round": round_number,
-            "supplier_id": supplier_id,
-            "status": status,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        for key, value in extra.items():
-            if isinstance(value, (str, int, float, bool)) or value is None:
-                payload[key] = value
-            elif isinstance(value, (list, tuple)):
-                payload[key] = [
-                    item
-                    if isinstance(item, (str, int, float, bool)) or item is None
-                    else str(item)
-                    for item in value
-                ]
-            else:
-                payload[key] = str(value)
-        try:
-            message = json.dumps(payload)
-        except TypeError:
-            sanitised = {key: str(value) for key, value in payload.items()}
-            message = json.dumps(sanitised)
-        logger.info("NEGOTIATION_ROUND_EVENT %s", message)
+    def _log_round_event(self, *,
+    workflow_id: Optional[str],
+    round_number: Optional[int],
+    supplier_id: Optional[str],
+    status: str,
+    **extra: Any,
+):
+        return _rounds.log_round_event(workflow_id=workflow_id, round_number=round_number, supplier_id=supplier_id, status=status, **extra)
 
     @contextmanager
     def _session_lock(self, workflow_id: str, supplier_id: str, round_no: int):
@@ -1692,6 +1395,34 @@ class NegotiationAgent(BaseAgent):
         token = ":".join(part or "" for part in key_parts)
         lock_id = binascii.crc32(token.encode("utf-8", "ignore")) & 0x7FFFFFFF
 
+        # A round takes this lock and then runs the supplier's negotiation, which
+        # takes it again. Each use opens its own connection and Postgres advisory
+        # locks belong to the connection, so the second attempt was refused by
+        # the first: the round locked itself out. The thread that holds a round's
+        # lock already has it; only another thread or process is a rival.
+        held = getattr(_SESSION_LOCKS_HELD, "ids", None)
+        if held is None:
+            held = _SESSION_LOCKS_HELD.ids = set()
+        if lock_id in held:
+            yield True
+            return
+
+        with self._session_lock_on_connection(
+            lock_id, workflow_id, supplier_id, round_no
+        ) as acquired:
+            if not acquired:
+                yield False
+                return
+            held.add(lock_id)
+            try:
+                yield True
+            finally:
+                held.discard(lock_id)
+
+    @contextmanager
+    def _session_lock_on_connection(
+        self, lock_id: int, workflow_id: str, supplier_id: str, round_no: int
+    ):
         get_conn = getattr(self.agent_nick, "get_db_connection", None)
         if not callable(get_conn):
             yield True
@@ -1917,14 +1648,15 @@ class NegotiationAgent(BaseAgent):
                 max_rounds = (
                     shared_context.get("max_rounds")
                     or input_payload.get("max_rounds")
-                    or getattr(self.agent_nick.settings, "negotiation_max_rounds", 3)
-                    or 3
+                    or MAX_ROUNDS()
                 )
                 try:
                     max_rounds = int(max_rounds)
                 except Exception:
-                    logger.warning("Unable to coerce max_rounds=%s; defaulting to 3", max_rounds)
-                    max_rounds = 3
+                    logger.warning(
+                        "Unable to coerce max_rounds=%s; using the governed limit", max_rounds
+                    )
+                    max_rounds = MAX_ROUNDS()
 
                 return self._run_multi_round_negotiation(
                     context,
@@ -1950,6 +1682,7 @@ class NegotiationAgent(BaseAgent):
             response_batch = []
 
         if response_batch:
+            response_batch = [self._with_stated_offer(entry) for entry in response_batch]
             shared: Dict[str, Any] = {"negotiation_batch": True}
             for key in BATCH_SHARED_KEYS:
                 candidate = payload.get(key)
@@ -1975,6 +1708,49 @@ class NegotiationAgent(BaseAgent):
                 shared.update(candidate)
 
         return batch, shared
+
+    def _last_stated_offer(self, workflow_id: Optional[str], supplier_id: Optional[str]
+                           ) -> Tuple[Optional[float], Optional[str]]:
+        """The most recent price this supplier stated on this workflow, as stored with their replies."""
+
+        if not workflow_id or not supplier_id:
+            return None, None
+        try:
+            with self.agent_nick.get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT price, currency FROM proc.supplier_response "
+                        "WHERE workflow_id = %s AND supplier_id = %s AND price IS NOT NULL "
+                        "ORDER BY id DESC LIMIT 1",
+                        (workflow_id, supplier_id),
+                    )
+                    row = cur.fetchone()
+        except Exception:  # noqa: BLE001
+            logger.warning("could not read the last stated offer for %s/%s", workflow_id, supplier_id, exc_info=True)
+            return None, None
+        if not row:
+            return None, None
+        return self._coerce_float(row[0]), (str(row[1]).strip().upper() if row[1] else None)
+
+    @staticmethod
+    def _with_stated_offer(response: Dict[str, Any]) -> Dict[str, Any]:
+        """A reply with the price stored on it lifted to where the offer is read.
+
+        The supplier agent hands a reply over with its figures nested under
+        ``supplier_output``; the offer is read from the top level, so a stored
+        price never reached it. A figure already at the top level is kept.
+        """
+
+        stored = response.get("supplier_output")
+        if not isinstance(stored, dict) or stored.get("price") is None:
+            return response
+        if response.get("price") is not None or response.get("current_offer") is not None:
+            return response
+        lifted = dict(response)
+        lifted["price"] = stored["price"]
+        if stored.get("currency") and not lifted.get("currency"):
+            lifted["currency"] = stored["currency"]
+        return lifted
 
     def _coerce_batch_defaults(
         self, base_payload: Dict[str, Any], shared_context: Dict[str, Any]
@@ -2005,55 +1781,8 @@ class NegotiationAgent(BaseAgent):
         payload["_batch_execution"] = True
         return payload
 
-    def _bucket_entries_by_round(self, entries: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Group negotiation batch entries by round to enforce sequential execution."""
-
-        buckets: Dict[Tuple[Optional[int], Optional[Any]], Dict[str, Any]] = {}
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            raw_round = None
-            for key in ("round", "round_number", "round_no"):
-                candidate = entry.get(key)
-                if candidate is not None:
-                    raw_round = candidate
-                    break
-
-            numeric_sort: Optional[int] = None
-            display_round: Optional[Any] = None
-            if raw_round is not None:
-                try:
-                    numeric_sort = int(float(raw_round))
-                    display_round = numeric_sort
-                except Exception:
-                    display_round = raw_round
-            else:
-                numeric_sort = 1
-
-            bucket_key = (numeric_sort, display_round)
-            bucket = buckets.get(bucket_key)
-            if not bucket:
-                bucket = {
-                    "round": display_round,
-                    "numeric_sort": numeric_sort,
-                    "entries": [],
-                }
-                buckets[bucket_key] = bucket
-            bucket["entries"].append(entry)
-
-        ordered = sorted(
-            buckets.values(),
-            key=lambda bucket: (
-                0,
-                bucket["numeric_sort"],
-            )
-            if bucket.get("numeric_sort") is not None
-            else (
-                1,
-                str(bucket.get("round") or "").lower(),
-            ),
-        )
-        return ordered
+    def _bucket_entries_by_round(self, entries: Sequence[Dict[str, Any]]):
+        return _rounds.bucket_entries_by_round(entries)
 
     def _compute_batch_workers(self, entries: Sequence[Dict[str, Any]]) -> int:
         """Determine worker pool size for the provided batch entries."""
@@ -2174,36 +1903,9 @@ class NegotiationAgent(BaseAgent):
         else:  # pragma: no cover - defensive fallback
             task_map[round_key].append(entry)
 
-    def _drain_pending_email_tasks(
-        self, context: AgentContext, round_number: Optional[int]
-    ) -> List[Dict[str, Any]]:
-        """Retrieve and clear pending email tasks for a negotiation round."""
-
-        try:
-            task_map = getattr(context, "_pending_email_round_tasks")
-        except AttributeError:
-            return []
-
-        if not task_map:
-            return []
-
-        try:
-            lock = getattr(context, "_pending_email_round_lock")
-        except AttributeError:
-            lock = None
-
-        try:
-            round_key = int(round_number) if round_number is not None else None
-        except Exception:
-            round_key = None
-
-        if round_key is None:
-            return []
-
-        if lock:
-            with lock:
-                return list(task_map.pop(round_key, []))
-        return list(task_map.pop(round_key, []))
+    def _drain_pending_email_tasks(self, context: AgentContext, round_number: Optional[int]
+):
+        return _rounds.drain_pending_email_tasks(context, round_number)
 
     def _combine_supplier_responses(
         self, responses: Sequence[Dict[str, Any]]
@@ -2462,11 +2164,12 @@ class NegotiationAgent(BaseAgent):
         self, parent_context: AgentContext, payload: Dict[str, Any]
     ) -> AgentOutput:
         workflow_id = payload.get("workflow_id") or parent_context.workflow_id or "negotiation-batch"
-        user_id = payload.get("user_id") or parent_context.user_id or "system"
+        user_id = payload.get("user_id") or parent_context.user_id or None
         sub_context = AgentContext(
             workflow_id=str(workflow_id),
             agent_id=parent_context.agent_id,
-            user_id=str(user_id),
+            # str(None) would be the name "None" -- a stand-in by accident.
+            user_id=str(user_id) if user_id else None,
             input_data=dict(payload),
             parent_agent=parent_context.agent_id,
             routing_history=list(parent_context.routing_history),
@@ -2497,6 +2200,7 @@ class NegotiationAgent(BaseAgent):
                 storage = negotiation_state.setdefault("hitl_email_tasks", {})
                 if isinstance(storage, dict):
                     storage[int(round_number)] = deepcopy(pending_entries)
+                self._persist_held_email_tasks(negotiation_state, round_number)
             return
 
         primary_identifier = None
@@ -2539,6 +2243,61 @@ class NegotiationAgent(BaseAgent):
 
         if isinstance(bundle_data, dict) and bundle_data:
             draft_bundles.append(deepcopy(bundle_data))
+
+    def _persist_held_email_tasks(
+        self, negotiation_state: Dict[str, Any], round_number: int
+    ) -> None:
+        """Put a round held for approval on the session, so it outlives this process.
+
+        Withholding approval stashes the drafted counters in
+        ``negotiation_state["hitl_email_tasks"]``, which is process memory. They
+        reached the caller only through ``AgentOutput.data`` (see
+        ``_run_multi_round_negotiation``), and the one live caller --
+        ``email_watcher.py``, on the inbound-reply route -- discards that output.
+        So the counters a human was asked to approve did not survive the run that
+        wrote them, and approving the round afterwards released nothing.
+
+        The session already persists between rounds; the held round belongs on it.
+        Entries carry a ``NegotiationIdentifier`` and an ``AgentOutput``, neither
+        of which is JSON, so they are reduced to the same JSON-safe form
+        ``_run_multi_round_negotiation`` uses before they reach the store.
+        """
+
+        session = negotiation_state.get("session")
+        workflow_id = self._coerce_text(negotiation_state.get("workflow_id"))
+        if session is None or not workflow_id:
+            logger.warning(
+                "a negotiation round is held for approval but cannot be persisted "
+                "(session=%s workflow_id=%s); it will not survive this process",
+                type(session).__name__ if session is not None else None,
+                workflow_id,
+            )
+            return
+
+        held = negotiation_state.get("hitl_email_tasks")
+        if not isinstance(held, dict) or not held:
+            return
+
+        try:
+            serialisable = json.loads(json.dumps(held, default=str))
+        except (TypeError, ValueError):
+            logger.exception(
+                "held email tasks for workflow %s round %s could not be serialised; "
+                "the round stays held but is not recoverable after a restart",
+                workflow_id,
+                round_number,
+            )
+            return
+
+        try:
+            session.negotiation_parameters["hitl_email_tasks"] = serialisable
+            self._save_session_state_obj(workflow_id, session)
+        except Exception:  # pragma: no cover - persistence must not lose the round
+            logger.exception(
+                "failed to persist held email tasks for workflow %s round %s",
+                workflow_id,
+                round_number,
+            )
 
     def _queue_round_action_for_immediate_drafts(
         self,
@@ -2928,53 +2687,13 @@ class NegotiationAgent(BaseAgent):
         except Exception:
             return True
 
-    def _extract_hitl_decisions(
-        self,
-        context: AgentContext,
-        shared_context: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        """Collect explicit HITL decisions provided in the inbound payload."""
+    def _extract_hitl_decisions(self, context: AgentContext,
+    shared_context: Dict[str, Any],
+):
+        return _rounds.extract_hitl_decisions(context, shared_context)
 
-        decisions: Dict[str, Any] = {}
-
-        def _merge(source: Optional[Dict[str, Any]]) -> None:
-            if not isinstance(source, dict):
-                return
-            for key in ("hitl_decisions", "hitl_approvals", "hitl_review", "hitl"):
-                value = source.get(key)
-                if isinstance(value, dict):
-                    for round_key, decision_value in value.items():
-                        decisions[str(round_key)] = decision_value
-
-        if isinstance(context.input_data, dict):
-            _merge(context.input_data)
-            nested_shared = context.input_data.get("shared_context")
-            if isinstance(nested_shared, dict):
-                _merge(nested_shared)
-        _merge(shared_context)
-        return decisions
-
-    @staticmethod
-    def _normalise_hitl_value(value: Any) -> Tuple[str, Optional[str]]:
-        """Normalise arbitrary decision tokens into approved/pending/rejected."""
-
-        reason: Optional[str] = None
-        candidate = value
-        if isinstance(candidate, dict):
-            reason = cast(Optional[str], candidate.get("reason") or candidate.get("notes"))
-            candidate = candidate.get("status") or candidate.get("decision")
-
-        if isinstance(candidate, bool):
-            return ("approved" if candidate else "rejected", reason)
-
-        token = str(candidate).strip().lower() if candidate is not None else ""
-        if token in {"approved", "approve", "ok", "okay", "yes", "true", "allow", "proceed"}:
-            return "approved", reason
-        if token in {"rejected", "reject", "no", "false", "deny", "denied", "blocked"}:
-            return "rejected", reason
-        if token in {"pending", "awaiting", "hold", "review"}:
-            return "pending", reason
-        return "pending", reason
+    def _normalise_hitl_value(self, value: Any):
+        return _rounds.normalise_hitl_value(value)
 
     def _resolve_hitl_decision(
         self,
@@ -3172,43 +2891,8 @@ class NegotiationAgent(BaseAgent):
         self._log_hitl_checkpoint(context, review_payload)
         return review_payload
 
-    def _compile_final_quotes(self, negotiation_state: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Compile supplier offers and counters for downstream evaluation."""
-
-        quotes: List[Dict[str, Any]] = []
-        active_suppliers = negotiation_state.get("active_suppliers", {})
-        if not isinstance(active_suppliers, dict):
-            return quotes
-
-        for supplier_id, supplier_state in active_suppliers.items():
-            if not isinstance(supplier_state, dict):
-                continue
-            entry_payload = supplier_state.get("entry") or {}
-            decisions = supplier_state.get("decisions") or []
-            latest_decision = decisions[-1] if decisions else {}
-            responses = supplier_state.get("responses") or []
-            latest_response = responses[-1] if responses else {}
-
-            currency = (
-                latest_decision.get("currency")
-                or entry_payload.get("currency")
-                or entry_payload.get("currency_code")
-            )
-
-            quotes.append(
-                {
-                    "supplier_id": supplier_id,
-                    "supplier_offer": entry_payload.get("current_offer")
-                    or entry_payload.get("price"),
-                    "counter_offer": latest_decision.get("counter_price"),
-                    "strategy": latest_decision.get("strategy"),
-                    "currency": currency,
-                    "rounds_completed": max(0, int(supplier_state.get("current_round", 1)) - 1),
-                    "latest_response": latest_response,
-                }
-            )
-
-        return quotes
+    def _compile_final_quotes(self, negotiation_state: Dict[str, Any]):
+        return _rounds.compile_final_quotes(negotiation_state)
 
     def _run_multi_round_negotiation(
         self,
@@ -3221,7 +2905,8 @@ class NegotiationAgent(BaseAgent):
 
         workflow_id = shared_context.get("workflow_id") or context.workflow_id
 
-        max_rounds = max(1, min(int(max_rounds), 3))
+        # A caller may ask for fewer rounds, never for more than policy allows.
+        max_rounds = max(1, min(int(max_rounds), MAX_ROUNDS()))
 
         shared_context = dict(shared_context or {})
 
@@ -3448,7 +3133,9 @@ class NegotiationAgent(BaseAgent):
             final_output.data["hitl_pending_rounds"] = []
 
         override_status = negotiation_state.get("override_status")
-        if override_status:
+        # Nothing was drafted when every supplier failed, so there is nothing
+        # awaiting anyone's approval: the failure is the status.
+        if override_status and final_output.data.get("final_status") != "ALL_FAILED":
             final_output.data["final_status"] = override_status
 
         final_output.data["final_round_all_responses_received"] = negotiation_state.get(
@@ -3766,7 +3453,7 @@ class NegotiationAgent(BaseAgent):
                         supplier_state["current_round"] = round_num
 
                         strategy_lower = (strategy or "").lower()
-                        if strategy_lower in {"accept", "decline"}:
+                        if strategy_lower in TERMINAL_STRATEGIES:
                             supplier_state["status"] = (
                                 "ACCEPTED" if strategy_lower == "accept" else "DECLINED"
                             )
@@ -3889,20 +3576,8 @@ class NegotiationAgent(BaseAgent):
                 mapped[supplier_id].append(row)
         return mapped
 
-    @staticmethod
-    def _run_async_task(coro: Awaitable[Any]) -> Any:
-        try:
-            return asyncio.run(coro)
-        except RuntimeError as exc:
-            if "asyncio.run() cannot be called" not in str(exc):
-                raise
-            loop = asyncio.new_event_loop()
-            try:
-                asyncio.set_event_loop(loop)
-                return loop.run_until_complete(coro)
-            finally:
-                asyncio.set_event_loop(None)
-                loop.close()
+    def _run_async_task(self, coro: Awaitable[Any]):
+        return _rounds.run_async_task(coro)
 
     def _record_round_status(
         self,
@@ -4116,9 +3791,9 @@ class NegotiationAgent(BaseAgent):
             or self._coerce_text(negotiation_state.get("max_rounds"))
         )
         try:
-            max_rounds_value = int(max_rounds_raw) if max_rounds_raw is not None else 3
+            max_rounds_value = int(max_rounds_raw) if max_rounds_raw is not None else MAX_ROUNDS()
         except Exception:
-            max_rounds_value = 3
+            max_rounds_value = MAX_ROUNDS()
 
         session_workflow_id = (
             self._coerce_text(workflow_id)
@@ -4810,15 +4485,8 @@ class NegotiationAgent(BaseAgent):
 
         return None
 
-    def _extract_message_from_response(self, response: Dict[str, Any]) -> Optional[str]:
-        """Extract plain text content from a supplier response."""
-
-        for key in ("message", "message_text", "body", "text", "content"):
-            value = response.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-
-        return None
+    def _extract_message_from_response(self, response: Dict[str, Any]):
+        return _rounds.extract_message_from_response(response)
 
     def _consolidate_multi_round_results(
         self,
@@ -4928,7 +4596,7 @@ class NegotiationAgent(BaseAgent):
             "workflow_id": negotiation_state.get("workflow_id"),
             "negotiation_type": "multi_round",
             "total_rounds_executed": len(all_round_results),
-            "max_rounds": negotiation_state.get("max_rounds", 3),
+            "max_rounds": negotiation_state.get("max_rounds") or MAX_ROUNDS(),
             "total_suppliers": negotiation_state.get("total_suppliers", 0),
             "completed_suppliers": completed_suppliers,
             "failed_suppliers": failed_suppliers,
@@ -4941,29 +4609,23 @@ class NegotiationAgent(BaseAgent):
 
         self._log_final_negotiation_outcome(context, data)
 
+        # The mailbox watcher clears a supplier's reply down, and stops watching,
+        # on SUCCESS. A run in which every supplier failed has dealt with nothing,
+        # so it must not say otherwise.
+        all_failed = data["final_status"] == "ALL_FAILED"
+
         return self._with_plan(
             context,
             AgentOutput(
-                status=AgentStatus.SUCCESS,
+                status=AgentStatus.FAILED if all_failed else AgentStatus.SUCCESS,
                 data=data,
                 pass_fields=data,
+                error="negotiation_all_suppliers_failed" if all_failed else None,
             ),
         )
 
-    def _determine_overall_status(self, negotiation_state: Dict[str, Any]) -> str:
-        """Summarise the overall negotiation status for reporting."""
-
-        total = negotiation_state.get("total_suppliers", 0) or 0
-        completed = len(negotiation_state.get("completed_suppliers", set()))
-        failed = len(negotiation_state.get("failed_suppliers", {}))
-
-        if total > 0 and completed == total:
-            return "ALL_COMPLETED"
-        if total > 0 and failed == total:
-            return "ALL_FAILED"
-        if total > 0 and completed + failed == total:
-            return "PARTIALLY_COMPLETED"
-        return "IN_PROGRESS"
+    def _determine_overall_status(self, negotiation_state: Dict[str, Any]):
+        return _rounds.determine_overall_status(negotiation_state)
 
     def _run_single_negotiation(self, context: AgentContext) -> AgentOutput:
 
@@ -5073,6 +4735,11 @@ class NegotiationAgent(BaseAgent):
         target_price = normalised_inputs.get("target_price")
         walkaway_price = normalised_inputs.get("walkaway_price")
         currency = normalised_inputs.get("currency")
+        if price is None:
+            # A reply that states no price leaves the supplier's last stated offer standing.
+            on_file, on_file_currency = self._last_stated_offer(workflow_id, supplier)
+            if on_file is not None and (currency is None or on_file_currency in (None, currency)):
+                price, currency = on_file, currency or on_file_currency
         lead_weeks = normalised_inputs.get("lead_time_weeks")
         volume_units = normalised_inputs.get("volume_units")
         term_days = normalised_inputs.get("term_days")
@@ -5110,7 +4777,7 @@ class NegotiationAgent(BaseAgent):
                 round_no = max(round_no, int(raw_round))
             except (TypeError, ValueError):
                 round_no = max(round_no, 1)
-        round_no = max(1, min(round_no, 3))
+        round_no = max(1, min(round_no, MAX_ROUNDS()))
         state["current_round"] = round_no
         identifier.round_number = round_no
 
@@ -5172,7 +4839,7 @@ class NegotiationAgent(BaseAgent):
             "target_price": target_price,
             "round": raw_round,
             "currency": currency,
-            "max_rounds": context.input_data.get("max_rounds") or 3,
+            "max_rounds": context.input_data.get("max_rounds") or MAX_ROUNDS(),
             "walkaway_price": walkaway_price,
             "ask_early_pay_disc": context.input_data.get("ask_early_pay_disc", 0.02),
             "ask_lead_time_keep": context.input_data.get("ask_lead_time_keep", True),
@@ -5218,7 +4885,7 @@ class NegotiationAgent(BaseAgent):
         decision.setdefault("asks", [])
         decision.setdefault("lead_time_request", None)
         decision.setdefault("rationale", "")
-        decision["closing_round"] = round_no >= 3
+        decision["closing_round"] = round_no >= MAX_ROUNDS()
         decision["counter_price"] = self._respect_positions(
             decision.get("counter_price"), positions
         )
@@ -5283,6 +4950,17 @@ class NegotiationAgent(BaseAgent):
             decision["rationale"] = f"{structured_rationale} {base_plan_message}".strip()
         else:
             decision["rationale"] = structured_rationale
+
+        # Last gate before the counter becomes a message. Placed after the
+        # rationale is composed so a withheld counter's explanation is the one a
+        # buyer reads, and before _optimize_multi_issue so nothing can put a
+        # number back.
+        self._apply_authority(
+            decision,
+            self._resolve_authority_block(context),
+            currency=currency,
+            volume_units=volume_units,
+        )
 
         playbook_context = self._resolve_playbook_context(context, decision)
         play_recommendations = playbook_context.get("plays", [])
@@ -5380,6 +5058,37 @@ class NegotiationAgent(BaseAgent):
             state["awaiting_response"] = halt_reason == "Awaiting supplier response."
             stop_message = self._build_stop_message(new_status, halt_reason, round_no)
             decision.setdefault("status_reason", halt_reason)
+            # Only the run that meets the final offer raises it: a session already
+            # completed halts for that reason instead and must not draft again.
+            if final_offer_reason and halt_reason == final_offer_reason:
+                final_offer_record, final_offer_draft = self._raise_final_offer(
+                    context=context,
+                    workflow_id=identifier.workflow_id,
+                    supplier=supplier,
+                    supplier_name=supplier_name,
+                    sent_reference=session_reference,
+                    round_no=round_no,
+                    state=state,
+                    offer=price,
+                    target=target_price,
+                    walkaway=walkaway_price,
+                    currency=currency,
+                    # The agent's governed mandate, and any review it has already
+                    # called for, outrank a good price.
+                    hold_reason=(
+                        decision.get("authority_reason")
+                        if decision.get("authority_withheld")
+                        else ("this offer has been flagged for a person's review"
+                              if decision.get("human_override_required") else None)
+                    ),
+                )
+                decision["final_offer"] = final_offer_record
+                if final_offer_record["recommendation"] == _final_offer.ESCALATE:
+                    # The agent's existing word for "a person decides"; one already set stands.
+                    decision.setdefault("recommendation", "query_for_human_review")
+                stop_message = f"{stop_message} {final_offer_record['reason']}"
+                if final_offer_draft is not None:
+                    draft_records.append(final_offer_draft)
             self._persist_thread_state(state, thread_state)
             email_thread_history = self._get_email_thread_history(
                 identifier.workflow_id, supplier
@@ -5495,7 +5204,8 @@ class NegotiationAgent(BaseAgent):
                 supplier_name=supplier_name,
                 round_number=round_no,
                 subject=subject_hint,
-                body=stop_message,
+                # The stop message is an internal note; a saved reply is logged with its own words.
+                body=None if draft_records else stop_message,
                 drafts=draft_records,
                 decision=decision,
                 negotiation_message=stop_message,
@@ -5521,7 +5231,14 @@ class NegotiationAgent(BaseAgent):
             overrides = {k: v for k, v in overrides.items() if k != "counter_price"}
         decision.update(overrides)
         counter_options = optimized.get("counter_options") or []
-        if not counter_options and decision.get("counter_price") is not None:
+        if decision.get("authority_withheld"):
+            # `_optimize_multi_issue` knows nothing about the mandate, and its
+            # options are published to draft_payload["counter_proposals"] and to
+            # AgentOutput.data. Clearing decision["counter_price"] alone does not
+            # withhold anything -- it moves the figure to another key on the same
+            # payload, which is how a governed refusal still reaches a supplier.
+            counter_options = []
+        elif not counter_options and decision.get("counter_price") is not None:
             counter_options = [{"price": decision["counter_price"], "terms": None, "bundle": None}]
 
         supplier_name = context.input_data.get("supplier_name") or supplier
@@ -5605,7 +5322,7 @@ class NegotiationAgent(BaseAgent):
             "lead_time_request": decision.get("lead_time_request"),
             "rationale": decision.get("rationale"),
             "round": round_no,
-            "closing_round": round_no >= 3,
+            "closing_round": round_no >= MAX_ROUNDS(),
             "supplier_reply_count": supplier_reply_count,
             "supplier_message": supplier_message,
             "supplier_snippets": supplier_snippets,
@@ -5687,7 +5404,7 @@ class NegotiationAgent(BaseAgent):
             "target_price": target_price,
             "current_offer": price,
             "round": round_no,
-            "closing_round": round_no >= 3,
+            "closing_round": round_no >= MAX_ROUNDS(),
             "supplier_reply_count": supplier_reply_count,
             "strategy": decision.get("strategy"),
             "asks": decision.get("asks", []),
@@ -5734,7 +5451,7 @@ class NegotiationAgent(BaseAgent):
         draft_stub["negotiation_message"] = negotiation_message
         draft_stub["counter_proposals"] = counter_options
         draft_stub["thread_index"] = round_no
-        draft_stub["closing_round"] = round_no >= 3
+        draft_stub["closing_round"] = round_no >= MAX_ROUNDS()
         if currency:
             draft_stub["currency"] = currency
         if supplier_snippets:
@@ -6329,72 +6046,13 @@ class NegotiationAgent(BaseAgent):
     # ------------------------------------------------------------------
     # NEW: Intelligence helpers
     # ------------------------------------------------------------------
-    def _extract_negotiation_signals(
-        self,
-        *,
-        supplier_message: Optional[str],
-        snippets: List[str],
-        market: Dict[str, Any],
-        performance: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        text = " ".join([t for t in ([supplier_message] + snippets) if t])[:8000]
-        signals: Dict[str, Any] = {
-            "finality_hint": False,
-            "capacity_tight": False,
-            "moq": None,
-            "payment_terms_hint": None,
-            "delivery_flex": None,
-            "alt_part_offered": False,
-            "tone": "neutral",
-            "concession_band_pct": None,
-        }
-
-        lowered = text.lower() if text else ""
-        if any(p in lowered for p in ("capacity", "backlog", "constrained")):
-            signals["capacity_tight"] = True
-        if "moq" in lowered:
-            m = re.search(r"moq[^0-9]*([0-9]{2,})", lowered)
-            if m:
-                try:
-                    signals["moq"] = int(m.group(1))
-                except Exception:
-                    pass
-        if any(x in lowered for x in ("net-30", "net30", "net 30", "net-45", "net 45", "early payment")):
-            signals["payment_terms_hint"] = "tradeable"
-        if any(x in lowered for x in ("expedite", "split shipment", "partial", "air freight")):
-            signals["delivery_flex"] = "possible"
-        if any(x in lowered for x in ("alternate", "alternative", "equivalent", "substitute", "brand b")):
-            signals["alt_part_offered"] = True
-        if any(x in lowered for x in ("cannot go lower", "final", "last price", "our best price", "rock bottom")):
-            signals["finality_hint"] = True
-            signals["tone"] = "firm"
-
-        if LLM_ENABLED and text:
-            try:  # pragma: no cover - optional dependency
-                from services.ollama_client import ollama_generate  # type: ignore
-
-                prompt = (
-                    "Extract JSON with keys: tone (firm/flexible/neutral), finality_hint (bool), "
-                    "capacity_tight (bool), moq (int or null), payment_terms_hint (tradeable/fixed/null), "
-                    "delivery_flex (possible/unlikely/null), concession_band_pct (float or null). Only return JSON.\n\n"
-                    f"Text:\n{text}"
-                )
-                # Use the project-standard wrapper: handles timeout (default 600s),
-                # retries, and the GPU semaphore — avoids an indefinite hang.
-                content = ollama_generate(prompt, model=LLM_MODEL, temperature=0.1) or ""
-                if "{" in content and "}" in content:
-                    content = content[content.find("{") : content.rfind("}") + 1]
-                    parsed = json.loads(content)
-                    if isinstance(parsed, dict):
-                        for key in signals:
-                            if key in parsed and parsed[key] is not None:
-                                signals[key] = parsed[key]
-            except Exception:
-                logger.debug("LLM signal extraction skipped/failed", exc_info=True)
-
-        signals["market"] = market or {}
-        signals["performance"] = performance or {}
-        return signals
+    def _extract_negotiation_signals(self, *,
+    supplier_message: Optional[str],
+    snippets: List[str],
+    market: Dict[str, Any],
+    performance: Dict[str, Any],
+):
+        return _analysis.extract_negotiation_signals(supplier_message=supplier_message, snippets=snippets, market=market, performance=performance)
 
     def _estimate_zopa(
         self,
@@ -6419,22 +6077,45 @@ class NegotiationAgent(BaseAgent):
 
         buyer_max = self._validate_buyer_max(buyer_max)
 
-        candidates: List[float] = []
+        # A supplier's cost floor is evidence or it is nothing. Until
+        # 2026-09-05 this fell through to `price * 0.85` when all three
+        # sources were absent -- which is the ordinary case, because nothing
+        # in this repository produces a should-cost and benchmarks are rarely
+        # supplied. Everything downstream then computed against a number
+        # invented from the supplier's own offer, and could not tell it apart
+        # from a costed one. Worse, the counter-email justification gated its
+        # "based on our market analysis and benchmarking" claim on a
+        # 15% gap to this floor, and (offer - 0.85*offer) / (0.85*offer) is
+        # 0.1765 -- so the claim was made to every supplier, every time,
+        # whether or not any benchmarking had occurred.
+        #
+        # `supplier_floor_basis` names the evidence so a consumer can tell a
+        # costed floor from an absent one without inferring it from the value.
+        candidates: List[Tuple[float, str]] = []
         if should_cost is not None and should_cost > 0:
-            candidates.append(float(should_cost))
+            candidates.append((float(should_cost), "should_cost"))
         bench_low = self._coerce_float(benchmarks.get("p10") or benchmarks.get("low"))
         if bench_low:
-            candidates.append(bench_low)
+            candidates.append((bench_low, "benchmark_p10"))
         hist_min = self._coerce_float(history.get("min_accepted_price"))
         if hist_min:
-            candidates.append(hist_min)
-        supplier_floor = min(candidates) if candidates else (price * 0.85 if price else None)
+            candidates.append((hist_min, "history_min_accepted"))
 
-        if supplier_floor:
+        findings: List[str] = []
+        if candidates:
+            supplier_floor, supplier_floor_basis = min(candidates, key=lambda c: c[0])
             if signals.get("capacity_tight"):
                 supplier_floor *= 1.03
             if signals.get("tone") == "firm":
                 supplier_floor *= 1.01
+        else:
+            supplier_floor = None
+            supplier_floor_basis = None
+            findings.append(
+                "zopa.supplier_floor UNASSESSED: no should-cost, no benchmark "
+                "p10/low and no historic minimum accepted price. The supplier's "
+                "cost base is unknown; do not present a counter as cost-justified."
+            )
 
         concession = signals.get("concession_band_pct") or 0.05
         entry = None
@@ -6444,7 +6125,9 @@ class NegotiationAgent(BaseAgent):
         return {
             "buyer_max": float(buyer_max) if buyer_max is not None else None,
             "supplier_floor": float(supplier_floor) if supplier_floor is not None else None,
+            "supplier_floor_basis": supplier_floor_basis,
             "entry_counter": entry,
+            "findings": findings,
         }
 
     def _adaptive_strategy(
@@ -6461,6 +6144,21 @@ class NegotiationAgent(BaseAgent):
         decision = dict(base_decision)
         price_locked = bool(base_decision.get("price_plan_locked"))
         current_round = int(round_hint) if isinstance(round_hint, (int, float)) else 1
+
+        if str(decision.get("strategy") or "").lower() in TERMINAL_STRATEGIES:
+            # The plan has already resolved this negotiation. `plan_counter` reads
+            # the same final-offer language `signals["finality_hint"]` reports, and
+            # it went further: it compared the offer against the walk-away and
+            # decided. Adapting a decision that has been made is not adaptation.
+            #
+            # The finality branch below used to run over the top of it, replacing
+            # `accept` with `package-trade` -- so a best-and-final we had decided to
+            # take never matched the `accept`/`decline` test in
+            # `_execute_negotiation_round`, the supplier was never added to
+            # `completed_suppliers`, and the loop opened another round bargaining
+            # against an offer we had already agreed. `price_plan_locked` guards the
+            # price against exactly this; nothing guarded the decision.
+            return decision
 
         if signals.get("finality_hint"):
             decision["strategy"] = "package-trade"
@@ -6541,7 +6239,7 @@ class NegotiationAgent(BaseAgent):
             price_candidates.append(round(entry, 2))
         if price and target:
             price_candidates.append(
-                round(max(supplier_floor or 0, price * (1 - AGGRESSIVE_FIRST_COUNTER_PCT)), 2)
+                round(max(supplier_floor or 0, price * (1 - AGGRESSIVE_FIRST_COUNTER_PCT())), 2)
             )
 
         sanitized: List[float] = []
@@ -6556,7 +6254,7 @@ class NegotiationAgent(BaseAgent):
             sanitized.append(round(value, 2))
         price_candidates = sorted(set(sanitized))
 
-        daily_rate = COST_OF_CAPITAL_APR / 365.0
+        daily_rate = COST_OF_CAPITAL_APR() / 365.0
         term_pkgs = [
             {"label": "Net15 with 2% disc", "apr_equiv": -0.02},
             {"label": "Net30 std", "apr_equiv": 0.0},
@@ -6597,7 +6295,7 @@ class NegotiationAgent(BaseAgent):
 
             delivery_score = 0.0
             weeks_gain = float(option["lead"].get("weeks_gain") or 0)
-            delivery_score = weeks_gain * LEAD_TIME_VALUE_PCT_PER_WEEK
+            delivery_score = weeks_gain * LEAD_TIME_VALUE_PCT_PER_WEEK()
 
             risk_score = 0.0
             performance = signals.get("performance") or {}
@@ -6816,6 +6514,11 @@ class NegotiationAgent(BaseAgent):
                     )
                     cur.execute(
                         "ALTER TABLE proc.negotiation_session_state ADD COLUMN IF NOT EXISTS rfq_id TEXT"
+                    )
+                    # The target and walk-away were only ever in the in-memory cache, so a
+                    # reply arriving after a restart was judged against nothing.
+                    cur.execute(
+                        "ALTER TABLE proc.negotiation_session_state ADD COLUMN IF NOT EXISTS positions JSONB"
                     )
                     cur.execute(
                         "ALTER TABLE proc.negotiation_session_state ADD COLUMN IF NOT EXISTS email_history JSONB"
@@ -7201,22 +6904,8 @@ class NegotiationAgent(BaseAgent):
         setattr(self, attr_name, fallback_info)
         return fallback_info
 
-    @staticmethod
-    def _normalise_base_subject(subject: Optional[str]) -> Optional[str]:
-        if subject is None:
-            return None
-        if not isinstance(subject, str):
-            try:
-                subject = str(subject)
-            except Exception:
-                return None
-        trimmed = subject.strip()
-        if not trimmed:
-            return None
-        trimmed = re.sub(r"(?i)^(re|fw|fwd):\s*", "", trimmed)
-        cleaned = EmailDraftingAgent._strip_rfq_identifier_tokens(trimmed)
-        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip("-–: ")
-        return cleaned or None
+    def _normalise_base_subject(self, subject: Optional[str]):
+        return _email_shaping.normalise_base_subject(subject)
 
     def _format_negotiation_subject(self, state: Dict[str, Any]) -> str:
         base = self._coerce_text(state.get("base_subject"))
@@ -7358,6 +7047,11 @@ class NegotiationAgent(BaseAgent):
                         exists = True
         except Exception:  # pragma: no cover - best effort
             logger.exception("failed to load negotiation session state")
+        # A fresh state carries an empty placeholder, so "is it a dict" says nothing.
+        if exists and not state.get("positions"):
+            saved_positions = self._load_saved_positions(workflow_id, supplier_id)
+            if saved_positions is not None:
+                state["positions"] = saved_positions
         state.setdefault("workflow_id", workflow_id)
         self._rehydrate_email_history(
             workflow_id=workflow_id,
@@ -7367,6 +7061,47 @@ class NegotiationAgent(BaseAgent):
         with self._state_lock:
             self._state_cache[key] = dict(state)
         return dict(state), exists
+
+    @staticmethod
+    def _positions_for_record(
+        state: Dict[str, Any], column_metadata: Dict[str, Dict[str, Any]]
+    ) -> Optional[str]:
+        """The negotiation's positions as a value for the saved row, when there is somewhere to put them."""
+
+        positions = state.get("positions")
+        if "positions" not in column_metadata or not isinstance(positions, dict) or not positions:
+            return None
+        try:
+            return json.dumps(positions, ensure_ascii=False, default=str)
+        except Exception:
+            return None
+
+    def _load_saved_positions(self, workflow_id: str, supplier_id: str) -> Optional[Dict[str, Any]]:
+        """The positions saved with this session, or ``None``.
+
+        Read on its own so the main load is untouched: a database that does not
+        have the column yet reads as nothing saved.
+        """
+
+        try:
+            with self.agent_nick.get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT positions FROM proc.negotiation_session_state "
+                        "WHERE workflow_id = %s AND supplier_id = %s",
+                        (workflow_id, supplier_id),
+                    )
+                    row = cur.fetchone()
+        except Exception:
+            logger.debug("no saved negotiation positions could be read", exc_info=True)
+            return None
+        raw = row[0] if row else None
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                return None
+        return dict(raw) if isinstance(raw, dict) and raw else None
 
     def _save_session_state(
         self, session_id: Optional[str], supplier: Optional[str], state: Dict[str, Any]
@@ -7427,6 +7162,10 @@ class NegotiationAgent(BaseAgent):
                             )
                         except Exception:
                             record["email_history"] = None
+
+                    positions_value = self._positions_for_record(state, column_metadata)
+                    if positions_value is not None:
+                        record["positions"] = positions_value
 
                     workflow_value = self._coerce_text(state.get("workflow_id"))
                     if workflow_value:
@@ -7595,46 +7334,11 @@ class NegotiationAgent(BaseAgent):
                     priorities.append(lever)
         return priorities
 
-    def _append_playbook_recommendations(
-        self,
-        summary: str,
-        plays: List[Dict[str, Any]],
-        playbook_context: Dict[str, Any],
-    ) -> str:
-        """Append structured playbook recommendations to the negotiation summary."""
-
-        if not plays:
-            return summary
-
-        lines: List[str] = [summary.rstrip()]
-
-        recommendation_lines: List[str] = []
-        lever_hints: List[str] = []
-        for play in plays[:4]:
-            if not isinstance(play, dict):
-                continue
-            lever = str(play.get("lever", "")).strip()
-            description = str(play.get("play", "")).strip()
-            if description:
-                if lever:
-                    recommendation_lines.append(f"- {lever}: {description}")
-                else:
-                    recommendation_lines.append(f"- {description}")
-            if lever:
-                lookup_key = lever.strip().title()
-                hint = TRADE_OFF_HINTS.get(lookup_key)
-                if hint:
-                    lever_hints.append(f"- {lookup_key}: {hint}")
-
-        if recommendation_lines:
-            lines.append("\nRecommended plays:")
-            lines.extend(recommendation_lines)
-
-        if lever_hints:
-            lines.append("\nTrade-off considerations:")
-            lines.extend(lever_hints[:3])
-
-        return "\n".join(lines)
+    def _append_playbook_recommendations(self, summary: str,
+    plays: List[Dict[str, Any]],
+    playbook_context: Dict[str, Any],
+):
+        return _prose.append_playbook_recommendations(summary, plays, playbook_context)
 
     def _compose_negotiation_message_rich(
         self,
@@ -7719,65 +7423,16 @@ class NegotiationAgent(BaseAgent):
 
         return "\n\n".join(part for part in message_parts if part)
 
-    def _determine_negotiation_tone(
-        self, round_no: int, signals: Dict[str, Any], strategy: str
-    ) -> str:
-        """Determine the appropriate negotiation tone."""
+    def _determine_negotiation_tone(self, round_no: int, signals: Dict[str, Any], strategy: str
+):
+        return _prose.determine_negotiation_tone(round_no, signals, strategy)
 
-        if strategy in ("accept", "decline"):
-            return "decisive"
-
-        if signals.get("finality_hint"):
-            return "collaborative-firm"
-
-        if signals.get("capacity_tight"):
-            return "understanding-assertive"
-
-        if round_no == 1:
-            return "exploratory-confident"
-        elif round_no == 2:
-            return "focused-collaborative"
-        else:
-            return "closure-oriented"
-
-    def _craft_opening(
-        self,
-        round_no: int,
-        supplier_message: Optional[str],
-        signals: Dict[str, Any],
-        tone: str,
-    ) -> str:
-        """Craft a rapport-building opening."""
-
-        # Acknowledge their response if this isn't the first round
-        if round_no > 1 and supplier_message:
-            if signals.get("finality_hint"):
-                return (
-                    "Thank you for taking the time to provide such a detailed response. "
-                    "I appreciate your transparency about your position, and I'd like to explore "
-                    "whether there's a way we can structure this to work for both parties."
-                )
-            elif signals.get("capacity_tight"):
-                return (
-                    "I appreciate you sharing the challenges around capacity and lead times. "
-                    "Understanding your operational constraints helps us find creative solutions "
-                    "that work within those parameters."
-                )
-            else:
-                return (
-                    "Thank you for your continued engagement on this. I've reviewed your proposal "
-                    "and believe we're making good progress toward an agreement that benefits both sides."
-                )
-
-        # First round opening
-        if tone == "exploratory-confident":
-            return (
-                "Thank you for submitting your proposal. I've had a chance to review the details "
-                "and would like to discuss how we might align this with our project requirements "
-                "and budget parameters."
-            )
-
-        return "I'd like to continue our discussion on finding the right structure for this partnership."
+    def _craft_opening(self, round_no: int,
+    supplier_message: Optional[str],
+    signals: Dict[str, Any],
+    tone: str,
+):
+        return _prose.craft_opening(round_no, supplier_message, signals, tone)
 
     def _craft_acknowledgment(
         self,
@@ -7981,345 +7636,47 @@ class NegotiationAgent(BaseAgent):
 
         return intro + " ".join(value_statements)
 
-    def _weave_commercial_play(
-        self, plays: List[Dict[str, Any]], round_no: int, tone: str
-    ) -> str:
-        """Weave commercial plays into natural language."""
+    def _weave_commercial_play(self, plays: List[Dict[str, Any]], round_no: int, tone: str
+):
+        return _prose.weave_commercial_play(plays, round_no, tone)
 
-        play_texts = [p.get("play", "") for p in plays]
+    def _weave_operational_play(self, plays: List[Dict[str, Any]], round_no: int, tone: str
+):
+        return _prose.weave_operational_play(plays, round_no, tone)
 
-        # Volume-based plays
-        if any("volume" in p.lower() or "tier" in p.lower() for p in play_texts):
-            return (
-                "I'd like to explore how we can structure volume commitments to unlock "
-                "better unit economics for both sides. If we can commit to tier-based volumes—"
-                "say, 250 units initially with pathways to 500+—there may be room to optimize "
-                "the pricing structure while giving you better demand visibility."
-            )
+    def _weave_strategic_play(self, plays: List[Dict[str, Any]], round_no: int, tone: str
+):
+        return _prose.weave_strategic_play(plays, round_no, tone)
 
-        # Early payment plays
-        if any("early payment" in p.lower() or "net-15" in p.lower() for p in play_texts):
-            return (
-                "One area where we can create immediate value is payment terms. "
-                "If we can accelerate payment to net-15, would that open up opportunities "
-                "for a 2-3% discount? This improves your cash flow while reducing our total cost."
-            )
+    def _weave_risk_play(self, plays: List[Dict[str, Any]], round_no: int, tone: str
+):
+        return _prose.weave_risk_play(plays, round_no, tone)
 
-        # Bundling plays
-        if any("bundle" in p.lower() or "consolidate" in p.lower() for p in play_texts):
-            return (
-                "We're also looking at how we might consolidate spend across multiple categories "
-                "or adjacent products. If we can bundle this with other requirements coming through "
-                "our pipeline, there could be meaningful volume synergies that benefit both parties."
-            )
+    def _weave_relational_play(self, plays: List[Dict[str, Any]], round_no: int, tone: str
+):
+        return _prose.weave_relational_play(plays, round_no, tone)
 
-        # Generic commercial
-        return (
-            "I believe there's room to structure the commercial terms in a way that creates "
-            "value for both organizations—whether through volume commitments, payment optimization, "
-            "or longer-term price stability."
-        )
+    def _craft_generic_value_proposition(self, decision: Dict[str, Any], round_no: int
+):
+        return _prose.craft_generic_value_proposition(decision, round_no)
 
-    def _weave_operational_play(
-        self, plays: List[Dict[str, Any]], round_no: int, tone: str
-    ) -> str:
-        """Weave operational plays into natural language."""
+    def _craft_collaborative_asks(self, *,
+    decision: Dict[str, Any],
+    round_no: int,
+    signals: Dict[str, Any],
+    tone: str,
+):
+        return _prose.craft_collaborative_asks(decision=decision, round_no=round_no, signals=signals, tone=tone)
 
-        play_texts = [p.get("play", "") for p in plays]
-
-        # Delivery/lead time plays
-        if any("delivery" in p.lower() or "lead time" in p.lower() for p in play_texts):
-            return (
-                "On the operational side, delivery timing is critical for our project schedule. "
-                "If you can guarantee delivery within 2 weeks or offer split shipments "
-                "(perhaps 30% upfront, balance within 4 weeks), that would significantly de-risk "
-                "our production timeline and justify the investment."
-            )
-
-        # Planning/forecasting plays
-        if any("forecast" in p.lower() or "planning" in p.lower() for p in play_texts):
-            return (
-                "We're happy to share our demand forecasts and collaborate on supply planning "
-                "to give you better visibility. This integrated approach typically helps both sides "
-                "reduce buffer stock and improve fulfillment rates."
-            )
-
-        # SLA/service level plays
-        if any("sla" in p.lower() or "priority" in p.lower() for p in play_texts):
-            return (
-                "To ensure this partnership meets both our operational needs, I'd like to define "
-                "clear service levels around delivery performance and fulfillment rates. "
-                "Having those guardrails helps us plan effectively and holds both parties accountable."
-            )
-
-        # Generic operational
-        return (
-            "From an operational standpoint, we're looking for reliability and responsiveness "
-            "in fulfillment. If we can align on clear delivery commitments and planning cadences, "
-            "that creates a strong foundation for the partnership."
-        )
-
-    def _weave_strategic_play(
-        self, plays: List[Dict[str, Any]], round_no: int, tone: str
-    ) -> str:
-        """Weave strategic plays into natural language."""
-
-        play_texts = [p.get("play", "") for p in plays]
-
-        # Innovation/co-development plays
-        if any("innovation" in p.lower() or "co-develop" in p.lower() for p in play_texts):
-            return (
-                "Beyond the immediate transaction, I see potential for deeper collaboration "
-                "on product development and innovation. If we can align on a shared roadmap "
-                "for the next 12-24 months, there may be opportunities to co-invest in capabilities "
-                "that benefit both our organizations."
-            )
-
-        # ESG/sustainability plays
-        if any("esg" in p.lower() or "sustainab" in p.lower() for p in play_texts):
-            return (
-                "Sustainability is increasingly important to our stakeholders. "
-                "If we can incorporate ESG metrics and carbon reduction targets into our partnership, "
-                "that strengthens the strategic case and may unlock internal budget flexibility."
-            )
-
-        # Long-term commitment plays
-        if any("long-term" in p.lower() or "multi-year" in p.lower() for p in play_texts):
-            return (
-                "We're thinking about this as a multi-year partnership rather than a one-off transaction. "
-                "If you're open to a longer-term commitment with price stability mechanisms, "
-                "we can structure this in a way that gives you revenue predictability while securing "
-                "our supply chain."
-            )
-
-        # Generic strategic
-        return (
-            "Strategically, we're looking to build partnerships that go beyond transactional relationships. "
-            "If we can align on shared objectives and longer-term value creation, "
-            "that opens up different ways to structure the commercial terms."
-        )
-
-    def _weave_risk_play(
-        self, plays: List[Dict[str, Any]], round_no: int, tone: str
-    ) -> str:
-        """Weave risk plays into natural language."""
-
-        play_texts = [p.get("play", "") for p in plays]
-
-        # Warranty plays
-        if any("warranty" in p.lower() for p in play_texts):
-            return (
-                "Given the mission-critical nature of these components, warranty coverage is important. "
-                "If you can extend warranty to 2-3 years at no additional cost, "
-                "that reduces our total cost of ownership and makes the business case stronger."
-            )
-
-        # Service credit plays
-        if any("service credit" in p.lower() or "sla penalt" in p.lower() for p in play_texts):
-            return (
-                "To manage performance risk, I'd like to incorporate service-level agreements "
-                "with appropriate credits if delivery or quality targets aren't met. "
-                "This ensures we have recourse mechanisms without damaging the relationship."
-            )
-
-        # Dual-sourcing plays
-        if any("dual-sourc" in p.lower() or "alternative" in p.lower() for p in play_texts):
-            return (
-                "From a risk management perspective, we're evaluating dual-sourcing strategies "
-                "to protect against supply disruption. If you can offer competitive terms and strong SLAs, "
-                "you'd be well-positioned as our primary supplier with the volumes that come with that."
-            )
-
-        # Generic risk
-        return (
-            "We need to ensure appropriate risk mitigation through warranty coverage, "
-            "performance guarantees, and clear remediation processes. "
-            "Building these protections into the agreement benefits both parties."
-        )
-
-    def _weave_relational_play(
-        self, plays: List[Dict[str, Any]], round_no: int, tone: str
-    ) -> str:
-        """Weave relational plays into natural language."""
-
-        return (
-            "Looking beyond this specific engagement, we value suppliers who can grow with us "
-            "and become trusted partners. If this initial project goes well, there are "
-            "significant opportunities for expanded business across our organization. "
-            "That long-term potential should factor into how we structure the initial terms."
-        )
-
-    def _craft_generic_value_proposition(
-        self, decision: Dict[str, Any], round_no: int
-    ) -> str:
-        """Fallback value proposition when playbook unavailable."""
-
-        asks = decision.get("asks", [])
-        if not asks:
-            return ""
-
-        if round_no <= 2:
-            return (
-                "To make this work within our budget parameters, I'd like to explore "
-                "areas where we can create mutual value—whether through volume commitments, "
-                "payment terms optimization, or longer-term partnership structures."
-            )
-        else:
-            return (
-                "As we work toward closure, I believe there are still opportunities "
-                "to optimize the total package through creative structuring of terms, "
-                "payment schedules, and service commitments."
-            )
-
-    def _craft_collaborative_asks(
-        self,
-        *,
-        decision: Dict[str, Any],
-        round_no: int,
-        signals: Dict[str, Any],
-        tone: str,
-    ) -> str:
-        """Frame asks as collaborative opportunities."""
-
-        asks = decision.get("asks", [])
-        lead_time_request = decision.get("lead_time_request")
-
-        if not asks and not lead_time_request:
-            return ""
-
-        # Frame based on tone
-        if tone in ("decisive", "closure-oriented"):
-            intro = "To finalize this agreement, there are a few specific elements I'd like to confirm:"
-        else:
-            intro = "To help us structure the best possible outcome, I'd like to explore a few areas:"
-
-        formatted_asks: List[str] = []
-
-        # Convert asks into questions/proposals rather than demands
-        for ask in asks[:4]:  # Limit to top 4
-            ask_text = str(ask).strip()
-
-            # Rephrase common asks to be more collaborative
-            if "volume" in ask_text.lower() or "tier" in ask_text.lower():
-                formatted_asks.append(
-                    "• What volume thresholds would unlock better unit economics? "
-                    "We're confident we can hit meaningful tiers if the pricing justifies it."
-                )
-            elif "payment" in ask_text.lower() and ("early" in ask_text.lower() or "discount" in ask_text.lower()):
-                formatted_asks.append(
-                    "• Would accelerated payment (net-15) create value for you? "
-                    "We'd be happy to explore if that opens up pricing flexibility."
-                )
-            elif "lead time" in ask_text.lower() or "delivery" in ask_text.lower():
-                formatted_asks.append(
-                    "• Can you confirm the delivery timeline and whether there's flexibility "
-                    "for partial shipments if that helps manage both our schedules?"
-                )
-            elif "warranty" in ask_text.lower():
-                formatted_asks.append(
-                    "• What warranty coverage is included, and is there room to extend that "
-                    "as part of the overall package?"
-                )
-            elif "breakdown" in ask_text.lower() or "cost" in ask_text.lower():
-                formatted_asks.append(
-                    "• Would you be open to sharing a high-level cost breakdown? "
-                    "That transparency helps us justify the investment internally."
-                )
-            elif "alternative" in ask_text.lower() or "spec" in ask_text.lower():
-                formatted_asks.append(
-                    "• Are there alternative specifications or components that could reduce cost "
-                    "while still meeting our performance requirements?"
-                )
-            else:
-                # Generic reframe
-                formatted_asks.append(f"• {ask_text}")
-
-        # Add lead time if specified
-        if lead_time_request and not any("lead time" in fa.lower() for fa in formatted_asks):
-            formatted_asks.append(
-                f"• Regarding timing: {lead_time_request.lower()} would be ideal for our project schedule."
-            )
-
-        if not formatted_asks:
-            return ""
-
-        return intro + "\n\n" + "\n".join(formatted_asks)
-
-    def _craft_closing(self, round_no: int, strategy: str, tone: str) -> str:
-        """Create a closing that maintains momentum."""
-
-        if strategy == "accept":
-            return (
-                "If we can align on these final points, I'm ready to move forward quickly "
-                "and get the paperwork in motion. Looking forward to your thoughts."
-            )
-
-        if strategy == "decline":
-            return (
-                "I appreciate your engagement throughout this process. Given where we've landed, "
-                "I'll need to take this back to my team for further discussion. "
-                "I'll circle back if our parameters change."
-            )
-
-        if round_no >= 3:
-            return (
-                "I'm hopeful we can find common ground here. This represents our best position "
-                "given all the factors at play. I'd appreciate your thoughts on whether we can "
-                "make this work, and I'm happy to jump on a call if that would be helpful "
-                "to talk through any remaining sticking points."
-            )
-
-        if round_no == 2:
-            return (
-                "I believe we're getting close to something that works for both sides. "
-                "Let me know your thoughts on this structure, and we can refine from there. "
-                "Happy to discuss any concerns or questions you might have."
-            )
-
-        # Round 1 or default
-        return (
-            "I'd welcome your perspective on this proposal. If you have questions or "
-            "want to discuss any of these points in more detail, I'm happy to set up "
-            "a quick call. Looking forward to your response."
-        )
+    def _craft_closing(self, round_no: int, strategy: str, tone: str):
+        return _prose.craft_closing(round_no, strategy, tone)
 
 
-    def _normalise_supplier_type(self, value: Any) -> Optional[str]:
-        if value is None:
-            return None
-        text = str(value).strip()
-        if not text:
-            return None
-        lowered = text.lower()
-        mapping = {
-            "transactional": "Transactional",
-            "leverage": "Leverage",
-            "strategic": "Strategic",
-            "bottleneck": "Bottleneck",
-        }
-        for key, canonical in mapping.items():
-            if key in lowered:
-                return canonical
-        return None
+    def _normalise_supplier_type(self, value: Any):
+        return _prose.normalise_supplier_type(value)
 
-    def _normalise_negotiation_style(self, value: Any) -> Optional[str]:
-        if value is None:
-            return None
-        text = str(value).strip()
-        if not text:
-            return None
-        lowered = text.lower()
-        mapping = {
-            "competitive": "Competitive",
-            "collaborative": "Collaborative",
-            "principled": "Principled",
-            "accommodating": "Accommodating",
-            "compromising": "Compromising",
-        }
-        for key, canonical in mapping.items():
-            if key in lowered:
-                return canonical
-        return None
+    def _normalise_negotiation_style(self, value: Any):
+        return _prose.normalise_negotiation_style(value)
 
     def _normalise_lever_category(self, value: Any) -> Optional[str]:
         # Canonical implementation lives in services.negotiation_advice.ranking;
@@ -8387,37 +7744,15 @@ class NegotiationAgent(BaseAgent):
     # ------------------------------------------------------------------
     # Decision support helpers
     # ------------------------------------------------------------------
-    def _detect_final_offer(
-        self, supplier_message: Optional[str], supplier_snippets: List[str]
-    ) -> Optional[str]:
-        texts: List[str] = []
-        if supplier_message:
-            texts.append(supplier_message)
-        texts.extend(snippet for snippet in supplier_snippets if snippet)
-        for text in texts:
-            lowered = text.lower()
-            for pattern in FINAL_OFFER_PATTERNS:
-                if pattern in lowered:
-                    return f"Supplier indicated final offer via phrase '{pattern}'."
-        return None
+    def _detect_final_offer(self, supplier_message: Optional[str], supplier_snippets: List[str]
+):
+        return _analysis.detect_final_offer(supplier_message, supplier_snippets)
 
-    def _should_continue(
-        self,
-        state: Dict[str, Any],
-        supplier_reply_registered: bool,
-        final_offer_reason: Optional[str],
-    ) -> Tuple[bool, str, str]:
-        status = state.get("status", "ACTIVE")
-        if status in {"COMPLETED", "EXHAUSTED"}:
-            return False, status, f"Session already {status.lower()}."
-        if final_offer_reason:
-            return False, "COMPLETED", final_offer_reason
-        replies = int(state.get("supplier_reply_count", 0))
-        if replies >= MAX_SUPPLIER_REPLIES:
-            return False, "EXHAUSTED", "Supplier reply cap reached."
-        if state.get("awaiting_response") and not supplier_reply_registered:
-            return False, "AWAITING_SUPPLIER", "Awaiting supplier response."
-        return True, "ACTIVE", ""
+    def _should_continue(self, state: Dict[str, Any],
+    supplier_reply_registered: bool,
+    final_offer_reason: Optional[str],
+):
+        return _analysis.should_continue(state, supplier_reply_registered, final_offer_reason)
 
     def _build_summary(
         self,
@@ -8494,30 +7829,12 @@ class NegotiationAgent(BaseAgent):
             )
         return message_text or ""
 
-    def _build_positions_from_decision(
-        self,
-        decision: Dict[str, Any],
-        price: Optional[float],
-        target_price: Optional[float],
-        round_no: int,
-    ) -> NegotiationPositions:
-        """Build NegotiationPositions object from decision data."""
-
-        positions_dict = decision.get("positions", {})
-        if isinstance(positions_dict, dict):
-            history = positions_dict.get("history", [])
-        else:
-            history = []
-
-        return NegotiationPositions(
-            start=decision.get("start_position") or positions_dict.get("start"),
-            desired=decision.get("desired_position")
-            or positions_dict.get("desired")
-            or target_price,
-            no_deal=decision.get("no_deal_position") or positions_dict.get("no_deal"),
-            supplier_offer=price,
-            history=history if isinstance(history, list) else [],
-        )
+    def _build_positions_from_decision(self, decision: Dict[str, Any],
+    price: Optional[float],
+    target_price: Optional[float],
+    round_no: int,
+):
+        return _analysis.build_positions_from_decision(decision, price, target_price, round_no)
 
     def _build_summary_fallback(
         self,
@@ -8552,7 +7869,7 @@ class NegotiationAgent(BaseAgent):
             header += f": {strategy}"
         lines.append(header)
 
-        if round_no >= 3:
+        if round_no >= MAX_ROUNDS():
             lines.append(
                 "- Closing round: request the supplier's best and final quote and confirm readiness to award"
             )
@@ -8689,19 +8006,9 @@ class NegotiationAgent(BaseAgent):
 
         return "\n\n".join(sections)
 
-    def _craft_opening_simple(
-        self, round_no: int, supplier_message: Optional[str], signals: Dict[str, Any]
-    ) -> str:
-        """Craft a simple opening."""
-        if round_no > 1 and supplier_message:
-            return (
-                "Thank you for your response. I've reviewed your proposal and would like to discuss "
-                "how we can align on the details."
-            )
-        return (
-            "Thank you for your proposal. I'd like to discuss the terms to ensure we can reach an "
-            "agreement that works for both parties."
-        )
+    def _craft_opening_simple(self, round_no: int, supplier_message: Optional[str], signals: Dict[str, Any]
+):
+        return _prose.craft_opening_simple(round_no, supplier_message, signals)
 
     def _craft_acknowledgment_simple(
         self, current_offer: Optional[float], signals: Dict[str, Any], currency: Optional[str]
@@ -8747,64 +8054,15 @@ class NegotiationAgent(BaseAgent):
             "business case."
         )
 
-    def _craft_value_proposition_simple(
-        self, playbook_context: Dict[str, Any], round_no: int
-    ) -> str:
-        """Craft simple value proposition from playbook."""
-        plays = playbook_context.get("plays", [])[:2]
+    def _craft_value_proposition_simple(self, playbook_context: Dict[str, Any], round_no: int
+):
+        return _prose.craft_value_proposition_simple(playbook_context, round_no)
 
-        if not plays:
-            return ""
+    def _craft_asks_simple(self, decision: Dict[str, Any]):
+        return _prose.craft_asks_simple(decision)
 
-        statements: List[str] = []
-        for play in plays:
-            if not isinstance(play, dict):
-                continue
-
-            description = play.get("play", "")
-            lowered = description.lower()
-            if "volume" in lowered or "tier" in lowered:
-                statements.append(
-                    "We'd like to explore volume commitments that could unlock better pricing for both sides."
-                )
-            elif "payment" in lowered and "early" in lowered:
-                statements.append(
-                    "We can offer accelerated payment terms if that helps with pricing flexibility."
-                )
-            elif "warranty" in lowered:
-                statements.append(
-                    "Extended warranty coverage would strengthen the business case on our side."
-                )
-
-        return " ".join(statements[:2]) if statements else ""
-
-    def _craft_asks_simple(self, decision: Dict[str, Any]) -> str:
-        """Craft simple asks section."""
-        asks = decision.get("asks", [])
-        if not asks:
-            return ""
-
-        asks_list = [f"• {ask}" for ask in asks[:4] if ask]
-        if not asks_list:
-            return ""
-
-        return "To help structure the best outcome:\n" + "\n".join(asks_list)
-
-    def _craft_closing_simple(self, round_no: int, strategy: str) -> str:
-        """Craft simple closing."""
-        if strategy == "accept":
-            return (
-                "If we can align on these final points, I'm ready to move forward. Looking forward to your thoughts."
-            )
-
-        if round_no >= 3:
-            return (
-                "I'm hopeful we can find common ground. Please let me know your thoughts, and I'm happy to discuss further if needed."
-            )
-
-        return (
-            "I'd welcome your feedback on this proposal. Happy to discuss any questions you might have."
-        )
+    def _craft_closing_simple(self, round_no: int, strategy: str):
+        return _prose.craft_closing_simple(round_no, strategy)
 
     def _get_prompt_template(self, context: AgentContext) -> str:
         template: Optional[str] = None
@@ -8980,7 +8238,14 @@ class NegotiationAgent(BaseAgent):
             "supplier_performance": performance_text,
             "market_context": market_text,
             "task_profile": self._serialise_for_prompt(context.task_profile),
-            "knowledge_base": self._serialise_for_prompt(context.knowledge_base),
+            # The manifest knowledge bundle is a data dictionary, not negotiation
+            # context: every table's columns and synonyms, for every agent, on
+            # every step. It told this prompt nothing it uses and cost a large
+            # slice of the window. Only what was loaded is reported, so the size
+            # stays visible. Build spec principle 5.
+            "knowledge_loaded": self._serialise_for_prompt(
+                (context.knowledge_base or {}).get("loaded")
+            ),
             "workflow_id": str(context.workflow_id),
             "agent_id": str(context.agent_id),
             "agentic_plan": "\n".join(self.AGENTIC_PLAN_STEPS),
@@ -9008,25 +8273,9 @@ class NegotiationAgent(BaseAgent):
 
         return prompt_values
 
-    def _apply_prompt_template(
-        self, template: str, values: Dict[str, str], lines: List[str]
-    ) -> str:
-        safe_values: defaultdict[str, str] = defaultdict(str)
-        for key, value in values.items():
-            if value is None:
-                continue
-            safe_values[key] = value
-
-        rendered: str = ""
-        try:
-            rendered = template.format_map(safe_values).strip()
-        except Exception:
-            logger.debug("Negotiation prompt template formatting failed", exc_info=True)
-
-        if not rendered:
-            rendered = "\n".join(lines)
-
-        return rendered
+    def _apply_prompt_template(self, template: str, values: Dict[str, str], lines: List[str]
+):
+        return _prose.apply_prompt_template(template, values, lines)
 
     def _serialise_for_prompt(self, value: Any) -> str:
         if value is None:
@@ -9425,42 +8674,13 @@ class NegotiationAgent(BaseAgent):
 
         return watch_payload
 
-    def _log_response_wait_diagnostics(
-        self,
-        *,
-        workflow_id: Optional[str],
-        supplier_id: Optional[str],
-        drafts: List[Dict[str, Any]],
-        watch_payload: Dict[str, Any],
-    ) -> None:
-        """Log detailed diagnostics for response waiting."""
-
-        logger.info("=" * 80)
-        logger.info("RESPONSE WAIT DIAGNOSTICS")
-        logger.info("Workflow ID: %s", workflow_id)
-        logger.info("Supplier ID: %s", supplier_id)
-        logger.info("Number of drafts: %d", len(drafts))
-        logger.info("Expected responses: %d", watch_payload.get("expected_email_count", 0))
-        logger.info("Unique IDs being tracked: %s", watch_payload.get("unique_ids", []))
-        logger.info("Await response flag: %s", watch_payload.get("await_response"))
-        logger.info(
-            "Await all responses flag: %s", watch_payload.get("await_all_responses")
-        )
-
-        for idx, draft in enumerate(drafts[:3]):
-            logger.info("Draft %d:", idx)
-            logger.info("  - unique_id: %s", draft.get("unique_id"))
-            logger.info("  - supplier_id: %s", draft.get("supplier_id"))
-            logger.info("  - workflow_id: %s", draft.get("workflow_id"))
-            metadata = (
-                draft.get("metadata") if isinstance(draft.get("metadata"), dict) else {}
-            )
-            if isinstance(metadata, dict):
-                logger.info(
-                    "  - metadata.supplier_id: %s",
-                    metadata.get("supplier_id"),
-                )
-        logger.info("=" * 80)
+    def _log_response_wait_diagnostics(self, *,
+    workflow_id: Optional[str],
+    supplier_id: Optional[str],
+    drafts: List[Dict[str, Any]],
+    watch_payload: Dict[str, Any],
+):
+        return _rounds.log_response_wait_diagnostics(workflow_id=workflow_id, supplier_id=supplier_id, drafts=drafts, watch_payload=watch_payload)
 
     def _await_supplier_responses(
         self,
@@ -9761,10 +8981,132 @@ class NegotiationAgent(BaseAgent):
                     self._supplier_agent = SupplierInteractionAgent(self.agent_nick)
         return self._supplier_agent
 
-    def _build_stop_message(self, status: str, reason: str, round_no: int) -> str:
-        status_text = status.capitalize()
-        reason_text = reason or "No further action required."
-        return f"Negotiation {status_text} after round {round_no}: {reason_text}"
+    @staticmethod
+    def _final_offer_thread_headers(sent_reference: Optional[str]) -> Dict[str, Any]:
+        """``In-Reply-To``/``References`` for a reply to the email ``sent_reference`` names. Never raises."""
+
+        if not sent_reference:
+            return {}
+        try:
+            from repositories import draft_rfq_emails_repo
+            from src.services.reply_threading import reply_thread_headers
+
+            source = draft_rfq_emails_repo.load_by_unique_id(sent_reference)
+            if not source:
+                return {}
+            return reply_thread_headers(source_draft=source, source_payload={}) or {}
+        except Exception:
+            logger.debug("could not thread the final-offer reply", exc_info=True)
+            return {}
+
+    def _raise_final_offer(
+        self,
+        *,
+        context: AgentContext,
+        workflow_id: Optional[str],
+        supplier: Optional[str],
+        supplier_name: Optional[str],
+        sent_reference: Optional[str],
+        round_no: int,
+        state: Dict[str, Any],
+        offer: Optional[float],
+        target: Optional[float],
+        walkaway: Optional[float],
+        currency: Optional[str],
+        hold_reason: Optional[str] = None,
+    ) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+        """Recommend what to do with a supplier's final offer and save a reply for approval.
+
+        Final-offer wording used to end the negotiation with no email and nothing
+        raised, so the supplier's last word went unanswered. The reply is saved
+        unsent, under a reference of its own, and is sent only if a person
+        approves it. Failing to save it never loses the recommendation.
+        """
+
+        advice = _final_offer.advise(
+            offer=offer, target=target, walkaway=walkaway, currency=currency, hold_reason=hold_reason
+        )
+        record = advice.as_dict()
+
+        # Who the supplier is reached through, and by what name, is what the
+        # supplier master holds and nothing that travelled with the workflow
+        # (the one lookup the drafting and sending paths share).
+        email_agent = None
+        contact = None
+        try:
+            email_agent = self._ensure_email_agent()
+            contact = email_agent._master_contact(supplier) if email_agent is not None else None
+        except Exception:
+            logger.debug("could not resolve the supplier's contact for the final-offer reply", exc_info=True)
+        recipients = list(getattr(contact, "emails", None) or [])
+        contact_name = getattr(contact, "name", None)
+        if not (workflow_id and supplier and recipients):
+            record["reply_not_drafted"] = "the supplier master holds no contact address for this supplier"
+            logger.warning(
+                "Final offer from supplier=%s workflow=%s: recommendation=%s, but no reply was drafted "
+                "(no contact address on the supplier master, or no workflow)",
+                supplier, workflow_id, advice.recommendation,
+            )
+            return record, None
+
+        draft: Dict[str, Any] = {
+            "intent": "NEGOTIATION_FINAL_OFFER_REPLY",
+            "workflow_id": workflow_id,
+            "supplier_id": supplier,
+            "supplier_name": supplier_name,
+            "subject": self._format_negotiation_subject(state),
+            # The contact on the supplier master, or no name: a company is not greeted as a person.
+            "body": _final_offer.reply_html(advice, contact_name=contact_name),
+            "recipients": recipients,
+            "sender": getattr(self.agent_nick.settings, "ses_default_sender", None),
+            "round": round_no,
+            "sent_status": False,
+            "final_offer": record,
+            "in_reply_to_unique_id": sent_reference,
+        }
+        # In the supplier's own conversation, as a person's reply is: without
+        # these it arrives as a new thread. Nothing recorded means none are set.
+        thread_headers = self._final_offer_thread_headers(sent_reference)
+        if thread_headers:
+            draft["thread_headers"] = thread_headers
+        try:
+            # The same assurance every other email takes: a thread holding an
+            # unreviewed flagged reply is not written on by an agent, and the
+            # draft carries its checks (our own limits must never be in it).
+            blocked, assurance = email_agent.assure_final_offer_reply(
+                {
+                    "current_offer": advice.offer,
+                    "currency": currency,
+                    "target_price": target,
+                    "walkaway_price": walkaway,
+                    "contact_name": contact_name,
+                },
+                text=draft["body"], recipients=recipients, supplier_id=supplier, workflow_id=workflow_id,
+            )
+            if blocked:
+                record["reply_not_drafted"] = blocked
+                logger.warning(
+                    "Final offer from supplier=%s workflow=%s: recommendation=%s; no reply drafted: %s",
+                    supplier, workflow_id, advice.recommendation, blocked,
+                )
+                return record, None
+            draft["assurance"] = assurance
+            email_agent._store_draft(draft)
+        except Exception:
+            logger.exception(
+                "Final offer from supplier=%s workflow=%s: recommendation=%s, but the reply could not be saved",
+                supplier, workflow_id, advice.recommendation,
+            )
+            return record, None
+
+        logger.info(
+            "Final offer from supplier=%s workflow=%s: recommendation=%s; reply saved for approval as %s",
+            supplier, workflow_id, advice.recommendation, draft.get("unique_id"),
+        )
+        return record, draft
+
+    def _build_stop_message(self, status: str, reason: str, round_no: int):
+        return _rounds.build_stop_message(status, reason, round_no)
 
     def _store_session(
         self, session_id: str, supplier: str, round_no: int, counter_price: Optional[float]
@@ -10036,65 +9378,13 @@ class NegotiationAgent(BaseAgent):
 
         return recipients
 
-    def _collect_supplier_snippets(self, payload: Dict[str, Any]) -> List[str]:
-        snippets: List[str] = []
-        for key in (
-            "supplier_snippets",
-            "snippets",
-            "highlights",
-            "supplier_highlights",
-            "response_text",
-            "message",
-            "raw_email",
-        ):
-            value = payload.get(key)
-            if isinstance(value, list):
-                snippets.extend(str(item).strip() for item in value if str(item).strip())
-            elif isinstance(value, str) and value.strip():
-                snippets.append(value.strip())
-        return snippets[:5]
+    def _collect_supplier_snippets(self, payload: Dict[str, Any]):
+        return _email_shaping.collect_supplier_snippets(payload)
 
-    def _ensure_supplier_id_in_drafts(
-        self,
-        drafts: List[Dict[str, Any]],
-        fallback_supplier_id: Optional[str],
-    ) -> List[Dict[str, Any]]:
-        """Ensure all drafts have supplier_id populated."""
-
-        corrected_drafts: List[Dict[str, Any]] = []
-
-        for draft in drafts:
-            if not isinstance(draft, dict):
-                continue
-
-            draft_copy = dict(draft)
-
-            supplier_id = draft_copy.get("supplier_id") or draft_copy.get("supplier")
-
-            metadata = draft_copy.get("metadata")
-            if not supplier_id and isinstance(metadata, dict):
-                supplier_id = metadata.get("supplier_id") or metadata.get("supplier")
-
-            if not supplier_id:
-                supplier_id = fallback_supplier_id
-
-            if not supplier_id:
-                logger.warning("Draft missing supplier_id even after fallback: %s", draft_copy)
-                continue
-
-            draft_copy["supplier_id"] = supplier_id
-            draft_copy.setdefault("supplier", supplier_id)
-
-            if "metadata" not in draft_copy or not isinstance(draft_copy["metadata"], dict):
-                draft_copy["metadata"] = {}
-
-            draft_metadata = cast(Dict[str, Any], draft_copy["metadata"])
-            draft_metadata["supplier_id"] = supplier_id
-            draft_metadata.setdefault("supplier", supplier_id)
-
-            corrected_drafts.append(draft_copy)
-
-        return corrected_drafts
+    def _ensure_supplier_id_in_drafts(self, drafts: List[Dict[str, Any]],
+    fallback_supplier_id: Optional[str],
+):
+        return _email_shaping.ensure_supplier_id_in_drafts(drafts, fallback_supplier_id)
 
     def _resolve_contact_name(
         self, payload: Optional[Dict[str, Any]], *, fallback: Optional[str] = None
@@ -10192,12 +9482,8 @@ class NegotiationAgent(BaseAgent):
             return None
         return text
 
-    @staticmethod
-    def _is_likely_identifier(value: str) -> bool:
-        token = value.strip()
-        if not token:
-            return False
-        return bool(re.match(r"^[A-Z]{2,}[A-Z0-9._-]*$", token))
+    def _is_likely_identifier(self, value: str):
+        return _email_shaping.is_likely_identifier(value)
 
     def _extract_name_from_email(self, value: Any) -> Optional[str]:
         email = self._coerce_text(value)
@@ -10213,22 +9499,8 @@ class NegotiationAgent(BaseAgent):
             return None
         return " ".join(token.capitalize() for token in tokens)
 
-    @staticmethod
-    def _has_explicit_greeting(message: Optional[str]) -> bool:
-        if not message:
-            return False
-        snippet = message.lstrip()
-        lowered = snippet.lower()
-        greeting_prefixes = (
-            "dear ",
-            "hi ",
-            "hello ",
-            "greetings",
-            "good morning",
-            "good afternoon",
-            "good evening",
-        )
-        return any(lowered.startswith(prefix) for prefix in greeting_prefixes)
+    def _has_explicit_greeting(self, message: Optional[str]):
+        return _email_shaping.has_explicit_greeting(message)
 
     def _build_personal_greeting(
         self, contact_name: Optional[str], supplier_name: Optional[str]
@@ -10244,38 +9516,13 @@ class NegotiationAgent(BaseAgent):
                 return f"Dear {parsed},"
         return None
 
-    def _build_decision_log(
-        self,
-        supplier: Optional[str],
-        session_reference: Optional[str],
-        price: Optional[float],
-        target_price: Optional[float],
-        decision: Dict[str, Any],
-    ) -> str:
-        base = (
-            f"Strategy={decision.get('strategy')} counter={decision.get('counter_price')}"
-            f" target={target_price} current={price} supplier={supplier} reference={session_reference}."
-        )
-        plays = decision.get("play_recommendations") or []
-        if plays:
-            top_snippets: List[str] = []
-            for play in plays[:3]:
-                if not isinstance(play, dict):
-                    continue
-                lever = play.get("lever") or play.get("category")
-                description = play.get("play") or play.get("description")
-                if not description:
-                    continue
-                if lever:
-                    top_snippets.append(f"{lever}: {description}")
-                else:
-                    top_snippets.append(str(description))
-            if top_snippets:
-                base = f"{base} Plays={' | '.join(top_snippets)}."
-        rationale = decision.get("rationale")
-        if rationale:
-            return f"{base} {rationale}"
-        return base
+    def _build_decision_log(self, supplier: Optional[str],
+    session_reference: Optional[str],
+    price: Optional[float],
+    target_price: Optional[float],
+    decision: Dict[str, Any],
+):
+        return _rounds.build_decision_log(supplier, session_reference, price, target_price, decision)
 
     # ------------------------------------------------------------------
     # Parsing helpers
@@ -10376,96 +9623,17 @@ class NegotiationAgent(BaseAgent):
 
         return normalised, issues
 
-    def _parse_money(self, value: Any) -> Optional[float]:
-        if value is None:
-            return None
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            try:
-                return float(value)
-            except (TypeError, ValueError):
-                return None
-        if isinstance(value, str):
-            text = value.strip()
-            if not text:
-                return None
-            cleaned = re.sub(r"[\s,]", "", text)
-            match = re.search(r"-?\d+(?:\.\d+)?", cleaned)
-            if match:
-                try:
-                    return float(match.group())
-                except ValueError:
-                    return None
-        return None
+    def _parse_money(self, value: Any):
+        return _parsing.parse_money(value)
 
-    def _parse_quantity(self, value: Any) -> Optional[float]:
-        if value is None:
-            return None
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            return float(value)
-        if isinstance(value, str):
-            text = value.strip()
-            if not text:
-                return None
-            match = re.search(r"\d+(?:\.\d+)?", text.replace(",", ""))
-            if match:
-                try:
-                    return float(match.group())
-                except ValueError:
-                    return None
-        return None
+    def _parse_quantity(self, value: Any):
+        return _parsing.parse_quantity(value)
 
-    def _parse_term_days(self, value: Any) -> Optional[int]:
-        if value is None:
-            return None
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            candidate = int(round(float(value)))
-            return candidate if candidate > 0 else None
-        if isinstance(value, str):
-            text = value.strip().lower()
-            if not text:
-                return None
-            numbers = re.findall(r"\d+(?:\.\d+)?", text)
-            if not numbers:
-                return None
-            try:
-                numeric = float(numbers[0])
-            except ValueError:
-                return None
-            if "week" in text and numeric > 0:
-                return int(round(numeric * 7))
-            return int(round(numeric)) if numeric > 0 else None
-        return None
+    def _parse_term_days(self, value: Any):
+        return _parsing.parse_term_days(value)
 
-    def _parse_date(self, value: Any) -> Optional[str]:
-        if value is None:
-            return None
-        if isinstance(value, datetime):
-            return value.astimezone(timezone.utc).isoformat()
-        if isinstance(value, str):
-            text = value.strip()
-            if not text:
-                return None
-            for fmt in (
-                "%Y-%m-%d",
-                "%d/%m/%Y",
-                "%m/%d/%Y",
-                "%d-%m-%Y",
-                "%d %b %Y",
-                "%b %d, %Y",
-            ):
-                try:
-                    dt = datetime.strptime(text, fmt)
-                    return dt.replace(tzinfo=timezone.utc).isoformat()
-                except ValueError:
-                    continue
-            try:
-                dt = datetime.fromisoformat(text)
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                return dt.astimezone(timezone.utc).isoformat()
-            except ValueError:
-                return None
-        return None
+    def _parse_date(self, value: Any):
+        return _parsing.parse_date(value)
 
     def _extract_reference_prices(self, payload: Dict[str, Any]) -> Dict[str, Optional[float]]:
         candidates: List[float] = []
@@ -10554,128 +9722,182 @@ class NegotiationAgent(BaseAgent):
 
         return positions
 
-    def _respect_positions(
-        self, counter: Optional[float], positions: NegotiationPositions
-    ) -> Optional[float]:
-        if counter is None:
-            return None
-        try:
-            candidate = float(counter)
-        except (TypeError, ValueError):
-            return None
+    def _respect_positions(self, counter: Optional[float], positions: NegotiationPositions
+):
+        return _analysis.respect_positions(counter, positions)
 
-        if positions.desired is not None:
-            try:
-                candidate = max(candidate, float(positions.desired))
-            except (TypeError, ValueError):
-                pass
-        if positions.no_deal is not None:
-            try:
-                candidate = min(candidate, float(positions.no_deal))
-            except (TypeError, ValueError):
-                pass
-        if positions.start is not None:
-            try:
-                candidate = min(candidate, float(positions.start))
-            except (TypeError, ValueError):
-                pass
+    def _resolve_authority_block(self, context: AgentContext
+):
+        return _analysis.resolve_authority_block(context)
 
-        return round(candidate, 2)
-
-    def _detect_outliers(
+    def _authority_refusal(
         self,
+        block: Optional[Dict[str, Any]],
         *,
-        supplier_offer: Optional[float],
-        target_price: Optional[float],
-        walkaway_price: Optional[float],
-        market_floor: Optional[float],
+        counter_price: Optional[float],
+        currency: Optional[str],
         volume_units: Optional[float],
-        term_days: Optional[int],
-    ) -> Dict[str, Any]:
-        alerts: List[str] = []
-        requires_review = False
-        human_override = False
-        review_recommendation: Optional[str] = None
-        rationale_notes: List[str] = []
+    ) -> Optional[str]:
+        """``None`` when this counter is within mandate, else why it is not.
 
-        def _percentage_gap(reference: Optional[float], offer: Optional[float]) -> Optional[float]:
-            try:
-                if reference is None or offer is None or reference <= 0:
-                    return None
-                return (reference - offer) / reference
-            except (TypeError, ValueError):
-                return None
+        The returned string is user-facing: it is interpolated into the decision
+        rationale a buyer reads, so it names no slugs and no config identifiers.
 
-        market_gap = _percentage_gap(market_floor, supplier_offer)
-        walkaway_gap = _percentage_gap(walkaway_price, supplier_offer)
+        Every branch here narrows. An absent block, an unreadable policy, a limit
+        with no currency, a currency we cannot compare, a quantity nobody stated
+        -- each of those is "we cannot show this is within mandate", which is not
+        the same as being within it. That is the stance `ungoverned_block` already
+        takes for the resolver, and `DecisionEngine` for email replies.
+        """
 
-        if market_gap is not None and market_gap >= MARKET_REVIEW_THRESHOLD:
-            requires_review = True
-            review_recommendation = "query_for_human_review"
-            alerts.append(
-                f"Supplier offer is {market_gap * 100:.1f}% below market reference {market_floor:.2f}."
+        if counter_price is None:
+            return None  # nothing is being committed, so there is nothing to authorise
+
+        if not isinstance(block, dict) or not block.get("governed"):
+            stated = block.get("reason") if isinstance(block, dict) else None
+            return stated or (
+                "no authority to propose a price unattended was resolved from "
+                "governed policy"
             )
-            rationale_notes.append("Requested price is materially below market benchmarks; seek justification.")
-            if market_gap >= MARKET_ESCALATION_THRESHOLD:
-                human_override = True
-                rationale_notes.append(
-                    "Supplier offer breaches escalation threshold relative to market floor."
-                )
 
-        if walkaway_gap is not None and walkaway_gap >= MARKET_REVIEW_THRESHOLD:
-            requires_review = True
-            review_recommendation = review_recommendation or "query_for_human_review"
-            alerts.append(
-                f"Supplier offer is {walkaway_gap * 100:.1f}% below walk-away price {walkaway_price:.2f}."
+        limit_raw = block.get("limit_gbp")
+        if limit_raw in (None, ""):
+            return (
+                "the policy that governs this agent states no value limit, so "
+                "there is no ceiling to check this counter against"
             )
-            rationale_notes.append(
-                "Requested price undercuts internal walk-away guardrail; confirm intent before proceeding."
+        try:
+            limit = float(str(limit_raw).replace(",", ""))
+        except (TypeError, ValueError):
+            return (
+                "the governed value limit is not a number, so it cannot be "
+                "applied to this counter"
             )
-            if walkaway_gap >= MARKET_ESCALATION_THRESHOLD:
-                human_override = True
-                rationale_notes.append(
-                    "The requested price is more than 20% below our walk-away price; escalation required."
-                )
 
-        if volume_units is not None and volume_units > MAX_VOLUME_LIMIT:
-            requires_review = True
-            review_recommendation = review_recommendation or "query_for_human_review"
-            alerts.append(
-                f"Requested volume {volume_units:.0f} exceeds configured limit {MAX_VOLUME_LIMIT:.0f}."
+        limit_currency = self._normalise_currency(block.get("limit_currency"))
+        if not limit_currency:
+            return (
+                "the governed value limit states no currency, so it cannot be "
+                "compared with this counter"
             )
-            rationale_notes.append("Request supplier rationale for above-capacity volume.")
-            if volume_units > MAX_VOLUME_LIMIT * 1.5:
-                human_override = True
-                rationale_notes.append("Volume exceeds escalation ceiling; seek human approval.")
 
-        if term_days is not None and term_days > MAX_TERM_DAYS:
-            requires_review = True
-            review_recommendation = review_recommendation or "query_for_human_review"
-            alerts.append(
-                f"Requested payment term {term_days} days exceeds policy limit {MAX_TERM_DAYS} days."
+        counter_currency = self._normalise_currency(currency)
+        if not counter_currency or counter_currency != limit_currency:
+            # No FX here, and inventing a rate of 1.0 by comparing bare numbers
+            # is how a limit silently stops meaning anything.
+            return (
+                f"this counter is priced in "
+                f"{counter_currency or 'an unstated currency'} and the limit is "
+                f"set in {limit_currency}; the two cannot be compared"
             )
-            rationale_notes.append("Payment term exceeds policy; confirm via human review.")
-            if term_days > MAX_TERM_DAYS * 2:
-                human_override = True
-                rationale_notes.append("Payment term far exceeds tolerance; human intervention required.")
 
-        message = None
-        if human_override:
-            for note in rationale_notes[::-1]:
-                if "escalation required" in note.lower():
-                    message = note
-                    break
-            message = message or "Escalation required before proceeding."
-        elif requires_review and rationale_notes:
-            message = rationale_notes[-1]
+        if volume_units is None:
+            return (
+                f"the quantity this counter would commit is not stated, so its "
+                f"total value cannot be established against the "
+                f"{limit_currency} {limit:,.0f} limit"
+            )
 
-        return {
-            "alerts": alerts,
-            "requires_review": requires_review,
-            "human_override": human_override,
-            "recommendation": review_recommendation,
-            "message": message,
+        try:
+            total = float(counter_price) * float(volume_units)
+        except (TypeError, ValueError):
+            return (
+                "the quantity this counter would commit is not a number, so its "
+                "total value cannot be established"
+            )
+
+        if total > limit:
+            return (
+                f"this counter commits {limit_currency} {total:,.2f}, above the "
+                f"governed {limit_currency} {limit:,.0f} limit"
+            )
+        return None
+
+    def _apply_authority(
+        self,
+        decision: Dict[str, Any],
+        block: Optional[Dict[str, Any]],
+        *,
+        currency: Optional[str],
+        volume_units: Optional[float],
+    ) -> None:
+        """Hold the decision to the mandate, in place.
+
+        Withholds the NUMBER rather than flagging it. A review flag stops nothing
+        here -- `_detect_outliers` sets one and the email is still drafted around
+        the price -- so an unmandated figure would still reach a supplier on the
+        strength of a dispatch approval. `decide_strategy` already has this shape
+        for a refused contract: no `counter_price`, and a reason.
+        """
+
+        decision["authority"] = {
+            "governed": bool(isinstance(block, dict) and block.get("governed")),
+            "policy_id": (block or {}).get("policy_id") if isinstance(block, dict) else None,
+            "policy_name": (block or {}).get("policy_name") if isinstance(block, dict) else None,
+            "limit_gbp": (block or {}).get("limit_gbp") if isinstance(block, dict) else None,
+            "limit_currency": (block or {}).get("limit_currency") if isinstance(block, dict) else None,
         }
+
+        reason = self._authority_refusal(
+            block,
+            counter_price=decision.get("counter_price"),
+            currency=currency,
+            volume_units=volume_units,
+        )
+        if reason is None:
+            return
+
+        decision["authority_withheld"] = True
+        decision["authority_reason"] = reason
+
+        if str(decision.get("strategy") or "").lower() in TERMINAL_STRATEGIES:
+            # `plan_counter` has already resolved this negotiation against the
+            # supplier's best-and-final, and `_execute_negotiation_round` closes
+            # the supplier only on `accept`/`decline`. Rewriting the strategy here
+            # would leave it open and reopen bargaining on an offer we had agreed
+            # -- the bug `_adaptive_strategy` returns early to avoid. An accept
+            # beyond mandate is escalated instead, through the flag the agent
+            # already uses for that and which closes `negotiation_allowed`.
+            decision.setdefault("flags", {})["human_override_required"] = True
+            decision["human_override_required"] = True
+            decision["recommendation"] = "query_for_human_review"
+            decision["rationale"] = (
+                f"This decision needs a buyer's sign-off because {reason}."
+            )
+            alerts = list(decision.get("alerts") or [])
+            alert = f"Beyond mandate: {reason}."
+            if alert not in alerts:
+                alerts.append(alert)
+            decision["alerts"] = alerts
+            return
+
+        decision["counter_price"] = None
+        decision["strategy"] = "review"
+        decision["decision_origin"] = "authority_withheld"
+        # Nothing downstream may put a number back: the multi-issue optimiser's
+        # price is dropped only while this is set.
+        decision["price_plan_locked"] = True
+        decision["recommendation"] = "query_for_human_review"
+        decision.setdefault("flags", {})["review_recommended"] = True
+        decision["rationale"] = (
+            f"No counter price is proposed because {reason}. A buyer needs to set "
+            "the figure before anything goes to this supplier."
+        )
+        alerts = list(decision.get("alerts") or [])
+        alert = f"Counter withheld: {reason}."
+        if alert not in alerts:
+            alerts.append(alert)
+        decision["alerts"] = alerts
+
+    def _detect_outliers(self, *,
+    supplier_offer: Optional[float],
+    target_price: Optional[float],
+    walkaway_price: Optional[float],
+    market_floor: Optional[float],
+    volume_units: Optional[float],
+    term_days: Optional[int],
+):
+        return _analysis.detect_outliers(supplier_offer=supplier_offer, target_price=target_price, walkaway_price=walkaway_price, market_floor=market_floor, volume_units=volume_units, term_days=term_days)
 
     def _compose_rationale(
         self,
@@ -10733,67 +9955,17 @@ class NegotiationAgent(BaseAgent):
 
         return " ".join(part for part in parts if part)
 
-    def _format_currency(self, value: Optional[float], currency: Optional[str]) -> str:
-        if value is None or (isinstance(value, float) and math.isnan(value)):
-            return ""
-        try:
-            amount = float(value)
-        except (TypeError, ValueError):
-            return ""
-        code = (currency or "GBP").upper()
-        symbol = (
-            "£"
-            if code == "GBP"
-            else "$"
-            if code == "USD"
-            else "€"
-            if code == "EUR"
-            else "₹"
-            if code == "INR"
-            else ""
-        )
-        formatted = f"{amount:,.2f}"
-        return f"{symbol}{formatted}" if symbol else f"{formatted} {code}"
+    def _format_currency(self, value: Optional[float], currency: Optional[str]):
+        return _parsing.format_currency(value, currency)
 
-    def _normalise_currency(self, value: Any) -> Optional[str]:
-        if not value:
-            return None
-        if isinstance(value, str):
-            trimmed = value.strip().upper()
-            if len(trimmed) == 3:
-                return trimmed
-        return None
+    def _normalise_currency(self, value: Any):
+        return _parsing.normalise_currency(value)
 
-    def _parse_lead_weeks(self, value: Any) -> Optional[float]:
-        if value is None:
-            return None
-        text = str(value).strip()
-        if not text:
-            return None
-        try:
-            number = float(text)
-            return number if number <= 12 else round(number / 7.0, 2)
-        except ValueError:
-            pass
-        lowered = text.lower()
-        digits = "".join(ch for ch in lowered if (ch.isdigit() or ch == "."))
-        try:
-            numeric = float(digits)
-        except ValueError:
-            return None
-        if "week" in lowered:
-            return numeric
-        if "day" in lowered or "business" in lowered:
-            return round(numeric / 7.0, 2)
-        return None
+    def _parse_lead_weeks(self, value: Any):
+        return _parsing.parse_lead_weeks(value)
 
-    def _coerce_float(self, value: Any) -> Optional[float]:
-        if value is None:
-            return None
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
+    def _coerce_float(self, value: Any):
+        return _parsing.coerce_float(value)
 
     def _validate_buyer_max(self, value: Any) -> Optional[float]:
         parsed = self._coerce_float(value)
@@ -10805,26 +9977,14 @@ class NegotiationAgent(BaseAgent):
             return None
         return parsed
 
-    def _positive_int(self, value: Any, *, fallback: int) -> int:
-        try:
-            parsed = int(value)
-        except Exception:
-            return fallback
-        return parsed if parsed > 0 else fallback
+    def _positive_int(self, value: Any, *, fallback: int):
+        return _parsing.positive_int(value, fallback=fallback)
 
-    def _coerce_text(self, value: Any) -> Optional[str]:
-        if isinstance(value, str):
-            text = value.strip()
-            if text:
-                return text
-        return None
+    def _coerce_text(self, value: Any):
+        return _parsing.coerce_text(value)
 
-    def _ensure_list(self, value: Any) -> List[Any]:
-        if value is None:
-            return []
-        if isinstance(value, list):
-            return value
-        return [value]
+    def _ensure_list(self, value: Any):
+        return _parsing.ensure_list(value)
 
     def _ensure_email_agent(self) -> Optional[EmailDraftingAgent]:
         try:
@@ -10837,60 +9997,14 @@ class NegotiationAgent(BaseAgent):
             return None
         return self._email_agent
 
-    @staticmethod
-    def _simple_html_from_text(text: str) -> str:
-        lines = text.splitlines()
-        html_parts: List[str] = []
-        bullets: List[str] = []
+    def _simple_html_from_text(self, text: str):
+        return _email_shaping.simple_html_from_text(text)
 
-        def flush() -> None:
-            if bullets:
-                items = "".join(f"<li>{escape(item)}</li>" for item in bullets)
-                html_parts.append(f"<ul>{items}</ul>")
-                bullets.clear()
+    def _normalise_recipient_list(self, value: Any):
+        return _email_shaping.normalise_recipient_list(value)
 
-        for line in lines:
-            stripped = line.strip()
-            if not stripped:
-                flush()
-                continue
-            if re.match(r"^[-*•]\s+", stripped):
-                bullets.append(stripped[1:].strip())
-                continue
-            flush()
-            html_parts.append(f"<p>{escape(stripped)}</p>")
-        flush()
-        return "".join(html_parts)
-
-    @staticmethod
-    def _normalise_recipient_list(value: Any) -> List[str]:
-        if value is None:
-            return []
-        candidates: List[str] = []
-        if isinstance(value, str):
-            tokens = re.split(r"[;,]", value)
-            candidates.extend(token.strip() for token in tokens if token.strip())
-        elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
-            for item in value:
-                if isinstance(item, str):
-                    tokens = re.split(r"[;,]", item)
-                    candidates.extend(token.strip() for token in tokens if token.strip())
-        return candidates
-
-    @staticmethod
-    def _merge_recipients_basic(to_list: List[str], cc_list: List[str]) -> List[str]:
-        merged: List[str] = []
-        seen: Set[str] = set()
-        for addr in list(to_list) + list(cc_list):
-            candidate = addr.strip()
-            if not candidate:
-                continue
-            key = candidate.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            merged.append(candidate)
-        return merged
+    def _merge_recipients_basic(self, to_list: List[str], cc_list: List[str]):
+        return _email_shaping.merge_recipients_basic(to_list, cc_list)
 
     def _build_negotiation_html_shell(
         self,
@@ -11635,7 +10749,7 @@ class NegotiationAgent(BaseAgent):
         if not entries:
             return []
 
-        limit = THREAD_HISTORY_TRANSCRIPT_LIMIT
+        limit = _resolve_thread_transcript_limit()
         if isinstance(limit, int) and limit > 0:
             return list(entries)[-limit:]
 
@@ -11760,34 +10874,8 @@ class NegotiationAgent(BaseAgent):
         )
         return history_container
 
-    def _inject_history_into_html(self, html: str, transcript_html: str) -> str:
-        if not html or not transcript_html:
-            return html
-
-        insertion_marker = (
-            "          <tr>\n"
-            "            <td style=\"padding:20px 32px 28px 32px;background-color:#f8fafc;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;line-height:1.6;color:#64748b;border-top:1px solid #e2e8f0;\">\n"
-        )
-
-        history_row = (
-            "          <tr>\n"
-            "            <td style=\"padding:0 32px 32px 32px;font-family:'Segoe UI',Arial,sans-serif;\">\n"
-            f"              {transcript_html}\n"
-            "            </td>\n"
-            "          </tr>\n"
-        )
-
-        marker_index = html.find(insertion_marker)
-        if marker_index == -1:
-            closing_body = "</body>"
-            body_index = html.lower().rfind(closing_body)
-            if body_index == -1:
-                return f"{html}\n{transcript_html}"
-            return (
-                f"{html[:body_index]}\n{transcript_html}\n{html[body_index:]}"
-            )
-
-        return html[:marker_index] + history_row + html[marker_index:]
+    def _inject_history_into_html(self, html: str, transcript_html: str):
+        return _email_shaping.inject_history_into_html(html, transcript_html)
 
     def _get_email_thread_summary(
         self, workflow_id: Optional[str], supplier_id: Optional[str]
@@ -13132,14 +12220,8 @@ class NegotiationAgent(BaseAgent):
 
         return payload
 
-    def _build_email_context_snapshot(self, context: AgentContext) -> Dict[str, Any]:
-        snapshot = {
-            "workflow_id": getattr(context, "workflow_id", None),
-            "agent_id": "EmailDraftingAgent",
-            "user_id": getattr(context, "user_id", None),
-            "manifest": context.manifest(),
-        }
-        return {key: value for key, value in snapshot.items() if value}
+    def _build_email_context_snapshot(self, context: AgentContext):
+        return _email_shaping.build_email_context_snapshot(context)
 
     def _flush_email_draft_actions(
         self, context: AgentContext, result: AgentOutput
@@ -13275,7 +12357,7 @@ class NegotiationSession:
             session_id=str(payload.get("session_id") or ""),
             supplier_negotiations=supplier_states,
             current_round=int(payload.get("current_round") or 1),
-            max_rounds=int(payload.get("max_rounds") or 3),
+            max_rounds=int(payload.get("max_rounds") or MAX_ROUNDS()),
             pending_responses=list(payload.get("pending_responses") or []),
             received_responses=list(payload.get("received_responses") or []),
             negotiation_parameters=dict(payload.get("negotiation_parameters") or {}),

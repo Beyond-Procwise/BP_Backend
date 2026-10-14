@@ -46,3 +46,53 @@ def collapse_versions(quotes: list[dict]) -> list[dict]:
             "rounds": sorted(m["quote_id"] for m in members),
         })
     return bids
+
+
+# --- Shared by every analysis over quotes (2026-10-08) ----------------------------------------
+# A bid is a supplier's quote FAMILY -- one base reference, from one supplier -- and its current
+# value is its latest version; earlier versions are history. Analyses that summed, averaged,
+# counted or ranked every version as a separate bid gave a three-supplier, three-round deal nine
+# "bids" and a value of all nine added together. Twin of the gateway's spendiq.quote-version.ts
+# and of bp_deal_overview's superseded_quote.
+
+def QUOTE_VERSION_SQL(col: str) -> str:
+    """SQL: the version number of a quote id column (unversioned = 1)."""
+    return f"COALESCE((regexp_match({col}, '\\(\\s*V(\\d+)', 'i'))[1]::int, 1)"
+
+
+def QUOTE_BASE_SQL(col: str) -> str:
+    """SQL: the quote id with its version marker removed."""
+    return f"regexp_replace({col}, '\\s*\\(\\s*v(\\d+).*\\)\\s*$', '', 'i')"
+
+
+def latest_quote_pred(alias: str, table: str = "proc.bp_quote_trgt") -> str:
+    """SQL predicate: row `alias` is its quote family's latest version.
+
+    Correlated over `table` (the same table the alias reads), so it works inside any query
+    without restructuring it: `... WHERE q.deal_id = %s AND <pred>`."""
+    return (
+        f"NOT EXISTS (SELECT 1 FROM {table} _lv "
+        f"WHERE COALESCE(_lv.supplier_id, '') = COALESCE({alias}.supplier_id, '') "
+        f"AND {QUOTE_BASE_SQL('_lv.quote_id')} = {QUOTE_BASE_SQL(f'{alias}.quote_id')} "
+        f"AND ({QUOTE_VERSION_SQL('_lv.quote_id')}, _lv.quote_id) > "
+        f"({QUOTE_VERSION_SQL(f'{alias}.quote_id')}, {alias}.quote_id))"
+    )
+
+
+def latest_per_family(rows: list[dict], id_key: str = "quote_id",
+                      supplier_key: str = "supplier_id") -> list[dict]:
+    """One row per bid -- each (supplier, base reference) family's highest version -- in
+    first-seen order. A row with no supplier is still a bid; two suppliers who number a quote
+    the same are two bids. Pure."""
+    best: dict[tuple, dict] = {}
+    order: list[tuple] = []
+    for r in rows:
+        qid = str(r.get(id_key) or "")
+        key = (r.get(supplier_key) or "", base_reference(qid))
+        if key not in best:
+            order.append(key)
+            best[key] = r
+        elif (version_ordinal(qid), qid) > (version_ordinal(str(best[key].get(id_key) or "")),
+                                            str(best[key].get(id_key) or "")):
+            best[key] = r
+    return [best[k] for k in order]

@@ -86,10 +86,13 @@ def draft_row(_db_reachable):
         cur.execute(
             "DELETE FROM proc.draft_rfq_emails WHERE unique_id = %s", (unique_id,)
         )
-        cur.execute(
-            "DELETE FROM proc.bp_agent_actions WHERE details ->> 'unique_id' = %s",
-            (unique_id,),
-        )
+        # The audit row this test produced is deliberately NOT cleaned up.
+        # 2026-09-16_bp_agent_actions_immutable.sql makes proc.bp_agent_actions
+        # append-only in the database, so the DELETE that used to sit here now
+        # raises. It should: the row records a denial that really was evaluated,
+        # and a test tidying away its own audit trail is the same motion as a
+        # caller tidying away an inconvenient one. The row is harmless -- it
+        # carries this run's unique_id and nothing looks it up afterwards.
         cleanup.commit()
     finally:
         cleanup.close()

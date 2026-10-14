@@ -161,7 +161,12 @@ def test_govern_endpoint(monkeypatch):
 
     monkeypatch.setattr(GRmod, "govern",
                         lambda task, agent=None: {"answer": "ok", "governance_used": {"prompts": [], "policies": []}, "rounds": 1})
+    from api.auth import require_user
+
     app = FastAPI(); app.include_router(G.router)
+    # /agents/govern resolves the caller (P8 phase 2); this test is about the
+    # reasoning, not authentication, so the principal is pinned: nobody.
+    app.dependency_overrides[require_user] = lambda: None
     client = TestClient(app)
     assert client.post("/agents/govern", json={"task": "x", "agent": "a"}).json()["answer"] == "ok"
     assert client.post("/agents/govern", json={"task": "  "}).status_code == 400

@@ -51,6 +51,17 @@ class AgentContract:
     # resolves the derived agent's own bp_prompt/bp_policy rows instead of the
     # backing class's. None for ordinary agents — their behaviour is unchanged.
     governance_slug: Optional[str] = None
+    # The tools this agent was given. None means the entry carries no list, and
+    # the agent is not narrowed; an empty list means it was given none.
+    tools: Optional[List[str]] = None
+    # The outputs a person named for a created agent: [{name, description}].
+    output_spec: Optional[List[Dict[str, str]]] = None
+    # The registered calculations this agent must always have. They are run
+    # before it reasons and handed to it as facts; it is never asked.
+    calculations: Optional[List[str]] = None
+    # Set while a created agent is a DRAFT: the one person who may run it.
+    # None once it is published, and for every agent that carries no stage.
+    draft_owner: Optional[str] = None
 
 
 class AutoRegistry:
@@ -112,6 +123,12 @@ class AutoRegistry:
                 "agent_definitions.json must be either a JSON array or an object "
                 "with an 'agents' key."
             )
+        if path is None:
+            # The catalogue, not just the file: the agents people created live
+            # in the database and are joined on by the one loader.
+            from agents.definitions import with_created_agents
+
+            agent_list = with_created_agents([e for e in agent_list if isinstance(e, dict)])
 
         contracts: Dict[str, AgentContract] = {}
         for entry in agent_list:
@@ -128,6 +145,27 @@ class AutoRegistry:
                 output_fields=list(entry.get("output_fields", entry.get("outputs", []))),
                 description=entry.get("description", ""),
                 governance_slug=slug if entry.get("derived_from") else None,
+                tools=(
+                    [str(t) for t in entry["tools"]]
+                    if isinstance(entry.get("tools"), list)
+                    else None
+                ),
+                output_spec=(
+                    [dict(o) for o in entry["output_spec"] if isinstance(o, dict)]
+                    if isinstance(entry.get("output_spec"), list) and entry["output_spec"]
+                    else None
+                ),
+                calculations=(
+                    [str(c) for c in entry["calculations"]]
+                    if isinstance(entry.get("calculations"), list) and entry["calculations"]
+                    else None
+                ),
+                # Whose draft it is: whoever last edited it, else whoever created it.
+                draft_owner=(
+                    str(entry.get("draft_by") or entry.get("created_by") or "")
+                    if entry.get("derived_from") and entry.get("stage") == "draft"
+                    else None
+                ),
             )
             contracts[slug] = contract
             logger.debug("Registered agent contract: %s", slug)
@@ -144,6 +182,23 @@ class AutoRegistry:
         """
         fresh = AutoRegistry.from_json(path)
         self._contracts = fresh._contracts
+        # A kept instance must not keep the tools it had before: a list that was
+        # narrowed in the catalogue has to narrow the agent that is already running.
+        for agent_id, instance in self._instances.items():
+            contract = self._contracts.get(agent_id)
+            if contract is None:
+                continue
+            if contract.tools is not None:
+                instance.allowed_tools = list(contract.tools)
+            elif getattr(instance, "allowed_tools", None) is not None:
+                instance.allowed_tools = None
+            instance.output_spec = (
+                [dict(o) for o in contract.output_spec] if contract.output_spec else None
+            )
+            instance.required_calculations = (
+                list(contract.calculations) if contract.calculations else None
+            )
+            instance.draft_owner = contract.draft_owner
 
     def remove(self, agent_id: str) -> None:
         """Drop *agent_id* from both the contract map and the instance cache.
@@ -285,6 +340,14 @@ class AutoRegistry:
             # Derived agent: this instance resolves governance under its own
             # catalogue slug, not under the backing class's name.
             instance.governance_slug = contract.governance_slug
+        if contract.tools is not None:
+            instance.allowed_tools = list(contract.tools)
+        if contract.output_spec:
+            instance.output_spec = [dict(o) for o in contract.output_spec]
+        if contract.calculations:
+            instance.required_calculations = list(contract.calculations)
+        if contract.draft_owner is not None:
+            instance.draft_owner = contract.draft_owner
 
         self._instances[agent_id] = instance
         logger.info("Instantiated agent '%s' from %s", agent_id, contract.class_path)

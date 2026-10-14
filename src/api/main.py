@@ -1,18 +1,17 @@
 import asyncio
 import json
+import re
 import sys, os, uvicorn, logging
 from contextlib import asynccontextmanager
 from typing import Any, Optional, Protocol, cast
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse
 
 # Ensure GPU utilisation by default on compatible hardware
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
-os.environ.setdefault("OLLAMA_USE_GPU", "1")
-os.environ.setdefault("OLLAMA_NUM_PARALLEL", "4")
 os.environ.setdefault("OMP_NUM_THREADS", "8")
 # Reduce peak CUDA-alloc fragmentation so a fresh start succeeds even when
 # the prior process hasn't finished releasing memory yet (per PyTorch's own
@@ -33,6 +32,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from orchestration.orchestrator import Orchestrator
 from services.model_selector import RAGPipeline
+from services import health_signals
+from services.db import get_conn as _health_db_conn
 from services.model_training_endpoint import ModelTrainingEndpoint
 from services.email_watcher import run_email_watcher_for_workflow
 from agents.base_agent import AgentNick
@@ -50,7 +51,11 @@ from agents.approvals_agent import ApprovalsAgent
 from agents.supplier_interaction_agent import SupplierInteractionAgent
 from api.routers import agents as agents_router_mod, documents, email, metrics, run, stream, system, training, vendors, workflows, deal_summary, deal_proposals, promotion, summary, negotiate, opportunities,session
 from api.routers import ws as ws_router_mod
+# Imported here, not further down, because every router below is mounted with
+# require_user as a dependency and that reference is resolved at mount time.
+from api import auth as _ask_auth
 from api.routers import agent_workflows as agent_workflows_router
+from api.routers import playbooks as playbooks_router
 from api.routers import agent_groups as agent_groups_router
 from api.routers import models as models_router
 from api.routers import decisions as decisions_router
@@ -66,8 +71,24 @@ from api.routers import benchmark as benchmark_router
 from api.routers import requirements as requirements_router
 from api.routers import fx as fx_router
 from api.routers import value_summary as value_summary_router
+from api.routers import brief_signals as brief_signals_router
+from api.routers import daily_brief as daily_brief_router
+from api.routers import contract_renewals as contract_renewals_router
+from api.routers import value_ledger as value_ledger_router
 from api.routers import analysis as analysis_router
 from api.routers import approvals as approvals_router
+from api.routers import draft_assurance as draft_assurance_router
+from api.routers import email_learning as email_learning_router
+from api.routers import catalog as catalog_router
+from api.routers import sales as sales_router
+from api.routers import quote_builder as quote_builder_router
+from api.routers import reports as reports_router
+from api.routers import triage as triage_router
+from api.routers import atb as atb_router
+from api.routers import i18n as i18n_router
+from api.routers import agent_policies as agent_policies_router
+from api.routers import prompts as prompts_router
+from api.routers import demand_intake as demand_intake_router
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), '..', 'logs')
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -98,12 +119,87 @@ class ProcwiseAppState(Protocol):
     extraction_v3_schemas: dict
     session_notify_listener: Optional[Any]
 
+def _optional(name: str, build, *, default=None):
+    """Build a startup subsystem whose absence the API can serve without.
+
+    Returns ``default`` and logs, rather than propagating, so one subsystem's
+    failure costs that subsystem alone.
+
+    The distinction this draws is the point. ``lifespan`` catches everything
+    around its whole initialisation and responds by nulling fourteen pieces of
+    app state -- which is the right answer when the core is gone and there is
+    nothing left to serve with, and the wrong answer to a reranker that would
+    not fit on the GPU. That is not a hypothetical: it happened on every boot of
+    this host, and because the handler is at the end, everything after the
+    failure point was skipped too -- the session-status bridge, the
+    extraction-hint cache and the formula audit sink all silently did not start.
+
+    A subsystem belongs here when its consumers already tolerate its absence.
+    ``state.rag_pipeline`` is the model: both routers that use it raise a clean
+    503 when it is missing, so losing it was always meant to be survivable. The
+    core -- AgentNick, the registries, the orchestrator -- stays outside, and a
+    failure there is still fatal and still loud.
+    """
+    try:
+        return build()
+    except Exception:
+        logger.exception(
+            "startup: %s is unavailable; continuing without it. The API will "
+            "serve, and any endpoint that needs it will say so.", name,
+        )
+        return default
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("API starting up...")
     state = cast(ProcwiseAppState, app.state)
+
+    # Make formula evaluation records durable, BEFORE the initialisation block
+    # below. Every `evaluate` call already built a full EvaluationRecord --
+    # inputs, output, version hash, findings, confidence -- and emitted it to a
+    # 5,000-entry in-process ring buffer, so the records were correct and then
+    # died with the process. Nothing reached proc.bp_agent_actions.
+    #
+    # Placement is the point. This sits outside that `try` because the whole of
+    # it is skipped by one `except Exception` when anything in it fails, and it
+    # does fail: a cross-encoder load OOMs whenever the GPU is busy, and the
+    # handler nulls out the app state and yields. An audit sink depends on no
+    # agent, no model and no GPU, so making its durability contingent on a warm
+    # GPU is exactly backwards -- a degraded boot is when you most want the
+    # record of what was computed.
+    #
+    # The database is deliberately not the *default* sink (ADR 0002 D6): a
+    # formula run over pairs would flood the audit table, which is why the batch
+    # sweeps go through `evaluate_many` and write one record each. That reasoning
+    # is about sweeps, not this process -- the API's formulas run a handful of
+    # times per request (benchmark's per-deal loop averages 4.5 quote lines, p95
+    # of 9, worst observed 49). Idempotent, because lifespan can run more than
+    # once in a process.
+    try:
+        from src.services.formulas import install_db_audit_sink
+
+        install_db_audit_sink()
+    except Exception:
+        logger.exception("formula audit sink install failed (non-critical)")
+
     try:
         agent_nick = AgentNick()
+
+        # The agents people created live in the database. Join them onto the
+        # catalogue BEFORE the registry is built from it, or they would not be
+        # registered until something asked for a reload. A server that cannot
+        # reach its database starts with the built-in agents alone, and says so.
+        try:
+            from repositories import agent_definition_repo as _agent_definition_repo
+
+            _taken = _agent_definition_repo.install_as_source()
+            if _taken:
+                logger.info("Created agents taken in from the catalogue file: %s", _taken)
+        except Exception:
+            logger.exception(
+                "Created agents are unavailable: the catalogue is the built-in agents only"
+            )
 
         # Auto-discover agents from agent_definitions.json (replaces manual registration)
         from agents.auto_registry import AutoRegistry
@@ -136,26 +232,43 @@ async def lifespan(app: FastAPI):
             "SupplierInteractionAgent": "supplier_interaction",
         })
 
-        # Initialize reasoning engine
+        # Initialize reasoning engine. Optional: the pattern store is a DDL
+        # round-trip and the reasoning engine is not reachable from any request
+        # path today (`create_plan` has no callers), so neither is worth the
+        # whole system. Nothing outside this module reads
+        # `agent_nick.reasoning_engine`.
         from services.pattern_service import PatternService
         from services.procurement_context_service import ProcurementContextService
         from orchestration.reasoning_engine import ReasoningEngine
 
-        pattern_service = PatternService(agent_nick)
-        pattern_service.ensure_table()
-        context_service = ProcurementContextService(agent_nick)
-        reasoning_engine = ReasoningEngine(
-            agent_nick, auto_registry, pattern_service, context_service
+        def _build_pattern_service():
+            service = PatternService(agent_nick)
+            service.ensure_table()
+            return service
+
+        pattern_service = _optional("the pattern store", _build_pattern_service)
+        context_service = _optional(
+            "the procurement context service",
+            lambda: ProcurementContextService(agent_nick),
+        )
+        reasoning_engine = _optional(
+            "the reasoning engine",
+            lambda: ReasoningEngine(
+                agent_nick, auto_registry, pattern_service, context_service
+            ),
         )
         agent_nick.reasoning_engine = reasoning_engine
         agent_nick.pattern_service = pattern_service
 
         # Seed initial patterns if table is empty
-        from services.seed_patterns import seed_patterns
-        existing = pattern_service.get_patterns()
-        if not existing:
-            seed_patterns(pattern_service)
-            logger.info("Seeded initial procurement patterns")
+        if pattern_service is not None:
+            def _seed_patterns_if_empty():
+                from services.seed_patterns import seed_patterns
+                if not pattern_service.get_patterns():
+                    seed_patterns(pattern_service)
+                    logger.info("Seeded initial procurement patterns")
+
+            _optional("the initial procurement patterns", _seed_patterns_if_empty)
 
         # === Extraction V3: schema validation (fail-loud on drift) ===
         try:
@@ -187,6 +300,9 @@ async def lifespan(app: FastAPI):
             # Seeded once, from what this machine already runs, so the offered-model
             # list agrees with reality rather than announcing a model nothing uses.
             _model_catalogue_repo.ensure_schema()
+            # Where each reasoning run of a created agent is recorded.
+            from repositories import agent_run_repo as _agent_run_repo
+            _agent_run_repo.ensure_schema()
             logger.info("Agent-workflows schema ensured")
         except Exception:
             logger.exception("Agent-workflows schema init failed (non-critical)")
@@ -212,6 +328,18 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("FX-rates schema init failed (non-critical)")
 
+        # Ensure the egress audit table exists. Non-critical: services.egress_log
+        # swallows its own write failures by design, so a missing table costs the
+        # audit trail and not the requests it observes — but that is a gap worth
+        # seeing in the startup log rather than discovering when someone asks
+        # what left the boundary last month.
+        try:
+            from src.services.egress_log import ensure_schema as _ensure_egress_schema
+            _ensure_egress_schema()
+            logger.info("Egress audit schema ensured")
+        except Exception:
+            logger.exception("Egress audit schema init failed (non-critical)")
+
         # Ensure provenance sidecar schema exists.
         try:
             from services.db import get_conn as _prov_db_get_conn
@@ -228,18 +356,35 @@ async def lifespan(app: FastAPI):
             )
 
         state.agent_nick = agent_nick
-        state.model_training_endpoint = ModelTrainingEndpoint(agent_nick)
+
+        # Optional: Orchestrator's own signature defaults training_endpoint to
+        # None, so it is built to run without this.
+        state.model_training_endpoint = _optional(
+            "the model training endpoint", lambda: ModelTrainingEndpoint(agent_nick)
+        )
+
+        # Core. Every request routes through the orchestrator; without it there
+        # is nothing to degrade to, so a failure here is still fatal.
         orchestrator = Orchestrator(
             agent_nick,
             training_endpoint=state.model_training_endpoint,
         )
         state.orchestrator = orchestrator
-        state.rag_pipeline = RAGPipeline(agent_nick)
+
+        # Optional, and the one that actually fired: RAGPipeline builds a
+        # cross-encoder, which OOMs when the GPU is busy. Both routers that use
+        # it already raise 503 when it is missing.
+        state.rag_pipeline = _optional(
+            "the RAG pipeline", lambda: RAGPipeline(agent_nick)
+        )
+
         state.agent_registry = agent_nick.agents
         state.supplier_interaction_agent = agents_dict.get("supplier_interaction")
         state.negotiation_agent = agents_dict.get("negotiation")
         state.email_watcher_runner = run_email_watcher_for_workflow
-        backend_scheduler = orchestrator.backend_scheduler
+        backend_scheduler = _optional(
+            "the backend scheduler", lambda: orchestrator.backend_scheduler
+        )
         state.backend_scheduler = backend_scheduler
         try:
             email_watcher_service = backend_scheduler.get_email_watcher_service()
@@ -392,45 +537,113 @@ app = FastAPI(title="ProcWise API v4 (Definitive)", version="4.0", lifespan=life
 
 _origins = [o.strip() for o in os.getenv("PROCWISE_CORS_ORIGINS", "*").split(",") if o.strip()]
 _allow_creds = _origins != ["*"]
-app.add_middleware(CORSMiddleware, allow_origins=_origins, allow_credentials=_allow_creds, allow_methods=["*"], allow_headers=["*"])
+# The screens run on another origin, and a browser hides any response header not exposed
+# here: the report editor's preview carries what would stop an edit saving in X-Report-Blocking.
+app.add_middleware(CORSMiddleware, allow_origins=_origins, allow_credentials=_allow_creds, allow_methods=["*"], allow_headers=["*"],
+                   expose_headers=["X-Report-Blocking", "X-Report-Run-Id"])
 
-# WebSocket router: no auth dependency — browsers cannot send custom headers
-# during WebSocket upgrade. Auth handled inside ws.py via token= query param.
+# WebSocket router: no auth DEPENDENCY, because a dependency that raises
+# HTTPException cannot answer a WebSocket upgrade. Browsers also cannot set
+# headers on that upgrade, so the token arrives as ?token= and ws.py verifies it
+# in the handler, through the same api.auth verifier and the same ASK_AUTH_MODE
+# semantics as require_user, before accepting the handshake.
+#
+# This comment previously described that arrangement as already existing. It did
+# not: the handler took session_id and websocket, and nothing else. Anyone who
+# could reach the port and knew a session id was served its outcomes.
+# tests/api/test_ws_authentication.py is what now holds this to be true.
 app.include_router(ws_router_mod.router)
+# Agent policies trust only the gateway's key + forwarded identity (design 2026-10-08 §3.2),
+# so they are NOT in _AUTHENTICATED_ROUTERS: the browser never calls them directly.
+app.include_router(agent_policies_router.router)
+app.include_router(agent_policies_router.orchestrator_router)
+app.include_router(prompts_router.router)
 
-app.include_router(agents_router_mod.router)
-app.include_router(documents.router)
-app.include_router(email.router)
-app.include_router(workflows.router)
-app.include_router(system.router)
-app.include_router(run.router)
-app.include_router(stream.router)
-app.include_router(training.router)
-app.include_router(vendors.build_router())
-app.include_router(metrics.router)
-app.include_router(extraction_feedback_router.router)
-app.include_router(decisions_router.router)
-app.include_router(agent_workflows_router.router)
-app.include_router(agent_groups_router.router)
-app.include_router(models_router.router)
-app.include_router(support_router.router)
-app.include_router(supplier_review_router.router)
-app.include_router(supplier_research_router.router)
-app.include_router(governance_router.router)
-app.include_router(deal_summary.router)
-app.include_router(deal_proposals.router)
-app.include_router(negotiate.router)
-app.include_router(opportunities.router)
-app.include_router(promotion.router)
-app.include_router(summary.router)
-app.include_router(session.router)
-app.include_router(obligations_router.router)
-app.include_router(benchmark_router.router)
-app.include_router(requirements_router.router)
-app.include_router(fx_router.router)
-app.include_router(value_summary_router.router)
-app.include_router(analysis_router.router)
-app.include_router(approvals_router.router)
+# The one signed-out translation path: the sign-in screens' text, from cache only. It takes
+# no input text and never calls the model (see api/routers/i18n.py). Listed in _PUBLIC in
+# tests/api/test_every_router_is_authenticated.py with its reason.
+app.include_router(i18n_router.public_router)
+
+# --------------------------------------------------------------------------
+# Every HTTP router below is mounted WITH authentication.
+#
+# Four of thirty-four carried a principal before this: approvals, decisions,
+# value_summary and workflows. The other thirty answered anyone who could reach
+# the port — /benchmark, /opportunities, /documents, /analysis, /summary, and
+# /agents/reason, which hands AgentNick a task and exposes every registered
+# agent to it as a callable tool.
+#
+# The dependency is applied HERE rather than in each router on purpose. A
+# per-router decoration is a control a new router forgets; a list every router
+# must appear in to be served is one a new router cannot be added without
+# touching. tests/api/test_every_router_is_authenticated.py asserts the two
+# stay in step, so adding a router without a deliberate decision fails a test
+# rather than quietly opening an endpoint.
+#
+# require_user honours ASK_AUTH_MODE: `enforce` (the default, and what .env
+# sets) verifies a Cognito ID token; `off` returns None and admits everyone,
+# logging a warning at startup; a misconfigured `enforce` refuses with 503
+# rather than falling open.
+#
+# The UI already sends the token: services/api.js sets
+# axios.defaults.headers.common["Authorization"] at login, and the SpendIQ
+# views that call this service directly on VITE_AI_API_URL rely on that same
+# default (see the comment at useSpendData.js:8). So this is enforcement of a
+# credential that is already on the wire, not a new requirement on callers.
+# --------------------------------------------------------------------------
+_AUTHENTICATED_ROUTERS = [
+    agents_router_mod.router,
+    documents.router,
+    email.router,
+    workflows.router,
+    system.router,
+    run.router,
+    stream.router,
+    training.router,
+    vendors.build_router(),
+    metrics.router,
+    extraction_feedback_router.router,
+    decisions_router.router,
+    agent_workflows_router.router,
+    playbooks_router.router,
+    agent_groups_router.router,
+    models_router.router,
+    support_router.router,
+    supplier_review_router.router,
+    supplier_research_router.router,
+    governance_router.router,
+    deal_summary.router,
+    deal_proposals.router,
+    negotiate.router,
+    opportunities.router,
+    promotion.router,
+    summary.router,
+    session.router,
+    obligations_router.router,
+    benchmark_router.router,
+    requirements_router.router,
+    fx_router.router,
+    value_summary_router.router,
+    brief_signals_router.router,
+    daily_brief_router.router,
+    contract_renewals_router.router,
+    value_ledger_router.router,
+    analysis_router.router,
+    approvals_router.router,
+    draft_assurance_router.router,
+    email_learning_router.router,
+    catalog_router.router,
+    sales_router.router,
+    quote_builder_router.router,
+    reports_router.router,
+    triage_router.router,
+    i18n_router.router,
+    atb_router.router,
+    demand_intake_router.router,
+]
+
+for _router in _AUTHENTICATED_ROUTERS:
+    app.include_router(_router, dependencies=[Depends(_ask_auth.require_user)])
 import src.services.requirement_similarity  # noqa: F401 — registers the quote_rival profile at startup
 
 
@@ -462,6 +675,101 @@ from services import output_safety as osafe  # noqa: E402
 # from at all. It returns display names and keys only — never the provider-facing
 # reference — so exempting it leaks nothing the operator did not already decide.
 _OPERATOR_PATHS = ("/docs", "/redoc", "/openapi.json", "/models")
+
+# The report editor's document: a report's own title and sentences, and the reasons an edit
+# was refused (which quote them). The same words are served unscrubbed as the printable page;
+# scrubbing their JSON form protected nothing and corrupted them -- a paragraph about a
+# "sourcing pipeline" came back as the apology sentence, and a person saving any other change
+# would have written that into the report (final review 2026-09-24). Exactly these three
+# answers; every other /reports answer, and every error raised in them, is still scrubbed.
+_REPORT_EDITOR = re.compile(r"^/reports/jobs/[^/]+/(draft|preview|versions)$")
+
+# The orchestrator's agent-policy feed: GET, exactly this path, nothing under it. It is
+# key-protected (AGENT_POLICY_ORCHESTRATOR_KEY), read by a machine and never shown to a
+# person. Each policy in it is an enforceable document, and a rewritten field would change
+# what is enforced: the scrubber turned the agent's instruction ("...retry the tool call")
+# into the apology sentence and withheld an excerpt holding "01/04/2026" and a condition
+# value like "DL/2024/001" (final review 2026-10-08, C1). Its error answers carry only fixed
+# words; every other agent-policy answer (the screens) is still scrubbed.
+_AGENT_POLICY_FEED = "/orchestrator/agent-policies/v2/live"
+
+# The agent-policy screens' reads and the upload-link answer (user ruling 2026-10-08). The
+# text in them is the customer's own policy documents -- excerpts, section text, reasons a
+# rule cannot be enforced -- and the names are their own file names. The scrubber withheld a
+# date like "01/04/2026" (two slashes look like a route) and rewrote reasons that mention the
+# orchestrator, so a person reading or comparing their own policy saw "[withheld]". Sign-in
+# (gateway key + user), the role check and the audit are unchanged; only the 2xx body of
+# exactly these method+path pairs is passed through. Anchored: a trailing slash, a child path
+# or another method is still scrubbed, and so is every error answer.
+_AGENT_POLICY_SCREEN_EXEMPT = (
+    ("GET", re.compile(r"^/agent-policies$")),
+    ("GET", re.compile(r"^/agent-policies/[A-Z]{3}-[0-9]{4,}$")),
+    ("GET", re.compile(r"^/agent-policies/taxonomy$")),
+    ("POST", re.compile(r"^/agent-policies/preview$")),
+    ("GET", re.compile(r"^/agent-policies/documents$")),
+    ("GET", re.compile(r"^/agent-policies/documents/[0-9]+/compare$")),
+    ("GET", re.compile(r"^/agent-policies/extraction-runs$")),
+    ("GET", re.compile(r"^/agent-policies/extraction-runs/[0-9]+$")),
+    ("POST", re.compile(r"^/agent-policies/documents/upload-urls$")),
+    # Stage 3 reads (user ruling 2026-10-08, Task 7): approval cases quote the policy excerpt,
+    # the source file name and the action's own values (a deal id like "DL/2024/001"); the
+    # decider map names the customer's Cognito groups (PROCWISE_PROCUMENT_BUYER_ANALYST reads as
+    # an env var). Sensitive inputs are masked by the endpoint itself. Same rules as above.
+    ("GET", re.compile(r"^/agent-policies/approvals$")),
+    ("GET", re.compile(r"^/agent-policies/approvals/[0-9]{1,18}$")),
+    ("GET", re.compile(r"^/agent-policies/notifications$")),
+    ("GET", re.compile(r"^/agent-policies/deciders$")),
+    ("GET", re.compile(r"^/agent-policies/[A-Z]{3}-[0-9]{4,}/firings$")),
+    # Stage 4 conflict reads (user ruling Q5, 2026-10-09): a conflict case quotes both policies'
+    # excerpts and documents and the example action's own values; an unroutable owner can be a
+    # Cognito group name. Sensitive inputs are masked by the endpoint itself. Same rules as above.
+    ("GET", re.compile(r"^/agent-policies/conflicts$")),
+    ("GET", re.compile(r"^/agent-policies/conflicts/[0-9]{1,18}$")),
+    # Stage 5 suggestion reads (user ruling Q1, 2026-10-10): a card names the customer's own policy
+    # and its inputs, and the draft IS the customer's policy form (its situation, excerpt and
+    # document name). Same rules as above; POST .../act and every error answer are still scrubbed.
+    ("GET", re.compile(r"^/agent-policies/suggestions$")),
+    ("GET", re.compile(r"^/agent-policies/suggestions/[0-9]{1,18}/draft$")),
+)
+
+
+# The prompt registry's two reads that return a prompt's wording (user ruling 2026-10-13).
+# A prompt is the customer's own internal instruction text; the scrubber withholds a date
+# like "01/04/2026" and rewrites sentences that mention the orchestrator, so the screen
+# would show wording that is not the wording. Passing it through is conditional on three
+# things, and all three are checked: the read was allowed and written down by the gate
+# (prompt.read, in the route itself); the answer is a 2xx from exactly these two paths; and
+# PromptEnginePolicy says so (`wording_read_passthrough`). If that policy is missing,
+# unreadable or says no, the answer is scrubbed like any other. The listing, every write
+# answer and every error are always scrubbed.
+_PROMPT_WORDING_READ = (
+    re.compile(r"^/prompts/[a-z0-9][a-z0-9_.-]*$"),
+    re.compile(r"^/prompts/[a-z0-9][a-z0-9_.-]*/versions/[0-9]{1,9}$"),
+)
+
+
+def _prompt_wording_passthrough_allowed() -> bool:
+    try:
+        from src.services import governed_limits
+
+        return governed_limits.limit("prompt_engine", "wording_read_passthrough",
+                                     cast=lambda v: v) is True
+    except Exception:  # noqa: BLE001 - no policy, no pass-through
+        return False
+
+
+def _prompt_wording_exempt(method: str, path: str, status_code: int) -> bool:
+    if method != "GET" or not 200 <= status_code < 300:
+        return False
+    if not any(rx.fullmatch(path) for rx in _PROMPT_WORDING_READ):
+        return False
+    return _prompt_wording_passthrough_allowed()
+
+
+def _agent_policy_screen_exempt(method: str, path: str, status_code: int) -> bool:
+    if not 200 <= status_code < 300:
+        return False
+    return any(method == m and rx.fullmatch(path) for m, rx in _AGENT_POLICY_SCREEN_EXEMPT)
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -497,7 +805,13 @@ class OutputSafetyMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
 
         path = request.url.path
-        if any(path.startswith(p) for p in _OPERATOR_PATHS):
+        if any(path.startswith(p) for p in _OPERATOR_PATHS) or _REPORT_EDITOR.match(path):
+            return response
+        if path == _AGENT_POLICY_FEED and request.method == "GET":
+            return response
+        if _agent_policy_screen_exempt(request.method, path, response.status_code):
+            return response
+        if _prompt_wording_exempt(request.method, path, response.status_code):
             return response
         ctype = response.headers.get("content-type", "")
 
@@ -562,10 +876,11 @@ class OutputSafetyMiddleware(BaseHTTPMiddleware):
         )
 
 
-# Ask-endpoint authentication. Configured once at import so the mode is decided
-# before the first request, and surfaced on /health — an unauthenticated ask
-# endpoint must be visible, not something you discover by testing it.
-from api import auth as _ask_auth  # noqa: E402
+# Authentication mode. `_ask_auth` itself is imported near the top, because the
+# router mounting above depends on require_user; only configure() runs here, so
+# the mode is decided once at import, before the first request, and is surfaced
+# on /health — auth being off must be visible, not something you discover by
+# testing an endpoint.
 from config.settings import settings as _settings  # noqa: E402
 
 _ASK_AUTH_MODE = _ask_auth.configure(_settings)
@@ -581,6 +896,86 @@ app.add_middleware(OutputSafetyMiddleware)
 
 @app.get("/", tags=["General"])
 def read_root(): return {"message": "Welcome to the ProcWise Agentic System API"}
+
+
+def _shadow_status():
+    """Shadow-mode enrolments, or why they could not be read.
+
+    Never raises: /health must answer even when the policy store cannot.
+    """
+
+    try:
+        from services import guardrail
+
+        return guardrail.shadow_status()
+    except Exception as exc:  # noqa: BLE001
+        logger.error("shadow status unavailable: %s", exc)
+        return {"error": "unavailable"}
+
+
+def _critic_shadow_status():
+    """The Opportunity Critic's shadow enrolments, or why they could not be read.
+
+    Never raises. health_status reports "unavailable" rather than an empty list
+    when the policy cannot be resolved -- an outage must not read as "nothing
+    is enrolled".
+    """
+
+    try:
+        from src.services.opportunity_critic.shadow import health_status
+
+        engine = getattr(getattr(app.state, "agent_nick", None), "policy_engine", None)
+        return health_status(engine)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("critic shadow status unavailable: %s", exc)
+        return {"error": "unavailable"}
+
+
+def _db_signal(read, name):
+    """Run one health_signals reader on a fresh connection; "unavailable" when
+    the database cannot answer, so a signal never takes /health down."""
+    try:
+        with _health_db_conn() as conn:
+            cur = conn.cursor()
+            try:
+                return read(cur)
+            finally:
+                try:
+                    cur.close()
+                except Exception:  # noqa: BLE001
+                    pass
+    except Exception as exc:  # noqa: BLE001
+        logger.error("health: %s unavailable: %s", name, exc)
+        return "unavailable"
+
+
+def _last_finding_written():
+    """When the newest detection finding was written. Stale on its own is not
+    an outage (triage dedupes; an unchanged corpus writes nothing new) -- read
+    it beside last_triage_run."""
+    return _db_signal(health_signals.last_finding_written, "last finding written")
+
+
+def _last_triage_run():
+    """When triage last finished and how many deals it failed. Findings writes
+    were silently rejected for 65 days once; this is the signal that shows it."""
+    return _db_signal(health_signals.last_triage_run, "last triage run")
+
+
+def _vector_store_status():
+    """How many points the document collection holds, or "unavailable" when
+    there is no client to ask. The collection sat empty for five weeks once;
+    a zero here is the signal that was missing then."""
+    collection = health_signals.collection_name(_settings)
+    client = getattr(getattr(app.state, "agent_nick", None), "qdrant_client", None)
+    if client is None:
+        return {"collection": collection, "points": "unavailable"}
+    try:
+        return {"collection": collection,
+                "points": health_signals.vector_store_points(client, collection)}
+    except Exception as exc:  # noqa: BLE001
+        logger.error("health: vector store count unavailable: %s", exc)
+        return {"collection": collection, "points": "unavailable"}
 
 
 @app.get("/health", tags=["General"])
@@ -604,6 +999,21 @@ def health():
         # deployment state someone must be able to see without probing the API.
         # No pool ids or issuer here — this endpoint needs no auth itself.
         "ask_auth": _ask_auth.auth_mode(),
+        # Which actions are being observed rather than enforced, and until when.
+        # Reported for the same reason ask_auth is: a control that is off is a
+        # deployment state someone must be able to see without reading code.
+        # Action names only — no policy content, no principals.
+        "shadow_mode": _shadow_status(),
+        # The Opportunity Critic's per-detector shadow enrolments, with expiries.
+        # "unavailable" when its policy cannot be read -- never an empty list.
+        "critic_shadow": _critic_shadow_status(),
+        # Output signals whose silence went unnoticed for weeks. Alert on a stale
+        # last_triage_run or a non-zero failed_deals, and on zero vector points.
+        # A stale last_finding_written alone is normal: triage dedupes, so an
+        # unchanged corpus writes no new findings.
+        "last_finding_written": _last_finding_written(),
+        "last_triage_run": _last_triage_run(),
+        "vector_store": _vector_store_status(),
         # Honest surface for features that lost a dependency they can never have. It stays
         # honest — the capability is still named, and it still says it is degraded — but the
         # *reason* no longer ships. It used to read "proc.agent table does not exist; …

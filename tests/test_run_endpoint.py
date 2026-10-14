@@ -74,7 +74,8 @@ class DummyOrchestrator:
             process_routing_service=prs or DummyPRS()
         )
 
-    def execute_agent_flow(self, flow, payload=None, process_id=None, prs=None):
+    def execute_agent_flow(self, flow, payload=None, process_id=None, prs=None,
+                           user_id=None):
         self.received_flow = flow
         self.received_payload = payload
         if prs and process_id is not None:
@@ -87,9 +88,16 @@ def create_client(prs=None):
 
 
 def create_client_with_orchestrator(orchestrator):
+    from api.auth import require_user
+
     app = FastAPI()
     app.include_router(run_router)
     app.state.orchestrator = orchestrator
+    # /run resolves the caller (P8 phase 2) and this app configures no auth, so
+    # require_user answers 503 -- and its global mode is set by whichever test
+    # ran first, which is why this only failed inside the full suite. These
+    # tests are about the flow, not authentication: pin nobody.
+    app.dependency_overrides[require_user] = lambda: None
     client = TestClient(app)
     return client, orchestrator
 
@@ -153,7 +161,8 @@ def test_run_endpoint_triggers_all_agents_and_updates_status():
             super().update_agent_status(process_id, agent_name, status, **kwargs)
 
     class MultiOrchestrator(DummyOrchestrator):
-        def execute_agent_flow(self, flow, payload=None, process_id=None, prs=None):
+        def execute_agent_flow(self, flow, payload=None, process_id=None, prs=None,
+                           user_id=None):
             self.received_flow = flow
             self.received_payload = payload
             if prs and process_id is not None:
@@ -206,7 +215,8 @@ def test_run_endpoint_updates_nested_statuses_independently():
             }
 
     class NestedOrchestrator(DummyOrchestrator):
-        def execute_agent_flow(self, flow, payload=None, process_id=None, prs=None):
+        def execute_agent_flow(self, flow, payload=None, process_id=None, prs=None,
+                           user_id=None):
             self.received_flow = flow
             self.received_payload = payload
             if prs and process_id is not None:
@@ -243,7 +253,8 @@ def test_run_endpoint_failure_does_not_inject_error():
         pass
 
     class FailOrchestrator(DummyOrchestrator):
-        def execute_agent_flow(self, flow, payload=None, process_id=None, prs=None):
+        def execute_agent_flow(self, flow, payload=None, process_id=None, prs=None,
+                           user_id=None):
             raise RuntimeError("boom")
 
     prs = FailPRS()

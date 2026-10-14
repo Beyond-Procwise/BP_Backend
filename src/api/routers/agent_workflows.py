@@ -7,10 +7,14 @@ workflow works out what it cannot know and asks the human for it. It never guess
 from __future__ import annotations
 
 import logging
+import re
+import threading
 import uuid
+from collections import OrderedDict
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from orchestration.elicitation import pending_requests
@@ -21,6 +25,8 @@ from orchestration.workflow_compiler import (
 from repositories import agent_workflow_repo as repo
 from repositories import workflow_input_request_repo as reqrepo
 
+from api.auth import require_user
+from api.endpoint_gate import require as gate
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agent-workflows", tags=["Agent Workflows"])
@@ -39,7 +45,9 @@ class WorkflowBody(BaseModel):
 
 class RunBody(BaseModel):
     payload: Dict[str, Any] = Field(default_factory=dict)
-    user_id: str = "system"
+    # Accepted because clients send it; never read. The run is started by the
+    # token. It defaulted to "system" and was passed straight in as the user.
+    user_id: Optional[str] = None
 
 
 class AnswerBody(BaseModel):
@@ -82,13 +90,19 @@ def list_workflows() -> Dict[str, Any]:
 
 
 @router.post("")
-def create_workflow(body: WorkflowBody) -> Dict[str, Any]:
+def create_workflow(
+    body: WorkflowBody, principal=Depends(require_user)
+) -> Dict[str, Any]:
+    gate("workflow.save", principal, agent="AgentWorkflowsRouter")
     try:
         validate_saved_graph(body.graph)
     except GraphValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     wid = repo.create(name=body.name, graph=body.graph, entry_node=_entry_of(body.graph),
-                      description=body.description)
+                      description=body.description,
+                      # Who saved it: the token, or nobody. It was never passed,
+                      # so the repo's "system" default named every author.
+                      created_by=getattr(principal, "subject", None) or None)
     return {"workflow_id": wid}
 
 
@@ -101,7 +115,11 @@ def get_workflow(workflow_id: int) -> Dict[str, Any]:
 
 
 @router.put("/{workflow_id}")
-def update_workflow(workflow_id: int, body: WorkflowBody) -> Dict[str, Any]:
+def update_workflow(
+    workflow_id: int, body: WorkflowBody, principal=Depends(require_user)
+) -> Dict[str, Any]:
+    gate("workflow.save", principal, agent="AgentWorkflowsRouter",
+         context={"workflow_id": workflow_id})
     try:
         validate_saved_graph(body.graph)
     except GraphValidationError as exc:
@@ -112,21 +130,39 @@ def update_workflow(workflow_id: int, body: WorkflowBody) -> Dict[str, Any]:
 
 
 @router.delete("/{workflow_id}")
-def delete_workflow(workflow_id: int) -> Dict[str, Any]:
+def delete_workflow(
+    workflow_id: int, principal=Depends(require_user)
+) -> Dict[str, Any]:
+    gate("workflow.save", principal, agent="AgentWorkflowsRouter",
+         context={"workflow_id": workflow_id, "deleting": True})
     repo.soft_delete(workflow_id)
     return {"ok": True}
 
 
-@router.post("/{workflow_id}/run")
-def run_workflow(workflow_id: int, body: RunBody, request: Request) -> Dict[str, Any]:
+def start_run(
+    request: Request,
+    workflow_id: int,
+    payload: Dict[str, Any],
+    principal: Any,
+) -> Dict[str, Any]:
+    """Start a saved workflow, or stop and ask. THE run path.
+
+    Lifted out of ``run_workflow`` so the playbook router can accept a proposal
+    without copying it. A second copy would be a second place that claims a
+    run, and claiming is what stops a replay from sending the same email twice.
+    """
+
     wf = repo.get(workflow_id)
     if not wf:
         raise HTTPException(status_code=404, detail="No such workflow")
 
     run_id = f"awf-{workflow_id}-{uuid.uuid4().hex[:8]}"
     answers = reqrepo.answers_for(run_id)          # empty on a fresh run
+    # Recorded on the run row, because a run that stops to ask a question is
+    # resumed by whoever ANSWERS -- who is not necessarily who started it.
+    started_by = getattr(principal, "subject", None) or None
 
-    missing = pending_requests(wf["graph"], body.payload, answers)
+    missing = pending_requests(wf["graph"], payload, answers)
     if missing:
         # The workflow does not guess. It stops and asks. The ORIGINAL payload
         # is persisted here — BEFORE returning awaiting_input — so it survives
@@ -134,8 +170,8 @@ def run_workflow(workflow_id: int, body: RunBody, request: Request) -> Dict[str,
         # answers and the run resumes. agent_workflow_id is recorded too, so
         # submit_input can resolve this run back to its saved workflow later
         # without parsing the run_id string.
-        reqrepo.create_run(run_id, agent_workflow_id=workflow_id, payload=body.payload,
-                            status="awaiting_input")
+        reqrepo.create_run(run_id, agent_workflow_id=workflow_id, payload=payload,
+                            status="awaiting_input", initiated_by=started_by)
         reqrepo.raise_requests(run_id, missing, agent_workflow_id=workflow_id)
         return {
             "run_id": run_id, "status": "awaiting_input",
@@ -146,30 +182,79 @@ def run_workflow(workflow_id: int, body: RunBody, request: Request) -> Dict[str,
     # Nothing outstanding — but this run must still be claimed atomically
     # before it executes, exactly like the resume path in submit_input, so a
     # replay of this same request can never execute the workflow twice.
-    reqrepo.create_run(run_id, agent_workflow_id=workflow_id, payload=body.payload,
-                        status="pending")
-    return _claim_and_execute(request, run_id, wf, {**body.payload, **answers}, body.user_id)
+    reqrepo.create_run(run_id, agent_workflow_id=workflow_id, payload=payload,
+                        status="pending", initiated_by=started_by)
+    return _claim_and_execute(request, run_id, wf, {**payload, **answers}, started_by)
+
+
+@router.post("/{workflow_id}/run")
+def run_workflow(
+    workflow_id: int, body: RunBody, request: Request,
+    principal=Depends(require_user),
+) -> Dict[str, Any]:
+    gate("workflow.run", principal, agent="AgentWorkflowsRouter",
+         context={"workflow_id": workflow_id})
+    return start_run(request, workflow_id, body.payload, principal)
 
 
 @router.get("/runs/{run_id}")
 def get_run(run_id: str) -> Dict[str, Any]:
-    """Surface the run's real persisted status alongside its pending questions,
-    so an operator/UI can tell 'executing' / 'completed' / 'failed' /
-    'awaiting_input' apart — an unknown run and a completed run were
-    previously indistinguishable (both returned an empty ``pending`` list).
+    """The run's persisted status, its pending questions, AND its live
+    per-node progress — the poll target that lets the canvas light nodes up
+    while a run executes in the background instead of freezing on a held
+    request (programme item A3).
     """
     run_row = reqrepo.get_run(run_id)
     if run_row is None:
         raise HTTPException(status_code=404, detail=f"No such run {run_id}")
-    return {
+
+    status = run_row["status"]
+    state = _LIVE_RUNS.get(run_id)
+
+    # A row saying "executing" with no live state in this process means the
+    # server restarted mid-run: the thread is gone and no amount of polling
+    # will finish it. Heal it to failed on first sight rather than reporting
+    # "executing" forever.
+    if status == "executing" and state is None:
+        reqrepo.finish_run(run_id, "failed")
+        return {
+            "run_id": run_id, "status": "failed",
+            "pending": [],
+            "node_statuses": {}, "node_results": {},
+            "errors": ["The run was interrupted by a server restart — run it again."],
+            "nodes": [],
+        }
+
+    # The run ROW carries the workflow id (create_run stores it); the
+    # request-rows resolver is only a fallback for legacy rows. A run that
+    # asked no questions has NO request rows, so resolving through them
+    # alone returned None and progress rendered empty (live bug, 2026-08-22).
+    graph = None
+    workflow_id = run_row.get("agent_workflow_id") or reqrepo.workflow_id_for(run_id)
+    if workflow_id is not None:
+        wf = repo.get(workflow_id)
+        if wf:
+            graph = wf["graph"]
+
+    out: Dict[str, Any] = {
         "run_id": run_id,
-        "status": run_row["status"],
+        "status": status,
         "pending": reqrepo.open_requests(run_id),
+        "node_statuses": {}, "node_results": {}, "errors": [],
+        "nodes": _describe_nodes(graph) if graph else [],
     }
+    if state is not None and graph is not None:
+        out["node_statuses"] = {
+            k: getattr(v, "value", v) for k, v in state.node_statuses.items()
+        }
+        out["node_results"] = _summarise_node_results(state.node_results, graph)
+        out["errors"] = _readable_errors(state.errors, graph)
+    return out
 
 
 @router.post("/runs/{run_id}/input")
-def submit_input(run_id: str, body: AnswerBody, request: Request) -> Dict[str, Any]:
+def submit_input(run_id: str, body: AnswerBody, request: Request,
+                 principal=Depends(require_user)) -> Dict[str, Any]:
     """The human answers. If nothing else is outstanding, the run proceeds.
 
     request_id is scoped to run_id: a request_id that belongs to a
@@ -193,7 +278,14 @@ def submit_input(run_id: str, body: AnswerBody, request: Request) -> Dict[str, A
     # A no-op if this request was already answered (e.g. a replayed final
     # answer) -- idempotent, not an error, so a client retry still gets a
     # 200 with the run's current state instead of failing.
-    reqrepo.answer(run_id, body.request_id, body.answer, body.answered_by)
+    #
+    # Who answered is the token. This row is the HITL audit trail -- what a
+    # person was asked and what they said -- and `body.answered_by` (default
+    # "human") is a name the caller types. It stays on the model because
+    # clients send it; it is not read as identity, and with no principal the
+    # answer is recorded against nobody.
+    reqrepo.answer(run_id, body.request_id, body.answer,
+                   getattr(principal, "subject", None) or None)
 
     still_open = reqrepo.open_requests(run_id)
     if still_open:
@@ -216,12 +308,39 @@ def submit_input(run_id: str, body: AnswerBody, request: Request) -> Dict[str, A
     # nothing the human already gave up front is ever dropped.
     original_payload = reqrepo.payload_for(run_id)
     answers = reqrepo.answers_for(run_id)
-    return _claim_and_execute(request, run_id, wf, {**original_payload, **answers}, "human")
+    # Started by whoever started it -- not "human", and not whoever answered
+    # last. The answerer is on the answer row; a self-approval check needs the
+    # two kept apart.
+    return _claim_and_execute(request, run_id, wf, {**original_payload, **answers},
+                              reqrepo.initiator_for(run_id))
+
+
+# A run gets this long to finish in-request before the caller is answered
+# "executing" and left to poll GET /runs/{run_id}. Short runs still feel
+# instant; a GPU-bound run no longer holds the connection for minutes.
+_SYNC_GRACE_SECONDS = 1.0
+
+# Live WorkflowState per run, readable by GET /runs/{run_id} while the
+# background thread mutates it (the engine mutates the resume_state object in
+# place, so a snapshot read here is always current). Completed runs stay until
+# the cap evicts them — the canvas polls once more AFTER completion to fetch
+# the final results. In-process on purpose: this service runs one worker, and
+# the durable run row (proc, via reqrepo) still owns the status of record.
+_LIVE_RUNS: "OrderedDict[str, Any]" = OrderedDict()
+_LIVE_RUNS_CAP = 100
+
+
+def _remember_live_run(run_id: str, state: Any) -> None:
+    _LIVE_RUNS[run_id] = state
+    _LIVE_RUNS.move_to_end(run_id)
+    while len(_LIVE_RUNS) > _LIVE_RUNS_CAP:
+        _LIVE_RUNS.popitem(last=False)
 
 
 def _claim_and_execute(request: Request, run_id: str, wf: Dict[str, Any],
-                        input_data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
-    """Atomically claim this run for execution, then execute it exactly once.
+                        input_data: Dict[str, Any], user_id: Optional[str]) -> Dict[str, Any]:
+    """Atomically claim this run, then execute it exactly once — in the
+    background.
 
     The claim is a single conditional UPDATE (see
     ``workflow_input_request_repo.claim_for_execution``) so a replayed final
@@ -231,6 +350,11 @@ def _claim_and_execute(request: Request, run_id: str, wf: Dict[str, Any],
     instead of running it again (the agents this can trigger include
     email_dispatch, negotiation and supplier_interaction — running twice
     means sending real emails twice).
+
+    Execution happens on a daemon thread; the request waits at most
+    ``_SYNC_GRACE_SECONDS`` and then answers with whatever state the run has
+    reached — "executing" if it is still going, final state if it finished
+    inside the grace. The canvas polls GET /runs/{run_id} for the rest.
     """
     if not reqrepo.claim_for_execution(run_id):
         run_row = reqrepo.get_run(run_id)
@@ -240,38 +364,227 @@ def _claim_and_execute(request: Request, run_id: str, wf: Dict[str, Any],
         return {
             "run_id": run_id, "status": status, "pending": [],
             "nodes": _describe_nodes(wf["graph"]),
-            "node_statuses": {}, "errors": [],
+            "node_statuses": {}, "node_results": {}, "errors": [],
         }
 
+    # Anything that must fail loudly — no orchestrator, an uncompilable graph —
+    # fails HERE, before a thread exists, and marks the claimed run failed so
+    # it is not left "executing" forever.
     try:
-        result = _execute(request, run_id, wf, input_data, user_id)
+        orchestrator = getattr(request.app.state, "orchestrator", None)
+        if orchestrator is None:
+            raise HTTPException(status_code=503, detail="Orchestrator not available")
+        engine = getattr(orchestrator, "_workflow_engine", None)
+        if engine is None:
+            raise HTTPException(status_code=503, detail="Workflow engine not available")
+        graph = compile_graph(wf["name"], wf["graph"])
     except Exception:
         reqrepo.finish_run(run_id, "failed")
         raise
-    reqrepo.finish_run(run_id, "failed" if result.get("errors") else "completed")
-    return result
 
+    from orchestration.workflow_engine import WorkflowState
 
-def _execute(request: Request, run_id: str, wf: Dict[str, Any],
-             input_data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
-    orchestrator = getattr(request.app.state, "orchestrator", None)
-    if orchestrator is None:
-        raise HTTPException(status_code=503, detail="Orchestrator not available")
-    engine = getattr(orchestrator, "_workflow_engine", None)
-    if engine is None:
-        raise HTTPException(status_code=503, detail="Workflow engine not available")
+    state = WorkflowState(
+        workflow_id=run_id,
+        workflow_name=wf["name"],
+        user_id=user_id,
+        started_at=datetime.utcnow().isoformat(),
+        shared_data=dict(input_data or {}),
+    )
+    _remember_live_run(run_id, state)
 
-    graph = compile_graph(wf["name"], wf["graph"])
-    state = engine.execute(graph, input_data=input_data, user_id=user_id, workflow_id=run_id)
+    worker = threading.Thread(
+        target=_run_to_completion,
+        args=(engine, graph, state, run_id, user_id),
+        kwargs={"release": getattr(orchestrator, "_release_wf_context", None)},
+        name=f"agent-workflow-{run_id}",
+        daemon=True,
+    )
+    worker.start()
+    worker.join(timeout=_SYNC_GRACE_SECONDS)
 
+    run_row = reqrepo.get_run(run_id)
     return {
         "run_id": run_id,
-        "status": getattr(state, "status", "completed"),
-        "node_statuses": {k: getattr(v, "value", v) for k, v in state.node_statuses.items()},
+        "status": run_row["status"] if run_row else "executing",
+        "node_statuses": {
+            k: getattr(v, "value", v) for k, v in state.node_statuses.items()
+        },
+        "node_results": _summarise_node_results(state.node_results, wf["graph"]),
         "errors": _readable_errors(state.errors, wf["graph"]),
         "nodes": _describe_nodes(wf["graph"]),
         "pending": [],
     }
+
+
+def _run_to_completion(engine: Any, graph: Any, state: Any, run_id: str,
+                       user_id: Optional[str], release: Any = None) -> None:
+    """The background body of a run. Owns the terminal status of the run row:
+    whatever happens — a clean finish, agent-level errors, or the engine
+    itself raising — the row leaves "executing".
+
+    ``release`` drops the run's shared blackboard from the orchestrator, as
+    execute_workflow does for its own runs; without it every canvas run's
+    WorkflowContext stays resident until the FIFO cap evicts it."""
+    try:
+        engine.execute(graph, input_data=dict(state.shared_data),
+                       user_id=user_id, workflow_id=run_id, resume_state=state)
+        final = "failed" if (state.errors or state.status == "failed") else "completed"
+    except Exception as exc:  # noqa: BLE001 — a thread that dies silently strands the run
+        logger.exception("agent workflow run %s crashed", run_id)
+        state.status = "failed"
+        state.errors.append({"error": str(exc)})
+        final = "failed"
+    finally:
+        if release is not None:
+            try:
+                release(run_id)
+            except Exception:  # noqa: BLE001 — never strand the run row over housekeeping
+                logger.debug("releasing blackboard for run %s failed", run_id, exc_info=True)
+    reqrepo.finish_run(run_id, final)
+
+
+# Keys an agent writes for the process, not the person: run bookkeeping, context
+# snapshots, plans. A result card that shipped these would put the system's
+# internals on the wire — the exact thing _readable_errors stopped doing for
+# failures, done here for successes.
+_INTERNAL_RESULT_KEYS = {
+    "action_id", "context", "plan", "routing_history", "task_profile",
+    "policy_context", "knowledge_base", "input_data", "shared_data", "raw",
+    "raw_response", "trace", "messages", "prompt",
+}
+
+# What a reasoning run reports about itself. The record's id is carried on the
+# card as its own field; none of it is a fact about the work.
+_RUN_BOOKKEEPING_KEYS = {"run_id", "recorded", "usage", "outputs", "outputs_error"}
+
+# Prose keys, in the order a human would want them as the card's one-line answer.
+_HEADLINE_KEYS = ("summary", "message", "answer", "recommendation", "status_message")
+
+_MAX_FACTS = 6
+_MAX_VALUE_CHARS = 120
+# A reasoning node's answer is prose — a recommendation and its reasons — so the
+# card carries it in full (bounded), where the headline is only its first line.
+_MAX_ANSWER_CHARS = 2000
+
+
+def _fact_label(key: str) -> str:
+    return key.replace("_", " ").strip().capitalize()
+
+
+_MARKDOWN_MARKS = re.compile(r"\*\*|__|`")
+
+
+def _plain(text: str) -> str:
+    """The card renders plain text; a model's **bold** and `code` marks would
+    show as literal symbols."""
+    return _MARKDOWN_MARKS.sub("", text)
+
+
+def _summarise_node_results(
+    node_results: Dict[str, Any], graph: Dict[str, Any]
+) -> Dict[str, Dict[str, Any]]:
+    """One renderable card per node: a headline and a few flat facts.
+
+    Summarised, never forwarded: scalars are kept (truncated), lists become
+    counts, and nested dicts, underscored keys and known-internal keys do not
+    leave the process at all. Everything that does leave goes through the
+    output-safety gate — an agent's summary sentence can name a table or a
+    stack frame just as easily as an error string can.
+    """
+    from services import output_safety as osafe
+
+    labels = {n.get("id"): n.get("agent_slug") for n in (graph.get("nodes") or [])}
+
+    cards: Dict[str, Dict[str, Any]] = {}
+    for node_id, data in (node_results or {}).items():
+        data = data if isinstance(data, dict) else {}
+
+        headline = ""
+        for key in _HEADLINE_KEYS:
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                headline = _plain(value.strip())[:200]
+                break
+
+        # A created agent's named outputs get their own place on the card
+        # (below), so they are not repeated among the facts.
+        named = data.get("outputs") if isinstance(data.get("outputs"), dict) else {}
+
+        facts: List[Dict[str, str]] = []
+        for key, value in data.items():
+            if len(facts) >= _MAX_FACTS:
+                break
+            if not isinstance(key, str) or key.startswith("_"):
+                continue
+            if key in _INTERNAL_RESULT_KEYS or key in _HEADLINE_KEYS:
+                continue
+            if key in _RUN_BOOKKEEPING_KEYS or key in named:
+                continue
+            if isinstance(value, bool):
+                shown = "yes" if value else "no"
+            elif isinstance(value, int):
+                shown = str(value)
+            elif isinstance(value, float):
+                # 44154.802707999974 is a computation artefact, not a figure
+                # a person reads.
+                shown = f"{value:.2f}"
+            elif isinstance(value, str):
+                if not value.strip() or len(value) > _MAX_VALUE_CHARS:
+                    continue
+                shown = value.strip()
+            elif isinstance(value, list):
+                if not value:
+                    continue
+                shown = f"{len(value)} item" + ("" if len(value) == 1 else "s")
+            else:
+                continue  # dicts and anything exotic stay in the process
+            facts.append({"label": _fact_label(key), "value": shown})
+
+        if not headline:
+            headline = (
+                f"Produced {facts[0]['value']} — {facts[0]['label'].lower()}"
+                if facts and facts[0]["value"].endswith("items")
+                else "Completed"
+            )
+
+        card: Dict[str, Any] = {
+            "agent_slug": labels.get(node_id) or "",
+            "headline": osafe.enforce(headline, where="workflow result headline"),
+            "facts": osafe.scrub_payload(facts, where="workflow result facts"),
+        }
+        answer = data.get("answer")
+        if isinstance(answer, str) and answer.strip():
+            card["answer"] = osafe.enforce(
+                _plain(answer.strip())[:_MAX_ANSWER_CHARS], where="workflow result answer"
+            )
+        # The record that can explain this run, named only when it was written:
+        # a link to a record that does not exist is worse than no link.
+        run_id = data.get("run_id")
+        if isinstance(run_id, str) and run_id and data.get("recorded") is True:
+            card["run_id"] = run_id
+        if named:
+            # Value and standing only. The words each output rests on stay in
+            # the record of the run, which is asked for separately and gated.
+            card["outputs"] = osafe.scrub_payload(
+                [
+                    {
+                        "name": str(name),
+                        "label": _fact_label(str(name)),
+                        "value": (
+                            str(filled.get("value"))[:_MAX_ANSWER_CHARS]
+                            if isinstance(filled, dict) and filled.get("value") is not None
+                            else None
+                        ),
+                        "status": str((filled or {}).get("status") or "missing")
+                        if isinstance(filled, dict) else "missing",
+                    }
+                    for name, filled in named.items()
+                ],
+                where="workflow result outputs",
+            )
+        cards[node_id] = card
+    return cards
 
 
 def _readable_errors(errors: Any, graph: Dict[str, Any]) -> List[str]:

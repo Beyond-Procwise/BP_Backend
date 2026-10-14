@@ -17,8 +17,12 @@ import pandas as pd
 
 from agents.base_agent import BaseAgent, AgentContext, AgentOutput, AgentStatus
 from models.opportunity_priority_model import OpportunityPriorityModel
+from src.services.formulas import (
+    UNASSESSED, ensure_registered, evaluate, evaluate_many,
+)
 from services.data_flow_manager import DataFlowManager
 from services.facts.deprecation import read_calculation_detail
+from engines.rule_book import RuleBookUnavailable
 from services.opportunity_service import load_opportunity_feedback
 from utils.gpu import configure_gpu
 from utils.instructions import parse_instruction_sources, normalize_instruction_key
@@ -177,6 +181,11 @@ _CONDITION_KEY_ALIASES: Dict[str, set[str]] = {
     "variance_threshold_pct": {
         "variance_threshold",
         "variance_thresholdpct",
+        # The plain camelCase form normalises to "variancethresholdpct", which
+        # none of the entries above produce. Callers sending varianceThresholdPct
+        # were silently ignored; a bp_policy row happened to supply the same
+        # value by another route, which hid it.
+        "varianceThresholdPct",
         "variancepct",
         "threshold_pct",
         "thresholdpct",
@@ -406,6 +415,35 @@ class Finding:
                 )
 
         return serialised
+
+
+def finding_weight_factor(
+    base_impact: float, risk_score: float, coverage: float
+) -> float:
+    """One finding's unnormalised weight: money at stake, amplified by supplier
+    risk and by how much of that supplier's document flow we can actually see.
+
+    The guard matters. A finding with real money behind it must never fall to a
+    zero weight because risk or coverage arrived as -1: it would vanish from the
+    ranking entirely, which is the opposite of what a risk signal should do.
+    """
+    factor = base_impact * (1.0 + risk_score) * (1.0 + coverage)
+    if factor <= 0.0 and base_impact > 0.0:
+        return base_impact
+    return factor
+
+
+def normalise_weightages(factors: List[float]) -> List[float]:
+    """Turn unnormalised weight factors into shares of the run.
+
+    A total of zero yields zeros rather than dividing: nothing in this run
+    carried weight, and 1/n would invent an even split that the evidence does
+    not support.
+    """
+    total = sum(factors)
+    if total <= 0:
+        return [0.0 for _ in factors]
+    return [factor / total for factor in factors]
 
 
 class OpportunityMinerAgent(BaseAgent):
@@ -2168,7 +2206,10 @@ class OpportunityMinerAgent(BaseAgent):
 
             policy_table_coverage = self._build_policy_data_coverage(tables)
 
-            # compute weightage with risk and data coverage awareness
+            # compute weightage with risk and data coverage awareness, through
+            # the formula registry so every factor is contract-checked and the
+            # whole run's shares are one audited evaluation
+            ensure_registered()
             weight_factors: List[float] = []
             for f in filtered:
                 supplier_id = f.supplier_id
@@ -2180,18 +2221,26 @@ class OpportunityMinerAgent(BaseAgent):
                 risk_score = self._normalise_risk_score(risk_raw)
                 coverage = self._supplier_flow_coverage(supplier_id, supplier_name)
                 base_impact = max(f.financial_impact_gbp, 0.0)
-                factor = base_impact * (1.0 + risk_score) * (1.0 + coverage)
-                if factor <= 0.0 and base_impact > 0.0:
-                    factor = base_impact
-                weight_factors.append(factor)
+                weight_factors.append(
+                    evaluate("opportunity.finding_weight_factor", {
+                        "base_impact": base_impact,
+                        "risk_score": risk_score,
+                        "coverage": coverage,
+                    }).or_else(base_impact)
+                )
                 details = f.calculation_details if isinstance(f.calculation_details, dict) else {}
                 details.setdefault("risk_score_normalised", risk_score)
                 details.setdefault("flow_coverage", coverage)
                 f.calculation_details = details
 
-            total_factor = sum(weight_factors)
-            for f, factor in zip(filtered, weight_factors):
-                f.weightage = (factor / total_factor) if total_factor > 0 else 0.0
+            shares = evaluate_many(
+                "opportunity.weightage_shares",
+                [{"factor": factor} for factor in weight_factors],
+            )
+            for f, share in zip(filtered, shares.values):
+                # A refused share is not a zero share; keep the finding out of
+                # the ranking rather than pinning it to the bottom of it.
+                f.weightage = None if share is UNASSESSED else share
 
             policy_top_summary = self._summarise_top_opportunities(
                 per_policy_retained, per_policy_categories, limit=2
@@ -2989,7 +3038,7 @@ class OpportunityMinerAgent(BaseAgent):
             data["policy_id"] = policy_id
         logger.warning("OpportunityMinerAgent blocked execution: %s", message)
         dummy_context = AgentContext(
-            workflow_id="blocked", agent_id="opportunity_miner", user_id="system", input_data={}
+            workflow_id="blocked", agent_id="opportunity_miner", user_id=None, input_data={}
         )
         dummy_context.routing_history = ["opportunity_miner"]
         return self._with_plan(
@@ -4214,207 +4263,97 @@ class OpportunityMinerAgent(BaseAgent):
             return self.min_financial_impact
         return threshold
 
-    def _get_policy_registry(self) -> Dict[str, Dict[str, Any]]:
-        """Return policy metadata keyed by canonical workflow slug."""
+    #: Detectors that infer the supplier rather than being handed one.
+    _SUPPLIER_AUTODETECT_SLUGS = frozenset(
+        {"price_variance_check", "supplier_performance_check"}
+    )
 
-        def entry(
-            slug: str,
-            detector: str,
-            handler,
-            required: Iterable[str],
-            default_conditions: Optional[Dict[str, Any]] = None,
-            *,
-            supplier_autodetect: bool = False,
-        ) -> Dict[str, Any]:
-            aliases = {
-                self._normalise_policy_slug(slug),
-                self._normalise_policy_slug(detector),
-            }
-            autodetect_enabled = bool(
-                supplier_autodetect
-                or getattr(handler, "supports_supplier_autodetect", False)
-            )
-            return {
-                "policy_slug": slug,
-                "policy_id": slug,
-                "detector": detector,
-                "policy_name": detector,
-                "required_fields": list(required),
-                "handler": handler,
-                "default_conditions": dict(default_conditions or {}),
-                "supplier_autodetect": autodetect_enabled,
-                "aliases": {alias for alias in aliases if alias},
-            }
+    def _detector_handlers(self) -> Dict[str, Any]:
+        """Detector slug -> the code that implements it.
 
-        registry: Dict[str, Dict[str, Any]] = {
-            "price_variance_check": entry(
-                "price_variance_check",
-                "Price Benchmark Variance",
-                self._policy_price_benchmark_variance,
-                ["supplier_id", "item_id", "actual_price", "benchmark_price"],
-                supplier_autodetect=True,
-            ),
-            "volume_consolidation_check": entry(
-                "volume_consolidation_check",
-                "Volume Consolidation",
-                self._policy_volume_consolidation,
-                ["minimum_volume_gbp"],
-            ),
-            "contract_expiry_check": entry(
-                "contract_expiry_check",
-                "Contract Expiry Opportunity",
-                self._policy_contract_expiry,
-                ["negotiation_window_days"],
-                {"negotiation_window_days": 90},
-            ),
-            "supplier_risk_check": entry(
-                "supplier_risk_check",
-                "Supplier Risk Alert",
-                self._policy_supplier_risk,
-                ["risk_threshold"],
-            ),
-            "maverick_spend_check": entry(
-                "maverick_spend_check",
-                "Maverick Spend Detection",
-                self._policy_maverick_spend,
-                ["minimum_value_gbp"],
-            ),
-            "duplicate_supplier_check": entry(
-                "duplicate_supplier_check",
-                "Duplicate Supplier",
-                self._policy_duplicate_supplier,
-                ["minimum_overlap_gbp"],
-            ),
-            "category_overspend_check": entry(
-                "category_overspend_check",
-                "Category Overspend",
-                self._policy_category_overspend,
-                ["category_budgets"],
-            ),
-            "inflation_passthrough_check": entry(
-                "inflation_passthrough_check",
-                "Inflation Pass-Through",
-                self._policy_inflation_passthrough,
-                ["market_inflation_pct"],
-            ),
-            "unused_contract_value_check": entry(
-                "unused_contract_value_check",
-                "Unused Contract Value",
-                self._policy_unused_contract_value,
-                ["minimum_unused_value_gbp"],
-            ),
-            "supplier_performance_check": entry(
-                "supplier_performance_check",
-                "Supplier Performance Deviation",
-                self._policy_supplier_performance,
-                ["performance_records"],
-                supplier_autodetect=True,
-            ),
-            "esg_opportunity_check": entry(
-                "esg_opportunity_check",
-                "ESG Opportunity",
-                self._policy_esg_opportunity,
-                ["esg_scores"],
-            ),
-            "invoice_po_variance_check": entry(
-                "invoice_po_variance_check",
-                "Invoice Overbilling",
-                self._policy_invoice_po_variance,
-                ["variance_threshold_pct"],
-                {"variance_threshold_pct": 10.0},
-            ),
+        The handler is the one part of a rule that cannot live in a database:
+        it is a function. Everything else about a rule -- whether it runs, what
+        it is called, what inputs it needs, what thresholds it uses -- comes
+        from ``proc.bp_rule``.
+        """
+
+        return {
+            "price_variance_check": self._policy_price_benchmark_variance,
+            "volume_consolidation_check": self._policy_volume_consolidation,
+            "contract_expiry_check": self._policy_contract_expiry,
+            "contract_expiry_bucket_check": self._policy_contract_expiry_buckets,
+            "supplier_risk_check": self._policy_supplier_risk,
+            "maverick_spend_check": self._policy_maverick_spend,
+            "duplicate_supplier_check": self._policy_duplicate_supplier,
+            "category_overspend_check": self._policy_category_overspend,
+            "inflation_passthrough_check": self._policy_inflation_passthrough,
+            "unused_contract_value_check": self._policy_unused_contract_value,
+            "supplier_performance_check": self._policy_supplier_performance,
+            "esg_opportunity_check": self._policy_esg_opportunity,
+            "invoice_po_variance_check": self._policy_invoice_po_variance,
         }
 
-        engine = getattr(self.agent_nick, "policy_engine", None)
-        policies = []
-        if engine is not None:
-            if hasattr(engine, "iter_policies"):
-                policies = list(engine.iter_policies())
-            elif hasattr(engine, "list_policies"):
-                policies = list(engine.list_policies())  # pragma: no cover - legacy
+    def _get_policy_registry(self) -> Dict[str, Dict[str, Any]]:
+        """The live detector registry, driven by ``proc.bp_rule``.
 
-        def aliases_for(policy: Dict[str, Any]) -> set[str]:
-            aliases: set[str] = set()
-            for key in ("policyName", "policy_desc", "policyId", "slug"):
-                alias = self._normalise_policy_slug(policy.get(key))
-                if alias:
-                    aliases.add(alias)
-            for alias in policy.get("aliases", []):
-                norm = self._normalise_policy_slug(alias)
-                if norm:
-                    aliases.add(norm)
-            details = policy.get("details", {})
-            if isinstance(details, dict):
-                for key in (
-                    "policy_name",
-                    "identifier",
-                    "policy_identifier",
-                    "name",
-                ):
-                    alias = self._normalise_policy_slug(details.get(key))
-                    if alias:
-                        aliases.add(alias)
-                rules = details.get("rules")
-                if isinstance(rules, dict):
-                    for key in ("policy_name", "name"):
-                        alias = self._normalise_policy_slug(rules.get(key))
-                        if alias:
-                            aliases.add(alias)
-            return aliases
+        Rules decide what runs; policies decide what is allowed. This reads the
+        rule book and nothing else, so no policy row can add a detector, remove
+        one, or move a threshold, whatever it happens to be called.
 
-        for policy in policies:
-            policy_aliases = aliases_for(policy)
-            if not policy_aliases:
+        That last point is not hypothetical. Detector configuration used to sit
+        in ``proc.bp_policy`` and was bound to detectors by fuzzy alias
+        matching which mutated each entry's alias set as it scanned. One entry
+        accumulated seventeen aliases -- including the bare policy ids and the
+        linked-agent name that every opportunity policy shares -- and ended up
+        bound to whichever policy matched last. Four of the five policy rows
+        collapsed onto a single detector, and three detectors that had a row
+        received none of its configuration.
+        """
+
+        book = getattr(self.agent_nick, "rule_book", None)
+        if book is None:
+            raise RuleBookUnavailable(
+                "no rule book available -- refusing to run opportunity "
+                "detection with no rules, which would report zero findings "
+                "and read as a clean scan"
+            )
+
+        handlers = self._detector_handlers()
+        registry: Dict[str, Dict[str, Any]] = {}
+        for rule in book.active_rules():
+            handler = handlers.get(rule.detector_slug)
+            if handler is None:
+                logger.error(
+                    "proc.bp_rule #%s (%r) names detector %r, which has no "
+                    "handler in code; the rule is skipped",
+                    rule.rule_id,
+                    rule.rule_name,
+                    rule.detector_slug,
+                )
                 continue
-            for slug, entry_data in registry.items():
-                entry_aliases = entry_data.setdefault("aliases", set())
-                base_aliases = {
-                    self._normalise_policy_slug(slug),
-                    self._normalise_policy_slug(entry_data.get("policy_id")),
-                    self._normalise_policy_slug(entry_data.get("policy_name")),
-                    self._normalise_policy_slug(entry_data.get("detector")),
-                }
-                entry_aliases.update(alias for alias in base_aliases if alias)
-                if entry_aliases & policy_aliases:
-                    entry_aliases.update(policy_aliases)
-                    policy_id = policy.get("policyId")
-                    if policy_id:
-                        entry_data["policy_id"] = str(policy_id)
-                    name = policy.get("policyName")
-                    if name:
-                        entry_data["policy_name"] = str(name)
-                    desc = policy.get("policy_desc")
-                    if desc:
-                        entry_data["policy_desc"] = desc
-                    entry_data["source_policy"] = policy
-                    details = policy.get("details", {})
-                    if isinstance(details, dict):
-                        rules = details.get("rules")
-                        if isinstance(rules, dict):
-                            params = rules.get("parameters")
-                            if isinstance(params, dict):
-                                existing = (
-                                    entry_data.get("parameters")
-                                    if isinstance(entry_data.get("parameters"), dict)
-                                    else {}
-                                )
-                                merged_params = {**existing, **params}
-                                entry_data["parameters"] = merged_params
-                                if not entry_data.get("required_fields"):
-                                    entry_data["required_fields"] = list(merged_params.keys())
-                            defaults = rules.get("default_conditions")
-                            if isinstance(defaults, dict):
-                                existing_defaults = (
-                                    entry_data.get("default_conditions")
-                                    if isinstance(entry_data.get("default_conditions"), dict)
-                                    else {}
-                                )
-                                entry_data["default_conditions"] = {
-                                    **existing_defaults,
-                                    **defaults,
-                                }
-                    break
-
+            aliases = {
+                self._normalise_policy_slug(rule.detector_slug),
+                self._normalise_policy_slug(rule.rule_name),
+            }
+            registry[rule.detector_slug] = {
+                "policy_slug": rule.detector_slug,
+                "policy_id": rule.detector_slug,
+                "detector": rule.rule_name,
+                "policy_name": rule.rule_name,
+                "required_fields": list(rule.required_fields),
+                "handler": handler,
+                "default_conditions": dict(rule.conditions),
+                "supplier_autodetect": bool(
+                    rule.detector_slug in self._SUPPLIER_AUTODETECT_SLUGS
+                    or getattr(handler, "supports_supplier_autodetect", False)
+                ),
+                "aliases": {alias for alias in aliases if alias},
+                "rule_id": rule.rule_id,
+                "rule_version": rule.version,
+                "finding_type": rule.finding_type,
+                "severity": rule.severity,
+                "scope": rule.scope,
+            }
         return registry
 
     def _to_float(self, value: Any, default: float = 0.0) -> float:
@@ -5771,7 +5710,7 @@ class OpportunityMinerAgent(BaseAgent):
 
         proc.bp_deal_overview already reconciles quote/PO/invoice totals per
         deal, but nothing previously read its price_variance_pct — a deal
-        could be invoiced at 3x its PO value and still show three_way_match
+        could be invoiced at 3x its PO value and still show value_reconciled
         true (that flag only checked all three document types exist, not
         that their amounts agree) with no opportunity ever raised.
         """
@@ -6222,6 +6161,54 @@ class OpportunityMinerAgent(BaseAgent):
                 finding.supplier_name = supplier_name
             findings.append(finding)
 
+        return findings
+
+    def _policy_contract_expiry_buckets(
+        self,
+        tables: Dict[str, pd.DataFrame],
+        input_data: Dict[str, Any],
+        notifications: set[str],
+        policy_cfg: Dict[str, Any],
+    ) -> List[Finding]:
+        """Bucketed expiry alerts (3/6/9/12/18 months), edges read from proc.bp_rule.
+
+        Reads proc.bp_contract_master itself rather than ``tables["contracts"]``:
+        that table is ``proc.contracts``, which does not exist in either database,
+        so the older ``contract_expiry_check`` has never had a contract to look at.
+        Recording alerts is a side effect of detection here -- it is what makes a
+        bucket fire once -- and a finding is returned only for an alert that is NEW
+        this run (first time in a bucket, or back after its demand item closed).
+        """
+        from src.services.contract_expiry import detector
+
+        reference_date = self._to_date(self._get_condition(input_data, "reference_date"))
+        result = detector.run(reference_date)
+        findings: List[Finding] = []
+        for item in result["fired"]:
+            contract, desired = item["contract"], item["desired"]
+            details = {
+                "bucket": desired.bucket,
+                "contract_title": contract.get("contract_title"),
+                "contract_end_date": str(desired.end_date) if desired.end_date else None,
+                "days_to_expiry": desired.days_to_end,
+                "auto_renew": contract.get("auto_renew_flag"),
+                "renewal_term": contract.get("renewal_term"),
+            }
+            findings.append(
+                self._build_finding(
+                    policy_cfg["detector"],
+                    contract.get("supplier_id"),
+                    contract.get("spend_category"),
+                    f"{contract['contract_id']}:{desired.bucket}",
+                    self._to_float(contract.get("total_contract_value")),
+                    details,
+                    [str(contract["contract_id"])],
+                    policy_id=policy_cfg["policy_id"],
+                    policy_name=policy_cfg.get("policy_name"),
+                )
+            )
+        if findings:
+            self._default_notifications(notifications)
         return findings
 
     def _policy_contract_expiry(
@@ -7349,15 +7336,12 @@ class OpportunityMinerAgent(BaseAgent):
             return
 
         for finding in findings:
-            info = None
-            for key in (
-                finding.opportunity_id,
-                finding.opportunity_ref_id,
-            ):
-                if key and key in feedback_map:
-                    info = feedback_map[key]
-                    break
-            if not info:
+            # By reference only. opportunity_id is this run's counter (1, 2, 3...),
+            # and feedback is stored against the id of the row a person rejected --
+            # so matching on it handed one opportunity's rejection to whichever
+            # unrelated finding was numbered the same in a later run.
+            info = feedback_map.get(finding.opportunity_ref_id or "")
+            if not info or info.get("opportunity_ref_id") != finding.opportunity_ref_id:
                 continue
 
             finding.feedback_status = info.get("status")
@@ -7555,16 +7539,16 @@ class OpportunityMinerAgent(BaseAgent):
                 conn.autocommit = False
                 cur = conn.cursor()
                 try:
-                    seen_refs = []
+                    seen_ids = []
                     detectors = set()
                     for finding in findings:
                         rec = finding.as_dict()
-                        upsert_opportunity(cur, rec)
-                        seen_refs.append(str(rec.get("opportunity_ref_id")
-                                             or rec.get("opportunity_id")))
+                        # The row it landed on: its subject's, whatever reference
+                        # this run's evidence happens to produce.
+                        seen_ids.append(upsert_opportunity(cur, rec))
                         if rec.get("detector_type"):
                             detectors.add(rec["detector_type"])
-                    retired = (retire_missing(cur, seen_refs, sorted(detectors),
+                    retired = (retire_missing(cur, seen_ids, sorted(detectors),
                                               min_impact=self.min_financial_impact)
                                if may_retire else 0)
                     conn.commit()

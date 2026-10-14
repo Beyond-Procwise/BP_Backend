@@ -927,6 +927,17 @@ _ID_PREFIX_RE = re.compile(r"^(?:INV|PO|QUT|QTE|RFQ)[\-_]?", re.IGNORECASE)
 # previous handling — the model returned the bare number for those documents.
 _QUOTE_REV_RE = re.compile(r"\s*(?:\(\s*v\s*(\d+)|\bre?v\.?\s*(\d+)\b)", re.IGNORECASE)
 
+# A version stated in its OWN field of the header: "Version: 2", "Revision 3", "Issue 2",
+# "Quote version: V4", or a "| Version | 2 |" table row. The label must open a line or a table
+# cell, so "Software version 2" in a description is not read, and a decimal ("Version 2.1") is a
+# product version, not a round.
+_QUOTE_REV_FIELD_RE = re.compile(
+    r"(?:^|\n|\|)[ \t*]*(?:quote\s+|quotation\s+|offer\s+)?"
+    r"(?:version|revision|rev\.?|issue)\s*(?:no\.?|number|#)?[ \t*]*[:\-|]?[ \t*]*v?(\d{1,2})(?![\d.])",
+    re.IGNORECASE)
+#: How much of the document counts as its header, where a quote states its own version.
+_QUOTE_HEADER_CHARS = 2500
+
 
 def canonical_quote_revision(quote_id, full_text):
     """Return ``quote_id`` carrying the revision the document states.
@@ -955,9 +966,16 @@ def canonical_quote_revision(quote_id, full_text):
         return quote_id
     tail = str(full_text)[idx + len(base):]
     m = _QUOTE_REV_RE.match(tail)
-    if not m:
-        return quote_id
-    version = int(m.group(1) or m.group(2))
+    if m:
+        version = int(m.group(1) or m.group(2))
+    else:
+        # No marker beside the number: a version stated in its own header field counts, but
+        # only when the header states exactly ONE -- a revision-history table, or two
+        # different figures, is not evidence of which round this document is.
+        found = {int(x) for x in _QUOTE_REV_FIELD_RE.findall(str(full_text)[:_QUOTE_HEADER_CHARS])}
+        if len(found) != 1:
+            return quote_id
+        version = found.pop()
     # Version 1 is the unsuffixed form; anything else carries its number.
     return base if version <= 1 else f"{base} (V{version})"
 
@@ -1192,8 +1210,16 @@ def _validate_and_bind(
                     # A quote revision is its own document and needs its own key.
                     # Recover the version from the text rather than relying on the
                     # model to decide whether the marker was part of the token.
-                    out[name] = (canonical_quote_revision(sval, full_text)
-                                 if name == "quote_id" else sval)
+                    if name == "quote_id":
+                        out[name] = canonical_quote_revision(sval, full_text)
+                    elif name == "po_id":
+                        # A PO revision ("Rev 3", "Change Order 2") likewise.
+                        from src.services.extraction.po_revision import canonical_po_revision
+                        out[name], rev = canonical_po_revision(sval, full_text)
+                        if rev is not None:
+                            out["po_revision"] = rev
+                    else:
+                        out[name] = sval
                 else:
                     log.debug("context_layer: dropped ungrounded id %s=%r", name, sval)
                     out[name] = None
@@ -1364,6 +1390,19 @@ def _as_float(v: Any) -> float | None:
         return None
 
 
+def _number_printed(value: float, text: str) -> bool:
+    """Is this amount printed on the page as a whole number, not a digit run inside one?
+
+    Accepts 1116000, 1,116,000 and either with .00; rejects 11160000 and 1116000.5.
+    """
+    if value is None or value <= 0:
+        return False
+    whole, cents = f"{value:.2f}".split(".")
+    digits = r",?".join(whole[max(0, i - 3):i] for i in range(len(whole), 0, -3)[::-1])
+    frac = r"(?:\.00?)?" if cents == "00" else rf"\.{cents}"
+    return re.search(rf"(?<![\d.,]){digits}{frac}(?![\d]|\.\d|,\d)", text) is not None
+
+
 def _money_closes(sub: float | None, tax: float | None, tot: float | None,
                   extras: float = 0.0, tol: float = 0.02) -> bool:
     """Does subtotal + extras (shipping/fees) + tax add up to the grand total?
@@ -1427,6 +1466,9 @@ def _read_labelled_id(full_text: str, labels: tuple[str, ...]) -> str | None:
     return None
 
 
+_REVISION_KEY_SUFFIX = re.compile(r"^ \((?:Rev |V)\d+\)$")
+
+
 def _recover_identifiers(
     row: dict[str, Any], full_text: str, valid_fields: set[str] | None = None
 ) -> dict[str, Any]:
@@ -1455,6 +1497,11 @@ def _recover_identifiers(
         # document prints against the label wins.
         if printed and current and str(current) != printed:
             cur_s = str(current)
+            # "<id> (Rev 3)" / "<id> (V2)" is the revision's own key (canonical_po_revision,
+            # canonical_quote_revision), not a model that read too much; stripping it back
+            # made revision 3 overwrite revision 1.
+            if cur_s.startswith(printed) and _REVISION_KEY_SUFFIX.match(cur_s[len(printed):]):
+                continue
             if cur_s in printed or printed in cur_s:
                 log.info(
                     "context_layer: %s=%r → %r (the model %s the printed identifier)",
@@ -1540,6 +1587,14 @@ def _reconcile_money(row: dict[str, Any], full_text: str, doc_type: str) -> dict
         chosen, why = (m_sub, m_tax, m_tot), "model (its figures add up)"
     elif printed_closes:
         chosen, why = (p_sub, p_tax, p_tot), "document's printed totals (the model's did not add up)"
+    elif (m_tax is not None and m_tot is not None
+          and _number_printed(round(m_tot - m_tax, 2), full_text)):
+        # The model's tax and total agree with a net the page prints; its net is some
+        # other figure. Orbis ORB-Q-6612 (V1) prints a 3-year contract value beside a
+        # Year 1 net / VAT / total as spreadsheet rows (no colon, so the labelled
+        # reader above sees nothing) and the model took the contract value as the net.
+        chosen = (round(m_tot - m_tax, 2), m_tax, m_tot)
+        why = "the net the page prints that closes the model's tax and total"
     else:
         # Nobody is self-consistent. Prefer a printed value over a model guess field by
         # field — a printed value is at least literally on the page — and leave the rest

@@ -17,21 +17,53 @@ from src.services.extraction_v3.yaml_schema.loader import DocSchema, FieldSpec
 log = logging.getLogger(__name__)
 
 
-def _header_to_field(header_text: str, line_fields: list[FieldSpec]) -> str | None:
+#: A column header that names money. Matched against the HEADER TEXT, not a
+#: value, so "Unit Price" and "Line Total" are caught whatever is under them.
+#: `value` and `rate` are here because the SQL and YAML comments both list
+#: them and the first version of this regex did not: a "Unit Rate" or "Unit
+#: Value" column still matched the bare "Unit" label and landed money in
+#: unit_of_measure -- the same defect the live run of 2026-10-05 found on
+#: "Unit Price", wearing a different word.
+_MONEY_HEADER_RE = re.compile(
+    r"(price|amount|total|cost|currency|tax|vat|value|rate)", re.I)
+
+
+def _declares_money(line_fields: list[FieldSpec]) -> bool:
+    """Does this doc type have any priced line field at all?
+
+    A goods receipt does not, by design (extraction_schemas/goods_receipt.yaml):
+    it proves DELIVERY and carries quantities only.
+    """
+    return any(
+        f.type == "money" or _MONEY_HEADER_RE.search(f.name or "")
+        for f in line_fields
+    )
+
+
+def _header_match(header_text: str, line_fields: list[FieldSpec]) -> tuple[str | None, int]:
     """Match header cell text to a line-item field by canonical_labels.
 
     Substring matches pick the LONGEST (most specific) matching label, so a
     generic label like "Unit" (unit_of_measure) cannot steal a specific column
     like "Unit Price" (unit_price) just because its field is listed first.
+
+    That rule depends on a MORE specific label existing to be preferred. On a
+    doc type with no priced field there is none, so "Unit Price" matched "Unit"
+    and 'GBP 13.59' was about to be stored as the unit a line was delivered in
+    -- found on the live run of 2026-10-05. A doc type that declares no money
+    field refuses a money-named header outright: the same rule as the absent
+    column and the absent schema field, one layer further out.
     """
     h = (header_text or "").strip().lower()
     if not h:
-        return None
-    # exact match preferred
+        return None, 0
+    if _MONEY_HEADER_RE.search(h) and not _declares_money(line_fields):
+        return None, 0
+    # exact match preferred -- it outranks any substring match (see _find_header)
     for f in line_fields:
         for lbl in (f.canonical_labels or []):
             if h == lbl.lower():
-                return f.name
+                return f.name, 1000 + len(lbl)
     # substring: choose the most specific (longest) matching label
     best_field: str | None = None
     best_len = -1
@@ -42,7 +74,11 @@ def _header_to_field(header_text: str, line_fields: list[FieldSpec]) -> str | No
                 if len(ll) > best_len:
                     best_len = len(ll)
                     best_field = f.name
-    return best_field
+    return best_field, max(best_len, 0)
+
+
+def _header_to_field(header_text: str, line_fields: list[FieldSpec]) -> str | None:
+    return _header_match(header_text, line_fields)[0]
 
 
 def _find_header(tbl: Any, line_fields: list[FieldSpec]) -> tuple[int | None, dict[int, str]]:
@@ -61,11 +97,23 @@ def _find_header(tbl: Any, line_fields: list[FieldSpec]) -> tuple[int | None, di
     best_i: int | None = None
     best_map: dict[int, str] = {}
     for i in order:
-        cmap: dict[int, str] = {}
+        # One column per field: the best-matching header wins (an exact label over a partial
+        # one, then the leftmost). Two columns used to feed one field and the LAST won, so
+        # "Provision | Detail" took the detail text ("Standard 1.5x; weekend 2x.") as the
+        # description of the Overtime line.
+        best: dict[str, tuple[int, int]] = {}
         for cell in tbl.rows[i]:
-            fld = _header_to_field(cell.text, line_fields)
-            if fld:
-                cmap.setdefault(cell.col_index, fld)
+            fld, score = _header_match(cell.text, line_fields)
+            if fld and (fld not in best or score > best[fld][0]):
+                best[fld] = (score, cell.col_index)
+        cmap: dict[int, str] = {col: fld for fld, (_score, col) in best.items()}
+        # A "Fee" column is the unit price when the table also states a line amount ("Fee |
+        # Disc. | Net"), and IS the line amount when it is the only money column.
+        if "line_amount" not in best and "unit_price" in best:
+            fee_col = best["unit_price"][1]
+            fee_text = next((c.text for c in tbl.rows[i] if c.col_index == fee_col), "")
+            if _FEE_HEADER_RE.search(fee_text or ""):
+                cmap[fee_col] = "line_amount"
         if len(cmap) > len(best_map):
             best_i, best_map = i, cmap
         # A declared header with 2+ recognised columns is trusted as-is.
@@ -75,12 +123,38 @@ def _find_header(tbl: Any, line_fields: list[FieldSpec]) -> tuple[int | None, di
 
 
 _AMOUNT_CLEAN_RE = re.compile(r"[^\d.\-]")
+_FEE_HEADER_RE = re.compile(r"\bfees?\b", re.I)
+#: A quantity written with its unit in the same cell: "1 package", "12 months", "3.5 days".
+_QTY_WITH_UNIT_RE = re.compile(r"^\s*(\d[\d,]*(?:\.\d+)?)\s+([A-Za-z][A-Za-z .\-/]{0,30}?)\s*$")
 _DIGIT_RE = re.compile(r"\d")
 
 # Summary-label patterns that procurement docs put in the DESCRIPTION
 # column on the totals rows (Sub-Total/Tax/Discount/Grand Total). These
 # are NOT line items — they're the financial summary block. When a row's
 # item_description matches one of these, skip the whole row.
+#: A section total named after its section: "Staffing subtotal", "Fixed-fee subtotal",
+#: "Provisions sub-total". _SUMMARY_DESC_RE only knew the bare word, so these were kept as
+#: lines and the line sum double-counted every section.
+_SECTION_SUBTOTAL_RE = re.compile(r"\bsub\s*-?\s*totals?\s*[:$£€¥]*\s*$", re.IGNORECASE)
+#: "Total (ex-VAT)", "Grand total (incl. VAT)": the word total qualified only by a bracket.
+_QUALIFIED_TOTAL_RE = re.compile(r"^\s*(?:grand\s+)?total\s*\([^)]*\)\s*[:$£€¥]*\s*$", re.IGNORECASE)
+
+
+def _is_summary_row(desc_value: str, row: list) -> bool:
+    """A totals/subtotal row, not an item.
+
+    Besides the label patterns, a label that the document MERGED across the row's other
+    columns ("Staffing subtotal | Staffing subtotal | ... | 1,995,700" -- a docx merged cell
+    repeats its text in every column it spans) is a heading or a total: an item puts
+    different things in its columns."""
+    if (_SUMMARY_DESC_RE.match(desc_value) or _SECTION_SUBTOTAL_RE.search(desc_value)
+            or _QUALIFIED_TOTAL_RE.match(desc_value)):
+        return True
+    d = desc_value.strip().lower()
+    repeats = sum(1 for cell in row if (cell.text or "").strip().lower() == d)
+    return bool(d) and repeats >= 3
+
+
 _SUMMARY_DESC_RE = re.compile(
     r"^\s*"
     r"(?:"
@@ -158,8 +232,18 @@ def extract_line_items(parsed: Any, schema: DocSchema) -> list[Candidate]:
                 # label ("Sub-Total" / "Tax (20%)" / "Grand Total" / etc.) —
                 # some templates put those labels in the description column.
                 desc_value = row_values["item_description"][0]
-                if _SUMMARY_DESC_RE.match(desc_value):
+                if _is_summary_row(desc_value, row):
                     continue
+                # "1 package": the number is the quantity; the word is its unit when the table
+                # has no unit column of its own. As one string it coerced to nothing.
+                if "quantity" in row_values:
+                    qv, qcell = row_values["quantity"]
+                    mq = _QTY_WITH_UNIT_RE.match(qv)
+                    if mq:
+                        row_values["quantity"] = (mq.group(1), qcell)
+                        if "unit_of_measure" not in row_values and any(
+                                f.name == "unit_of_measure" for f in line_fields):
+                            row_values["unit_of_measure"] = (mq.group(2).strip(), qcell)
                 local_idx = line_index
                 for fld, (value, cell) in row_values.items():
                     out.append(Candidate(

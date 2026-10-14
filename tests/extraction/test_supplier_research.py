@@ -1,4 +1,7 @@
-"""Supplier web-research: grounding guard, fill-empty-only apply, sensitive-field guard."""
+"""Supplier web-research: grounding guard, fill-empty-only rules, sensitive-field guard.
+
+The propose-only behaviour itself lives in test_supplier_research_propose_only.py.
+"""
 import pytest
 
 from src.services.db import get_conn
@@ -63,7 +66,14 @@ def _seed(sid, name, **cols):
         c.commit()
 
 
-def test_apply_fills_empty_only_when_entity_matches(monkeypatch):
+def test_only_empty_non_sensitive_fields_are_proposed(monkeypatch):
+    """Was test_apply_fills_empty_only_when_entity_matches, and asserted that a
+    confident, well-matched result was written straight into bp_supplier.
+
+    Research proposes now (A19.39) — see test_supplier_research_propose_only.py.
+    What this still pins is which fields make it into the proposal at all: the
+    empty one yes, the one that already has a value no, the sensitive one never.
+    """
     _seed(f"{IDP}1", "Acme Widgets Ltd", country="GB")  # country set, website empty
     canned = ('{"matched_name":"Acme Widgets Ltd","fields": {'
               '"website_url": {"value":"https://acme.example","source_url":"https://acme.example/about","confidence":0.9},'
@@ -79,17 +89,20 @@ def test_apply_fills_empty_only_when_entity_matches(monkeypatch):
     with get_conn() as c:
         res = R.research_and_enrich(f"{IDP}1", c)
     assert res["entity_confirmed"] is True
-    assert "website_url" in res["applied"]         # empty → filled
-    assert "country" not in res["applied"]          # non-empty → not overwritten
-    assert "vat_number" not in res["fields"]        # sensitive → never even kept
+    assert "website_url" in res["proposed"]          # empty → offered
+    assert "country" not in res["proposed"]          # non-empty → never overwritten
+    assert "vat_number" not in res["fields"]         # sensitive → never even kept
+    assert res["applied"] == {}                      # and nothing was written
     with get_conn() as c, c.cursor() as cur:
         cur.execute("SELECT website_url, country FROM proc.bp_supplier WHERE supplier_id=%s", (f"{IDP}1",))
         website, country = cur.fetchone()
-    assert website == "https://acme.example" and country == "GB"
+    assert website in (None, "") and country == "GB"
 
 
 def test_entity_mismatch_stays_pending(monkeypatch):
-    # Found a real, well-cited company — but a DIFFERENT one → must NOT auto-apply.
+    # Found a real, well-cited company — but a DIFFERENT one. Nothing is written
+    # either way now; what this pins is that the mismatch is still detected and
+    # reported, rather than quietly dropped along with the gate it used to feed.
     _seed(f"{IDP}3", "Zephyr Robotics Ltd")  # all empty
     canned = ('{"matched_name":"Umbrella Facilities Management Ltd","fields": {'
               '"website_url": {"value":"https://umbrella.example","source_url":"https://umbrella.example","confidence":0.95},'
@@ -100,7 +113,7 @@ def test_entity_mismatch_stays_pending(monkeypatch):
     }))
     with get_conn() as c:
         res = R.research_and_enrich(f"{IDP}3", c)
-    assert res["entity_confirmed"] is False and res["applied"] == {}  # cited but wrong entity → pending
+    assert res["entity_confirmed"] is False and res["applied"] == {}  # cited but wrong entity
     with get_conn() as c, c.cursor() as cur:
         cur.execute("SELECT website_url FROM proc.bp_supplier WHERE supplier_id=%s", (f"{IDP}3",))
         assert cur.fetchone()[0] in (None, "")  # nothing written

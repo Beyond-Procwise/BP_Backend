@@ -1,4 +1,6 @@
 import logging
+from src.services.governed_limits import LimitUnavailable
+from src.services.governed_limits import limit as _governed_limit
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional
@@ -177,6 +179,20 @@ class BackendScheduler:
         except Exception:
             logger.exception("downstream chain: pending-raw catch-up failed")
         try:
+            # A goods receipt reaches _trgt by its PO's deal, not by the
+            # PO-gated promote_ready below and not by _look_forward (which only
+            # stamps documents whose uploader tagged a deal). A note that
+            # arrived before its order was extracted or grouped has nothing
+            # else waking it, so it is retried here.
+            from src.services.extraction.goods_receipt_link import (
+                link_pending_receipts,
+            )
+            recs = link_pending_receipts()
+            if recs.get("linked") or recs.get("waiting"):
+                logger.info("downstream chain: goods-receipt linking %s", recs)
+        except Exception:
+            logger.exception("downstream chain: goods-receipt linking failed")
+        try:
             from src.services.linking_engine import promote_ready
             prom = promote_ready()
             logger.info("downstream chain: trgt promotion %s", prom)
@@ -224,7 +240,12 @@ class BackendScheduler:
         # Found headline with nobody having looked. Review the historical set first
         # (scripts/backfill_duplicate_invoices.py, dry run by default), then set
         # DUPLICATE_INVOICE_DETECTOR_ENABLED=1 so new arrivals are flagged as they land.
-        if os.environ.get("DUPLICATE_INVOICE_DETECTOR_ENABLED", "0").strip() in ("1", "true", "True"):
+        # AutonomousOperationPolicy (P9). A fraud control that is off by default
+        # and switchable with no record is the most consequential kind of
+        # setting to leave in the environment.
+        if _governed_limit("autonomous_operation",
+                           "duplicate_invoice_detector_enabled",
+                           env="DUPLICATE_INVOICE_DETECTOR_ENABLED", cast=bool):
             try:
                 from src.services.duplicate_invoice_detector import run_detector
                 logger.info("downstream chain: duplicate invoices %s new finding(s)",
@@ -414,10 +435,453 @@ class BackendScheduler:
         self._register_extraction_feedback_job()
         self._register_price_outlier_job()
         self._register_value_digest_job()
+        self._register_capture_retention_job()
+        self._register_prompt_render_retention_job()
+        self._register_sales_calibration_job()
         self._register_style_staging_sweep_job()
         self._register_mailbox_health_job()
         self._register_style_feedback_job()
         self._register_mail_intake_sweep_job()
+        self._register_triage_job()
+        self._register_playbook_sweep_job()
+        self._register_contract_link_job()
+        self._register_contract_expiry_job()
+        self._register_email_learning_job()
+        self._register_email_text_retention_job()
+        self._register_email_draft_sweep_job()
+        self._register_agent_policy_approvals_job()
+        self._register_agent_policy_conflict_scan_job()
+        self._register_agent_policy_learning_scan_job()
+
+    AGENT_POLICY_APPROVALS_JOB_NAME = "agent-policy-approval-sweep"
+
+    def _register_agent_policy_approvals_job(self) -> None:
+        """Escalate or reject agent-policy approval cases nobody answered in time (every 60 s).
+
+        ON unless AGENT_POLICY_APPROVAL_SWEEP=off. A timeout escalates to the next level and, at
+        the last level, rejects; it never approves. Concurrent sweeps are safe (SKIP LOCKED).
+        """
+        import os
+        if os.environ.get("AGENT_POLICY_APPROVAL_SWEEP", "on").strip().lower() == "off":
+            logger.info("agent policy approval sweep not registered (AGENT_POLICY_APPROVAL_SWEEP=off)")
+            return
+        if self.AGENT_POLICY_APPROVALS_JOB_NAME in self._jobs:
+            return
+        self.register_job(
+            self.AGENT_POLICY_APPROVALS_JOB_NAME,
+            self._run_agent_policy_approvals_sweep,
+            interval=timedelta(seconds=60),
+            initial_delay=timedelta(seconds=60),
+        )
+
+    def _run_agent_policy_approvals_sweep(self) -> None:
+        try:
+            from datetime import datetime, timezone
+
+            # `services.` (not `src.services.`): the same module object the routers use, so a
+            # replaced approvals.replay_hook is the one this job sees.
+            from services.agent_policy import approvals
+            from services.db import get_conn
+
+            with get_conn() as conn:
+                counts = approvals.sweep(conn, datetime.now(timezone.utc))
+            if counts.get("escalated") or counts.get("rejected") or counts.get("errors"):
+                logger.info("agent policy approval sweep: %s", counts)
+        except Exception:
+            logger.exception("agent policy approval sweep failed")
+        # Approved actions whose background replay was lost (restart, no runtime): bounded retry.
+        try:
+            from datetime import datetime, timezone
+
+            from services.agent_policy import replay_retry
+            from services.db import get_conn
+
+            with get_conn() as conn:
+                retried = replay_retry.retry_lost_replays(conn, datetime.now(timezone.utc))
+            if retried.get("retried") or retried.get("errors"):
+                logger.info("agent policy replay retry: %s", retried)
+        except Exception:
+            logger.exception("agent policy replay retry failed")
+
+    AGENT_POLICY_CONFLICT_SCAN_JOB_NAME = "agent-policy-conflict-scan"
+    # Its own lane: the scan can take minutes and must never hold up the shared lane (the 60 s
+    # approval sweep runs there). Nothing else writes the conflict tables it writes.
+    AGENT_POLICY_CONFLICT_SCAN_LANE = "agent-policy-conflicts"
+
+    def _register_agent_policy_conflict_scan_job(self) -> None:
+        """Look for contradicting agent policies every hour (first run 5 min after start).
+
+        ON unless AGENT_POLICY_CONFLICT_SCAN=off. The safety net behind detection on save and on
+        extraction: it raises the policy conflict cases those missed. Duplicates are impossible
+        (one open case per pair, under a per-pair lock).
+        """
+        import os
+        if os.environ.get("AGENT_POLICY_CONFLICT_SCAN", "on").strip().lower() == "off":
+            logger.info("agent policy conflict scan not registered (AGENT_POLICY_CONFLICT_SCAN=off)")
+            return
+        if self.AGENT_POLICY_CONFLICT_SCAN_JOB_NAME in self._jobs:
+            return
+        self.register_job(
+            self.AGENT_POLICY_CONFLICT_SCAN_JOB_NAME,
+            self._run_agent_policy_conflict_scan,
+            interval=timedelta(hours=1),
+            initial_delay=timedelta(minutes=5),
+            lane=self.AGENT_POLICY_CONFLICT_SCAN_LANE,
+        )
+
+    def _run_agent_policy_conflict_scan(self) -> None:
+        try:
+            from datetime import datetime, timezone
+
+            from services.agent_policy import conflict_cases
+            from services.db import get_conn
+
+            with get_conn() as conn:
+                counts = conflict_cases.detect_all(conn, now=datetime.now(timezone.utc))
+            if counts.get("raised") or counts.get("errors"):
+                logger.info("agent policy conflict scan: %s", counts)
+        except Exception:
+            logger.exception("agent policy conflict scan failed")
+
+    AGENT_POLICY_LEARNING_SCAN_JOB_NAME = "agent-policy-learning-scan"
+    # Its own lane, like the conflict scan: it reads every live approve policy's decisions and
+    # must never hold up the shared lane. People's actions on a card (not yet, dismiss, a save)
+    # write the same suggestion rows, so the scan locks a policy's rows before it changes them.
+    AGENT_POLICY_LEARNING_SCAN_LANE = "agent-policy-learning"
+
+    def _register_agent_policy_learning_scan_job(self) -> None:
+        """Look for approve policies people keep approving, every hour (first run 10 min after start).
+
+        OFF unless AGENT_POLICY_LEARNING_SCAN is on, 1 or true; run it once under supervision on
+        each database before switching it on. It only ever writes suggestion rows for an owner
+        to review; it never changes a policy. Idempotent: one row per policy and change.
+        """
+        from services.agent_policy import settings as agent_policy_settings
+
+        if not agent_policy_settings.learning_scan_enabled():   # the rule the settings screen shows
+            logger.info("agent policy learning scan is off, not registered "
+                        "(set AGENT_POLICY_LEARNING_SCAN=on to turn it on)")
+            return
+        if self.AGENT_POLICY_LEARNING_SCAN_JOB_NAME in self._jobs:
+            return
+        self.register_job(
+            self.AGENT_POLICY_LEARNING_SCAN_JOB_NAME,
+            self._run_agent_policy_learning_scan,
+            interval=timedelta(hours=1),
+            initial_delay=timedelta(minutes=10),
+            lane=self.AGENT_POLICY_LEARNING_SCAN_LANE,
+        )
+
+    def _run_agent_policy_learning_scan(self) -> None:
+        try:
+            from datetime import datetime, timezone
+
+            from services.agent_policy import learning
+            from services.db import get_conn
+
+            with get_conn() as conn:
+                counts = learning.scan(conn, datetime.now(timezone.utc))
+            worth_a_line = ("raised", "reopened", "weakened", "superseded", "errors", "unreadable", "skipped")
+            if any(counts.get(k) for k in worth_a_line):
+                logger.info("agent policy learning scan: %s", counts)
+        except Exception:
+            logger.exception("agent policy learning scan failed")
+
+    EMAIL_LEARNING_JOB_NAME = "email-learning"
+
+    def _register_email_learning_job(self) -> None:
+        """Learn from what reviewers did to email drafts (Stage 6).
+
+        OFF unless EMAIL_LEARNING_ENABLED=1: it writes to the email_agent schema, which exists only where the
+        capture migrations were applied. It fills queues and candidate lists and changes nothing a person has
+        not approved. Interval EMAIL_LEARNING_INTERVAL_MINUTES (default 60); it is idempotent, so a missed
+        or doubled run does no harm.
+        """
+        import os
+        if os.environ.get("EMAIL_LEARNING_ENABLED", "0").strip() not in ("1", "true", "True"):
+            logger.info("email learning job not registered (EMAIL_LEARNING_ENABLED)")
+            return
+        if self.EMAIL_LEARNING_JOB_NAME in self._jobs:
+            return
+        try:
+            minutes = int(os.environ.get("EMAIL_LEARNING_INTERVAL_MINUTES", "60"))
+        except ValueError:
+            minutes = 60
+        self.register_job(
+            self.EMAIL_LEARNING_JOB_NAME,
+            self._run_email_learning,
+            interval=timedelta(minutes=max(1, minutes)),
+            initial_delay=timedelta(minutes=10),
+        )
+
+    def _run_email_learning(self) -> None:
+        try:
+            from src.services import rbac
+            from src.services.draft_assurance import connections
+            from src.services.draft_assurance.learning import run_learning
+
+            with connections.writer(self.agent_nick) as conn:
+                report = run_learning(conn, rbac.policy_engine())
+            logger.info("email learning: %s", report)
+        except Exception:
+            # A missing threshold, an unreadable policy store or an absent schema stops THIS run and says
+            # why; the job is a sweep, and the next interval tries again.
+            logger.exception("email learning run failed")
+
+    EMAIL_TEXT_RETENTION_JOB_NAME = "email-text-retention"
+
+    def _register_email_text_retention_job(self) -> None:
+        """Age out raw email text (sent text, diffs, the model's own drafts) after the governed period.
+
+        ON unless EMAIL_TEXT_RETENTION_ENABLED is 0/false: raw text must not accumulate because a switch was
+        never flipped. Where the email_agent schema has not been applied the run finds no table and stops
+        harmlessly. The period is the EmailTextRetention policy row; if it cannot be read the run does nothing.
+        Interval EMAIL_TEXT_RETENTION_INTERVAL_MINUTES (default 360); idempotent.
+        """
+        import os
+        if os.environ.get("EMAIL_TEXT_RETENTION_ENABLED", "1").strip().lower() in ("0", "false", "no", "off"):
+            logger.info("email text retention job not registered (EMAIL_TEXT_RETENTION_ENABLED)")
+            return
+        if self.EMAIL_TEXT_RETENTION_JOB_NAME in self._jobs:
+            return
+        try:
+            minutes = int(os.environ.get("EMAIL_TEXT_RETENTION_INTERVAL_MINUTES", "360"))
+        except ValueError:
+            minutes = 360
+        self.register_job(
+            self.EMAIL_TEXT_RETENTION_JOB_NAME,
+            self._run_email_text_retention,
+            interval=timedelta(minutes=max(1, minutes)),
+            initial_delay=timedelta(minutes=15),
+        )
+
+    def _run_email_text_retention(self) -> None:
+        try:
+            from src.services import rbac
+            from src.services.draft_assurance import connections, retention
+
+            days = retention.load_rules(rbac.policy_engine())["raw_text_days"]
+            with connections.writer(self.agent_nick) as conn:
+                report = retention.purge_expired(conn, days)
+            logger.info("email text retention (%s days): %s", days, report)
+        except Exception:
+            # An unreadable period, an absent schema or a database fault stops THIS run and says why.
+            logger.exception("email text retention run failed")
+
+    EMAIL_DRAFT_SWEEP_JOB_NAME = "email-draft-sweep"
+
+    def _register_email_draft_sweep_job(self) -> None:
+        """Record drafts nobody sent and nobody abandoned as abandoned, once they have been quiet for the governed period.
+
+        ON unless EMAIL_DRAFT_SWEEP_ENABLED is 0/false. Where the email_agent schema or the sweep rules are absent the run
+        does nothing and says why. It abandons a draft only when the product tables confirm it was not sent (see
+        draft_assurance.sweep). Interval EMAIL_DRAFT_SWEEP_INTERVAL_MINUTES (default 60); idempotent.
+        """
+        import os
+        if os.environ.get("EMAIL_DRAFT_SWEEP_ENABLED", "1").strip().lower() in ("0", "false", "no", "off"):
+            logger.info("email draft sweep job not registered (EMAIL_DRAFT_SWEEP_ENABLED)")
+            return
+        if self.EMAIL_DRAFT_SWEEP_JOB_NAME in self._jobs:
+            return
+        try:
+            minutes = int(os.environ.get("EMAIL_DRAFT_SWEEP_INTERVAL_MINUTES", "60"))
+        except ValueError:
+            minutes = 60
+        self.register_job(
+            self.EMAIL_DRAFT_SWEEP_JOB_NAME,
+            self._run_email_draft_sweep,
+            interval=timedelta(minutes=max(1, minutes)),
+            initial_delay=timedelta(minutes=20),
+        )
+
+    def _run_email_draft_sweep(self) -> None:
+        try:
+            from src.services import rbac
+            from src.services.draft_assurance import connections, sweep
+
+            rules = sweep.load_rules(rbac.policy_engine())
+            with connections.writer(self.agent_nick) as writer_conn, connections.reader(self.agent_nick) as reader_conn:
+                report = sweep.sweep(writer_conn, reader_conn, rules)
+            logger.info("email draft sweep: %s", report)
+        except Exception:
+            logger.exception("email draft sweep run failed")
+
+    TRIAGE_JOB_NAME = "discrepancy-triage"
+
+    CONTRACT_EXPIRY_JOB_NAME = "contract-expiry-alerts"
+    CONTRACT_EXPIRY_LANE = "contract-expiry"
+
+    def _register_contract_expiry_job(self) -> None:
+        """Record the expiry-bucket alerts (the contract_expiry_bucket_check rule).
+
+        Toggle CONTRACT_EXPIRY_ENABLED (default on); interval
+        CONTRACT_EXPIRY_INTERVAL_MINUTES (default 60). Hourly is cheap -- two
+        reads and a handful of writes -- and an alert should not wait a day to
+        notice that a demand item closed or that a contract crossed a bucket edge.
+
+        Its own lane: proc.bp_contract_expiry_alert is written by this job and
+        nothing else, so it has no reason to queue behind the data pipeline.
+        """
+        import os
+        if os.environ.get("CONTRACT_EXPIRY_ENABLED", "1").strip() not in ("1", "true", "True"):
+            logger.info("contract expiry job disabled by CONTRACT_EXPIRY_ENABLED")
+            return
+        if self.CONTRACT_EXPIRY_JOB_NAME in self._jobs:
+            return
+        try:
+            minutes = int(os.environ.get("CONTRACT_EXPIRY_INTERVAL_MINUTES", "60"))
+        except ValueError:
+            minutes = 60
+        self.register_job(
+            self.CONTRACT_EXPIRY_JOB_NAME,
+            self._run_contract_expiry,
+            interval=timedelta(minutes=max(1, minutes)),
+            initial_delay=timedelta(minutes=2),
+            lane=self.CONTRACT_EXPIRY_LANE,
+        )
+
+    def _run_contract_expiry(self) -> None:
+        """Logged only when something changed, so a quiet system stays quiet. A
+        failure (rule missing, database unreachable) is logged as an error and the
+        next run tries again; the brief reads the rule live and does not depend on
+        this job having succeeded."""
+        try:
+            from src.services.contract_expiry import detector  # noqa: PLC0415
+            result = detector.run()
+            counts = result["counts"]
+            if any(counts[k] for k in ("new", "reopened", "suppressed", "cleared")):
+                logger.info("contract expiry alerts: %s", counts)
+        except Exception:
+            logger.exception("contract expiry job failed")
+
+    CONTRACT_LINK_JOB_NAME = "contract-parent-links"
+
+    def _register_contract_link_job(self) -> None:
+        """Propose a parent for any contract document that still has none.
+
+        The BACKSTOP, not the main path. A contract is scored the moment it
+        promotes (extraction.promotion.propose_contract_parent); this pass exists
+        for the documents that promotion never saw — promoted while the policy
+        said no, re-read since, or arrived before any of this was wired.
+
+        Deliberately slow. The pass is corpus-wide and writes into a queue a
+        person works, so it runs on an hours-scale interval, not the minutes
+        scale the extraction jobs use. Interval via
+        autonomous_operation.contract_parent_proposal_sweep_hours
+        (CONTRACT_PARENT_PROPOSAL_SWEEP_HOURS overrides, deprecated).
+
+        Governed by the same flag as the promotion hook, so turning proposals
+        off turns BOTH off — a flag that silenced the hook and left a nightly
+        sweep writing would be worse than no flag.
+        """
+        if self.CONTRACT_LINK_JOB_NAME in self._jobs:
+            return
+        try:
+            enabled = _governed_limit("autonomous_operation",
+                                      "contract_parent_proposals_enabled",
+                                      env="CONTRACT_PARENT_PROPOSALS_ENABLED",
+                                      cast=bool)
+        except Exception as exc:
+            logger.warning("contract parent-link sweep not scheduled: policy "
+                           "unreadable (%s)", exc)
+            return
+        if not enabled:
+            logger.info("contract parent-link sweep disabled by policy")
+            return
+        try:
+            hours = _governed_limit("autonomous_operation",
+                                    "contract_parent_proposal_sweep_hours",
+                                    env="CONTRACT_PARENT_PROPOSAL_SWEEP_HOURS",
+                                    cast=float)
+        except Exception as exc:
+            logger.warning("contract parent-link sweep interval unreadable (%s); "
+                           "not scheduled", exc)
+            return
+        self.register_job(
+            self.CONTRACT_LINK_JOB_NAME,
+            self._run_contract_link_job,
+            interval=timedelta(hours=max(1.0, float(hours or 24.0))),
+            # Not at startup: a server restart must not be a reason for new rows
+            # to appear in somebody's queue a minute later.
+            initial_delay=timedelta(minutes=30),
+        )
+
+    def _run_contract_link_job(self) -> None:
+        try:
+            from src.services import contract_links
+
+            result = contract_links.propose_parent_links()
+            logger.info("contract parent-link sweep: %s",
+                        {k: v for k, v in result.items() if k != "details"})
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("contract parent-link sweep failed")
+
+    def _register_triage_job(self) -> None:
+        """Re-triage deals whose documents (or tolerances) changed since their last
+        successful triage, by content hash against proc.bp_triage_deal_state.
+
+        Does nothing until a full backfill has completed (spec §9.1): the first pass over
+        the whole corpus is a deliberate, reported act, not a side effect of startup.
+
+        Interval via TRIAGE_INTERVAL_MINUTES (default 15).
+        """
+        import os
+        if self.TRIAGE_JOB_NAME in self._jobs:
+            return
+        try:
+            minutes = int(os.environ.get("TRIAGE_INTERVAL_MINUTES", "15"))
+        except ValueError:
+            minutes = 15
+        self.register_job(
+            self.TRIAGE_JOB_NAME,
+            self._run_triage_job,
+            interval=timedelta(minutes=max(1, minutes)),
+            initial_delay=timedelta(minutes=5),
+        )
+
+    def _run_triage_job(self) -> None:
+        try:
+            from src.services.triage.engine import run_changed
+
+            report = run_changed()
+            if report is not None:
+                logger.info("Discrepancy triage: %s", report.render().splitlines()[1])
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Discrepancy triage job failed")
+
+    PLAYBOOK_SWEEP_JOB_NAME = "playbook-sweep"
+
+    def _register_playbook_sweep_job(self) -> None:
+        """Propose a playbook for every open finding that one governs.
+
+        Proposes only — a proposal waits for a person, and nothing in this job
+        can start a workflow. It ships against an empty proc.bp_playbook, so it
+        is a deliberate no-op until an expert authors a strategy.
+
+        Interval via PLAYBOOK_SWEEP_INTERVAL_MINUTES (default 30).
+        """
+        import os
+        if self.PLAYBOOK_SWEEP_JOB_NAME in self._jobs:
+            return
+        try:
+            minutes = int(os.environ.get("PLAYBOOK_SWEEP_INTERVAL_MINUTES", "30"))
+        except ValueError:
+            minutes = 30
+        self.register_job(
+            self.PLAYBOOK_SWEEP_JOB_NAME,
+            self._run_playbook_sweep,
+            interval=timedelta(minutes=max(1, minutes)),
+            initial_delay=timedelta(minutes=5),
+        )
+
+    def _run_playbook_sweep(self) -> None:
+        """Run one playbook sweep, logging the count whatever it is."""
+        try:
+            from services.playbooks.sweep import sweep
+
+            sweep()
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Playbook sweep failed")
 
     def _register_style_staging_sweep_job(self) -> None:
         """Register the style-staging TTL sweep.
@@ -626,8 +1090,51 @@ class BackendScheduler:
             from src.services.linking_engine import promote_ready
             result = promote_ready()
             logger.info("trgt promotion completed: %s", result)
+            self._sync_promoted_to_kg(result)
         except Exception:
             logger.exception("trgt promotion job failed")
+
+    def _sync_promoted_to_kg(self, result: dict) -> int:
+        """Push rows that just reached _trgt into the knowledge graph.
+
+        This is where the per-document KG sync belongs, and it used to live in
+        process_monitor_watcher — firing when dispatch returned ``promoted``,
+        which is _stg promotion, not _trgt. The graph mirrors _trgt, so syncing
+        at the earlier point created nodes for documents that had not reached
+        final state, and the reconciling rebuild then swept them. The graph
+        oscillated for exactly the documents still in flight.
+
+        Failures never propagate. A document is durable in _trgt before this
+        runs; the graph is a downstream view and can be rebuilt from _trgt at
+        any time, so a KG problem must not fail the promotion job.
+
+        KNOWN GAP: linking_engine reports purchase-order promotions in aggregate
+        (`{"doc_type": "purchase_order", "promoted": n}`) with no primary keys,
+        so POs promoted here are not individually synced — the full rebuild
+        picks them up. Fixing that means returning the PO ids from
+        `_promote_purchase_orders`, which is a change to linking_engine rather
+        than to this job.
+        """
+        synced = 0
+        for entry in (result or {}).get("details") or []:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("action") != "promoted":
+                continue
+            doc_type, doc_pk = entry.get("doc_type"), entry.get("doc_pk")
+            if not doc_type or not doc_pk:
+                continue
+            try:
+                from src.services.extraction.kg_sync import sync_row_to_kg
+                synced += sync_row_to_kg(self.agent_nick, doc_type, str(doc_pk))
+            except Exception:
+                logger.exception(
+                    "KG sync failed for %s pk=%s after _trgt promotion",
+                    doc_type, doc_pk,
+                )
+        if synced:
+            logger.info("trgt promotion: %d row(s) synced to the KG", synced)
+        return synced
 
     def _register_deal_assignment_job(self) -> None:
         """Assign documents to deals after _stg->_trgt promotion (look-forward +
@@ -653,7 +1160,8 @@ class BackendScheduler:
     def _register_analysis_sweep_job(self) -> None:
         """Safety net for analysis events the listener path missed. Toggle
         ANALYSIS_SWEEP_ENABLED (default on), interval
-        ANALYSIS_SWEEP_INTERVAL_MINUTES (default 15)."""
+        ANALYSIS_SWEEP_INTERVAL_MINUTES (default 2) -- a report whose live freeze
+        failed waits on this job, and the UI stops narrating after 6 minutes."""
         import os
         if os.environ.get("ANALYSIS_SWEEP_ENABLED", "1").strip() not in ("1", "true", "True"):
             logger.info("analysis sweep job disabled by ANALYSIS_SWEEP_ENABLED")
@@ -661,9 +1169,9 @@ class BackendScheduler:
         if self.ANALYSIS_SWEEP_JOB_NAME in self._jobs:
             return
         try:
-            minutes = int(os.environ.get("ANALYSIS_SWEEP_INTERVAL_MINUTES", "15"))
+            minutes = int(os.environ.get("ANALYSIS_SWEEP_INTERVAL_MINUTES", "2"))
         except ValueError:
-            minutes = 15
+            minutes = 2
         self.register_job(
             self.ANALYSIS_SWEEP_JOB_NAME,
             self._run_analysis_sweep,
@@ -724,6 +1232,94 @@ class BackendScheduler:
             # run_weekly_digest already swallows its own failures; this is the backstop for
             # anything raised before it gets that far.
             logger.exception("value digest failed")
+
+    CAPTURE_RETENTION_JOB_NAME = "capture-retention"
+
+    def _register_capture_retention_job(self) -> None:
+        """Age out the on-disk captures of document and agent content.
+
+        Registered unconditionally, with no enable switch. The other jobs here
+        do something; this one stops something accumulating, and a retention
+        sweep that can be turned off is a retention policy that quietly is not
+        one. The window is AutonomousOperationPolicy's capture_retention_days
+        (P9); the sweep itself is not optional.
+
+        Daily, and on boot: these directories had four months of content in them
+        when the job was written, so the first run has real work to do and there
+        is no reason to make an operator wait a day for it.
+        """
+        if self.CAPTURE_RETENTION_JOB_NAME in self._jobs:
+            return
+        self.register_job(
+            self.CAPTURE_RETENTION_JOB_NAME,
+            self._run_capture_retention,
+            interval=timedelta(days=1),
+        )
+
+    def _run_capture_retention(self) -> None:
+        try:
+            from src.services.capture_retention import purge_all, retention_days
+            removed = purge_all()
+            total = sum(removed.values())
+            if total:
+                logger.info(
+                    "capture retention: removed %d file(s) older than %d days — %s",
+                    total, retention_days(),
+                    ", ".join(f"{k}: {v}" for k, v in removed.items() if v),
+                )
+        except Exception:
+            logger.exception("capture retention sweep failed")
+
+    PROMPT_RENDER_RETENTION_JOB_NAME = "prompt-render-retention"
+
+    def _register_prompt_render_retention_job(self) -> None:
+        """Age out stored prompt renders (wording with customer values filled in).
+
+        Registered unconditionally, like the capture sweep and for the same
+        reason. The window is PromptEnginePolicy's manifest_retention_days,
+        counted from a render's last use; with no window stated nothing is
+        deleted and the refusal is logged. The record of which run used which
+        render is kept.
+        """
+        if self.PROMPT_RENDER_RETENTION_JOB_NAME in self._jobs:
+            return
+        self.register_job(
+            self.PROMPT_RENDER_RETENTION_JOB_NAME,
+            self._run_prompt_render_retention,
+            interval=timedelta(days=1),
+        )
+
+    def _run_prompt_render_retention(self) -> None:
+        try:
+            from src.services.prompt_engine import render
+            render.sweep()
+        except Exception:
+            logger.exception("prompt render retention sweep failed")
+
+    SALES_CALIBRATION_JOB_NAME = "sales_win_probability_calibration"
+
+    def _register_sales_calibration_job(self) -> None:
+        """Daily: set win_probability from closed quote outcomes (spec §4.5).
+        Writes nothing until a type has the governed minimum of closed outcomes."""
+        if self.SALES_CALIBRATION_JOB_NAME in self._jobs:
+            return
+        self.register_job(
+            self.SALES_CALIBRATION_JOB_NAME,
+            self._run_sales_calibration,
+            interval=timedelta(days=1),
+        )
+
+    def _run_sales_calibration(self) -> None:
+        try:
+            from src.services.sell_side._db import transactional_conn
+            from src.services.sell_side.calibration import calibrate
+            with transactional_conn() as conn:
+                applied = [c for c in calibrate(conn) if c.applied]
+            if applied:
+                logger.info("sales calibration: %s", ", ".join(
+                    f"{c.opportunity_type}={c.rate} ({c.won}/{c.won + c.lost})" for c in applied))
+        except Exception:
+            logger.exception("sales win-probability calibration failed")
 
     def _register_price_outlier_job(self) -> None:
         """Scan for extreme prices and raise them for review."""
@@ -832,6 +1428,10 @@ class BackendScheduler:
             self._chain_opportunity_mining(result)
         except Exception:
             logger.exception("chained opportunity mining failed")
+        try:
+            self._chain_graph_resolution(result)
+        except Exception:
+            logger.exception("chained graph resolution failed")
 
     def _chain_opportunity_mining(self, deal_result: Any) -> None:
         """Run opportunity mining iff deal-assignment changed something. Mining is
@@ -851,15 +1451,62 @@ class BackendScheduler:
         logger.info("deals changed -> chaining opportunity mining")
         self._run_opportunity_mining()
 
+    def _chain_graph_resolution(self, deal_result: Any) -> None:
+        """Resolve entities in the graph iff deal-assignment changed something.
+
+        The pass reads the same rows deal assignment just touched, so it runs on
+        the same trigger rather than on a timer of its own. Set
+        GRAPH_RESOLUTION_ENABLED=0 to disable the chain (default on).
+
+        Every stage runs in PASS_ORDER: a later profile reads earlier edges as
+        signals, so the order is a correctness requirement, not a preference.
+        """
+        import os
+        if os.environ.get("GRAPH_RESOLUTION_ENABLED", "1").strip() in ("0", "false", "False"):
+            return
+        changed = isinstance(deal_result, dict) and any(
+            int(deal_result.get(k) or 0) for k in self._DEAL_CHANGE_KEYS)
+        if not changed:
+            logger.debug("graph resolution chain skipped — no deal changes")
+            return
+
+        from services.procurement_kg_builder import ProcurementKGBuilder
+        from src.services.db import get_conn
+        from src.services.graph_resolution.pass_runner import run_all
+
+        builder = ProcurementKGBuilder(self.agent_nick)
+        if not builder._driver:
+            logger.error("graph resolution skipped — Neo4j is not reachable")
+            return
+        try:
+            limit = os.environ.get("GRAPH_RESOLUTION_LIMIT")
+            with get_conn() as conn:
+                counts = run_all(conn, builder._driver,
+                                 int(limit) if limit else None)
+            # The review backlog is logged at INFO on every run on purpose:
+            # bp_supplier_review already holds 727 rows nobody has looked at,
+            # and adding to it silently is how that happened.
+            logger.info("graph resolution completed: %s", counts)
+        finally:
+            builder.close()
+
     def _run_opportunity_mining(self) -> None:
         """Run opportunity mining; the miner upserts findings into bp_opportunity."""
         import os
         try:
             workflow = os.environ.get("OPPORTUNITY_MINING_WORKFLOW", "all")
+            # What counts as worth telling a buyer about is policy (P9). It used
+            # to fall back to 100.0 when the policy value could not be read as a
+            # number -- a threshold decided by a constant nobody could see. No
+            # governed threshold now means no mining, and the log says why.
             try:
-                min_impact = float(os.environ.get("OPPORTUNITY_MINING_MIN_IMPACT", "100"))
-            except ValueError:
-                min_impact = 100.0
+                min_impact = _governed_limit(
+                    "autonomous_operation", "opportunity_mining_min_impact",
+                    env="OPPORTUNITY_MINING_MIN_IMPACT")
+            except (LimitUnavailable, ValueError, TypeError) as exc:
+                logger.error("opportunity mining skipped: no governed "
+                             "opportunity_mining_min_impact (%s)", exc)
+                return
             result = self._orchestrator.execute_workflow(
                 "opportunity_mining",
                 {"workflow": workflow, "conditions": {}, "min_financial_impact": min_impact},
@@ -880,8 +1527,43 @@ class BackendScheduler:
             initial_delay=timedelta(minutes=2),
         )
 
+    # Document labels a healthy full rebuild must produce. If every one of these
+    # is zero the run did nothing, whatever else it reports.
+    _KG_DOCUMENT_LABELS = (
+        "Invoice", "InvoiceLine", "PurchaseOrder", "POLine", "Quote", "QuoteLine",
+    )
+
+    @staticmethod
+    def _kg_full_rebuild_enabled() -> bool:
+        """Whether the SCHEDULED job may perform a full rebuild.
+
+        OFF by default, for the same reason the duplicate-invoice detector above
+        is: a full rebuild is not an increment. The graph currently holds ~600
+        invoices while the _trgt tier holds 12,408, so the first run after the
+        source tables were corrected would write roughly 232,000 nodes —
+        38,000 documents and 194,000 line items — unattended, on a six-hour
+        timer, with nobody looking.
+
+        Set KG_FULL_REBUILD_ENABLED=1 once that first rebuild has been run
+        deliberately and its result checked. The per-document path
+        (extraction.kg_sync) is unaffected and keeps working either way, so
+        newly promoted documents still reach the graph while this is off.
+        """
+        import os  # imported per-function, as everywhere else in this module
+
+        return os.environ.get("KG_FULL_REBUILD_ENABLED", "0").strip() in (
+            "1", "true", "True",
+        )
+
     def _run_kg_sync(self) -> None:
         """Build/refresh the procurement knowledge graph."""
+        if not self._kg_full_rebuild_enabled():
+            logger.info(
+                "KG full rebuild skipped (KG_FULL_REBUILD_ENABLED unset). "
+                "Per-document sync is unaffected; run the rebuild deliberately "
+                "the first time — see docs/remediation."
+            )
+            return
         try:
             from services.procurement_kg_builder import ProcurementKGBuilder
             builder = ProcurementKGBuilder(self.agent_nick)
@@ -892,7 +1574,23 @@ class BackendScheduler:
                 )
                 return
             counts = builder.build_full_graph()
-            logger.info("KG sync completed: %s", counts)
+
+            # A run that loaded no documents is a failure, not a completion.
+            # This job logged "KG sync completed: {...}" with every document
+            # count at zero for eleven days, because the builder was reading six
+            # tables that no longer existed. A success message containing all
+            # zeros is worse than an error: it answers the question nobody
+            # re-asked.
+            loaded = {k: counts.get(k, 0) for k in self._KG_DOCUMENT_LABELS}
+            if not any(loaded.values()):
+                logger.error(
+                    "KG sync loaded NO documents — every one of %s came back 0. "
+                    "The source tables are unreadable or empty; the graph has "
+                    "not been refreshed. Counts: %s",
+                    ", ".join(self._KG_DOCUMENT_LABELS), counts,
+                )
+            else:
+                logger.info("KG sync completed: %s", counts)
             builder.close()
         except Exception:
             logger.exception("KG sync job failed")

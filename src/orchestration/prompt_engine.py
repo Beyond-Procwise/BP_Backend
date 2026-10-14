@@ -439,9 +439,12 @@ class PromptEngine:
 **JSON OUTPUT:**"""
 
         try:
-            options = {"temperature": 0.0}
-            if torch.cuda.is_available():
-                options["num_gpu_layers"] = -1
+            # num_gpu_layers is llama.cpp's spelling: Ollama accepts it, IGNORES it, and
+            # falls back to the Modelfile — and because this sent no num_ctx either, it
+            # asked for an auto-sized runner that nothing else matched and reloaded the
+            # model. One shared set, from the one place that owns it.
+            from src.services.ollama_client import load_options as _load_options
+            options = {**_load_options(), "temperature": 0.0}
             response = ollama.generate(
                 model=self.llm_model,
                 prompt=prompt,

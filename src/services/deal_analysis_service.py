@@ -16,7 +16,9 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from src.services.db import get_conn
+from src.services.formulas import ensure_registered, evaluate
 from src.services.deal_summary import gather_deal_context
+from src.services.version_collapse import latest_per_family
 
 log = logging.getLogger(__name__)
 
@@ -100,13 +102,30 @@ def _items_from(docs: list[dict]) -> list[dict]:
     return items
 
 
+def _reference_quotes(quotes: list[dict], awarded_supplier) -> list[dict]:
+    """The bid the deal stands on: the awarded supplier's latest versions, else the lowest
+    current bid. A deal's quotes are competing bids revised in rounds; totalling, averaging or
+    listing all of them describes no real offer (same rule as bp_deal_overview.quote_total)."""
+    latest = latest_per_family(sorted(quotes, key=lambda q: str(q.get("quote_id") or "")))
+    ref = [q for q in latest if awarded_supplier and q.get("supplier_id") == awarded_supplier]
+    if ref:
+        return ref
+    priced = [q for q in latest if _num(q.get("total_amount")) is not None]
+    return [min(priced, key=lambda q: (_num(q.get("total_amount")), str(q.get("quote_id"))))] if priced else latest[:1]
+
+
 def _compute(ctx: dict, cur) -> dict:
     docs = ctx["documents"]
-    inv, po, quote = docs["invoices"], docs["purchase_orders"], docs["quotes"]
+    inv, po, all_quotes = docs["invoices"], docs["purchase_orders"], docs["quotes"]
+    awarded = _first_present(inv, "supplier_id") or _first_present(po, "supplier_id")
+    quote = _reference_quotes(all_quotes, awarded)
 
+    # The deal's supplier: invoiced / ordered from, else the only bidder. With competing bids
+    # and no award there is no single supplier -- not whichever quote happened to come first.
+    bidders = {q.get("supplier_id") or q.get("quote_id") for q in latest_per_family(all_quotes)}
     supplier = (_first_present(inv, "supplier_name")
                 or _first_present(po, "supplier_name")
-                or _first_present(quote, "supplier_name"))
+                or (_first_present(quote, "supplier_name") if len(bidders) == 1 else None))
 
     # deal value / currency: prefer invoice, then PO, then quote
     deal_value = _doc_total(inv)
@@ -124,22 +143,30 @@ def _compute(ctx: dict, cur) -> dict:
         volume = _sum_qty(quote)
     unit_price = (deal_value / volume) if (deal_value is not None and volume) else None
 
-    inv_unit = _weighted_unit_price(inv)
-    quote_unit = _weighted_unit_price(quote)
+    ensure_registered()
+
+    inv_unit = evaluate("deal.weighted_unit_price", {"documents": inv}).or_else(None)
+    quote_unit = evaluate("deal.weighted_unit_price", {"documents": quote}).or_else(None)
     if quote_unit is None:
-        quote_unit = _weighted_unit_price(po)
-    price_change_pct = _pct_change(inv_unit, quote_unit)
+        quote_unit = evaluate("deal.weighted_unit_price", {"documents": po}).or_else(None)
+    price_change_pct = evaluate(
+        "deal.pct_change", {"new": inv_unit, "base": quote_unit}
+    ).or_else(None)
 
     inv_vol = _sum_qty(inv)
     quote_vol = _sum_qty(quote)
     if quote_vol is None:
         quote_vol = _sum_qty(po)
-    volume_change_pct = _pct_change(inv_vol, quote_vol)
+    volume_change_pct = evaluate(
+        "deal.pct_change", {"new": inv_vol, "base": quote_vol}
+    ).or_else(None)
 
     # efficiency = realized savings = (quoted unit - invoiced unit) * invoiced volume
-    efficiency_score = None
-    if inv_unit is not None and quote_unit is not None and inv_vol is not None:
-        efficiency_score = round((quote_unit - inv_unit) * inv_vol, 2)
+    efficiency_score = evaluate("deal.realised_savings", {
+        "quoted_unit_price": quote_unit,
+        "invoiced_unit_price": inv_unit,
+        "invoiced_volume": inv_vol,
+    }).or_else(None)
 
     items = _items_from(inv) or _items_from(quote) or _items_from(po)
 

@@ -23,12 +23,19 @@ def hint_name(doc_type: str, vendor_key: str, field_name: str | None) -> str:
     return f"vhint::{doc_type}::{vendor_key}::{field_name or '_'}"
 
 
-def approve(proposal_id: int, approver: str) -> dict:
+def approve(proposal_id: int, approver: str | None) -> dict:
     """Approve a pending proposal → active versioned bp_prompt hint.
 
     Returns {"prompt_id": int, "version": int}. Raises ValueError if the
     proposal is missing or not pending.
+
+    ``approver`` is None when nobody is identified (ASK_AUTH_MODE=off). The
+    proposal's ``reviewed_by`` then records nobody. bp_prompt's
+    created_by/last_modified_by are NOT NULL DEFAULT 'system', so they get that
+    column default -- the table's own word for "no person" -- rather than
+    failing the approval.
     """
+    prompt_actor = approver or "system"
     with get_conn() as c:
         with c.cursor() as cur:
             cur.execute(
@@ -49,7 +56,7 @@ def approve(proposal_id: int, approver: str) -> dict:
                 "UPDATE proc.bp_prompt SET prompts_status = 0, last_modified_date = now(), "
                 "last_modified_by = %s WHERE prompt_name = %s "
                 "AND prompt_type = 'extraction_vendor_hint' AND prompts_status = 1",
-                (approver, name),
+                (prompt_actor, name),
             )
             cur.execute(
                 "SELECT COALESCE(MAX(version), 0) FROM proc.bp_prompt "
@@ -66,7 +73,7 @@ def approve(proposal_id: int, approver: str) -> dict:
                 "INSERT INTO proc.bp_prompt "
                 "(prompt_name, prompt_type, prompts_desc, prompts_status, version, created_by, last_modified_by) "
                 "VALUES (%s, 'extraction_vendor_hint', %s::jsonb, 1, %s, %s, %s) RETURNING prompt_id",
-                (name, desc, new_version, approver, approver),
+                (name, desc, new_version, prompt_actor, prompt_actor),
             )
             prompt_id = cur.fetchone()[0]
             cur.execute(
@@ -87,7 +94,7 @@ def approve(proposal_id: int, approver: str) -> dict:
     return {"prompt_id": prompt_id, "version": new_version}
 
 
-def reject(proposal_id: int, approver: str, reason: str | None = None) -> None:
+def reject(proposal_id: int, approver: str | None, reason: str | None = None) -> None:
     """Reject a pending proposal (records the reason; will not be re-proposed)."""
     with get_conn() as c:
         with c.cursor() as cur:

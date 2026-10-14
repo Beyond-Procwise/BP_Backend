@@ -19,6 +19,7 @@ from agents.opportunity_miner_agent import (
 )
 from agents.base_agent import AgentContext, AgentStatus
 from engines.policy_engine import PolicyEngine
+from engines.rule_book import RuleBook
 
 
 def _opportunity_policy_rows():
@@ -108,9 +109,61 @@ def _opportunity_policy_rows():
     ]
 
 
+#: Mirrors deploy/sql/2026-09-27_bp_rule.sql. Detection rules live in
+#: proc.bp_rule; the policy rows above no longer configure detectors.
+#: tests/migrations/test_2026_09_27_bp_rule.py proves this stays in step with
+#: the live table.
+_RULE_SEED = [
+    ("Price Benchmark Variance", "price_variance_check", "opportunity", "po_lines",
+     ["supplier_id", "item_id", "actual_price", "benchmark_price"], {}, "medium"),
+    ("Volume Consolidation", "volume_consolidation_check", "opportunity", "po_lines",
+     ["minimum_volume_gbp"], {}, "low"),
+    ("Contract Expiry Opportunity", "contract_expiry_check", "opportunity", "contracts",
+     ["negotiation_window_days"], {"negotiation_window_days": 90}, "medium"),
+    ("Supplier Risk Alert", "supplier_risk_check", "non_conformance", "supplier_master",
+     ["risk_threshold"], {}, "high"),
+    ("Maverick Spend Detection", "maverick_spend_check", "non_conformance", "purchase_orders",
+     ["minimum_value_gbp"], {}, "high"),
+    ("Duplicate Supplier", "duplicate_supplier_check", "opportunity", "po_lines",
+     ["minimum_overlap_gbp"], {}, "low"),
+    ("Category Overspend", "category_overspend_check", "non_conformance", "invoice_lines",
+     ["category_budgets"], {}, "medium"),
+    ("Inflation Pass-Through", "inflation_passthrough_check", "anomaly", "invoice_lines",
+     ["market_inflation_pct"], {}, "medium"),
+    ("Unused Contract Value", "unused_contract_value_check", "opportunity", "contracts",
+     ["minimum_unused_value_gbp"], {}, "low"),
+    ("Supplier Performance Deviation", "supplier_performance_check", "anomaly", "invoices",
+     ["performance_records"], {}, "medium"),
+    ("ESG Opportunity", "esg_opportunity_check", "opportunity", None,
+     ["esg_scores"], {}, "low"),
+    ("Invoice Overbilling", "invoice_po_variance_check", "anomaly", "invoice_lines",
+     ["variance_threshold_pct"], {"variance_threshold_pct": 10.0}, "high"),
+]
+
+
+def _rule_rows():
+    return [
+        {
+            "rule_id": i,
+            "rule_name": name,
+            "detector_slug": slug,
+            "finding_type": ftype,
+            "scope": scope,
+            "required_fields": json.dumps(required),
+            "conditions": json.dumps(conditions),
+            "severity": severity,
+            "rule_status": 1,
+            "version": 1,
+        }
+        for i, (name, slug, ftype, scope, required, conditions, severity)
+        in enumerate(_RULE_SEED, start=1)
+    ]
+
+
 class DummyNick:
     def __init__(self):
         self.policy_engine = PolicyEngine(policy_rows=_opportunity_policy_rows())
+        self.rule_book = RuleBook(rule_rows=_rule_rows())
         self.settings = SimpleNamespace(script_user="tester")
 
 
@@ -1932,6 +1985,9 @@ def test_registry_matches_numeric_policy_identifiers_without_catalog():
             self.settings = SimpleNamespace(script_user="tester")
             self.prompt_engine = SimpleNamespace()
             self.policy_engine = None
+            # No policy catalogue, but detection still needs its rules:
+            # the two are independent sources now.
+            self.rule_book = RuleBook(rule_rows=_rule_rows())
             self.process_routing_service = SimpleNamespace(
                 log_process=lambda **kwargs: None,
                 log_run_detail=lambda **kwargs: None,

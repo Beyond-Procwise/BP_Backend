@@ -26,11 +26,23 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from src.services import rbac
+from src.services import policy_condition, policy_observation, rbac
 
 logger = logging.getLogger(__name__)
+
+
+# The gate's three answers. "resolved" means a rule spoke -- allow or deny, and
+# either way somebody's rule is accountable for it. "unresolved" means the rule
+# deferred to policy and policy did not settle it: nothing said yes and nothing
+# said no. That is a question, not a grant, and it goes to a person.
+#
+# DecisionEngine already uses this vocabulary for the same idea; the gate now
+# shares it rather than inventing a second one.
+RESOLVED = "resolved"
+UNRESOLVED = "unresolved"
 
 
 @dataclass(frozen=True)
@@ -41,10 +53,38 @@ class Decision:
     policy_name: Optional[str] = None
     policy_version: Optional[int] = None
     evidence: Dict[str, Any] = field(default_factory=dict)
+    resolution: str = RESOLVED
+
+    @property
+    def unresolved(self) -> bool:
+        """Nobody's rule answered this. It needs a human, not a default."""
+
+        return self.resolution == UNRESOLVED
 
 
 def _deny(reason: str, **evidence: Any) -> Decision:
     return Decision(allowed=False, reason=reason, evidence=dict(evidence))
+
+
+def _unresolved(
+    reason: str, policy: Optional[Dict[str, Any]] = None, **evidence: Any
+) -> Decision:
+    """No rule settled this.
+
+    ``allowed`` is False so that a caller which only checks ``decision.allowed``
+    -- which is all four of today's call sites -- fails closed exactly as it did
+    before. The difference is that this one is also put in front of a person
+    instead of being refused in silence.
+    """
+
+    attribution = policy_attribution(policy)
+    return Decision(
+        allowed=False,
+        reason=reason,
+        evidence=dict(evidence),
+        resolution=UNRESOLVED,
+        **attribution,
+    )
 
 
 def _version_of(policy: Dict[str, Any]) -> Optional[int]:
@@ -97,20 +137,25 @@ def deny_from_policy(
     return Decision(allowed=False, reason=reason, evidence=dict(evidence), **attribution)
 
 
-def authorize(
+def _evaluate(
     action: str,
     action_class: str,
     principal: Optional[Any],
     context: Optional[Dict[str, Any]] = None,
     policy_engine: Optional[Any] = None,
 ) -> Decision:
-    """Decide whether ``principal`` may perform ``action``.
+    """The real decision, with no knowledge of shadow mode.
 
-    ``context`` is accepted for interface symmetry with callers that carry
-    request-scoped data, but is not read by this function today. It is
-    intentionally left uncoerced: a coercion that is never used can only
-    ever turn a caller's type error into a silently swallowed denial,
-    hiding a bug in the caller rather than surfacing it.
+    Split out of ``authorize`` unchanged. Shadow mode is decided once, at the
+    boundary, rather than threaded through the evaluation logic -- a mode check
+    scattered through here is how a deliberate hole becomes an accidental one.
+
+    Decide whether ``principal`` may perform ``action``.
+
+    ``context`` is read only by a policy's ``details.condition`` (see
+    :mod:`policy_condition`), and left uncoerced: a context that is not a dict
+    simply carries no fields, so a condition on it cannot be checked and the
+    request goes to a person rather than being waved through.
     """
 
     try:
@@ -155,12 +200,50 @@ def authorize(
                 f"role {role} may not perform {action_class}",
                 action=action,
                 role=role,
+                # What the role was resolved from, so the refusal can be acted on:
+                # no groups on the sign-in, groups the mapping does not know, or
+                # a grant that was not enough.
+                role_from=rbac.role_basis(principal, policy_engine=engine),
             )
 
         allowing: Optional[Dict[str, Any]] = None
+        deferring: Optional[Dict[str, Any]] = None
         for policy in policies:
             details = policy.get("details") or {}
             rules = details.get("rules") or {}
+
+            # A condition narrows WHEN the policy applies. One that does not
+            # apply is skipped whole -- including its required_role -- but one
+            # that cannot be checked is never skipped: a deny must not stop
+            # denying because the caller left out a field.
+            if "condition" in details:
+                try:
+                    applies = policy_condition.evaluate(
+                        details["condition"], context
+                    )
+                except policy_condition.MissingField as exc:
+                    return _unresolved(
+                        f"{policy.get('policyName')} has a condition on "
+                        f"{exc.field!r}, which this request did not carry, so "
+                        f"it cannot be said whether it applies",
+                        policy,
+                        action=action,
+                        action_class=action_class,
+                        role=role,
+                        missing_field=exc.field,
+                    )
+                except policy_condition.ConditionError as exc:
+                    # Unenforceable as written: deny, as an unresolvable
+                    # required_role does, rather than let it evaporate.
+                    return deny_from_policy(
+                        f"{policy.get('policyName')} has a condition that "
+                        f"cannot be evaluated: {exc}",
+                        policy,
+                        action=action,
+                        role=role,
+                    )
+                if not applies:
+                    continue
 
             required_role = details.get("required_role")
             if required_role:
@@ -189,7 +272,9 @@ def authorize(
                         role=role,
                     )
 
-            if str(rules.get("effect") or "").lower() == "deny":
+            effect = str(rules.get("effect") or "").lower()
+
+            if effect == "deny":
                 return deny_from_policy(
                     str(rules.get("reason") or "denied by policy"),
                     policy,
@@ -197,21 +282,46 @@ def authorize(
                     role=role,
                 )
 
-            if allowing is None:
+            # A permit must be STATED. This used to read "matched and did not
+            # deny" as consent, which meant a policy with nothing to say about
+            # permission -- a scoring config given an applies_to, say -- became
+            # the policy that authorised the action. Matching is applicability;
+            # it is not agreement.
+            if effect == "allow" and allowing is None:
                 allowing = policy
+            elif effect not in ("allow", "deny") and deferring is None:
+                deferring = policy
 
         if allowing is None:
-            if irreversible:
-                return _deny(
-                    f"no policy permits {action}; irreversible actions are "
-                    "default-deny",
+            if deferring is not None:
+                return _unresolved(
+                    f"{deferring.get('policyName')} applies to {action} but "
+                    "states no effect, so it has not permitted or refused it",
+                    deferring,
                     action=action,
                     action_class=action_class,
                     role=role,
                 )
+            if irreversible:
+                # Not a deny: nothing refused this, nothing permitted it, and
+                # refusing in silence is the gate deciding alone. Ask.
+                return _unresolved(
+                    f"no policy speaks to {action}, and {action_class} cannot "
+                    "be assumed safe",
+                    action=action,
+                    action_class=action_class,
+                    role=role,
+                )
+            # Resolved, and by a named rule: RoleDefinitionPolicy is what
+            # declares these classes reversible. Attributing it is the
+            # difference between an answer and a silence.
             return Decision(
                 allowed=True,
-                reason=f"{action_class} is not irreversible and no policy denies it",
+                reason=(
+                    f"{action_class} is a reversible class under "
+                    f"RoleDefinitionPolicy and no policy denies {action}"
+                ),
+                policy_name="RoleDefinitionPolicy",
                 evidence={"action": action, "role": role},
             )
 
@@ -236,9 +346,192 @@ def authorize(
         )
 
     except Exception as exc:  # noqa: BLE001 - a broken gate is a closed gate
-        logger.error("guardrail.authorize(%s) failed: %s", action, exc)
+        logger.error("guardrail evaluation of %s failed: %s", action, exc)
         return _deny(
             "policy evaluation failed; denying",
             action=action,
             error=str(exc),
         )
+
+
+# ---------------------------------------------------------------------------
+# Shadow mode
+#
+# A deliberate hole, so the rules around it are stated in code rather than left
+# to configuration:
+#
+#   * These two actions can never be shadowed. They are enforced today at four
+#     call sites and are the only things in this product that reliably refuse.
+#     A list in a policy row could enrol them by accident or by edit; this
+#     cannot.
+#   * An enrolment without an expiry is not an enrolment. Shadow mode must not
+#     become the permanent state because nobody got round to the next step.
+#   * No record, no shadow. Allowing without recording gives neither the safety
+#     of the refusal nor the data it was traded for.
+# ---------------------------------------------------------------------------
+
+NEVER_SHADOW = frozenset({"email.send", "approval.email"})
+
+_SHADOW_SLUG = "shadow_mode"
+
+
+def _shadow_expiry(action: str, engine: Optional[Any]) -> Optional[datetime]:
+    """When this action's shadow enrolment ends, or ``None`` if it is not enrolled."""
+
+    if action in NEVER_SHADOW or engine is None:
+        return None
+    try:
+        policy = engine.get_policy(_SHADOW_SLUG)
+        rules = ((policy or {}).get("details") or {}).get("rules") or {}
+        for entry in rules.get("shadow_actions") or []:
+            if not isinstance(entry, dict) or entry.get("action") != action:
+                continue
+            raw = entry.get("until")
+            if not raw:
+                # A missing expiry is not an unlimited one.
+                return None
+            parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed
+    except Exception as exc:  # noqa: BLE001 - unreadable config means enforce
+        logger.error("shadow config unreadable for %s: %s", action, exc)
+    return None
+
+
+def shadow_status(engine: Optional[Any] = None) -> Dict[str, Any]:
+    """What is enrolled and until when. Surfaced on /health.
+
+    A control that is off must be visible, not something discovered by reading
+    code -- the same reason ``ask_auth`` is reported there.
+    """
+
+    resolved = engine if engine is not None else rbac.policy_engine()
+    out: Dict[str, Any] = {"enrolled": [], "never_shadowed": sorted(NEVER_SHADOW)}
+    try:
+        policy = resolved.get_policy(_SHADOW_SLUG) if resolved else None
+        rules = ((policy or {}).get("details") or {}).get("rules") or {}
+        now = datetime.now(timezone.utc)
+        for entry in rules.get("shadow_actions") or []:
+            if not isinstance(entry, dict):
+                continue
+            action = entry.get("action")
+            expiry = _shadow_expiry(str(action or ""), resolved)
+            out["enrolled"].append(
+                {
+                    "action": action,
+                    "until": entry.get("until"),
+                    "active": bool(expiry and expiry > now),
+                }
+            )
+    except Exception as exc:  # noqa: BLE001
+        out["error"] = str(exc)
+    return out
+
+
+def authorize(
+    action: str,
+    action_class: str,
+    principal: Optional[Any],
+    context: Optional[Dict[str, Any]] = None,
+    policy_engine: Optional[Any] = None,
+) -> Decision:
+    """Decide whether ``principal`` may perform ``action``, and write it down.
+
+    The decision itself is ``_evaluate``'s and is not influenced by anything
+    here. This function records what was decided and, for an action explicitly
+    enrolled in shadow mode with an unexpired entry, declines to apply a denial
+    so the effect of a rule can be measured before it is felt.
+
+    Every decision is recorded, allows included: "we observed no denials" and
+    "we were not observing" are otherwise the same observation.
+    """
+
+    decision = _evaluate(action, action_class, principal, context, policy_engine)
+
+    engine = policy_engine if policy_engine is not None else rbac.policy_engine()
+
+    # Shadow mode softens a REFUSAL so its cost can be measured. It must never
+    # soften a deferral: allowing something through while simultaneously asking
+    # whether it is allowed grants the very thing in question. An unresolved
+    # decision is always refused and always asked.
+    refused_by_a_rule = not decision.allowed and not decision.unresolved
+    expiry = _shadow_expiry(action, engine) if refused_by_a_rule else None
+    shadowed = bool(expiry and expiry > datetime.now(timezone.utc))
+
+    try:
+        recorded = policy_observation.record(
+            action=action,
+            action_class=action_class,
+            principal_subject=getattr(principal, "subject", None),
+            role=(decision.evidence or {}).get("role"),
+            would_have_denied=not decision.allowed,
+            shadowed=shadowed,
+            policy_id=decision.policy_id,
+            policy_name=decision.policy_name,
+            policy_version=decision.policy_version,
+            reason=decision.reason,
+            evidence=decision.evidence,
+        )
+    except Exception as exc:  # noqa: BLE001 - bookkeeping must not break the gate
+        logger.error("policy observation failed for %s: %s", action, exc)
+        recorded = False
+
+    if decision.unresolved:
+        # A question, not a verdict. Ask it, and keep refusing while it is
+        # unanswered. An escalation that cannot be raised is logged loudly by
+        # the decision engine and changes nothing here: unasked is not consent.
+        try:
+            _raise_for_a_human(
+                action=action,
+                action_class=action_class,
+                principal_subject=getattr(principal, "subject", None),
+                role=(decision.evidence or {}).get("role"),
+                reason=decision.reason,
+                policy_id=decision.policy_id,
+                policy_name=decision.policy_name,
+                evidence=decision.evidence,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("could not raise %s for review: %s", action, exc)
+        return decision
+
+    if not shadowed:
+        return decision
+
+    if not recorded:
+        # No record, no shadow. Allowing here would spend the refusal and buy
+        # nothing with it.
+        logger.warning(
+            "shadow mode for %s could not be recorded; the denial stands", action
+        )
+        return decision
+
+    logger.info(
+        "SHADOW: %s would have been denied (%s) and was allowed through",
+        action,
+        decision.reason,
+    )
+    return Decision(
+        allowed=True,
+        reason=(
+            f"shadow mode: this would have been denied -- {decision.reason} -- "
+            f"and was allowed through so the effect could be measured"
+        ),
+        policy_id=decision.policy_id,
+        policy_name=decision.policy_name,
+        policy_version=decision.policy_version,
+        evidence={**(decision.evidence or {}), "shadowed": True},
+    )
+
+
+def _raise_for_a_human(**fields: Any) -> Optional[int]:
+    """Route an unresolved authorization to the decision engine.
+
+    Imported lazily: the gate is loaded by rbac and by every send path, and it
+    must not drag the decision engine's dependencies in behind it.
+    """
+
+    from src.engines.decision_engine import escalate_authorization
+
+    return escalate_authorization(**fields)

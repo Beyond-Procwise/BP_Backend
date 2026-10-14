@@ -5,7 +5,6 @@ _os.environ.setdefault("HF_HUB_OFFLINE", "1")
 _os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 _os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
 
-import boto3
 from botocore.config import Config
 import json
 import logging
@@ -17,14 +16,14 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Mapping
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union, Mapping
 from urllib.parse import quote_plus
 import threading
 
 import psycopg2
 from http import HTTPStatus
 
-from qdrant_client import QdrantClient, models
+from qdrant_client import models  # dataclasses only; the client is built by services.egress
 from sentence_transformers import SentenceTransformer
 import ollama
 from ollama._types import ResponseError
@@ -32,6 +31,7 @@ from ollama._types import ResponseError
 from config.settings import settings
 from orchestration.prompt_engine import PromptEngine
 from engines.policy_engine import PolicyEngine
+from engines.rule_book import load_rule_book
 from engines.query_engine import QueryEngine
 from engines.routing_engine import RoutingEngine
 from services.process_routing_service import ProcessRoutingService
@@ -41,6 +41,7 @@ from services.workflow_memory_service import WorkflowMemoryService
 from utils.gpu import configure_gpu
 # One shared GPU-layer count: a different value makes Ollama load a SECOND copy of
 # the model and blocks the caller for minutes while it does.
+from src.services import ollama_client as _ollama_client
 from src.services.ollama_client import ALL_GPU_LAYERS as _OLLAMA_ALL_GPU_LAYERS
 
 try:  # Optional imports used for dataset persistence
@@ -121,6 +122,46 @@ _AGENT_MODEL_FIELD_PREFERENCES: Dict[str, Tuple[str, ...]] = {
 }
 
 
+# Tools a workflow node's reasoning loop must never reach: the one tool that
+# sends real email. Dispatch stays a drawable node with its own atomic-claim
+# protection (agent_workflows._claim_and_execute); a loop must not trigger it.
+NODE_TOOL_EXCLUSIONS: Tuple[str, ...] = ("run_email_dispatch",)
+
+# Keys the orchestrator injects into a node's input for the agent's own use
+# (governance rows, model choice). They are not workflow facts and would only
+# crowd the model's context.
+_NODE_TASK_SKIP_KEYS = frozenset({"prompts", "policies", "llm", "workflow_id"})
+_NODE_TASK_MAX_CHARS = 6000
+
+# How much of what governs a created agent is written into its system prompt.
+# Anything beyond is named, with the tool that fetches it.
+_BRIEF_POLICY_CHARS = 6000
+_BRIEF_PROMPT_CHARS = 4000
+
+
+def _render_node_task(input_data: Any) -> str:
+    """The workflow's state so far, as the task for a reasoning node."""
+    facts: Dict[str, Any] = {}
+    if isinstance(input_data, dict):
+        for key, value in input_data.items():
+            if not isinstance(key, str) or key in _NODE_TASK_SKIP_KEYS or key.startswith("_"):
+                continue
+            facts[key] = value
+    try:
+        rendered = json.dumps(facts, ensure_ascii=False, default=str, indent=1)
+    except Exception:  # pragma: no cover - defensive
+        rendered = str(facts)
+    if len(rendered) > _NODE_TASK_MAX_CHARS:
+        rendered = rendered[:_NODE_TASK_MAX_CHARS] + "\n... (truncated)"
+    return (
+        "You are one step in a procurement workflow. Carry out your instructions "
+        "using the tools, then answer with what you found or decided, concretely. "
+        "Write plain prose: no markdown, no bold marks, no bullet symbols.\n\n"
+        "What the workflow has so far (inputs and earlier steps' outputs):\n"
+        f"{rendered}"
+    )
+
+
 class AgentStatus(str, Enum):
     """Execution status for an agent."""
 
@@ -134,7 +175,11 @@ class AgentContext:
 
     workflow_id: str
     agent_id: str
-    user_id: str
+    # The subject of the person who started this run, or None when no person
+    # did (a scheduled job, a watcher, authentication switched off). Never a
+    # stand-in: the self-approval bar compares it with an approver, and a name
+    # like "AgentNick" can neither match a person nor be told apart from one.
+    user_id: Optional[str]
     input_data: Dict[str, Any]
     parent_agent: Optional[str] = None
     routing_history: List[str] = field(default_factory=list)
@@ -232,6 +277,27 @@ class AgentOutput:
     agentic_plan: Optional[str] = None
     context_snapshot: Optional[Dict[str, Any]] = None
 
+def _context_dataset_writer_for(settings: Any) -> Any:
+    """The writer an agent captures its runs with, or None when capture is off.
+
+    Off means ``context_training_capture_enabled`` is false or the directory is
+    blank. The directory is only created when something will be written to it.
+    """
+    if not (ConversationDatasetWriter and TrainingConfig):
+        return None
+    if not getattr(settings, "context_training_capture_enabled", True):
+        return None
+    try:
+        data_dir = getattr(
+            settings, "context_training_data_dir", TrainingConfig().data_dir
+        )
+        if data_dir:
+            return ConversationDatasetWriter(data_dir)
+    except Exception:
+        logger.debug("Failed to initialise context dataset writer", exc_info=True)
+    return None
+
+
 class BaseAgent:
     DEFAULT_AGENTIC_PLAN_STEPS: Tuple[str, ...] = (
         "Review the incoming context and clarify the task objectives.",
@@ -260,24 +326,346 @@ class BaseAgent:
         self.prompt_engine = prompt_engine
         self.learning_repository = getattr(agent_nick, "learning_repository", None)
         dataset_writer = getattr(agent_nick, "_context_dataset_writer", None)
-        if dataset_writer is None and ConversationDatasetWriter and TrainingConfig:
-            try:
-                data_dir = getattr(
-                    self.settings,
-                    "context_training_data_dir",
-                    TrainingConfig().data_dir if TrainingConfig else None,
-                )
-                if data_dir:
-                    dataset_writer = ConversationDatasetWriter(data_dir)
-            except Exception:
-                logger.debug("Failed to initialise context dataset writer", exc_info=True)
-                dataset_writer = None
+        if dataset_writer is None:
+            dataset_writer = _context_dataset_writer_for(self.settings)
             if dataset_writer is not None:
                 setattr(agent_nick, "_context_dataset_writer", dataset_writer)
         self._context_dataset_writer = dataset_writer
 
     def run(self, *args, **kwargs):
         raise NotImplementedError("Each agent must implement its own 'run' method.")
+
+    # ------------------------------------------------------------------
+    # Reasoning with tools (programme item A4)
+    # ------------------------------------------------------------------
+    def instructions(self) -> Optional[str]:
+        """The instructions a person gave THIS agent, or None.
+
+        Stored by the workspace as the ``<slug>_instructions`` bp_prompt row
+        linked to the derived agent's slug. Until A4 nothing read it back.
+        """
+        return self.resolve_prompt(f"{self._governance_slug()}_instructions")
+
+    def reason(self, task: str, **kwargs: Any):
+        """Plan and act on ``task`` with AgentNick's governed tools, under this
+        agent's own instructions.
+
+        Same loop as ``AgentNick.reason`` — corpus facts, governed policies and
+        prompts, registered agents as tools — with this agent's instructions
+        added to the system prompt. ``NODE_TOOL_EXCLUSIONS`` applies unless the
+        caller passes its own ``exclude``.
+
+        An agent given a list of tools (``allowed_tools``, stamped from the
+        catalogue) reasons with those and no others; an empty list is no tools.
+        An agent never given a list is not narrowed.
+        """
+        from orchestration.agentnick_control import reason as _reason
+
+        parts = [
+            p
+            for p in (
+                self.instructions(),
+                self.governance_brief(),
+                kwargs.pop("extra_system", None),
+            )
+            if p
+        ]
+        kwargs.setdefault("exclude", NODE_TOOL_EXCLUSIONS)
+        own_slug = getattr(self, "governance_slug", None)
+        if own_slug:
+            # An agent is never one of its own tools.
+            kwargs["exclude"] = tuple(kwargs["exclude"]) + (f"run_{own_slug}",)
+        allowed = getattr(self, "allowed_tools", None)
+        if allowed is not None:
+            kwargs.setdefault("only", list(allowed))
+        # The model this agent was given, if it was given one. Strict: an agent
+        # with no model of its own gets None — the standard model — not some
+        # other agent's fallback.
+        resolver = getattr(self.agent_nick, "get_agent_model", None)
+        if own_slug and callable(resolver):
+            try:
+                own_model = resolver(own_slug, strict=True)
+            except Exception:  # pragma: no cover - defensive
+                logger.warning("model of %s could not be resolved", own_slug, exc_info=True)
+                own_model = None
+            if own_model:
+                kwargs.setdefault("model", own_model)
+        kwargs.setdefault("agent", self._governance_slug())   # who is calling, for the policy gate
+        return _reason(
+            self.agent_nick,
+            task,
+            extra_system="\n\n".join(parts) or None,
+            **kwargs,
+        )
+
+    def governance_brief(self) -> Optional[str]:
+        """What governs THIS created agent, as text for its system prompt.
+
+        The policies and prompts linked to the agent's own slug. Before this a
+        link was a record and nothing more: the loop was given the agent's
+        instructions, and everything else governing it had to be asked for by
+        name. Policies are stated as binding and come with their values;
+        linked prompts are guidance. The agent's own instructions are not
+        repeated here.
+
+        Whatever does not fit the budget is still NAMED, with the tool that
+        fetches it — never left out without a word. ``None`` for an agent that
+        is not a created one, or that has nothing linked.
+        """
+        if not getattr(self, "governance_slug", None):
+            return None
+        slug = self._governance_slug()
+
+        policies: List[Tuple[str, str]] = []
+        engine = getattr(self.agent_nick, "policy_engine", None)
+        try:
+            for policy in (engine.list_policies() if engine is not None else []):
+                linked = {_slugify_agent_name(a) for a in policy.get("policy_linked_agents") or []}
+                if slug not in linked:
+                    continue
+                name = str(policy.get("policyName") or policy.get("slug") or "").strip()
+                if not name:
+                    continue
+                lines = [f"- {name}"]
+                if policy.get("policy_desc"):
+                    lines.append(f"  {str(policy['policy_desc']).strip()}")
+                details = policy.get("details")
+                if details:
+                    lines.append(
+                        "  " + json.dumps(details, ensure_ascii=False, default=str, sort_keys=True)
+                    )
+                policies.append((name, "\n".join(lines)))
+        except Exception:  # pragma: no cover - defensive
+            logger.warning("governance_brief: policies unreadable for %s", slug, exc_info=True)
+
+        prompts: List[Tuple[str, str]] = []
+        own = f"{slug}_instructions"
+        try:
+            prompt_engine = getattr(self, "prompt_engine", None)
+            for prompt in (prompt_engine.prompts_for_agent(slug) if prompt_engine else []):
+                name = str(prompt.get("promptName") or "").strip()
+                template = prompt.get("template")
+                if not name or not template or _slugify_agent_name(name) == own:
+                    continue
+                prompts.append((name, f"- {name}\n  {str(template).strip()}"))
+        except Exception:  # pragma: no cover - defensive
+            logger.warning("governance_brief: prompts unreadable for %s", slug, exc_info=True)
+
+        sections: List[str] = []
+        for heading, items, budget, tool in (
+            (
+                "Policies that bind you. You must not act against any of them, and "
+                "where one sets a value you use that value:",
+                policies, _BRIEF_POLICY_CHARS, "get_policy",
+            ),
+            ("Guidance linked to you:", prompts, _BRIEF_PROMPT_CHARS, "get_prompt"),
+        ):
+            if not items:
+                continue
+            shown: List[str] = []
+            named_only: List[str] = []
+            used = 0
+            for name, text in items:
+                if used + len(text) <= budget:
+                    shown.append(text)
+                    used += len(text)
+                else:
+                    named_only.append(name)
+            block = [heading, *shown]
+            if named_only:
+                block.append(
+                    f"These also apply and are not shown in full; read each with {tool} "
+                    f"before you answer: {', '.join(named_only)}"
+                )
+            sections.append("\n".join(block))
+        return "\n\n".join(sections) or None
+
+    def run_tool_loop(self, context: "AgentContext") -> "AgentOutput":
+        """Run this workflow node by reasoning with tools.
+
+        The task is what the workflow has produced so far (the node's input
+        data, minus the governance blobs the orchestrator injects). The result
+        is a normal node result: the answer, which tools were used, and a trace
+        of what each was asked — never what it returned, which can be raw rows.
+        """
+        from services.tool_runtime import count_tokens
+
+        task = _render_node_task(context.input_data)
+        started_at = datetime.utcnow()
+        # The calculations this agent was declared to need are run first and
+        # stated in its task. It is not asked whether to run them, and the task
+        # that is recorded is the task it was actually given.
+        calculations = self._required_calculation_results(context)
+        if calculations:
+            from services import calculation_tools
+
+            task = f"{task}\n\n{calculation_tools.render_required(calculations)}"
+        with count_tokens() as usage:
+            result, outputs, outputs_error = self._reason_and_fill(context, task)
+        run_id, recorded = self._record_reasoning_run(
+            context, task, result, started_at, outputs=outputs, usage=usage
+        )
+        output = self._tool_loop_output(result, outputs, outputs_error, run_id, recorded, usage)
+        if calculations:
+            output.data["calculations"] = calculations
+        if result.answer and not result.error:
+            untraced = self._untraced_figures(task, result)
+            # Reported, not enforced: the answer stands, and a reader can see
+            # which of its figures were not read from anything the run was given.
+            output.data["untraced_figures"] = untraced
+            if untraced:
+                logger.warning(
+                    "run %s of %s states figures found in nothing it was given: %s",
+                    run_id, self._governance_slug(), ", ".join(untraced),
+                )
+        return output
+
+    def _required_calculation_results(
+        self, context: "AgentContext"
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Run the calculations declared on this agent, or None if it has none.
+
+        A failure to run them is not a quiet absence: each is reported to the
+        agent as not assessed, so it cannot read silence as licence to estimate.
+        """
+        names = getattr(self, "required_calculations", None)
+        if not names:
+            return None
+        try:
+            from services import calculation_tools
+
+            return calculation_tools.run_required(
+                names, context.input_data, trace_id=context.workflow_id
+            )
+        except Exception as exc:
+            logger.error(
+                "required calculations of %s could not be run", self._governance_slug(),
+                exc_info=True,
+            )
+            return [
+                {"calculation": name, "assessed": False,
+                 "why": f"the calculation could not be run: {exc}"}
+                for name in names
+            ]
+
+    def _untraced_figures(self, task: str, result: Any) -> List[str]:
+        try:
+            from services import calculation_tools
+
+            return calculation_tools.untraced_figures(
+                result.answer,
+                [task, getattr(result, "system", "") or "",
+                 *(c.result for c in result.calls if c.ok)],
+            )
+        except Exception:  # pragma: no cover - a check must not fail the run it checks
+            logger.warning("figure check failed for %s", self._governance_slug(), exc_info=True)
+            return []
+
+    def _reason_and_fill(self, context: "AgentContext", task: str):
+        """The run itself: reason with tools, then fill the named outputs.
+        Returns ``(result, outputs, outputs_error)``."""
+        result = self.reason(
+            task, workflow_id=context.workflow_id, user_id=context.user_id
+        )
+        # The outputs a person named for this agent, filled in from this run.
+        # Only for a run that produced an answer: a failed run has nothing to
+        # fill them from, and asking would invite invention.
+        outputs: Optional[Dict[str, Dict[str, Any]]] = None
+        outputs_error: Optional[str] = None
+        spec = getattr(self, "output_spec", None)
+        if spec and result.answer and not result.error:
+            from agents import named_outputs
+
+            try:
+                outputs = named_outputs.fill(
+                    spec, task=task, calls=result.calls, answer=result.answer,
+                    model=getattr(result, "model", "") or None,
+                )
+            except Exception as exc:
+                logger.error(
+                    "named outputs of %s could not be filled", self._governance_slug(),
+                    exc_info=True,
+                )
+                outputs = {s["name"]: named_outputs.missing() for s in spec}
+                outputs_error = str(exc)
+        return result, outputs, outputs_error
+
+    def _tool_loop_output(
+        self, result: Any, outputs: Optional[Dict[str, Dict[str, Any]]],
+        outputs_error: Optional[str], run_id: str, recorded: bool, usage: Dict[str, int],
+    ) -> "AgentOutput":
+        data: Dict[str, Any] = {
+            # The record that can explain this run later — what the agent was
+            # told, which model answered, what each tool returned. ``recorded``
+            # is False when it could not be written, so a run that cannot be
+            # explained never looks like one that can.
+            "run_id": run_id,
+            "recorded": recorded,
+            # What the run cost: every model call it made, the named outputs
+            # and any agent it called included.
+            "usage": dict(usage),
+            "tools_used": list(result.tools_used),
+            "rounds": result.rounds,
+            "trace": [
+                {"name": c.name, "arguments": c.arguments, "ok": c.ok, "error": c.error}
+                for c in result.calls
+            ],
+        }
+        if result.error and not result.answer:
+            return AgentOutput(status=AgentStatus.FAILED, data=data, error=result.error)
+        data["answer"] = result.answer
+        if outputs is not None:
+            data["outputs"] = outputs
+            if outputs_error:
+                data["outputs_error"] = outputs_error
+            # Each output with a value is also published under its own name, so
+            # the next step in a workflow can use it. A missing one publishes nothing.
+            for name, filled in outputs.items():
+                if filled.get("value") is not None:
+                    data[name] = filled["value"]
+        return AgentOutput(status=AgentStatus.SUCCESS, data=data)
+
+    def _record_reasoning_run(
+        self, context: "AgentContext", task: str, result: Any, started_at: datetime,
+        *, outputs: Optional[Dict[str, Dict[str, Any]]] = None,
+        usage: Optional[Dict[str, int]] = None,
+    ) -> Tuple[str, bool]:
+        """Store the run. Returns its id and whether it was written.
+
+        A record that cannot be written does not fail the run: the work is done
+        and the answer stands. It is logged as an error and reported on the result.
+        """
+        from repositories import agent_run_repo
+
+        run_id = agent_run_repo.new_run_id()
+        try:
+            agent_run_repo.record(
+                run_id=run_id,
+                agent_slug=getattr(self, "governance_slug", None) or self._governance_slug(),
+                workflow_id=context.workflow_id,
+                user_id=context.user_id,
+                model=getattr(result, "model", "") or None,
+                system_prompt=getattr(result, "system", "") or "",
+                task=task,
+                tools_offered=list(getattr(result, "tools_offered", []) or []),
+                calls=list(result.calls),
+                answer=result.answer,
+                rounds=result.rounds,
+                error=result.error,
+                outputs=outputs,
+                prompt_tokens=(usage or {}).get("prompt_tokens", 0),
+                completion_tokens=(usage or {}).get("completion_tokens", 0),
+                model_calls=(usage or {}).get("model_calls", 0),
+                started_at=started_at,
+                finished_at=datetime.utcnow(),
+            )
+            return run_id, True
+        except Exception:
+            logger.error(
+                "reasoning run %s of %s could not be recorded", run_id,
+                self._governance_slug(), exc_info=True,
+            )
+            return run_id, False
 
     def set_workflow_context(self, wf_ctx) -> None:
         """Attach a WorkflowContext for inter-agent communication."""
@@ -400,12 +788,19 @@ class BaseAgent:
             logger.debug("governing_policy: get_policy failed", exc_info=True)
             return None
 
-    def execute(self, context: "AgentContext") -> "AgentOutput":
+    def execute(
+        self, context: "AgentContext", *, tool_loop: bool = False
+    ) -> "AgentOutput":
         """Execute the agent with process logging.
 
         This centralises writes to ``proc.routing`` and ``proc.bp_action`` so that
         every agent invocation is captured in the database regardless of how it
         is triggered.
+
+        ``tool_loop=True`` (a workflow node built from a canvas-made agent) swaps
+        the agent's fixed ``run`` for :meth:`run_tool_loop` — the governed
+        AgentNick loop under this agent's own instructions. Everything around
+        it — logging, memory, the plan, the context snapshot — is unchanged.
         """
 
         routing_service = getattr(self.agent_nick, "process_routing_service", None)
@@ -423,11 +818,25 @@ class BaseAgent:
                     error=f"Workflow ID mismatch for process {context.process_id}",
                 )
 
+        # A draft agent runs for the person who created it and nobody else,
+        # however the run was started. ``draft_owner`` is None for a published
+        # agent; an empty owner (a draft nobody is named for) runs for no one.
+        draft_owner = getattr(self, "draft_owner", None)
+        if draft_owner is not None and (not context.user_id or context.user_id != draft_owner):
+            return AgentOutput(
+                status=AgentStatus.FAILED,
+                data={},
+                error=(
+                    "This agent is a draft. Only the person who created it can run it "
+                    "until someone else publishes it."
+                ),
+            )
+
         logger.info("%s: starting", self.__class__.__name__)
         start_ts = datetime.utcnow()
         try:
             snapshot = self._prepare_context(context)
-            result = self.run(context)
+            result = self.run_tool_loop(context) if tool_loop else self.run(context)
             if isinstance(result, AgentOutput):
                 result = self._with_plan(context, result)
                 result = self._with_context_snapshot(context, result, snapshot)
@@ -456,7 +865,8 @@ class BaseAgent:
                 process_name=self.__class__.__name__,
                 process_details={"input": logged_input, "output": logged_output},
                 user_id=context.user_id,
-                user_name=self.agent_nick.settings.script_user,
+                # No user_name: the gateway fills this column with a person's
+                # display name, and the service's own name there read as one.
                 process_status=0,
                 workflow_id=context.workflow_id,
             )
@@ -996,7 +1406,7 @@ class BaseAgent:
         self,
         prompt: Optional[str] = None,
         model: Optional[str] = None,
-        format: Optional[str] = None,
+        format: Optional[Union[str, Dict[str, Any]]] = None,
         messages: Optional[List[Dict[str, str]]] = None,
         **kwargs,
     ) -> Dict[str, Any]:
@@ -1064,22 +1474,21 @@ class BaseAgent:
             return bool(name and "gpt-oss" in name)
         if _is_gpt_oss(model) or _is_gpt_oss(base_model) or _is_gpt_oss(quantized):
             options.setdefault("reasoning_effort", "medium")
-        optimized_defaults = {}
-        gpu_layers = getattr(self.settings, "ollama_gpu_layers", None)
-        if gpu_layers is not None:
-            optimized_defaults["gpu_layers"] = int(gpu_layers)
-        num_batch = getattr(self.settings, "ollama_num_batch", None)
-        if num_batch is not None:
-            optimized_defaults["num_batch"] = int(num_batch)
-        context_window = getattr(self.settings, "ollama_context_window", None)
-        if context_window:
-            optimized_defaults["num_ctx"] = int(context_window)
-        optimized_defaults.setdefault("num_thread", max(1, os.cpu_count() or 1))
-        optimized_defaults.setdefault(
-            "num_gpu", max(1, int(os.getenv("OLLAMA_NUM_GPU", "1")))
-        )
-        for key, value in optimized_defaults.items():
-            options.setdefault(key, value)
+        # The load-affecting options are NOT assembled here any more. They used to be:
+        # num_ctx from settings (8192), num_batch, num_thread, and a num_gpu defaulted
+        # from OLLAMA_NUM_GPU (1!) — a set nobody else in the process sent. Ollama keys a
+        # loaded runner on exactly these, so this method and the preload and model_selector
+        # each asked for a different runner of the same 18GB model and evicted one another:
+        # four loads in five minutes, and a 159s demand-intake turn that was 153s of
+        # loading. ollama_options() is now the one source, and it reads
+        # ollama_client.load_options(). Anything a caller passes in `options` still wins,
+        # so a deliberate per-call override is still possible — but it will cost a load.
+        #
+        # `keep_alive` is a TOP-LEVEL request field. Inside `options` Ollama logs
+        # `invalid option provided option=keep_alive` and ignores it, so the model expired
+        # on the daemon's 5m default and the next caller after any lull paid a cold load.
+        # model_selector already knew this; this path did not.
+        base_kwargs.setdefault("keep_alive", _ollama_client.KEEP_ALIVE)
 
         tokenizer = getattr(self.settings, "ollama_tokenizer", None)
         if tokenizer:
@@ -1151,12 +1560,21 @@ class BaseAgent:
             try:
                 attempt_options = dict(options)
                 if messages is not None:
+                    # format travels on BOTH endpoints. It used to be passed to
+                    # generate and dropped here, so an agent that sent messages
+                    # asked for grammar-guided decoding and silently got prose
+                    # back. The key is omitted rather than sent as None because
+                    # its mere presence reads as a request for JSON on some
+                    # client versions.
+                    chat_kwargs = dict(base_kwargs)
+                    if format is not None:
+                        chat_kwargs["format"] = format
                     return ollama.chat(
                         model=model_to_use,
                         messages=messages,
                         options=attempt_options,
                         stream=False,
-                        **base_kwargs,
+                        **chat_kwargs,
                     )
                 return ollama.generate(
                     model=model_to_use,
@@ -1169,6 +1587,14 @@ class BaseAgent:
             except ResponseError as exc:
                 message = exc.args[0] if exc.args else ""
                 status_code = exc.args[1] if len(exc.args) > 1 else None
+                # The card will not take the whole model. Ask for less and try
+                # the same model again rather than giving the caller an error:
+                # slower is an answer, this is not.
+                if _ollama_client.is_layout_rejection(message) and "num_gpu" in options:
+                    _ollama_client.note_layout_rejection(options.get("num_gpu"))
+                    options = {k: v for k, v in options.items() if k != "num_gpu"}
+                    idx -= 1
+                    continue
                 is_not_found = "not found" in str(message).lower() or status_code == 404
                 if is_quantized and is_not_found:
                     missing_models.add(model_to_use)
@@ -1213,7 +1639,7 @@ class BaseAgent:
         self,
         prompt: Optional[str],
         model: Optional[str],
-        format: Optional[str],
+        format: Optional[Union[str, Dict[str, Any]]],
         messages: Optional[List[Dict[str, str]]],
         **kwargs,
     ) -> Dict[str, Any]:
@@ -1475,17 +1901,39 @@ class AgentNick:
         self.settings = settings
         logger.info("Initializing shared clients...")
         self.device = configure_gpu()
-        os.environ.setdefault("OLLAMA_NUM_PARALLEL", "8")
         os.environ.setdefault("OMP_NUM_THREADS", "8")
         self._db_engine = None
-        self.qdrant_client = QdrantClient(url=self.settings.qdrant_url, api_key=self.settings.qdrant_api_key)
+        # The ONE production construction of a Qdrant client. Every other
+        # consumer — rag_service, document_embedding_service, learning_repository,
+        # the agents — borrows this instance off agent_nick rather than making
+        # its own, so routing this single line through egress puts the whole
+        # vector-index path behind RAG_EXTERNAL_ENABLED and the egress record.
+        # (The two other QdrantClient constructions in the tree are one-off
+        # migration scripts.)
+        from src.services import egress as _egress
+        # A blank key means "no auth" (the local container). Passing "" makes
+        # qdrant_client send an empty api-key header and warn about an insecure
+        # connection on every boot.
+        _qdrant_key = (self.settings.qdrant_api_key or "").strip() or None
+        self.qdrant_client = _egress.vector_client(
+            purpose=_egress.Purpose.VECTOR_INDEX,
+            url=self.settings.qdrant_url,
+            api_key=_qdrant_key,
+        )
+        # Nothing below may touch Qdrant until it answers. The learning
+        # repository and the static policy sync both run inside this
+        # constructor and both swallow their own failures, so without this
+        # gate a boot that overtakes the Qdrant container comes up looking
+        # healthy with nothing in the vector store.
+        self._await_qdrant_ready()
         self.embedding_model = SentenceTransformer(self.settings.embedding_model, device=self.device)
         self.learning_repository = LearningRepository(self)
         self.static_policy_loader: Optional[StaticPolicyLoader] = None
         s3_pool = max(4, int(getattr(self.settings, "s3_max_pool_connections", 64)))
         self._s3_pool_size = s3_pool
-        self.s3_client = boto3.client(
+        self.s3_client = _egress.aws_client(
             "s3",
+            purpose=_egress.Purpose.OBJECT_STORAGE,
             config=Config(
                 max_pool_connections=s3_pool,
                 retries={"max_attempts": 10, "mode": "standard"},
@@ -1504,6 +1952,11 @@ class AgentNick:
         logger.info("Initializing core engines...")
         self.prompt_engine = PromptEngine(self)
         self.policy_engine = PolicyEngine(self)
+        # Rules decide what is detected; policies decide what is allowed. The
+        # two are separate tables and separate engines so that neither can
+        # quietly become the other. A missing rule book is carried as None --
+        # detection refuses, the rest of the API boots.
+        self.rule_book = load_rule_book(self)
         self.query_engine = QueryEngine(self)
         self.routing_engine = RoutingEngine(self)
         self.process_routing_service = ProcessRoutingService(self)
@@ -1547,6 +2000,46 @@ class AgentNick:
         from orchestration.agentnick_control import build_tools
 
         return build_tools(self)
+
+    def _await_qdrant_ready(self) -> None:
+        """Hold startup until the vector store answers, or say so plainly."""
+
+        wait = int(getattr(self.settings, "qdrant_startup_wait_seconds", 90) or 0)
+        if wait <= 0:
+            logger.debug("Qdrant startup wait is disabled")
+            return
+
+        grace = int(getattr(self.settings, "qdrant_startup_grace_seconds", 30) or 0)
+        url = getattr(self.settings, "qdrant_url", "http://localhost:6333")
+
+        try:
+            from src.services.qdrant_health import await_qdrant_ready
+
+            ready = await_qdrant_ready(
+                url,
+                api_key=(getattr(self.settings, "qdrant_api_key", None) or "").strip() or None,
+                wait_seconds=wait,
+                grace_seconds=grace,
+            )
+        except Exception:  # pragma: no cover - the gate must never block a boot
+            logger.exception("Qdrant readiness check failed; continuing startup")
+            return
+
+        if ready:
+            logger.info("Qdrant is ready at %s", url)
+            return
+
+        # Loud on purpose. Everything downstream degrades silently, so this
+        # line is the only warning anyone gets that the box is about to serve
+        # an empty vector store.
+        logger.error(
+            "Qdrant did not answer at %s within %ss — the learning collection "
+            "and the static policy corpus will NOT be ingested this boot, and "
+            "policy and document search will return nothing until the vector "
+            "store is reachable and the service is restarted",
+            url,
+            wait,
+        )
 
     def _initialise_static_policy_corpus(self) -> None:
         """Ensure the static policy knowledge base is synchronised."""
@@ -1671,10 +2164,29 @@ class AgentNick:
 
         Hence an explicit count rather than the -1 that reads as "all layers"
         everywhere else.
+
+        The count is read from ollama_client rather than named here, so a card
+        that has just refused the whole model moves every caller at once —
+        including this one. Two callers disagreeing about num_gpu means two
+        copies of a 20GB model loaded at the same time.
+
+        Every load-affecting option now comes from ollama_client.load_options() rather
+        than being assembled here and in call_ollama. Measured 2026-10-05: this method
+        supplied num_gpu only, call_ollama added num_ctx/num_batch/num_thread, and the
+        preload sent neither — three callers, three runners, four loads of an 18GB model
+        in five minutes. See load_options() for the full account.
+
+        keep_alive is NOT returned. It is a top-level request field; inside ``options``
+        Ollama logs `invalid option provided option=keep_alive` and ignores it, so the
+        model expired on the daemon's 5m default and the next caller paid a cold load.
+        Callers pass ollama_client.KEEP_ALIVE alongside the request instead.
         """
         if self.device == "cuda":
-            return {"num_gpu": self._ALL_GPU_LAYERS, "keep_alive": "10m"}
-        return {"keep_alive": "10m"}
+            return dict(_ollama_client.load_options())
+        # No card: the GPU options are meaningless, but the rest of the set still decides
+        # what the model can see, so it must not silently differ from the CUDA path. The
+        # keys are not named here on purpose — ollama_client owns them.
+        return dict(_ollama_client.load_options(include_gpu=False))
 
     def _build_agent_model_registry(self) -> Dict[str, str]:
         """Compile the agent → model preference map with overrides applied."""
@@ -1845,8 +2357,8 @@ class AgentNick:
         (:latest) and only used by the legacy data_extraction_agent path. This
         avoids the ~60s cold-load from disk on the first document after a
         server/Ollama restart, and pins it resident with the same keep_alive the
-        pipeline uses. preload_model uses a 120s timeout — long enough for a true
-        cold-load (the old 30s timeout silently failed on cold disk).
+        pipeline uses. preload_model waits up to the client's DEFAULT_TIMEOUT: a cold
+        load measured 114-141 s, and the old 120 s wait cancelled it most restarts.
         """
         try:
             from src.services.ollama_client import preload_model

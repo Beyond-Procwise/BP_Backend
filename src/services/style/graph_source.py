@@ -38,6 +38,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from services.style.mailbox import MailboxBinding
 from services.style.sources import RawExemplar
 
+from src.services import egress
+
+from src.services import egress as _egress
+
 logger = logging.getLogger(__name__)
 
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
@@ -87,10 +91,9 @@ def resolve_credentials(credential_ref: str, *, client=None) -> GraphCredentials
         raise ValueError("credential_ref must be a Secrets Manager ARN")
 
     if client is None:  # pragma: no cover - exercised only with real AWS
-        import boto3
 
         region = credential_ref.split(":")[3]
-        client = boto3.client("secretsmanager", region_name=region)
+        client = _egress.aws_client("secretsmanager", purpose=_egress.Purpose.SECRETS, region_name=region)
 
     payload = client.get_secret_value(SecretId=credential_ref)
     raw = payload.get("SecretString")
@@ -115,19 +118,19 @@ class RequestsTransport:
         self.timeout = timeout
 
     def post_form(self, url: str, data: Dict[str, str]) -> Tuple[int, Any]:
-        import requests
 
         try:
-            response = requests.post(url, data=data, timeout=self.timeout)
+            response = egress.post(url, purpose=egress.Purpose.MAILBOX,
+                                   data=data, timeout=self.timeout)
         except Exception as exc:  # requests.Timeout and friends
             raise MailboxUnreachable(str(exc)) from exc
         return response.status_code, _safe_json(response)
 
     def get(self, url: str, headers: Dict[str, str]) -> Tuple[int, Any]:
-        import requests
 
         try:
-            response = requests.get(url, headers=headers, timeout=self.timeout)
+            response = egress.get(url, purpose=egress.Purpose.MAILBOX,
+                                  headers=headers, timeout=self.timeout)
         except Exception as exc:
             raise MailboxUnreachable(str(exc)) from exc
         return response.status_code, _safe_json(response)
@@ -135,10 +138,11 @@ class RequestsTransport:
     def post_json(self, url: str, headers: Dict[str, str], payload: Any) -> Tuple[int, Any]:
         """Used only to CREATE a draft. There is no endpoint here that transmits."""
 
-        import requests
 
         try:
-            response = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
+            response = egress.post(url, purpose=egress.Purpose.MAILBOX,
+                                   headers=headers, json=payload,
+                                   timeout=self.timeout)
         except Exception as exc:
             raise MailboxUnreachable(str(exc)) from exc
         return response.status_code, _safe_json(response)

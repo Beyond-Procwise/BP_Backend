@@ -1,0 +1,44 @@
+{
+ "id": "036-the-contract-is-yours",
+ "family": "negotiation_counter",
+ "description": "Promising the award in the email ('the contract is yours') is a forbidden commitment. The original pattern missed it (found live 2026-10-09); 2026-10-09_email_award_commitment.sql widens it.",
+ "run": {
+  "path": "counter",
+  "payload": {
+   "supplier_id": "S-1",
+   "workflow_id": "wf-1",
+   "supplier_name": "Acme Ltd",
+   "recipients": [
+    "alex@acme.test"
+   ],
+   "current_offer": 47.5,
+   "currency": "GBP",
+   "counter_price": 44.8,
+   "rationale": "Anchor below their offer",
+   "response_deadline": "30 October 2026",
+   "reasoned_basis": {
+    "response_deadline": [
+     "email_thread_summary"
+    ]
+   }
+  }
+ },
+ "model": {
+  "compose": "Subject: Re: Pricing\nDear Alex Morgan,\n\nThank you for your offer of 47.50 GBP. Could you accept 44.80 GBP by 30 October 2026? If you agree, the contract is yours.\n\nKind regards,\nProcurement Team",
+  "judge": {
+   "scores": {
+    "ask_is_specific": 5,
+    "position_follows_from_offer": 4,
+    "deadline_stated": 5,
+    "tone_matches_escalation_level": 4,
+    "concise": 4
+   },
+   "rationale": "clear"
+  }
+ },
+ "expect": {
+  "rec.violations[*].kind": {
+   "has": "forbidden_content"
+  }
+ }
+}

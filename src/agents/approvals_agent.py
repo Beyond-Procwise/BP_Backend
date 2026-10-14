@@ -145,14 +145,20 @@ class ApprovalsAgent(BaseAgent):
         # Currency is never invented. If the caller did not state one it stays NULL.
         currency = payload.get("currency") or best.get("currency")
 
-        # An explicit threshold on the request is a deliberate caller override, and
-        # is recorded as such so the trace shows the gate did not come from policy.
+        # A caller may make the gate STRICTER than the governed policy, never
+        # looser: a request that could raise its own limit would let anyone
+        # approve any spend (capability audit 2026-10-08: threshold=99999999
+        # approved 230000 against a governed 10000). With no governed threshold
+        # to compare against, an override cannot be shown to be stricter, so it
+        # is not trusted and a human decides.
         override = self._as_decimal(payload.get("threshold"))
+        threshold, provenance = self._governed_threshold()
         if override is not None:
-            threshold: Optional[Decimal] = override
-            provenance: Dict[str, Any] = {"threshold_source": "request_override"}
-        else:
-            threshold, provenance = self._governed_threshold()
+            if threshold is not None and override <= threshold:
+                threshold = override
+                provenance = {"threshold_source": "request_override"}
+            else:
+                provenance = {**provenance, "override_rejected": str(override)}
 
         comparison: Optional[str] = None
         if threshold is None:

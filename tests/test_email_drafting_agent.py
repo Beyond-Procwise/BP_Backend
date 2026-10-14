@@ -254,15 +254,16 @@ def test_decision_context_to_public_json():
     assert data["asks"] == ["item"]
 
 
-def test_run_sets_recipient_when_instructions_present():
-    agent = EmailDraftingAgent()
-    context = _make_context(
+def _ranking_context():
+    return _make_context(
         {
             "ranking": [
                 {
                     "supplier_id": "SUP-1",
                     "supplier_name": "Acme",
-                    "contact_email": "quotes@acme.test",
+                    # Carried on the ranking entry. Deliberately NOT the address
+                    # the draft should use -- see the two tests below.
+                    "contact_email": "carried@acme.test",
                 }
             ],
             "supplier_profiles": {"SUP-1": {}},
@@ -270,12 +271,47 @@ def test_run_sets_recipient_when_instructions_present():
         }
     )
 
-    result = agent.run(context)
+
+def test_run_addresses_the_draft_from_the_supplier_master(monkeypatch):
+    """The recipient is what proc.bp_supplier holds, resolved by supplier_id."""
+
+    from src.services.supplier_contact import SupplierContact
+
+    agent = EmailDraftingAgent()
+    monkeypatch.setattr(
+        EmailDraftingAgent,
+        "_master_contact",
+        lambda self, supplier_id: SupplierContact(
+            emails=["quotes@acme.test"] if supplier_id == "SUP-1" else [],
+            name="Acme Sales",
+        ),
+    )
+
+    result = agent.run(_ranking_context())
 
     assert result.status == AgentStatus.SUCCESS
     draft = result.data["drafts"][0]
     assert draft["recipients"] == ["quotes@acme.test"]
     assert draft["receiver"] == "quotes@acme.test"
+
+
+def test_an_address_carried_on_the_ranking_entry_is_never_used():
+    """With nothing on the master there is no recipient -- not a fallback.
+
+    The ranking entry carries ``contact_email``; before this the agent took it
+    as its first candidate, so an address that had travelled through the shared
+    workflow context decided where an RFQ went. An unaddressed draft is held,
+    which is the outcome we want when the master cannot answer.
+    """
+
+    agent = EmailDraftingAgent()  # no database: the master answers nothing
+
+    result = agent.run(_ranking_context())
+
+    assert result.status == AgentStatus.SUCCESS
+    draft = result.data["drafts"][0]
+    assert draft["recipients"] == []
+    assert not draft.get("receiver")
 
 
 def test_supplier_context_is_not_injected_into_email_body():
@@ -685,3 +721,50 @@ def test_manual_draft_inherits_workflow_id(monkeypatch):
     manual_draft = drafts[-1]
     assert manual_draft.get("workflow_id") == "wf-1"
     assert manual_draft.get("metadata", {}).get("workflow_id") == "wf-1"
+
+
+# --- Capability audit 2026-10-08: the buyer's requirement must reach the RFQ ---
+
+_REQ = {
+    "title": "Business Laptops (14-inch, 16GB RAM, 512GB SSD, 3-year warranty)",
+    "quantity": 200.0,
+    "delivery_location": "London",
+    "needed_by_date": "2026-12-03",
+    "target_budget": 250000.0,
+    "currency": "GBP",
+}
+
+
+def _scope_args(requirement=None, profile=None):
+    agent = EmailDraftingAgent()
+    ctx = {"requirement": requirement} if requirement is not None else {}
+    return agent._build_template_args(
+        {"supplier_id": "S1", "total_spend": 0}, profile or {}, {}, ctx,
+    )
+
+
+def test_rfq_scope_states_what_the_buyer_asked_for():
+    import re
+    out = _scope_args(_REQ)
+    text = re.sub(r"<[^>]+>", " ", out["scope_summary_html"] + out["rfq_table_html"])
+    assert "Business Laptops" in text
+    assert "200" in text
+    assert "London" in text
+    assert "2026-12-03" in text
+    assert "detailed requirement is TBC" not in text
+
+
+def test_rfq_never_discloses_the_buyers_budget_to_the_supplier():
+    out = _scope_args(_REQ)
+    blob = out["scope_summary_html"] + out["rfq_table_html"]
+    assert "250" not in blob.replace("2026", "")
+
+
+def test_rfq_requirement_beats_unrelated_purchase_history():
+    out = _scope_args(_REQ, profile={"items": ["External works & hardstanding"]})
+    assert "External works" not in out["scope_summary_html"] + out["rfq_table_html"]
+
+
+def test_rfq_without_a_requirement_is_unchanged():
+    out = _scope_args(None)
+    assert "TBC" in out["scope_summary_html"]

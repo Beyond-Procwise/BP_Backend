@@ -1,0 +1,780 @@
+"""Report Generation Agent: the way in from outside the process.
+
+Composing a report takes the local model minutes, too long to hold a request
+open, so the door files a job and answers at once:
+
+    POST /reports/generate           -> 202 {job_id, status: queued}
+    GET  /reports/jobs               -> the newest jobs, without their decks
+    GET  /reports/jobs/{job_id}      -> queued | running | released | blocked | failed
+    GET  /reports/jobs/{job_id}/deck -> the .pptx, for a released job only
+    GET  /reports/jobs/{job_id}/page -> the printable A4 page, inline
+    GET  /reports/jobs/{job_id}/draft    -> what the light editor edits
+    POST /reports/jobs/{job_id}/preview  -> the printable page of an unsaved edit
+    POST /reports/jobs/{job_id}/versions -> save an edit as the next version
+
+  * The gate is asked before a job is filed, as ``report.generate``, by whoever
+    the token says is calling. Downloading a deck asks ``report.read``. A status
+    poll does not ask the gate: it runs every few seconds, would write an audit
+    row each time, and reveals no figure -- the router-level auth still applies.
+  * A BLOCKED report returns its reasons and never its deck. The worker does not
+    even store one, and the table refuses a deck on a job that was not released.
+  * Asking again for the same report while it is queued or running returns the
+    same job; the GPU runs it once.
+"""
+from __future__ import annotations
+
+import datetime as dt
+import json
+import re
+import urllib.parse
+from typing import Any, Dict, Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+import src.services.rga  # noqa: F401  registers the Fact Pack builders
+from src.services.rga import audit, editing, job_runner, job_store, signoff
+from src.services.rga.factpack import registered_types
+
+from src.services import report_export
+from src.services.report_data import mode as rd_mode, scope as rd_scope, service as rd_service
+from src.services.report_data.spec import SpecRejected
+from src.services.agent_actions import record_action_or_fail
+
+from api.auth import require_user
+from api.endpoint_gate import require as gate
+
+router = APIRouter(prefix="/reports", tags=["Reports"])
+_AGENT = "ReportsRouter"
+_CURRENCY = re.compile(r"^[A-Z]{3}$")
+_PUBLIC = ("job_id", "report_type", "scope", "as_of", "status", "requested_by",
+           "requested_at", "started_at", "finished_at", "run_id", "stage_reached",
+           "blocking", "error", "dismissed_at", "dismissed_by", "dismiss_reason", "has_page",
+           "has_snapshot")
+
+
+#: Report types asked for by deal rather than by period (the board paper, 2026-09-25).
+_DEAL_SCOPED = {"board_paper"}
+
+
+class GenerateBody(BaseModel):
+    report_type: str
+    period_start: Optional[dt.date] = None
+    period_end: Optional[dt.date] = None
+    period_label: Optional[str] = Field(default=None, max_length=200)
+    currency: str = "GBP"
+    # A deal-scoped report: which deal, and the category a person confirmed for it in
+    # SpendIQ (the source carries none; the approval route is derived from it).
+    deal_id: Optional[str] = Field(default=None, max_length=100)
+    category: Optional[str] = Field(default=None, max_length=100)
+    # Which approved style pack the report is laid out on, for the builder pages. Absent means the
+    # deck and the printable page only, exactly as before. NOT part of scope(): the scope is hashed
+    # into the Fact Pack id and the dedup key, and a style changes none of a report's facts.
+    pack_key: Optional[str] = Field(default=None, max_length=200)
+
+    @field_validator("currency")
+    @classmethod
+    def _iso_currency(cls, v: str) -> str:
+        if not _CURRENCY.match(v):
+            raise ValueError("currency is a three-letter ISO code, e.g. GBP")
+        return v
+
+    @model_validator(mode="after")
+    def _ordered(self) -> "GenerateBody":
+        if self.report_type in _DEAL_SCOPED:
+            if not (self.deal_id or "").strip():
+                raise ValueError("a board paper is written for one deal: give deal_id")
+            return self
+        if self.period_start is None or self.period_end is None:
+            raise ValueError("give period_start and period_end")
+        if self.period_start > self.period_end:
+            raise ValueError("period_start is after period_end")
+        return self
+
+    def scope(self) -> dict:
+        if self.report_type in _DEAL_SCOPED:
+            deal = self.deal_id.strip()
+            out = {"deal_id": deal, "period_label": (self.period_label or "").strip() or deal}
+            if (self.category or "").strip():
+                out["category"] = self.category.strip()
+            return out
+        start, end = self.period_start.isoformat(), self.period_end.isoformat()
+        return {"period_start": start, "period_end": end,
+                "period_label": self.period_label or f"{start} to {end}",
+                "currency": self.currency}
+
+
+def _deal_exists(deal_id: str) -> bool:
+    from src.services.db import get_conn
+
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM proc.bp_deal_overview WHERE deal_id = %s LIMIT 1", (deal_id,))
+        return cur.fetchone() is not None
+
+
+def _view(job: Dict[str, Any], s: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    out = {k: job.get(k) for k in _PUBLIC}
+    # Check codes go out lower-case. The output-safety boundary in api/main.py
+    # reads some upper-case codes (REPORT_UNTRACED_FIGURE) as environment-variable
+    # names and withholds them, which left the screens with no reason to show.
+    if out.get("blocking"):
+        out["blocking"] = [{**b, "code": str(b.get("code") or "").lower()}
+                           for b in out["blocking"]]
+    # Sign-off (ruled 2026-09-24): a released deck leaves only once signed off, if the
+    # policy says its report type needs it. The hash it is bound to stays server-side.
+    # A list passes the state it read in one batch (signoff.states_for); a single job reads it.
+    s = s if s is not None else signoff.state(job)
+    out["signoff"] = {k: v for k, v in s.items() if k != "deck_sha256"}
+    released = job.get("status") == "released"
+    # Flags, not links: the output-safety boundary in api/main.py withholds any field that
+    # names an internal route. The caller builds /reports/jobs/{job_id}/deck itself.
+    out["deck_ready"] = released and s["state"] in ("not_required", "signed_off")
+    out["review_available"] = released and s["state"] == "awaiting"
+    # The printable page follows the deck exactly; older jobs have none.
+    out["has_page"] = bool(job.get("has_page"))
+    out["page_ready"] = out["deck_ready"] and out["has_page"]
+    out["page_review_available"] = out["review_available"] and out["has_page"]
+    # The builder PAGES, the third drawing. A flag and never the drawing itself, for the reason
+    # the store computes it rather than selecting the column: a status poll must not haul it.
+    # Reading them goes through exactly the deck's rules (_releasable), so the caller offers
+    # them inside the same released/review branches it already offers the deck in.
+    out["has_snapshot"] = bool(job.get("has_snapshot"))
+    # The light editor: a released report made with its Fact Pack stored can be edited;
+    # each saved edit is a new version, and its last editor cannot sign that version off.
+    out["editable"] = released and bool(job.get("editable"))
+    for key in ("current_version", "last_edited_by", "title"):
+        out[key] = job.get(key)
+    return out
+
+
+def _job_or_404(job_id: str) -> Dict[str, Any]:
+    job = job_store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"no report job {job_id!r}")
+    return job
+
+
+@router.get("/types")
+def list_types():
+    return {"report_types": registered_types()}
+
+
+@router.post("/generate", status_code=202)
+def generate(body: GenerateBody, principal=Depends(require_user)):
+    if body.report_type not in registered_types():
+        raise HTTPException(status_code=404,
+                            detail=f"no report type {body.report_type!r}; "
+                                   f"available: {registered_types()}")
+    scope = body.scope()
+    if body.report_type in _DEAL_SCOPED and not _deal_exists(scope["deal_id"]):
+        raise HTTPException(status_code=404, detail=f"no deal {scope['deal_id']!r} on the record")
+    decision = gate("report.generate", principal, agent=_AGENT,
+                    context={"report_type": body.report_type, "scope": scope})
+    subject = getattr(principal, "subject", None) or None
+    evidence = getattr(decision, "evidence", None) or {}
+    # The gate's own audit row has no trace id, so the job keeps the decision and
+    # the run repeats it on report.scope_resolved. `shadowed` is read from the
+    # evidence, never inferred from `allowed`: under shadow mode a refusal is
+    # recorded as allowed (docs/rga/build-report.md §6).
+    entitlement = {"action": "report.generate", "principal": subject,
+                   "allowed": bool(getattr(decision, "allowed", False)),
+                   "role": evidence.get("role"),
+                   "policy_name": getattr(decision, "policy_name", None),
+                   "policy_version": getattr(decision, "policy_version", None),
+                   "resolution": getattr(decision, "resolution", None),
+                   "shadowed": bool(evidence.get("shadowed"))}
+
+    job, created = job_store.create(
+        body.report_type, scope=scope, as_of=dt.date.today().isoformat(),
+        requested_by=subject, entitlement=entitlement, pack_key=body.pack_key)
+    if created:
+        job_runner.submit(job["job_id"])
+    return {"job_id": job["job_id"], "status": job["status"],
+            "already_requested": not created}
+
+
+class ExportBody(BaseModel):
+    """The report builder's rendered page, or its tables, to be made into a file."""
+    format: str = Field(default="pdf", pattern="^(pdf|xlsx)$")
+    name: str = Field(default="report", min_length=1, max_length=120)
+    report_id: Optional[str] = Field(default=None, max_length=64)
+    html: Optional[str] = None
+    css: Optional[str] = None
+    tables: Optional[list] = None
+    # The report-data request the page was drawn from. When given, the export is built from a
+    # fresh compute of it under the EXPORTER's rights, and carries every tile and its parameters.
+    request: Optional[Dict[str, Any]] = None
+
+
+_EXPORT_TYPES = {"pdf": "application/pdf",
+                 "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
+
+
+def _may(principal: Any):
+    """A read-action check that answers yes/no instead of raising, so one denied source marks its
+    own tiles ``forbidden`` rather than failing the whole report."""
+    def check(action: str) -> bool:
+        try:
+            gate(action, principal, agent=_AGENT, context={"via": "report_data"})
+            return True
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                return False
+            raise
+    return check
+
+
+def _compute_report(request: Dict[str, Any], principal: Any) -> Dict[str, Any]:
+    try:
+        return rd_service.compute(principal, request, authorise=_may(principal),
+                                  mode_ok=lambda: rd_mode.is_active(principal))
+    except rd_service.ModeRefused:
+        # whatever the client sent: only an Admin with an active presentation session gets this
+        raise HTTPException(status_code=403, detail="presentation data is not available")
+    except SpecRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+
+
+@router.post("/data")
+def report_data(body: Dict[str, Any], principal=Depends(require_user)):
+    """Per-tile results for a list of tile specs, under the caller's rights and scope.
+
+    ``data_mode`` is on every tile. Presentation data is refused (403) to anyone but an Admin with an
+    active presentation session, whatever the request says.
+    """
+    gate("report.read", principal, agent=_AGENT, context={"via": "report_data"})
+    return _compute_report(body, principal)
+
+
+@router.post("/values")
+def dimension_values(body: Dict[str, Any], principal=Depends(require_user)):
+    """The choices a tile filter may offer, under the caller's rights and scope: a Buyer is offered
+    only their own suppliers and deals. Presentation mode offers only synthetic names."""
+    gate("report.read", principal, agent=_AGENT, context={"via": "report_values"})
+    try:
+        return rd_service.dimension_values(principal, body, authorise=_may(principal),
+                                           mode_ok=lambda: rd_mode.is_active(principal))
+    except rd_service.ModeRefused:
+        raise HTTPException(status_code=403, detail="presentation data is not available")
+    except SpecRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/registry")
+def registry_catalogue(principal=Depends(require_user)):
+    """The metrics and dimensions the caller may build tiles from. Presentation-only metrics appear only
+    while presentation mode is active for this session; an unavailable one never does."""
+    gate("report.read", principal, agent=_AGENT, context={"via": "registry"})
+    return rd_service.catalogue(authorise=_may(principal), presentation_ok=rd_mode.is_active(principal))
+
+
+@router.get("/presentation-mode")
+def presentation_status(principal=Depends(require_user)):
+    return {"eligible": rd_mode.is_admin(principal), "active": rd_mode.is_active(principal)}
+
+
+@router.post("/presentation-mode")
+def presentation_set(body: Dict[str, Any], principal=Depends(require_user)):
+    """Admin only; per session; ends with the sign-in."""
+    try:
+        return rd_mode.activate(principal) if body.get("active") else rd_mode.deactivate(principal)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+class ScopeBody(BaseModel):
+    subject: str = Field(min_length=1, max_length=200)
+    buyer_id: str = Field(min_length=1, max_length=64)
+
+
+@router.get("/scope")
+def scope_list(subject: Optional[str] = None, principal=Depends(require_user)):
+    gate("report.scope.write", principal, agent=_AGENT, context={"op": "list"})
+    from src.services.db import get_conn
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT subject, buyer_id, granted_by, granted_at FROM proc.bp_user_buyer_scope "
+                    "WHERE revoked_at IS NULL AND (%s::text IS NULL OR subject = %s) ORDER BY subject, buyer_id",
+                    (subject, subject))
+        return {"data": [{"subject": r[0], "buyer_id": r[1], "granted_by": r[2], "granted_at": r[3].isoformat()}
+                         for r in cur.fetchall()]}
+
+
+@router.post("/scope", status_code=201)
+def scope_grant(body: ScopeBody, principal=Depends(require_user)):
+    """Admin only: let ``subject`` see the deals of one buyer in reports. A user cannot grant themselves."""
+    gate("report.scope.write", principal, agent=_AGENT, context={"op": "grant", "subject": body.subject})
+    by = getattr(principal, "subject", None) or "unknown"
+    if body.subject == by:
+        raise HTTPException(status_code=403, detail="you cannot change your own report scope")
+    from src.services.db import get_conn
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("INSERT INTO proc.bp_user_buyer_scope (subject, buyer_id, granted_by) VALUES (%s, %s, %s) "
+                    "ON CONFLICT (subject, buyer_id) WHERE revoked_at IS NULL DO NOTHING", (body.subject, body.buyer_id, by))
+    return {"subject": body.subject, "buyer_id": body.buyer_id, "granted_by": by}
+
+
+@router.delete("/scope")
+def scope_revoke(subject: str, buyer_id: str, principal=Depends(require_user)):
+    """Admin only. Query parameters, not a body, so the product's plain DELETE bridge can call it."""
+    gate("report.scope.write", principal, agent=_AGENT, context={"op": "revoke", "subject": subject})
+    by = getattr(principal, "subject", None) or "unknown"
+    from src.services.db import get_conn
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE proc.bp_user_buyer_scope SET revoked_at = now(), revoked_by = %s "
+                    "WHERE subject = %s AND buyer_id = %s AND revoked_at IS NULL", (by, subject, buyer_id))
+        return {"revoked": cur.rowcount}
+
+
+@router.get("/scope/buyers")
+def scope_buyers(q: Optional[str] = None, principal=Depends(require_user)):
+    """Admin only: the buyer codes a person can be given, with how many deals each has, so the grant
+    screen can offer a list instead of asking someone to type a code from memory."""
+    gate("report.scope.write", principal, agent=_AGENT, context={"op": "buyers"})
+    needle = (q or "").strip()[:40]
+    from src.services.db import get_conn
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT buyer_id, COUNT(*) FROM proc.bp_deal_overview WHERE buyer_id IS NOT NULL "
+                    "AND (%s = '' OR buyer_id ILIKE %s) GROUP BY buyer_id ORDER BY COUNT(*) DESC, buyer_id LIMIT 50",
+                    (needle, f"%{needle}%"))
+        return {"data": [{"buyer_id": r[0], "deals": int(r[1])} for r in cur.fetchall()]}
+
+
+@router.post("/export")
+def export_report(body: ExportBody, principal=Depends(require_user)):
+    """Render the builder's page to a PDF (or the report's tables to a workbook) and download it.
+
+    The file goes back only to the person who composed the page, so this is a read
+    (``report.read``), not a share: anyone may export a report they are building. Sending
+    one on to somebody else is ``report.export`` and stays governed.
+
+    When ``request`` (the report-data request) is given, the export is built from a fresh compute
+    of it under the exporter's own rights and scope: every tile appears in its true state with its
+    parameters, a presentation report is watermarked on every page (PDF) and flagged on the first
+    sheet with a ``-DEMO`` filename (XLSX), and a mark cannot be switched off by the request. A copy is
+    kept in S3 and its key written to ``bp_reports.report_url`` (never for a presentation export); if
+    either fails the download still works and the response says so (``X-Report-Stored``).
+    """
+    gate("report.read", principal, agent=_AGENT,
+         context={"format": body.format, "report_id": body.report_id})
+    payload = _compute_report(body.request, principal) if body.request else None
+    presentation = bool(payload and payload["data_mode"] == "presentation")
+    try:
+        if body.format == "pdf":
+            html, css = body.html or "", body.css or ""
+            if payload:
+                appendix = report_export.report_appendix_html(
+                    payload, title=body.name, generated_by=getattr(principal, "email", None) or getattr(principal, "subject", "") or "")
+                html = (html or "") + appendix if html.strip() else "<html><body>" + appendix + "</body></html>"
+                css += "\n" + report_export.APPENDIX_CSS
+            if presentation:
+                html = (html.replace("</body>", report_export.watermark_html() + "</body>", 1)
+                        if "</body>" in html else html + report_export.watermark_html())
+                css += "\n" + report_export.watermark_css()
+            content = report_export.render_pdf(html, css)
+        else:
+            tables = report_export.payload_tables(payload) if payload else (body.tables or [])
+            content = report_export.render_xlsx(tables)
+    except report_export.ExportRefused as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    name = body.name + ("-DEMO" if presentation and body.format == "xlsx" else "")
+    key = report_export.storage_key(body.report_id, name, body.format, stamp)
+    if presentation:
+        # a presentation export is logged and handed back, never stored or recorded against a report
+        rd_mode.log_export(principal, {"format": body.format, "name": name})
+        stored = recorded = False
+    else:
+        stored = report_export.store(content, key, _EXPORT_TYPES[body.format])
+        recorded = bool(stored and body.report_id and report_export.record_url(body.report_id, key))
+    filename = re.sub(r"[^A-Za-z0-9._ -]+", "_", name)[:80] or "report"
+    return Response(content=content, media_type=_EXPORT_TYPES[body.format],
+                    headers={"Content-Disposition": f'attachment; filename="{filename}.{body.format}"',
+                             "X-Report-Stored": "true" if stored else "false",
+                             "X-Report-Url-Recorded": "true" if recorded else "false",
+                             "X-Report-Data-Mode": payload["data_mode"] if payload else "unspecified"})
+
+
+@router.get("/jobs")
+def list_jobs(limit: int = 20):
+    """Recent jobs, newest first, without their decks. Not gated, like a single
+    status poll: the Reports screen reloads it while a job runs."""
+    jobs = job_store.recent(max(1, min(limit, 50)))
+    states = signoff.states_for(jobs)
+    return {"jobs": [_view(j, states[j["job_id"]]) for j in jobs]}
+
+
+@router.get("/attention")
+def attention(limit: int = 50):
+    """Blocked or failed reports nobody has dealt with -- the SpendIQ Action
+    Centre's Reports items. Not gated, like the other job reads."""
+    items = []
+    jobs = job_store.needs_attention(max(1, min(limit, 100)))
+    states = signoff.states_for(jobs)
+    for job in jobs:
+        item = _view(job, states[job["job_id"]])
+        # The store lists every released deck without a sign-off; the policy decides
+        # which of those actually need one.
+        if job.get("status") == "released" and item["signoff"]["state"] not in ("awaiting", "refused"):
+            continue
+        item["rerun_status"] = job.get("rerun_status")
+        items.append(item)
+    return {"items": items}
+
+
+class DismissBody(BaseModel):
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
+@router.post("/jobs/{job_id}/dismiss")
+def dismiss(job_id: str, body: DismissBody, principal=Depends(require_user)):
+    """A person decides a blocked or failed report needs no further action.
+
+    Gated as finding.resolve -- the same act as closing any other Action Centre
+    finding -- so a Viewer can see the item but not clear it."""
+    job = _job_or_404(job_id)
+    gate("finding.resolve", principal, agent=_AGENT,
+         context={"job_id": job_id, "run_id": job.get("run_id")})
+    subject = getattr(principal, "subject", None) or None
+    reason = (body.reason or "").strip() or None
+    refused = job["status"] == "released" and signoff.state(job)["state"] == "refused"
+    if not job_store.dismiss(job_id, by=subject, reason=reason, allow_released=refused):
+        raise HTTPException(status_code=409,
+                            detail=f"report job {job_id} is {job['status']}; only a blocked "
+                                   "or failed report can be dismissed, and only once")
+    with audit.run_context(job_id=job_id, requested_by=job.get("requested_by")):
+        audit.emit(audit.DISMISSED, run_id=job.get("run_id") or job_id, agent=_AGENT,
+                   summary=f"{job['status']} report dismissed",
+                   details={"dismissed_by": subject, "reason": reason,
+                            "status": job["status"]})
+    return {"job_id": job_id, "dismissed": True}
+
+
+class SignoffBody(BaseModel):
+    reason: Optional[str] = Field(default=None, max_length=500)
+    # The version the person was shown (the job's current_version when they opened it; null
+    # for a report from before versions). Required: a decision about files the person never
+    # saw -- an edit landed after they opened it -- is refused (final review 2026-09-24).
+    version: Optional[int]
+
+
+class RefuseBody(BaseModel):
+    reason: str = Field(max_length=500)
+    version: Optional[int]
+
+    @field_validator("reason")
+    @classmethod
+    def _stated(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("a refusal must say why")
+        return v.strip()
+
+
+def _refuse_self(job: Dict[str, Any], subject: Optional[str], verdict: str, by_editor: bool):
+    """On the record, like the email approvals' self-approval refusal: the gate has already
+    logged report.signoff as allowed, and this refusal must not leave no trace. The raising
+    writer -- a refusal that cannot be recorded is still a refusal."""
+    requester, editor = job.get("requested_by"), job.get("last_edited_by")
+    evidence = {"rule": "self_approval", "requested_by": requester, "actioned_by": subject}
+    if editor or by_editor:
+        evidence["last_edited_by"] = editor or subject
+    record_action_or_fail(
+        phase="authorize", action_type=signoff.ACTION, agent=_AGENT, status="denied",
+        summary=("a report version cannot be signed off by the person who made its last "
+                 "edit") if by_editor else
+                "a report cannot be signed off by the person who asked for it",
+        details={"job_id": job["job_id"], "run_id": job.get("run_id"), "principal": subject,
+                 "verdict": verdict, "policy_name": "ReportSignoffPolicy",
+                 "evidence": evidence})
+    raise HTTPException(status_code=403,
+                        detail="you made the last edit to this report, so someone else "
+                               "must sign it off" if by_editor else
+                               "you asked for this report, so someone else must sign it off")
+
+
+def _decide(job_id: str, verdict: str, reason: Optional[str], principal: Any,
+            seen_version: Optional[int]) -> Dict[str, Any]:
+    """Sign a report off, or refuse to. Who may is policy (report.signoff's permit, Approver
+    and above); whether a requester may sign off their own is policy too."""
+    job = _job_or_404(job_id)
+    gate(signoff.ACTION, principal, agent=_AGENT,
+         context={"job_id": job_id, "run_id": job.get("run_id"), "verdict": verdict,
+                  "version": seen_version})
+    subject = getattr(principal, "subject", None) or None
+    requester = job.get("requested_by")
+    # Self-approval covers the person who asked for the report AND the person who made its
+    # last edit (ruled 2026-09-24): whoever last chose its words cannot be the one who lets
+    # that version leave. A job with no recorded person cannot match anyone -- the email
+    # approvals' rule. Checked here as the fast path, and again by decide() on the locked
+    # row, where a save committing in between cannot slip past it.
+    editor = job.get("last_edited_by")
+    denied = signoff.self_approval_denied()
+    own = [who for who in (requester, editor) if who and subject and who == subject]
+    if denied and own:
+        _refuse_self(job, subject, verdict, by_editor=editor == subject)
+    try:
+        decided = signoff.decide(job_id, verdict=verdict, by=subject or "", reason=reason,
+                                 policy_name="ReportSignoffAuthorityPolicy",
+                                 seen_version=seen_version, self_approval_denied=denied)
+    except signoff.SelfApproval as exc:
+        _refuse_self(job, subject, verdict, by_editor=exc.role == "editor")
+    except signoff.NotDecidable as exc:
+        if exc.state == "edited":
+            raise HTTPException(status_code=409,
+                                detail="This report was edited since you opened it. Review "
+                                       "the new version before signing it off or refusing it.")
+        raise HTTPException(status_code=409,
+                            detail=f"report job {job_id} is {exc.state}; only a report "
+                                   "awaiting sign-off can be signed off or refused")
+    except ValueError as exc:   # no signed-in person to record
+        raise HTTPException(status_code=403, detail=str(exc))
+    # Irreversible events: the raising writer. The decision is already committed, so a
+    # failed write surfaces as an error rather than passing silently.
+    granted = verdict == "sign_off"
+    with audit.run_context(job_id=job_id, requested_by=requester):
+        audit.emit(audit.APPROVAL_GRANTED if granted else audit.APPROVAL_DENIED,
+                   run_id=job.get("run_id") or job_id, agent=_AGENT,
+                   summary="report signed off" if granted else "report sign-off refused",
+                   details={("signed_off_by" if granted else "refused_by"): subject,
+                            "reason": reason, "approval_id": decided.get("approval_id"),
+                            "version": seen_version,
+                            "policy": "ReportSignoffAuthorityPolicy"})
+    return _view(job_store.get(job_id) or job)
+
+
+@router.post("/jobs/{job_id}/signoff")
+def sign_off(job_id: str, body: SignoffBody, principal=Depends(require_user)):
+    return _decide(job_id, "sign_off", (body.reason or "").strip() or None, principal,
+                   body.version)
+
+
+@router.post("/jobs/{job_id}/refuse")
+def refuse(job_id: str, body: RefuseBody, principal=Depends(require_user)):
+    return _decide(job_id, "refuse", body.reason, principal, body.version)
+
+
+@router.get("/jobs/{job_id}")
+def get_job(job_id: str):
+    return _view(_job_or_404(job_id))
+
+
+# The printable page is served inline, to be read and printed in a browser tab. It is
+# self-contained and every text in it is escaped; the policy below makes sure that even a
+# mistake in that escaping could not run anything: no scripts, no fetches, inline style only.
+from src.services.rga.render.html import PAGE_CSP as _PAGE_CSP  # one policy, header and page
+
+
+def _releasable(job_id: str, principal: Any, fmt: str):
+    """-> (job, signoff state) for a job whose drawing a caller may read, else raises.
+
+    THE SAME RULES FOR EVERY DRAWING. The deck, the printable page and the builder pages are three
+    renderings of one report, so a caller who may not open one may not open another: serving the
+    builder pages under looser rules would make them a way around the sign-off hold — the same
+    report, read as pages.
+    """
+    job = _job_or_404(job_id)
+    s = signoff.state(job)
+    # Held until signed off. Before then only someone the policy lets sign it off may open
+    # it -- to review it -- and that download is audited as a review. A refused report is
+    # held from everyone.
+    if s["state"] == "awaiting" and not signoff.may_sign_off(principal):
+        raise HTTPException(status_code=409,
+                            detail=f"report job {job_id} is awaiting sign-off; only a person "
+                                   "who may sign it off can open it before then")
+    if s["state"] == "refused":
+        raise HTTPException(status_code=409,
+                            detail=f"report job {job_id} was refused sign-off: "
+                                   f"{s.get('reason') or 'no reason recorded'}")
+    gate("report.read", principal, agent=_AGENT,
+         context={"job_id": job_id, "run_id": job.get("run_id"),
+                  "review": s["state"] == "awaiting", "format": fmt})
+    if job["status"] != "released":
+        # The status decides, not the presence of bytes.
+        raise HTTPException(status_code=409,
+                            detail=f"report job {job_id} is {job['status']}; only a "
+                                   "released report has a deck")
+    return job, s
+
+
+def readable_deck(job_id: str, principal: Any, allow_review: bool = True):
+    """-> (job, content, media_type, filename) for a deck this caller may read, else raises.
+
+    ONE RULE SET for everything that reads a stored deck: the download, and 'learn a style from this
+    report' (/atb/import/from-report). Both go through here so that a report a person may not
+    open cannot become a pack they can read. The sign-off hold, the refusal, report.read, the
+    released-only rule and the signed-hash match all live in this function and nowhere else.
+    """
+    job, s = _releasable(job_id, principal, "deck")
+    if not allow_review and s["state"] == "awaiting":
+        # An approver may OPEN an unsigned report to review it. That is not leave to copy what is in
+        # it somewhere else: a caller that keeps the content (a style pack carries the slides' own
+        # words and figures, readable by everyone who may read packs) says allow_review=False.
+        raise HTTPException(status_code=409,
+                            detail=f"report job {job_id} is awaiting sign-off; it can be used "
+                                   "once it has been signed off")
+    found = job_store.deck(job_id)
+    if found is None:
+        raise HTTPException(status_code=409, detail=f"report job {job_id} has no deck")
+    content, media_type, filename = found
+    # A sign-off is for the files that were reviewed. An edit replaces them only as a new
+    # version, which the sign-off does not count for (signoff.state), so a mismatch here --
+    # or a sign-off that never saw this file -- means this is not what was signed off.
+    signed_hash = s.get("deck_sha256")
+    if s["state"] == "signed_off" and (not signed_hash
+                                       or signoff.deck_hash(content) != signed_hash):
+        raise HTTPException(status_code=409,
+                            detail=f"report job {job_id}: the stored deck does not match "
+                                   "the one that was signed off")
+    return job, content, media_type, filename
+
+
+def _serve(job_id: str, principal: Any, fmt: str) -> Response:
+    """The deck or the page -- one set of rules for both, so the two cannot drift apart."""
+    if fmt == "deck":
+        job, content, media_type, filename = readable_deck(job_id, principal)
+        return Response(content=content, media_type=media_type,
+                        headers={"Content-Disposition": f'attachment; filename="{filename}"',
+                                 "X-Report-Run-Id": job.get("run_id") or ""})
+    job, s = _releasable(job_id, principal, fmt)
+    found = job_store.page(job_id)
+    signed_hash = s.get("page_sha256")
+    if found is None:
+        raise HTTPException(status_code=404,
+                            detail=f"report job {job_id} has no printable page -- it was "
+                                   "made before pages existed")
+    content = found[0]
+    if s["state"] == "signed_off" and (not signed_hash
+                                       or signoff.deck_hash(content) != signed_hash):
+        raise HTTPException(status_code=409,
+                            detail=f"report job {job_id}: the stored {fmt} does not match "
+                                   "the one that was signed off")
+    name = f"{job.get('report_type')}_{job.get('run_id') or job_id}.html"
+    return Response(content=content, media_type=found[1],
+                    headers={"Content-Disposition": f'inline; filename="{name}"',
+                             "Content-Security-Policy": _PAGE_CSP,
+                             "X-Content-Type-Options": "nosniff",
+                             "X-Report-Run-Id": job.get("run_id") or ""})
+
+
+@router.get("/jobs/{job_id}/deck")
+def get_deck(job_id: str, principal=Depends(require_user)):
+    return _serve(job_id, principal, "deck")
+
+
+@router.get("/jobs/{job_id}/page")
+def get_page(job_id: str, principal=Depends(require_user)):
+    """The printable A4 page, inline, for a browser tab to show and print."""
+    return _serve(job_id, principal, "page")
+
+
+@router.get("/jobs/{job_id}/snapshot")
+def get_snapshot(job_id: str, principal=Depends(require_user)) -> Dict[str, Any]:
+    """The report as the builder opens it: pages laid out on an approved style pack.
+
+    The third drawing, under the same rules as the other two — held until sign-off, withheld from
+    everyone once refused, gated as report.read, and 409 for a job that is not released.
+
+    Returns the snapshot itself rather than a link to it: the output-safety layer replaces any field
+    that names an internal route with "[withheld]", and this payload is ids by design.
+    """
+    _releasable(job_id, principal, "snapshot")
+    snap = job_store.snapshot(job_id)
+    if snap is None:
+        raise HTTPException(status_code=404,
+                            detail=f"report job {job_id} has no builder pages -- it was made "
+                                   "before pages existed, asked for no style pack, or its pages "
+                                   "did not pass the report's own checks")
+    return snap
+
+
+# -- the light editor (ruled 2026-09-24): words and layout, never a number -----------------
+# Gated as report.generate -- Buyers and above -- because an edit makes a new report version.
+# Every rule about WHAT may be saved lives in services/rga/editing.py; this is only the door.
+
+
+class PreviewBody(BaseModel):
+    title: str = Field(max_length=500)
+    ast: Dict[str, Any]
+
+
+class VersionBody(PreviewBody):
+    base_version: int
+    summary: Optional[str] = Field(default=None, max_length=500)
+
+
+class _Refusal(Exception):
+    def __init__(self, reasons):
+        self.reasons = reasons
+
+
+def _refused(reasons) -> JSONResponse:
+    return JSONResponse(status_code=422, content={"detail": {"reasons": reasons}})
+
+
+def _editing_call(fn, *args, **kwargs):
+    """The editor's refusals as HTTP answers a person can act on."""
+    try:
+        return fn(*args, **kwargs)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="no such report")
+    except editing.NotEditable as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except editing.EditRefused as exc:
+        # Returned, not raised: the app's error handler flattens a structured detail to text.
+        raise _Refusal(exc.reasons)
+    except editing.StaleVersion as exc:
+        raise HTTPException(status_code=409,
+                            detail=f"Someone else saved a newer version (version {exc.current}) "
+                                   "while you were editing. Reopen the report to see their "
+                                   "changes, then make yours again.")
+
+
+def _edit_gate(job_id: str, principal: Any, what: str) -> Optional[str]:
+    gate("report.generate", principal, agent=_AGENT,
+         context={"job_id": job_id, "edit": what})
+    return getattr(principal, "subject", None) or None
+
+
+@router.get("/jobs/{job_id}/draft")
+def get_draft(job_id: str, principal=Depends(require_user)):
+    """The current version, and the report's own figures the editor may place."""
+    _edit_gate(job_id, principal, "open")
+    return _editing_call(editing.draft, job_id)
+
+
+@router.post("/jobs/{job_id}/preview")
+def preview_edit(job_id: str, body: PreviewBody, principal=Depends(require_user)):
+    """The printable page of an unsaved edit. Served as the page itself, not inside JSON: the
+    output-safety boundary would withhold a page whose footnotes name its evidence. What would
+    stop it saving travels in a header, percent-encoded JSON (headers are ASCII)."""
+    _edit_gate(job_id, principal, "preview")
+    try:
+        content, blocking = _editing_call(editing.preview, job_id, title=body.title,
+                                          ast_json=body.ast)
+    except _Refusal as r:
+        return _refused(r.reasons)
+    if content is None:
+        return _refused(blocking)
+    return Response(content=content, media_type="text/html; charset=utf-8",
+                    headers={"Content-Security-Policy": _PAGE_CSP,
+                             "X-Content-Type-Options": "nosniff",
+                             # At most twenty: a header has a size limit, and a person fixes the first ones first.
+                             "X-Report-Blocking": urllib.parse.quote(json.dumps(blocking[:20]))})
+
+
+@router.post("/jobs/{job_id}/versions")
+def save_version(job_id: str, body: VersionBody, principal=Depends(require_user)):
+    """Save an edit as the next version. It goes back to awaiting sign-off (a sign-off counts
+    for the version it saw), and whoever saved it cannot sign that version off."""
+    subject = _edit_gate(job_id, principal, "save")
+    if not subject:
+        raise HTTPException(status_code=403, detail="an edit must be made by a signed-in person")
+    try:
+        version = _editing_call(editing.save, job_id, base_version=body.base_version,
+                                title=body.title, ast_json=body.ast, by=subject,
+                                summary=(body.summary or "").strip() or None)
+    except _Refusal as r:
+        return _refused(r.reasons)
+    return {**_view(_job_or_404(job_id)), "version": version}

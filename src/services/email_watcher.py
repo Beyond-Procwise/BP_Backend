@@ -21,7 +21,7 @@ from email.utils import parseaddr, parsedate_to_datetime
 from html.parser import HTMLParser
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 
-from agents.base_agent import AgentContext, AgentOutput
+from agents.base_agent import AgentContext, AgentOutput, AgentStatus
 from agents.negotiation_agent import NegotiationAgent
 from agents.supplier_interaction_agent import SupplierInteractionAgent
 from services.event_bus import get_event_bus
@@ -41,6 +41,7 @@ except Exception:  # pragma: no cover - fallback when settings unavailable
     app_settings = None
 from repositories.supplier_interaction_repo import SupplierInteractionRow
 from repositories.supplier_response_repo import SupplierResponseRow
+from src.services.negotiation.reply_offer import read_offer
 from repositories.workflow_email_tracking_repo import WorkflowDispatchRow
 from utils import email_tracking
 from utils.email_tracking import (
@@ -1035,6 +1036,14 @@ class EmailWatcher:
     def _match_responses(self, tracker: WorkflowTracker, responses: Sequence[EmailResponse]) -> List[SupplierResponseRow]:
         matched_rows: List[SupplierResponseRow] = []
         for email_response in responses:
+            # The mailbox is searched by date, so earlier replies come round again. One stored as the answer to
+            # an email already is not a new reply (live, 2026-10-14: a 06:44 reply was matched to a 07:26 email).
+            if email_response.message_id and supplier_response_repo.message_already_matched(
+                    email_response.message_id, tracker.workflow_id, None):
+                continue
+            # And a reply cannot answer an email sent after it arrived.
+            email_records = {uid: d for uid, d in tracker.email_records.items()
+                             if _sent_before(d, email_response)}
             matched_id: Optional[str] = None
             best_dispatch: Optional[EmailDispatchRecord] = None
             best_score = 0.0
@@ -1042,9 +1051,9 @@ class EmailWatcher:
 
             if email_response.unique_id:
                 uid = email_response.unique_id.strip()
-                if uid in tracker.email_records:
+                if uid in email_records:
                     matched_id = uid
-                    best_dispatch = tracker.email_records[uid]
+                    best_dispatch = email_records[uid]
                     best_score = 1.0
                     best_reason = "unique-id"
 
@@ -1052,7 +1061,7 @@ class EmailWatcher:
                 normalised_rfq = _normalise_identifier(email_response.rfq_id)
                 if normalised_rfq and normalised_rfq in tracker.rfq_index:
                     for uid in tracker.rfq_index[normalised_rfq]:
-                        dispatch = tracker.email_records.get(uid)
+                        dispatch = email_records.get(uid)
                         if not dispatch:
                             continue
                         score, reason = score_dispatch_match(
@@ -1071,7 +1080,7 @@ class EmailWatcher:
                             best_reason = reason
 
             if not matched_id:
-                for uid, dispatch in tracker.email_records.items():
+                for uid, dispatch in email_records.items():
                     if uid in tracker.matched_responses:
                         continue
                     score, reason = score_dispatch_match(dispatch, email_response, match_threshold=self.config.match_threshold)
@@ -1116,7 +1125,7 @@ class EmailWatcher:
                     processed=False,
                     round_number=best_dispatch.round_number,
                 )
-                supplier_response_repo.insert_response(response_row)
+                _store_matched_response(response_row)
                 if tracker.workflow_id:
                     responded_at = email_response.received_at or datetime.now(timezone.utc)
                     try:
@@ -1151,7 +1160,7 @@ class EmailWatcher:
             else:
                 pending_candidates = [
                     (uid, dispatch)
-                    for uid, dispatch in tracker.email_records.items()
+                    for uid, dispatch in email_records.items()
                     if uid not in tracker.matched_responses
                 ]
                 resolved = False
@@ -1210,7 +1219,7 @@ class EmailWatcher:
                         processed=False,
                         round_number=best_dispatch.round_number,
                     )
-                    supplier_response_repo.insert_response(response_row)
+                    _store_matched_response(response_row)
                     if tracker.workflow_id:
                         responded_at = email_response.received_at or datetime.now(timezone.utc)
                         try:
@@ -1324,7 +1333,7 @@ class EmailWatcher:
             context = AgentContext(
                 workflow_id=workflow_id,
                 agent_id="EmailWatcher",
-                user_id="system",
+                user_id=None,  # a watcher, not a person
                 input_data={**input_payload, "email_headers": headers},
             )
 
@@ -1374,7 +1383,6 @@ class EmailWatcher:
                 ]
             if unique_id and unique_id not in ids_from_agent:
                 ids_from_agent.append(unique_id)
-            processed_ids.extend(ids_from_agent)
 
             negotiation_payload = dict(wait_result.data)
             negotiation_payload.setdefault("supplier_responses", responses)
@@ -1390,18 +1398,56 @@ class EmailWatcher:
                 },
             )
 
+            # This route has no orchestrator, so the AgentOutput returned here is
+            # the only place the negotiation's result can be read. It used to be
+            # discarded, and the replies below were deleted whether the round had
+            # succeeded or not -- so a failed or raising negotiation destroyed the
+            # only record of what the supplier had offered, leaving nothing to
+            # retry from. A round is cleared down only once it has been processed.
+            negotiation_ok = True
             if self.negotiation_agent is not None:
+                negotiation_ok = False
                 try:
                     neg_context = AgentContext(
                         workflow_id=tracker.workflow_id,
                         agent_id="NegotiationAgent",
-                        user_id="system",
+                        user_id=None,  # started by a supplier's reply, not a person
                         input_data=negotiation_payload,
                     )
-                    self.negotiation_agent.execute(neg_context)
+                    neg_result = self.negotiation_agent.execute(neg_context)
+                    negotiation_ok = (
+                        getattr(neg_result, "status", None) == AgentStatus.SUCCESS
+                    )
+                    if not negotiation_ok:
+                        logger.warning(
+                            "NegotiationAgent returned %s for workflow %s (%s); "
+                            "keeping %d supplier response(s) for retry",
+                            getattr(neg_result, "status", None),
+                            tracker.workflow_id,
+                            getattr(neg_result, "error", None),
+                            len(ids_from_agent),
+                        )
+                    elif isinstance(getattr(neg_result, "data", None), dict) and (
+                        neg_result.data.get("hitl_email_tasks")
+                    ):
+                        logger.info(
+                            "Negotiation round for workflow %s is held awaiting "
+                            "human approval; %d round(s) pending",
+                            tracker.workflow_id,
+                            len(neg_result.data["hitl_email_tasks"]),
+                        )
                 except Exception:
-                    logger.exception("NegotiationAgent failed for workflow %s", tracker.workflow_id)
+                    logger.exception(
+                        "NegotiationAgent failed for workflow %s; keeping %d "
+                        "supplier response(s) for retry",
+                        tracker.workflow_id,
+                        len(ids_from_agent),
+                    )
 
+            if not negotiation_ok:
+                continue
+
+            processed_ids.extend(ids_from_agent)
             if ids_from_agent:
                 supplier_response_repo.delete_responses(
                     workflow_id=tracker.workflow_id, unique_ids=ids_from_agent
@@ -2885,6 +2931,53 @@ class EmailWatcherService:
                 break
 
         logger.debug("EmailWatcherService loop terminated")
+
+# Clock skew between our send and the supplier's mail server: a reply stamped this much before dispatch still counts.
+_REPLY_CLOCK_SKEW = timedelta(minutes=2)
+
+
+def _sent_before(dispatch: "EmailDispatchRecord", email_response: "EmailResponse") -> bool:
+    """Whether ``dispatch`` went out before ``email_response`` arrived; unknown times do not exclude it."""
+
+    sent, received = dispatch.dispatched_at, email_response.received_at
+    if sent is None or received is None:
+        return True
+    if sent.tzinfo is None:
+        sent = sent.replace(tzinfo=timezone.utc)
+    if received.tzinfo is None:
+        received = received.replace(tzinfo=timezone.utc)
+    return received >= sent - _REPLY_CLOCK_SKEW
+
+
+def _store_matched_response(row: SupplierResponseRow) -> None:
+    """Store a matched reply together with the price its own words state.
+
+    Nothing on this route read the email, so the row was stored with no price
+    and the negotiation that followed ran with "supplier offer missing". The
+    figure is stamped as read-by-rule and unverified, never as confirmed; a
+    reply that states no single amount is stored exactly as before.
+    """
+
+    offer = None
+    if row.price is None:
+        try:
+            offer = read_offer(row.response_text)
+        except Exception:  # pragma: no cover - reading a figure never costs the reply
+            logger.debug("could not read an offer from the reply", exc_info=True)
+        if offer is not None:
+            row.price = offer.price
+            row.currency = row.currency or offer.currency
+    supplier_response_repo.insert_response(row)
+    if offer is not None:
+        supplier_response_repo.record_extraction(
+            workflow_id=row.workflow_id,
+            unique_id=row.unique_id,
+            response_message_id=row.response_message_id,
+            method=offer.method,
+            model=None,
+            prompt_version=None,
+        )
+
 
 def _parse_email(raw: bytes) -> EmailResponse:
     """Backwards-compatible helper for tests importing the private parser."""

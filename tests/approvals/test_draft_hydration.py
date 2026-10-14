@@ -149,3 +149,32 @@ def test_multi_recipient_case_recipient_email_holds_only_the_first():
     send_hash = content_hash(resolve_effective_content(send_side))
     approval_hash = content_hash(resolve_effective_content(approval_side))
     assert send_hash == approval_hash
+
+
+# ---------------------------------------------------------------------------
+# P3: who asked survives the read, and cannot be talked out of the payload
+# ---------------------------------------------------------------------------
+def test_the_requester_survives_hydration():
+    """Found by a live check, not by a unit test: the router tests stub
+    _load_draft, so nothing noticed that `requested_by` was dropped between the
+    column and the dict the approvals surface actually compares. The
+    self-approval bar would have been perfect and never fired."""
+    from src.services.draft_hydration import hydrate_draft
+
+    row = {"unique_id": "UID-1", "subject": "s", "body": "b", "payload": None,
+           "requested_by": "sub-alice"}
+
+    assert hydrate_draft(row)["requested_by"] == "sub-alice"
+
+
+def test_the_payload_cannot_rewrite_who_asked():
+    """Everything else on a draft is payload-over-columns (C2). This one field
+    is not: it decides an authorization outcome, so it comes from the column the
+    migration guarantees, and a payload claiming otherwise is ignored."""
+    from src.services.draft_hydration import hydrate_draft
+
+    row = {"unique_id": "UID-1", "subject": "s", "body": "b",
+           "payload": {"requested_by": "sub-someone-else"},
+           "requested_by": "sub-alice"}
+
+    assert hydrate_draft(row)["requested_by"] == "sub-alice"

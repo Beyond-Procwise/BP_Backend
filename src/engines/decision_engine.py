@@ -31,6 +31,7 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -1123,7 +1124,8 @@ class DecisionEngine:
         *,
         workflow_id: Optional[str] = None,
         agent: Optional[str] = None,
-        created_by: str = "system",
+        # Who decided: a principal's subject, or None. Never "system".
+        created_by: Optional[str] = None,
     ) -> Optional[int]:
         """Persist the decision and its evidence. Returns the new decision_id."""
         try:
@@ -1183,15 +1185,68 @@ class DecisionEngine:
 
     # Verbs that close a finding. `flag` is deliberately absent: flagging something is
     # how you ask for attention, not how you make it go away.
+    #: action -> (status, resolution_action) as the TABLE defines them.
+    #:
+    #: proc.bp_extraction_discrepancy constrains both columns (see scripts/migrations/
+    #: 2026-05-16-extraction-discrepancy-hitl.sql):
+    #:
+    #:     status            IN ('open', 'resolved', 'ignored', 'superseded')
+    #:     resolution_action IS NULL OR IN ('apply_value', 'keep_null', 'dismiss')
+    #:
+    #: This used to write 'flagged', 'on_hold' and 'escalated' into status, and the
+    #: human's verb into resolution_action. Neither is permitted, so 9 of the 11
+    #: actions raised CheckViolation, were swallowed below, and reached the user as
+    #: "could not update the finding" -- the buttons simply did not work.
+    #:
+    #: resolution_action is NOT "what the human clicked". services/extraction/
+    #: promotion.py switches on it to decide what happens to the RAW extracted value:
+    #: 'apply_value' writes the corrected figure, 'keep_null' nulls the field,
+    #: 'dismiss' touches nothing. A verb with no honest fit records NULL rather than
+    #: claiming a raw-value action that never happened. What the human clicked is
+    #: recorded on proc.bp_decision by _record_human_action, which keeps the real verb.
+    #:
+    #: The same mapping is used by the Node gateway against this same table
+    #: (beyond-procwaise-Api spendiq.service.ts RESOLUTION_STATUS), so the two
+    #: writers agree rather than each inventing a vocabulary.
+    STATUS_FOR_ACTION: Dict[str, tuple] = {
+        # Settled: the finding is dealt with.
+        "apply_value": ("resolved", "apply_value"),
+        "confirm": ("resolved", None),
+        "approve": ("resolved", None),
+        # Deliberately set aside -- a decision, but not a fix to the extracted value.
+        "dismiss": ("ignored", "dismiss"),
+        "reject": ("ignored", "dismiss"),
+        # Escalating: a request for a human. It MUST stay open, or it vanishes from
+        # the queue it was raised into -- the one outcome the click was preventing.
+        "flag": ("open", None),
+        "hold": ("open", None),
+        "escalate": ("open", None),
+        "assign": ("open", None),
+        "investigate": ("open", None),
+        "query": ("open", None),
+    }
+
     CLOSING_ACTIONS = {"apply_value", "confirm", "approve", "reject", "dismiss"}
     KNOWN_ACTIONS = CLOSING_ACTIONS | {"flag", "escalate", "hold", "assign", "investigate", "query"}
+
+    #: The closing actions that mean "yes, do the thing", as opposed to setting the
+    #: finding aside. Only these may carry out a side effect beyond closing the row.
+    ACCEPTING_ACTIONS = {"apply_value", "confirm", "approve"}
+
+    #: src/services/contract_links.py writes its parent proposals into this same
+    #: table on purpose -- it is the queue a buyer already works. Accepting one must
+    #: go through contract_links.confirm(), which is the ONLY thing allowed to set
+    #: proc.bp_contracts.parent_contract_id.
+    CONTRACT_PARENT_ISSUE_TYPE = "contract_parent_proposed"
 
     def execute(
         self,
         finding_id: str,
         action: str,
         *,
-        user_id: str = "api",
+        # Who acted: a principal's subject. No stand-in -- "api" was written to
+        # resolved_by / actioned_by as though it were a person.
+        user_id: Optional[str] = None,
         value: Optional[str] = None,
         override_reason: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -1244,7 +1299,25 @@ class DecisionEngine:
                 ),
             }
 
-        # Work out the new state of the finding.
+        # A contract-parent proposal is not an extracted value to close: accepting it
+        # has to WRITE the link. Routed by issue_type because this method is otherwise
+        # issue-type-agnostic -- it closed the proposal, wrote nothing to
+        # proc.bp_contracts.parent_contract_id, and left contract_links.confirm()
+        # permanently unable to link it (confirm claims the row on status='open'). The
+        # next pass then re-proposed the same parent, so the button read as working and
+        # never did. Setting the proposal ASIDE still takes the ordinary path: a
+        # dismissal links nothing, and contract_links reads a dismissed row as still
+        # occupying the slot, so it will not re-propose.
+        if row.get("issue_type") == self.CONTRACT_PARENT_ISSUE_TYPE and action in self.ACCEPTING_ACTIONS:
+            return self._accept_contract_parent(
+                row, action=action, user_id=user_id, recommendation=recommendation,
+                conflicts=conflicts, override_reason=override_reason,
+            )
+
+        # Work out the new state of the finding. STATUS_FOR_ACTION is the authority on
+        # what may be written; only the resolved VALUE is derived per action here.
+        new_status, resolution_action = self.STATUS_FOR_ACTION[action]
+        resolved = None
         if action == "apply_value":
             # THE fix: actually carry the expected value across. Closing this without
             # writing resolved_value is what "Apply value" has always done.
@@ -1258,24 +1331,15 @@ class DecisionEngine:
                     ),
                     "recommendation": recommendation.to_dict(),
                 }
-            new_status, resolved = "resolved", str(resolved_value)
+            resolved = str(resolved_value)
         elif action == "confirm":
             # Confirming says "what we extracted was right" — so the resolved value is
             # the extracted one, not the expected one.
-            new_status, resolved = "resolved", str(
+            resolved = str(
                 row.get("computed_value") or row.get("raw_value") or ""
             ) or None
-        elif action in ("dismiss", "reject"):
-            new_status, resolved = "ignored", None
         elif action == "approve":
-            new_status, resolved = "resolved", value
-        elif action == "flag":
-            # Stays OPEN. A flag is a request for a human, not a resolution.
-            new_status, resolved = "flagged", None
-        elif action == "hold":
-            new_status, resolved = "on_hold", None
-        else:  # escalate | assign | investigate | query
-            new_status, resolved = "escalated", None
+            resolved = value
 
         try:
             with self.agent_nick.get_db_connection() as conn:
@@ -1291,21 +1355,40 @@ class DecisionEngine:
                                    resolved_at = NOW()
                              WHERE discrepancy_id::text = %s
                             """,
-                            (new_status, action, resolved, user_id, str(finding_id)),
+                            (new_status, resolution_action, resolved, user_id,
+                             str(finding_id)),
                         )
                     else:
                         # Open states keep resolved_* NULL — they are not resolved.
+                        # resolved_at is cleared explicitly: a finding that was
+                        # resolved and is now flagged back open would otherwise keep
+                        # the stamp saying it was closed, and read as both at once.
                         cur.execute(
                             """
                             UPDATE proc.bp_extraction_discrepancy
                                SET status = %s,
-                                   resolution_action = %s
+                                   resolution_action = %s,
+                                   resolved_at = NULL
                              WHERE discrepancy_id::text = %s
                             """,
-                            (new_status, action, str(finding_id)),
+                            (new_status, resolution_action, str(finding_id)),
                         )
                 conn.commit()
-        except Exception:
+        except Exception as exc:
+            from src.services.lifecycle import refusal
+
+            reason = refusal(exc)
+            if reason:
+                # Not an outage: someone else moved this finding first (or it is
+                # closed a different way and must be re-opened). Say so, or the
+                # person reads a failure and clicks again.
+                logger.info("action %s on finding %s refused: %s", action, finding_id, reason)
+                return {
+                    "applied": False,
+                    "conflict": True,
+                    "error": reason,
+                    "recommendation": recommendation.to_dict(),
+                }
             logger.exception("failed to apply action %s to finding %s", action, finding_id)
             return {
                 "applied": False,
@@ -1331,6 +1414,98 @@ class DecisionEngine:
             # What was actually written. For apply_value this is the number carried
             # across — the thing the button has always claimed to do and never did.
             "resolved_value": resolved,
+            "overridden": bool(conflicts),
+            "override_reason": override_reason if conflicts else None,
+            "actioned_by": user_id,
+            "decision_id": decision_id,
+            "recommendation": recommendation.to_dict(),
+        }
+
+    def _accept_contract_parent(
+        self,
+        row: Dict[str, Any],
+        *,
+        action: str,
+        user_id: Optional[str],
+        recommendation: "Decision",
+        conflicts: bool,
+        override_reason: Optional[str],
+    ) -> Dict[str, Any]:
+        """Accepting a parent proposal: link it, or report that nothing was linked.
+
+        contract_links.confirm() closes the proposal itself, in the SAME statement
+        that claims it, and only then writes the link. So there is no generic UPDATE
+        here: a second one would close the row a second time and, worse, could close
+        it in the case where confirm() refused to link.
+        """
+        child = row.get("doc_pk_candidate")
+        parent = row.get("expected_value")
+        if not child or not parent:
+            return {
+                "applied": False,
+                "error": (
+                    "this parent proposal names no contract to link "
+                    f"(document={child!r}, proposed parent={parent!r}); nothing was linked"
+                ),
+                "recommendation": recommendation.to_dict(),
+            }
+
+        # Imported here, and called through the module, so the one place that may
+        # write parent_contract_id stays substitutable in tests.
+        from src.services import contract_links
+
+        try:
+            linked = contract_links.confirm(
+                str(child), str(parent), row.get("source_file") or "",
+                reviewer=user_id,
+            )
+        except Exception:
+            logger.exception("could not confirm contract parent for finding %s",
+                             row.get("discrepancy_id"))
+            return {
+                "applied": False,
+                "error": "could not link the parent contract",
+                "recommendation": recommendation.to_dict(),
+            }
+
+        if not linked:
+            # confirm() returns False when the proposal was not open (someone else
+            # acted first, or it was dismissed) or when the row it names is gone.
+            return {
+                "applied": False,
+                "conflict": True,
+                "error": (
+                    "this proposal is no longer open, so nothing was linked — "
+                    "reload the finding to see who acted on it"
+                ),
+                "recommendation": recommendation.to_dict(),
+            }
+
+        # Which KIND of link the person confirmed. parent_contract_id holds every
+        # kind (triage reads it as a family pointer), so the kind is kept here, in
+        # the audit row. A failed lookup never undoes or blocks a link already made.
+        try:
+            link_type = contract_links.link_type_of(str(child))
+        except Exception:
+            logger.exception("link type lookup failed for %s", child)
+            link_type = None
+        recommendation.facts["link_type"] = link_type
+
+        decision_id = self._record_human_action(
+            recommendation,
+            human_action=action,
+            actor=user_id,
+            override_reason=override_reason if conflicts else None,
+        )
+        return {
+            "applied": True,
+            "action": action,
+            "finding_id": str(row.get("discrepancy_id")),
+            "new_status": "resolved",
+            "resolved_value": str(parent),
+            "parent_contract_id": str(parent),
+            "link_type": link_type,
+            "contract_id": str(child),
             "overridden": bool(conflicts),
             "override_reason": override_reason if conflicts else None,
             "actioned_by": user_id,
@@ -1502,7 +1677,7 @@ class DecisionEngine:
         decision_id: int,
         action: str,
         *,
-        user_id: str = "api",
+        user_id: Optional[str] = None,
         override_reason: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Record the human's send/reject on an already-decided email reply.
@@ -1681,3 +1856,317 @@ class DecisionEngine:
                 "audit entry rather than retrying only the part that failed."
             )
         return result
+
+
+# ---------------------------------------------------------------------------
+# Authorization deferrals
+#
+# The gate answers three ways: allow, deny, and "nobody's rule said". The third
+# is not a verdict, it is a question -- and a question belongs in front of a
+# person rather than being resolved by a default nobody chose.
+#
+# This is where those questions become visible. It writes the same
+# proc.bp_decision row every other escalation uses, so the Action Centre lists
+# them without a new endpoint: list_decisions already filters on subject_type
+# and status='open'.
+#
+# It is a module-level function rather than a DecisionEngine method because the
+# gate has no agent_nick and must not acquire one. What matters is that
+# escalations are created in one place, and this is that place.
+# ---------------------------------------------------------------------------
+
+AUTHORIZATION_SUBJECT_TYPE = "authorization"
+
+
+def escalate_authorization(
+    *,
+    action: str,
+    action_class: Optional[str] = None,
+    principal_subject: Optional[str] = None,
+    role: Optional[str] = None,
+    reason: str = "",
+    policy_id: Optional[Any] = None,
+    policy_name: Optional[str] = None,
+    evidence: Optional[Dict[str, Any]] = None,
+) -> Optional[int]:
+    """Put an unresolved authorization in front of a person. Returns the id.
+
+    Raised against the person who was stopped, so they can see why; resolving it
+    is a policy judgement and belongs to whoever can make one.
+
+    Never raises. A question that cannot be asked must not become permission --
+    the caller keeps refusing either way, and the failure is logged loudly
+    because an unasked question is a governance gap, not a hiccup.
+    """
+
+    try:
+        from src.services.db import get_conn
+
+        facts = {
+            "action": action,
+            "action_class": action_class,
+            "role": role,
+            "requested_by": principal_subject,
+        }
+        with get_conn() as conn:
+            conn.autocommit = False
+            cur = conn.cursor()
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO proc.bp_decision (
+                        subject_type, subject_id, decision, resolution,
+                        rationale, policy_id, policy_name, facts, evidence,
+                        status, agent, created_by
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    RETURNING decision_id
+                    """,
+                    (
+                        AUTHORIZATION_SUBJECT_TYPE,
+                        action,
+                        "clarify_policy",
+                        ESCALATED,
+                        reason,
+                        None,
+                        policy_name,
+                        json.dumps(facts, default=str),
+                        json.dumps(evidence or {}, default=str),
+                        "open",
+                        "guardrail",
+                        principal_subject or "system",
+                    ),
+                )
+                row = cur.fetchone()
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return int(row[0]) if row else None
+    except Exception as exc:  # noqa: BLE001 - an unasked question is not consent
+        logger.error(
+            "could not raise an authorization question for %s: %s -- the action "
+            "stays refused, but nobody has been asked about it",
+            action,
+            exc,
+        )
+        return None
+
+# ======================================================================================
+# Live conflicts between agent policies: decided on precedent, or escalated
+# (specs/2026-10-09-conflict-history-and-precedent-design.md §3.2, rulings R1-R3)
+# ======================================================================================
+LIVE_CONFLICT_SUBJECT = "live_conflict"
+PRECEDENT_SOURCE = "proc.bp_agent_policy_conflict"
+
+#: The last N settled live cases of this exact clash: the same pair key, the same version of every
+#: involved policy, decided by a person. Precedent and every other automatic decision has
+#: by_person false, so the engine can never reinforce itself.
+#: Each row also carries the cited case's stored overlap example (the condition values of the
+#: action people decided, written by conflict_live.insert_live), for the value range check.
+PRECEDENT_SQL = """
+    SELECT c.decision_id, c.outcome, c.decided_by, c.decided_at,
+           (SELECT e->'example'
+              FROM jsonb_array_elements(CASE WHEN jsonb_typeof(d.evidence) = 'array' THEN d.evidence
+                                             ELSE '[]'::jsonb END) AS e
+             WHERE e->>'kind' = 'overlap' LIMIT 1) AS example
+      FROM proc.bp_agent_policy_conflict c
+      LEFT JOIN proc.bp_decision d ON d.decision_id = c.decision_id
+     WHERE c.kind = 'live' AND c.pair_key = %s AND NOT c.is_open AND c.by_person
+       AND c.policy_versions = %s::jsonb
+     ORDER BY c.decided_at DESC, c.decision_id DESC
+     LIMIT %s
+"""
+
+
+# Who approved a member case of each cited live case (the approval cases its settle row names):
+# a requester among them, or among the credited deciders, is never decided for on precedent.
+PRECEDENT_MEMBERS_SQL = """
+    SELECT DISTINCT a.actioned_by
+      FROM proc.bp_decision s
+     CROSS JOIN LATERAL jsonb_array_elements_text(
+           CASE WHEN jsonb_typeof(s.facts->'memberCases') = 'array' THEN s.facts->'memberCases'
+                ELSE '[]'::jsonb END) AS m(id)
+      JOIN proc.bp_decision c ON c.decision_id = m.id::bigint
+      JOIN proc.bp_decision a ON a.subject_type = c.subject_type AND a.subject_id = c.subject_id
+     WHERE s.subject_type = %s AND s.subject_id = %s AND s.status = 'actioned'
+       AND s.facts->>'caseId' = ANY(%s)
+       AND c.subject_type = %s AND a.status = 'actioned' AND a.decision = 'approve'
+       AND a.actioned_by IS NOT NULL
+"""
+SAME_PERSON = "the requester decided an earlier case of this clash"
+
+
+def _precedent_count() -> Optional[int]:
+    """The governed precedent count, read fresh. A seam; raises when it cannot be read."""
+    from services.agent_policy import settings as agent_policy_settings
+
+    return agent_policy_settings.precedent_count()
+
+
+def _precedent_value_range_pct() -> Optional[float]:
+    """The governed precedent value range in percent, read fresh. A seam; raises when it cannot
+    be read; None is a stated null (no range check)."""
+    from services.agent_policy import settings as agent_policy_settings
+
+    return agent_policy_settings.precedent_value_range_pct()
+
+
+RANGE_UNAVAILABLE = "precedent value range unavailable"
+
+
+def _as_number(value: Any) -> Optional[Decimal]:
+    """The value as the condition evaluator reads a number (policy_condition._number: Decimal of
+    the trimmed text, so "1200" is 1200, and never a bool), or None when it cannot be read.
+    Reading it the evaluator's way matters: a value the policies compared as a number must be
+    range-checked as one, or text such as "1200" would slip past the range."""
+    from services import policy_condition
+
+    try:
+        return policy_condition._number(value, "precedent value range")
+    except policy_condition.ConditionError:
+        return None
+
+
+def _render(value: Any) -> str:
+    return str(int(value)) if isinstance(value, float) and value.is_integer() else str(value)
+
+
+def _value_range(lc: Any, ctx: Dict[str, Any], rows: List[Any], pct: Optional[float]) -> tuple:
+    """(why, facts): why is None when every numeric condition value of this action is within
+    `pct` percent above the largest value people decided for that field in the cited cases
+    (approve or reject alike; numbers are read as the condition evaluator reads them);
+    otherwise the reason it goes to people. No lower bound. A cited case that lacks a number for
+    the field is doubt. A sensitive field's values are masked in both why and facts."""
+    from services.agent_policy import conflict_live, conflict_payload, enforcement
+
+    if pct is None:
+        return None, {"pct": None, "fields": {}}
+    docs = [h["policy"] for h in lc.involved]
+    current = conflict_payload.condition_values(docs, conflict_live._flat(ctx))
+    sensitive = set().union(*[enforcement._sensitive(d) for d in docs])
+    factor = 1 + Decimal(str(pct)) / 100
+    fields: Dict[str, Any] = {}
+    for name in sorted(k for k, v in current.items() if _as_number(v) is not None):
+        value = current[name]
+        cited = [(r[4] if isinstance(r[4], dict) else {}).get(name) for r in rows]
+        numbers = [_as_number(v) for v in cited]
+        if not all(x is not None and x.is_finite() for x in numbers):
+            return f"{name} has no number in an earlier case", None
+        top_number, top = max(zip(numbers, cited), key=lambda p: p[0])
+        limit = top_number * factor
+        shown = (lambda v: enforcement.MASK) if name in sensitive else _render
+        number = _as_number(value)
+        within = number.is_finite() and number <= limit     # NaN and infinity are never within
+        if not within:
+            return (f"{name} {shown(value)} is more than {_render(pct)}% above the largest earlier value "
+                    f"({shown(top)})"), None
+        fields[name] = ({"value": enforcement.MASK, "max": enforcement.MASK, "limit": enforcement.MASK}
+                        if name in sensitive else {"value": value, "max": top, "limit": float(limit)})
+    return None, {"pct": pct, "fields": fields}
+
+
+def _as_iso(value: Any) -> Any:
+    return value.isoformat() if hasattr(value, "isoformat") else value
+
+
+def _hit_version(hit: Dict[str, Any]) -> int:
+    try:
+        return int(hit.get("version") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def decide_live_conflict(cur, lc: Any, *, ctx: Dict[str, Any], now: Any, requester: Optional[str]) -> Decision:
+    """Decide a live clash between agent policies from its own history, or escalate it.
+
+    Facts first (rule 1): the governed precedent count and this clash's settled cases, looked up
+    here. Escalate rather than guess (rule 2): resolved only when the last N cases of this exact
+    clash (same policies, same versions) were all decided the same way by people, and every
+    approval the action needs is part of the clash. The action's values (ctx) count only in the
+    governed value range (Task 12): each numeric condition value must be at most
+    precedent_value_range_pct percent above the largest value people approved for it in the
+    cited cases, or the clash goes to people.
+
+    The self-approval bar binds here too (stage 3): when `requester` (who asked for this action)
+    is the same person (approvals._same_person) as the credited decider of any cited case, or as
+    any member approver of one, the clash goes to people. Precedent never lets someone approve
+    their own request at one remove. `requester` is required; None means no person asked.
+
+    `lc` is a conflict_engine.LiveConflict. Runs on the caller's cursor inside the caller's
+    transaction and never writes. A failed lookup rolls back to its own savepoint and escalates,
+    so it never poisons that transaction."""
+    from services.agent_policy.conflict_detect import pair_key
+    from services.agent_policy.conflict_payload import case_id
+    from src.services.governed_limits import LimitUnavailable
+
+    key = pair_key(*[str(h["id"]) for h in lc.involved])
+    versions = {str(h["id"]): _hit_version(h) for h in lc.involved}
+    base = {"pairKey": key, "versions": versions, "consultedAt": _as_iso(now)}
+
+    def escalate(why: str, **more: Any) -> Decision:
+        return Decision(subject_type=LIVE_CONFLICT_SUBJECT, subject_id=key, decision="escalate",
+                        resolution=ESCALATED, rationale=why, facts={**base, **more})
+
+    if lc.kind != "human":
+        return escalate("only a clash that needs people can be decided on precedent")
+    outside = [str(h["id"]) for h in lc.required if not any(h is x for x in lc.involved)]
+    if outside:
+        return escalate(f"{', '.join(outside)} also needs approval and is not part of this clash")
+    try:
+        n = _precedent_count()
+    except (LimitUnavailable, TypeError, ValueError) as exc:
+        logger.warning("precedent limit unavailable, the clash %s goes to people: %s", key, exc)
+        return escalate("precedent limit unavailable")
+    if not n or n <= 0:
+        return escalate("precedent is switched off", precedentCount=n)
+
+    cur.execute("SAVEPOINT live_conflict_precedent")
+    try:
+        cur.execute(PRECEDENT_SQL, (key, json.dumps(versions, sort_keys=True), int(n)))
+        rows = cur.fetchall()
+    except Exception as exc:  # noqa: BLE001 - a lookup that failed is doubt: people decide
+        cur.execute("ROLLBACK TO SAVEPOINT live_conflict_precedent")
+        cur.execute("RELEASE SAVEPOINT live_conflict_precedent")
+        logger.warning("precedent lookup failed for %s: %s", key, type(exc).__name__)
+        return escalate("precedent lookup failed", precedentCount=n)
+    cur.execute("RELEASE SAVEPOINT live_conflict_precedent")
+
+    if len(rows) < n:
+        return escalate(f"only {len(rows)} of {n} decisions by people on this exact clash", precedentCount=n)
+    outcomes = {r[1] for r in rows}
+    if len(outcomes) != 1 or not outcomes <= {"approve", "reject"}:
+        return escalate("decisions disagree", precedentCount=n)
+    outcome = outcomes.pop()
+    cited = [case_id(int(r[0])) for r in rows]
+    if requester and str(requester).strip():
+        from services.agent_policy import approvals
+
+        cur.execute("SAVEPOINT live_conflict_precedent_members")
+        try:
+            cur.execute(PRECEDENT_MEMBERS_SQL, (LIVE_CONFLICT_SUBJECT, key, list(cited), approvals.SUBJECT_TYPE))
+            members = [r[0] for r in cur.fetchall()]
+        except Exception as exc:  # noqa: BLE001 - a lookup that failed is doubt: people decide
+            cur.execute("ROLLBACK TO SAVEPOINT live_conflict_precedent_members")
+            cur.execute("RELEASE SAVEPOINT live_conflict_precedent_members")
+            logger.warning("precedent member lookup failed for %s: %s", key, type(exc).__name__)
+            return escalate("precedent lookup failed", precedentCount=n)
+        cur.execute("RELEASE SAVEPOINT live_conflict_precedent_members")
+        asker = SimpleNamespace(subject=str(requester), email=None)
+        if any(approvals._same_person(asker, who) for who in [r[2] for r in rows] + members):
+            return escalate(SAME_PERSON, precedentCount=n, citedCases=cited)
+    try:
+        pct = _precedent_value_range_pct()
+    except (LimitUnavailable, TypeError, ValueError) as exc:
+        logger.warning("%s, the clash %s goes to people: %s", RANGE_UNAVAILABLE, key, type(exc).__name__)
+        return escalate(RANGE_UNAVAILABLE, precedentCount=n, citedCases=cited)
+    out_of_range, value_range = _value_range(lc, ctx, rows, pct)
+    if out_of_range:
+        return escalate(out_of_range, precedentCount=n, citedCases=cited)
+    evidence = [Evidence(fact="precedent",
+                         value={"decision_id": int(r[0]), "outcome": r[1], "actioned_by": r[2],
+                                "actioned_at": _as_iso(r[3])},
+                         source=PRECEDENT_SOURCE, reference=case_id(int(r[0]))) for r in rows]
+    return Decision(subject_type=LIVE_CONFLICT_SUBJECT, subject_id=key, decision=outcome, resolution=RESOLVED,
+                    rationale=f"Decided the same way ({outcome}) {n} times before by people: {', '.join(cited)}.",
+                    facts={**base, "precedentCount": n, "citedCases": cited, "valueRange": value_range},
+                    evidence=evidence)

@@ -1,0 +1,44 @@
+{
+ "id": "035-a-date-that-is-not-a-deadline",
+ "family": "negotiation_counter",
+ "description": "The email asks for something and mentions a date, but sets no deadline. A bare date used to satisfy the deadline check (found 2026-10-09: the judge missed a no-deadline draft; checking the deterministic check by hand showed any date anywhere passed it).",
+ "run": {
+  "path": "counter",
+  "payload": {
+   "supplier_id": "S-1",
+   "workflow_id": "wf-1",
+   "supplier_name": "Acme Ltd",
+   "recipients": [
+    "alex@acme.test"
+   ],
+   "current_offer": 47.5,
+   "currency": "GBP",
+   "counter_price": 44.8,
+   "rationale": "Anchor below their offer"
+  }
+ },
+ "model": {
+  "compose": "Subject: Re: Pricing\nDear Alex Morgan,\n\nThank you for your offer of 47.50 GBP, sent on 1 October 2026. Could you accept 44.80 GBP?\n\nKind regards,\nProcurement Team",
+  "judge": {
+   "scores": {
+    "ask_is_specific": 5,
+    "position_follows_from_offer": 4,
+    "deadline_stated": 5,
+    "tone_matches_escalation_level": 4,
+    "concise": 4
+   },
+   "rationale": "clear"
+  }
+ },
+ "expect": {
+  "rec.violations[*].kind": {
+   "has": "missing_required_element"
+  },
+  "rec.violations[*].detail": {
+   "has": "deadline"
+  },
+  "rec.violations[*].detail #2": {
+   "lacks": "explicit_ask"
+  }
+ }
+}

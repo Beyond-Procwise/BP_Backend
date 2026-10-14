@@ -16,10 +16,22 @@ MAIN = Path(__file__).resolve().parents[2] / "src" / "api" / "main.py"
 
 
 def test_main_imports_and_includes_the_requirements_router():
+    """Asserted against the app the way the docstring above always claimed.
+
+    This used to grep main.py for the literal string
+    ``app.include_router(requirements_router.router)``. That broke the moment
+    the routers were collected into a list to be mounted with an authentication
+    dependency — a refactor that did not unmount anything. A source-text
+    assertion cannot tell "no longer mounted" from "mounted differently", which
+    is the one distinction this test exists to make.
+    """
     source = MAIN.read_text()
     assert re.search(r"import requirements as requirements_router", source), \
         "main.py must import the requirements router"
-    assert "app.include_router(requirements_router.router)" in source, \
+
+    from api.main import app
+    served = set((app.openapi().get("paths") or {}).keys())
+    assert "/requirements/message" in served, \
         "main.py must mount the requirements router"
 
 

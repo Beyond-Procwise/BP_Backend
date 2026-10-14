@@ -42,7 +42,7 @@ def test_record_action_uses_injected_conn_and_does_not_commit():
     # The write is wrapped in a SAVEPOINT, so executed also holds SAVEPOINT/
     # RELEASE statements; find the one INSERT among them.
     inserts = [(sql, params) for sql, params in conn._cur.executed
-               if "INSERT INTO proc.agent_actions" in sql]
+               if "INSERT INTO proc.bp_agent_actions" in sql]
     assert len(inserts) == 1
     sql, params = inserts[0]
     # details serialized to JSON text
@@ -80,7 +80,7 @@ def test_bulk_record_uses_executemany_on_injected_conn():
     )
     assert len(conn._cur.many) == 1
     sql, rows = conn._cur.many[0]
-    assert "INSERT INTO proc.agent_actions" in sql
+    assert "INSERT INTO proc.bp_agent_actions" in sql
     assert len(rows) == 2
 
 
@@ -99,12 +99,12 @@ class _FailingInsertCursor:
 
     def execute(self, sql, params=()):
         self.executed.append(sql)
-        if "INSERT INTO proc.agent_actions" in sql:
+        if "INSERT INTO proc.bp_agent_actions" in sql:
             raise RuntimeError("relation does not exist")
 
     def executemany(self, sql, params):
         self.executed.append(sql)
-        if "INSERT INTO proc.agent_actions" in sql:
+        if "INSERT INTO proc.bp_agent_actions" in sql:
             raise RuntimeError("relation does not exist")
 
 

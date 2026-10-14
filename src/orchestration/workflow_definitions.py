@@ -139,7 +139,12 @@ def _has_drafts(state: WorkflowState) -> bool:
 
 
 def _has_responses(state: WorkflowState) -> bool:
-    return bool(state.shared_data.get("responses"))
+    # `supplier_responses`, not `responses`: that is the key EmailWatcherAgent
+    # returns (email_watcher_agent.py:572) and the key
+    # NegotiationAgent._extract_batch_inputs reads. This gate asked for
+    # `responses`, which nothing produces, so it was permanently False and the
+    # negotiate node had never executed in this graph.
+    return bool(state.shared_data.get("supplier_responses"))
 
 
 # ---------------------------------------------------------------------------
@@ -417,14 +422,14 @@ def build_supplier_interaction_workflow() -> WorkflowGraph:
     graph.add_node(WorkflowNode(
         name="watch_responses",
         agent_type="email_watcher",
-        output_to_shared=["responses"],
+        output_to_shared=["supplier_responses"],
         required=True,
     ))
 
     graph.add_node(WorkflowNode(
         name="negotiate",
         agent_type="negotiation",
-        input_mapping={"watch_responses.responses": "responses"},
+        input_mapping={"watch_responses.supplier_responses": "supplier_responses"},
         output_to_shared=["negotiation_result"],
         required=False,
     ))

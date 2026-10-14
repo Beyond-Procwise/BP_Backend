@@ -165,7 +165,7 @@ def propose(limit: Optional[int] = None) -> dict[str, Any]:
     return result
 
 
-def confirm(doc_type: str, doc_pk: str, po_id: str, reviewer: str = "human") -> bool:
+def confirm(doc_type: str, doc_pk: str, po_id: str, reviewer: Optional[str] = None) -> bool:
     """A human accepted the proposal: set the po_id and let the deal machinery take over."""
     table = {"invoice": "proc.bp_invoice_stg", "quote": "proc.bp_quote_stg"}.get(doc_type)
     pk = {"invoice": "invoice_id", "quote": "quote_id"}.get(doc_type)

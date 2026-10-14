@@ -10,7 +10,6 @@ from pathlib import Path
 import os
 from urllib.parse import urljoin
 
-import httpx
 import psycopg2
 import psycopg2.errors
 
@@ -19,6 +18,8 @@ import numpy as np
 from dataclasses import asdict, is_dataclass
 
 import services.capability_status as capability_status
+
+from src.services import egress
 
 logger = logging.getLogger(__name__)
 
@@ -988,7 +989,9 @@ class ProcessRoutingService:
                             process_name,
                             resolved_workflow_id,
                             self._safe_dumps(normalised_details),
-                            created_by or self.settings.script_user,
+                            # Who created it, or nobody. Not the service's own
+                            # name: that sat beside real people in this column.
+                            created_by,
                             user_id,
                             user_name,
                             process_status,
@@ -1102,7 +1105,7 @@ class ProcessRoutingService:
                         """,
                         (
                             self._safe_dumps(self.normalize_process_details(process_details)),
-                            modified_by or self.settings.script_user,
+                            modified_by,
                             process_id,
                         ),
                     )
@@ -1264,7 +1267,7 @@ class ProcessRoutingService:
                         (
                             numeric_status,
                             self._safe_dumps(self.normalize_process_details(details)),
-                            modified_by or self.settings.script_user,
+                            modified_by,
                             process_id,
                         ),
                     )
@@ -1425,16 +1428,21 @@ class ProcessRoutingService:
             )
             return
 
-        try:
-            response = httpx.post(
-                url,
-                json={"workflow_id": workflow_key},
-                timeout=5.0,
-            )
-        except Exception:  # pragma: no cover - defensive logging
-            logger.exception(
-                "Failed to trigger email watcher API for workflow %s",
-                workflow_key,
+        # The watcher is an internal service, so its address is deliberately
+        # allowed to be private; the call still passes through the chokepoint so
+        # it is described and recorded like any other.
+        response = egress.post(
+            url,
+            purpose=egress.Purpose.NOTIFICATION,
+            json={"workflow_id": workflow_key},
+            timeout=5,
+            require_global=False,
+        )
+        if response is None:
+            # egress logged the reason. Unreachable or refused, the outcome for
+            # this caller is the same as the old bare except: nothing to trigger.
+            logger.debug(
+                "Email watcher API not reached for workflow %s", workflow_key,
             )
             return
 
@@ -1582,7 +1590,7 @@ class ProcessRoutingService:
             "process_end_ts": process_end_ts.isoformat(),
             "duration": duration.total_seconds() if duration else None,
             "status": status_text,
-            "triggered_by": triggered_by or self.settings.script_user,
+            "triggered_by": triggered_by,
         }
 
         try:
@@ -1602,7 +1610,7 @@ class ProcessRoutingService:
                             status_int,
                             self._safe_dumps(annotated_details) if annotated_details is not None else None,
                             self._safe_dumps(raw_payload),
-                            triggered_by or self.settings.script_user,
+                            triggered_by,
                             process_id,
                         ),
                     )

@@ -31,7 +31,12 @@ try:  # pragma: no cover - FAISS optional dependency
 except Exception:  # pragma: no cover - gracefully degrade when unavailable
     faiss = None  # type: ignore
 
-DISALLOWED_METADATA_KEYS: Set[str] = set()
+# Imported, never redeclared. This module and document_embedding_service both
+# write to the same Qdrant collections; a second local set would drift and one
+# of the two write paths would stop redacting without anything failing.
+from services.document_embedding_service import (  # noqa: E402
+    DISALLOWED_METADATA_KEYS,
+)
 
 _TRAINING_ROOT = (
     Path(__file__).resolve().parent.parent

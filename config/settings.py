@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     qdrant_collection_name: str = Field(
         default="procwise_document_embeddings", env="QDRANT_COLLECTION_NAME"
     )
+    # How long startup may wait for Qdrant to answer before giving up and
+    # coming up without a vector store. 0 disables the wait entirely.
+    qdrant_startup_wait_seconds: int = Field(
+        default=90, env="QDRANT_STARTUP_WAIT_SECONDS"
+    )
+    qdrant_startup_grace_seconds: int = Field(
+        default=30, env="QDRANT_STARTUP_GRACE_SECONDS"
+    )
     uploaded_documents_collection_name: str = Field(
         default="uploaded_documents", env="UPLOADED_DOCUMENTS_COLLECTION_NAME"
     )
@@ -59,6 +67,12 @@ class Settings(BaseSettings):
     )
     llamaparse_api_key: Optional[str] = Field(default=None, env="LLAMAPARSE_API_KEY")
     llamaparse_base_url: Optional[str] = Field(default=None, env="LLAMAPARSE_BASE_URL")
+    # Whether an agent run writes its context and response to
+    # context_training_data_dir. On by default because it always was; what is
+    # written is aged out by services/capture_retention.
+    context_training_capture_enabled: bool = Field(
+        default=True, env="CONTEXT_TRAINING_CAPTURE_ENABLED"
+    )
     context_training_data_dir: str = Field(
         default=os.path.join(PROJECT_ROOT, "resources", "training", "conversations"),
         env="CONTEXT_TRAINING_DATA_DIR",
@@ -298,6 +312,25 @@ class Settings(BaseSettings):
         default=60, env="EMAIL_INBOUND_INITIAL_WAIT_SECONDS"
     )
 
+    # The deterministic analytic answer ("top 10 suppliers by spend"): off until
+    # a tenant is switched over, so the ask path is unchanged by default. The
+    # threshold and the fiscal-year start are business facts, not laws, which is
+    # why they are settings rather than constants in the detector.
+    analytic_answer_v2_enabled: bool = Field(
+        default=False, env="ANALYTIC_ANSWER_V2_ENABLED"
+    )
+    analytic_concentration_threshold_pct: float = Field(
+        default=30.0, env="ANALYTIC_CONCENTRATION_THRESHOLD_PCT"
+    )
+    analytic_fiscal_year_start_month: int = Field(
+        default=4, env="ANALYTIC_FISCAL_YEAR_START_MONTH"
+    )
+    # One attempt at the headline, bounded: the templated headline is already
+    # written behind it, so a slow model costs a sentence, not the answer.
+    analytic_insight_timeout_seconds: int = Field(
+        default=45, env="ANALYTIC_INSIGHT_TIMEOUT_SECONDS"
+    )
+
     negotiation_multi_round_enabled: bool = Field(
         default=True, env="NEGOTIATION_MULTI_ROUND_ENABLED"
     )
@@ -413,11 +446,20 @@ class Settings(BaseSettings):
     ollama_quantized_model: Optional[str] = Field(
         default=None, env="OLLAMA_QUANTIZED_MODEL"
     )
+    # Superseded too: `gpu_layers` is not an option Ollama reads at all. See above.
     ollama_gpu_layers: Optional[int] = Field(
         default=None, env="OLLAMA_GPU_LAYERS"
     )
+    # SUPERSEDED 2026-10-05, and left here only so an existing .env still parses.
+    # Nothing reads these three any more. The options Ollama keys a loaded runner on
+    # (num_gpu, num_ctx, num_batch, num_thread) are owned by services/ollama_client's
+    # load_options(), because assembling them in more than one place is what made the same
+    # 18GB model load four times in five minutes. OLLAMA_NUM_BATCH and
+    # OLLAMA_CONTEXT_WINDOW still take effect — ollama_client reads the environment
+    # directly — but the live default for the context window is 12288 there, NOT the 8192
+    # that used to be here, so do not read these numbers as the truth.
     ollama_num_batch: Optional[int] = Field(default=256, env="OLLAMA_NUM_BATCH")
-    ollama_context_window: int = Field(default=8192, env="OLLAMA_CONTEXT_WINDOW")
+    ollama_context_window: int = Field(default=12288, env="OLLAMA_CONTEXT_WINDOW")
     ollama_tokenizer: Optional[str] = Field(
         default="llama3", env="OLLAMA_TOKENIZER"
     )

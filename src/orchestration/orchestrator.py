@@ -31,6 +31,13 @@ from services.process_routing_service import ProcessRoutingService
 from services.backend_scheduler import BackendScheduler
 from services.event_bus import get_event_bus, workflow_scope
 from services.agent_manifest import AgentManifestService
+from src.services.governed_limits import limit as _governed_limit
+# Imported by its `src.`-prefixed name, matching every other governance_tools
+# import in this file. Both names resolve, but to two DIFFERENT module objects
+# and therefore two different exception classes -- so an `except` on one silently
+# fails to catch the other, and a governance block arrives as an anonymous
+# workflow crash. Change one of these and you must change the other.
+from src.services.governance_tools.envelope import GovernanceUnavailable
 from services.supplier_response_workflow import SupplierResponseWorkflow
 from utils.gpu import configure_gpu
 from services.redis_client import get_workflow_redis_client
@@ -40,8 +47,6 @@ logger = logging.getLogger(__name__)
 # Ensure GPU is enabled when available
 os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", os.getenv("CUDA_VISIBLE_DEVICES", "0"))
-os.environ.setdefault("OLLAMA_USE_GPU", "1")
-os.environ.setdefault("OLLAMA_NUM_PARALLEL", "4")
 os.environ.setdefault("OMP_NUM_THREADS", "8")
 
 
@@ -110,7 +115,13 @@ class Orchestrator:
     # Bounded signal-driven feedback: at most this many SUGGEST_AGENT additions
     # per sequential chain, so a misbehaving agent can never expand a workflow
     # without limit.
-    MAX_DYNAMIC_AGENTS: int = int(os.getenv("MAX_DYNAMIC_AGENTS", "3"))
+    # AgentReachPolicy (P9). A property rather than a class attribute: the value
+    # is resolved when it is used, so a missing limit refuses instead of being
+    # baked in at import from a number the code carried.
+    @property
+    def MAX_DYNAMIC_AGENTS(self) -> int:
+        return _governed_limit("agent_reach", "max_dynamic_agents",
+                               env="MAX_DYNAMIC_AGENTS", cast=int)
 
     def __init__(self, agent_nick, *, training_endpoint=None):
         # Ensure GPU environment is initialised before any agent execution.
@@ -163,6 +174,8 @@ class Orchestrator:
             else:
                 _wf_get_conn = None
             wf_state_manager = StateManager(get_connection=_wf_get_conn) if _wf_get_conn else None
+            # The same run trail for workflows the engine does not run.
+            self._run_trail = wf_state_manager
 
             self._workflow_engine = WorkflowEngine(
                 agent_registry=self.agents,
@@ -176,9 +189,18 @@ class Orchestrator:
             self._workflow_registry = WORKFLOW_REGISTRY
             logger.info("Declarative workflow engine initialized with %d workflows", len(WORKFLOW_REGISTRY))
         except Exception as exc:
-            logger.warning("Workflow engine init failed, using legacy routing: %s", exc)
+            # Tolerated so the rest of the orchestrator still starts -- workflows
+            # with no declarative graph are unaffected. It is NOT a licence to
+            # run a graph-backed workflow some other way: see the guard in
+            # execute_workflow, which fails those loudly rather than rerouting
+            # them. "using legacy routing" was the old behaviour and it is gone.
+            logger.error(
+                "Workflow engine init failed; workflows with a declarative graph "
+                "will now fail rather than route elsewhere: %s", exc
+            )
             self._workflow_engine = None
             self._workflow_registry = {}
+            self._workflow_engine_error = str(exc)
 
         # BackendScheduler MUST be the last thing initialized because it
         # starts the ProcessMonitorWatcher which immediately sweeps for
@@ -283,42 +305,113 @@ class Orchestrator:
         """Backward compatible alias for :meth:`execute_extraction_flow`."""
         return self.execute_extraction_flow(s3_prefix, s3_object_key, **kwargs)
 
+    #: Policy naming the workflows that may run with no governance envelope.
+    #: Read by identifier, deliberately WITHOUT an ``applies_to``: that field is
+    #: how ``guardrail.authorize`` selects policies, and this row is
+    #: configuration the orchestrator reads by name, not an authority statement
+    #: the gate should weigh (P7 draws exactly this line).
+    _GOVERNANCE_POLICY = "workflow_governance"
+
+    def _workflows_exempt_from_governance(self) -> frozenset:
+        """Workflow names policy says may run without a governance envelope.
+
+        This was a hardcoded ``if workflow_name == "document_extraction"``. The
+        exemption is a governance decision, so it belongs where the other
+        governance decisions are — visible, versioned and attributable, rather
+        than discoverable only by reading the orchestrator.
+
+        A missing policy exempts NOTHING. An exemption that was never written
+        down does not exist.
+        """
+        policy = self.policy_engine.get_policy(self._GOVERNANCE_POLICY)
+        if not policy:
+            logger.warning(
+                "no %s policy: no workflow is exempt from governance resolution",
+                self._GOVERNANCE_POLICY,
+            )
+            return frozenset()
+        rules = (policy.get("details") or {}).get("rules") or {}
+        names = rules.get("ungoverned_workflows") or []
+        if isinstance(names, str):
+            names = [names]
+        return frozenset(str(n).strip() for n in names if str(n).strip())
+
     def _apply_governance_envelope(self, workflow_name, context, enriched_input):
         """Resolve + inject the governed policy/prompt for an agentic workflow.
 
-        Deterministic (no LLM). Excludes document_extraction (must stay
-        deterministic). Flag-gated (WORKFLOW_GOVERNANCE_ENABLED) and fail-open —
-        any error → return None and the workflow runs exactly as before.
+        Deterministic (no LLM). FAIL-CLOSED: if the governance cannot be read,
+        this raises and the workflow does not run. It used to return None and
+        let the workflow run exactly as before, which meant a governance outage
+        was indistinguishable from governance being satisfied — the one thing a
+        control must never be.
+
+        Three outcomes, kept apart on purpose:
+
+          * exempt   — policy names this workflow as one that runs without an
+                       envelope (document_extraction, which must stay
+                       deterministic). Returns None.
+          * resolved — an envelope. Injected if it governs anything; if it
+                       governs nothing, the workflow runs and the log says so,
+                       because "nothing governs this" is an answer, not a
+                       failure, and three live workflows are in that state.
+          * failed   — GovernanceUnavailable. The caller stops the workflow.
         """
-        import os
-        if os.getenv("WORKFLOW_GOVERNANCE_ENABLED", "1") in ("0", "false", "False"):
-            return None
-        if workflow_name == "document_extraction":
-            return None
+        from src.services.governance_tools.envelope import (
+            GovernanceUnavailable,
+            resolve_governance,
+        )
+
         try:
-            from src.services.governance_tools.envelope import resolve_governance
-            env = resolve_governance(workflow_name)
-            if not env or (not env.get("policies") and not env.get("prompts")):
-                return None
-            if isinstance(enriched_input, dict):
-                enriched_input["governed"] = env
-            try:
-                context.input_data["governed"] = env
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                from src.services.agent_actions import record_action
-                record_action(phase="governance", action_type="governance_applied",
-                              agent=env.get("agent"),
-                              summary=f"governance envelope for {workflow_name}", details=env)
-            except Exception:  # noqa: BLE001
-                pass
-            logger.info("governance envelope applied for %s: %d policies, %d prompts",
-                        workflow_name, len(env.get("policies", [])), len(env.get("prompts", [])))
-            return env
-        except Exception:  # noqa: BLE001 - fail open
-            logger.debug("governance envelope failed for %s", workflow_name, exc_info=True)
+            exempt = self._workflows_exempt_from_governance()
+        except Exception as exc:  # noqa: BLE001 - unreadable policy is not consent
+            raise GovernanceUnavailable(
+                f"could not read the {self._GOVERNANCE_POLICY} policy: {exc}"
+            ) from exc
+
+        if workflow_name in exempt:
+            logger.info("governance: %s is exempt by %s policy — no envelope",
+                        workflow_name, self._GOVERNANCE_POLICY)
             return None
+
+        try:
+            env = resolve_governance(workflow_name)
+        except GovernanceUnavailable:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            # Any other exception out of the resolver still means the governance
+            # is unknown. Classifying that here rather than trusting the
+            # resolver to raise the right type keeps "we don't know what governs
+            # this" from arriving as an anonymous workflow crash.
+            raise GovernanceUnavailable(
+                f"governance resolution for {workflow_name} failed: {exc}"
+            ) from exc
+
+        if not env or (not env.get("policies") and not env.get("prompts")):
+            # Resolved, and nothing governs it. Said out loud rather than
+            # returned silently: an ungoverned workflow should be visible in
+            # the log of the run that was ungoverned.
+            logger.warning(
+                "governance: %s ran ungoverned — no active policy or prompt is "
+                "linked to it", workflow_name,
+            )
+            return None
+
+        if isinstance(enriched_input, dict):
+            enriched_input["governed"] = env
+        try:
+            context.input_data["governed"] = env
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from src.services.agent_actions import record_action
+            record_action(phase="governance", action_type="governance_applied",
+                          agent=env.get("agent"),
+                          summary=f"governance envelope for {workflow_name}", details=env)
+        except Exception:  # noqa: BLE001
+            pass
+        logger.info("governance envelope applied for %s: %d policies, %d prompts",
+                    workflow_name, len(env.get("policies", [])), len(env.get("prompts", [])))
+        return env
 
     # Workflows whose agents can put mail in front of a supplier. Extraction is
     # excluded for the same reason the governance envelope excludes it: it must
@@ -394,6 +487,7 @@ class Orchestrator:
 
         context: Optional[AgentContext] = None
         enriched_input: Dict[str, Any] = {}
+        trail_id: Optional[int] = None
 
         try:
             # Create initial context
@@ -411,7 +505,7 @@ class Orchestrator:
             context = AgentContext(
                 workflow_id=workflow_id,
                 agent_id=workflow_name,
-                user_id=user_id or self.settings.script_user,
+                user_id=user_id,
                 input_data=enriched_input,
                 task_profile=manifest.get("task", {}),
                 policy_context=manifest.get("policies", []),
@@ -420,8 +514,9 @@ class Orchestrator:
             context.apply_manifest(manifest)
 
             # --- Governance envelope: resolve + inject the governed policy/prompt
-            # for agentic workflows (deterministic; extraction excluded; flag-gated;
-            # fail-open). Additive — agents unaffected unless they read `governed`.
+            # for agentic workflows (deterministic; exemptions read from policy).
+            # FAIL-CLOSED: a resolution failure raises GovernanceUnavailable and
+            # is caught below as a block, not run ungoverned.
             governance_applied = self._apply_governance_envelope(
                 workflow_name, context, enriched_input)
 
@@ -439,6 +534,28 @@ class Orchestrator:
                 }
 
             workflow_config = enriched_input.get("workflow_configuration")
+
+            # A workflow with a declarative graph runs on the engine or not at
+            # all. Until 2026-09-07 a failed engine build fell through to a
+            # hand-rolled second implementation of supplier_interaction, whose
+            # own tests had quietly stopped exercising it -- so a broken engine
+            # became a different pipeline that still returned a result. Failing
+            # here is louder and honest. Narrow on purpose: a workflow with no
+            # graph (negotiation, for one) is untouched by this.
+            from orchestration.workflow_definitions import WORKFLOW_REGISTRY as _GRAPHS
+
+            if (
+                self._workflow_engine is None
+                and workflow_name in _GRAPHS
+                and not workflow_config
+                and enriched_input.get("use_workflow_engine", True)
+            ):
+                raise RuntimeError(
+                    f"workflow '{workflow_name}' runs on the declarative workflow "
+                    f"engine, which failed to initialise "
+                    f"({getattr(self, '_workflow_engine_error', 'reason not recorded')}). "
+                    "Refusing to run it another way."
+                )
 
             # --- New DAG Scheduler path (Phase 3 migration) ---
             if getattr(self.settings, 'use_dag_scheduler', False) and workflow_name in self._workflow_registry:
@@ -466,13 +583,20 @@ class Orchestrator:
                 and not workflow_config
                 and enriched_input.get("use_workflow_engine", True)
             )
+            # The engine records its own run in proc.workflow_execution. No other
+            # path recorded anything -- negotiation among them, and the
+            # self-approval bar on a negotiation round reads exactly that row
+            # to learn who started it.
+            if not use_engine:
+                trail_id = self._open_run_trail(workflow_id, workflow_name, user_id)
+
             if use_engine:
                 from orchestration.workflow_definitions import get_workflow
                 graph = get_workflow(workflow_name)
                 engine_state = self._workflow_engine.execute(
                     graph,
                     input_data=enriched_input,
-                    user_id=user_id or self.settings.script_user,
+                    user_id=user_id,
                     workflow_id=workflow_id,
                 )
                 result = {
@@ -491,14 +615,14 @@ class Orchestrator:
                 result = self._execute_quote_workflow(context)
             elif workflow_name == "opportunity_mining":
                 result = self._execute_opportunity_workflow(context)
-            elif workflow_name == "supplier_interaction":
-                result = self._execute_supplier_interaction_workflow(context)
             else:
                 result = self._execute_generic_workflow(workflow_name, context)
 
             # Attach the governance that shaped this run (traceability).
             if governance_applied and isinstance(result, dict):
                 result.setdefault("governance_applied", governance_applied)
+
+            self._close_run_trail(trail_id, "completed")
 
             self._publish_workflow_complete(
                 workflow_name=workflow_name,
@@ -527,8 +651,33 @@ class Orchestrator:
                 "execution_path": context.routing_history,
             }
 
+        except GovernanceUnavailable as exc:
+            # Not a crash and not a completion: the governance that was supposed
+            # to shape this run could not be read, so the run does not happen.
+            # Kept ahead of the generic handler so it cannot be reported as a
+            # workflow failure -- "blocked" is reviewable, "failed" is noise.
+            logger.error("Workflow %s (%s) blocked: %s", workflow_id, workflow_name, exc)
+            evidence = str(exc)
+            try:
+                from src.services.agent_actions import record_action
+                record_action(
+                    phase="governance", action_type="governance_blocked",
+                    agent=workflow_name, status="blocked",
+                    summary=f"{workflow_name} blocked: governance could not be resolved",
+                    details={"workflow_id": workflow_id, "error": evidence},
+                )
+            except Exception:  # noqa: BLE001 - the block stands either way
+                logger.debug("could not record the governance block", exc_info=True)
+            return {
+                "status": "blocked",
+                "reason": "governance could not be resolved",
+                "evidence": evidence,
+                "workflow_id": workflow_id,
+            }
+
         except Exception as e:
             logger.error(f"Workflow {workflow_id} failed: {e}")
+            self._close_run_trail(trail_id, "failed")
             if context is None:
                 fallback_input: Dict[str, Any] = {}
                 if isinstance(enriched_input, dict):
@@ -538,7 +687,7 @@ class Orchestrator:
                 context = AgentContext(
                     workflow_id=workflow_id,
                     agent_id=workflow_name,
-                    user_id=user_id or self.settings.script_user,
+                    user_id=user_id,
                     input_data=fallback_input,
                 )
             self._publish_workflow_complete(
@@ -564,6 +713,38 @@ class Orchestrator:
             # Drop the shared blackboard for this run so the registry stays bounded.
             self._release_wf_context(workflow_id)
 
+    def _open_run_trail(
+        self, workflow_id: str, workflow_name: str, user_id: Optional[str]
+    ) -> Optional[int]:
+        """Record a non-engine run in proc.workflow_execution, with who started it.
+
+        Tolerant in the same way the engine's own write is (_safe_persist): a
+        run is not refused because its trail could not be written. What that
+        costs is stated rather than hidden -- with no row, the self-approval
+        bar on this run's negotiation rounds finds no initiator, and an unknown
+        initiator is not a match.
+        """
+        trail = getattr(self, "_run_trail", None)
+        if trail is None:
+            return None
+        try:
+            return trail.create_workflow_execution(workflow_id, workflow_name, user_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("could not record workflow %s (%s) in the run trail",
+                             workflow_id, workflow_name)
+            return None
+
+    def _close_run_trail(self, trail_id: Optional[int], status: str) -> None:
+        trail = getattr(self, "_run_trail", None)
+        if trail is None or trail_id is None:
+            return
+        try:
+            from datetime import datetime as _dt
+
+            trail.update_workflow_status(trail_id, status, _dt.utcnow())
+        except Exception:  # noqa: BLE001
+            logger.exception("could not close run-trail row %s as %s", trail_id, status)
+
     @staticmethod
     @lru_cache(maxsize=1)
     def _load_agent_definitions() -> Dict[str, str]:
@@ -574,17 +755,11 @@ class Orchestrator:
         policies, which can occur many times within a single workflow.
         """
 
-        from agents.definitions import DEFINITIONS_PATH
+        # Through the one loader, so the agents people created (which live in
+        # the database, not the file) are in this view too.
+        from agents.definitions import load_agent_definitions
 
-        path = DEFINITIONS_PATH
-        with path.open() as f:
-            data = json.load(f)
-
-        # The catalogue is stored as {"agents": [...]} but historically was a bare
-        # list — accept either shape so a schema tweak can't silently blank the
-        # whole agent registry.
-        if isinstance(data, dict):
-            data = data.get("agents") or data.get("definitions") or []
+        data = load_agent_definitions()
 
         defs: Dict[str, str] = {}
         for item in data:
@@ -976,14 +1151,19 @@ class Orchestrator:
         payload: Optional[Dict[str, Any]] = None,
         process_id: Optional[int] = None,
         prs: Any = None,
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Execute a flow either in new JSON form or legacy tree structure."""
+        """Execute a flow either in new JSON form or legacy tree structure.
+
+        ``user_id`` is the subject of whoever started the flow, or None. Every
+        node's context carries it; it used to be settings.script_user.
+        """
 
         if isinstance(flow, dict) and "entrypoint" in flow and "steps" in flow:
-            return self._execute_json_flow(flow, payload or {}, process_id, prs)
+            return self._execute_json_flow(flow, payload or {}, process_id, prs, user_id)
 
         # Fallback to previous onSuccess/onFailure style graphs
-        return self._execute_legacy_flow(flow, process_id, prs)
+        return self._execute_legacy_flow(flow, process_id, prs, user_id)
 
     # ------------------------------------------------------------------
     # New JSON flow executor
@@ -1108,6 +1288,7 @@ class Orchestrator:
         payload: Dict[str, Any],
         process_id: Optional[int] = None,
         prs: Any = None,
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute a flow defined with ``entrypoint`` and ``steps`` fields."""
 
@@ -1329,7 +1510,7 @@ class Orchestrator:
                 context = AgentContext(
                     workflow_id=str(uuid.uuid4()),
                     agent_id=agent_key,
-                    user_id=self.settings.script_user,
+                    user_id=user_id,
                     input_data=agent_input,
                     task_profile=manifest.get("task", {}),
                     policy_context=manifest.get("policies", []),
@@ -1385,7 +1566,8 @@ class Orchestrator:
         return {"status": flow_status, "ctx": run_ctx}
 
     def _execute_legacy_flow(
-        self, flow: Dict[str, Any], process_id: Optional[int] = None, prs: Any = None
+        self, flow: Dict[str, Any], process_id: Optional[int] = None, prs: Any = None,
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute legacy tree-based flows with ``onSuccess``/``onFailure`` links."""
 
@@ -1470,7 +1652,7 @@ class Orchestrator:
             context = AgentContext(
                 workflow_id=_new_id(),
                 agent_id=agent_key,
-                user_id=self.settings.script_user,
+                user_id=user_id,
                 input_data=input_data,
                 task_profile=manifest.get("task", {}),
                 policy_context=manifest.get("policies", []),
@@ -1986,295 +2168,6 @@ class Orchestrator:
         else:
             logger.info("SupplierRankingAgent skipped due to empty candidate list")
 
-        return results
-
-    def _execute_supplier_interaction_workflow(self, context: AgentContext) -> Dict:
-        """Coordinate drafting, dispatch waits, and supplier processing."""
-
-        payload = dict(context.input_data or {})
-        draft_payload = payload.get("draft_payload")
-        supplier_payload = payload.get("supplier_input")
-
-        if not isinstance(draft_payload, dict):
-            result = self._execute_agent("supplier_interaction", context)
-            return result.data if result else {}
-
-        dispatch_timeout_raw = payload.get("dispatch_timeout_seconds")
-        dispatch_poll_raw = payload.get("dispatch_poll_interval")
-        response_timeout_raw = payload.get("response_timeout_seconds")
-        response_poll_raw = payload.get("response_poll_interval")
-
-        def _positive(value, fallback):
-            try:
-                num = float(value)
-            except Exception:
-                return fallback
-            if num <= 0:
-                return fallback
-            return num
-
-        dispatch_timeout = int(_positive(dispatch_timeout_raw, 300))
-        dispatch_poll = max(0, int(_positive(dispatch_poll_raw, getattr(self.settings, "email_response_poll_seconds", 60))))
-        response_timeout = int(_positive(response_timeout_raw, getattr(self.settings, "email_response_timeout_seconds", 900)))
-        response_poll = max(0, int(_positive(response_poll_raw, getattr(self.settings, "email_response_poll_seconds", 60))))
-
-        email_ctx = self._create_child_context(context, "email_drafting", dict(draft_payload))
-        for key in (
-            "draft_payload",
-            "supplier_input",
-            "dispatch_timeout_seconds",
-            "dispatch_poll_interval",
-            "response_timeout_seconds",
-            "response_poll_interval",
-        ):
-            email_ctx.input_data.pop(key, None)
-
-        email_result = self._execute_agent("email_drafting", email_ctx)
-        email_data = email_result.data if email_result else {}
-        email_drafts = self._extract_drafts(email_result)
-        drafted_email_count = len([draft for draft in email_drafts if isinstance(draft, dict)])
-        tracked_unique_ids = [
-            str(draft.get("unique_id")).strip()
-            for draft in email_drafts
-            if isinstance(draft, dict)
-            and draft.get("unique_id") not in (None, "")
-        ]
-        tracked_unique_ids = [uid for uid in tracked_unique_ids if uid]
-
-        workflow_hint = self._select_workflow_identifier(email_drafts, context.workflow_id)
-        email_drafts = self._filter_drafts_for_workflow(email_drafts, workflow_hint)
-        unique_ids = [draft.get("unique_id") for draft in email_drafts]
-
-        dispatch_input: Dict[str, Any] = {}
-        if email_result and email_result.pass_fields:
-            dispatch_input.update(dict(email_result.pass_fields))
-        dispatch_input.setdefault("drafts", email_drafts)
-        dispatch_input.setdefault("workflow_id", workflow_hint)
-        round_hint = (
-            payload.get("round_number")
-            or payload.get("round")
-            or (supplier_payload.get("round") if isinstance(supplier_payload, dict) else None)
-        )
-        if round_hint is not None:
-            dispatch_input.setdefault("round", round_hint)
-
-        dispatch_ctx = self._create_child_context(context, "email_dispatch", dispatch_input)
-        dispatch_result = self._execute_agent("email_dispatch", dispatch_ctx)
-        dispatch_data = dispatch_result.data if dispatch_result else {}
-
-        if isinstance(dispatch_data.get("drafts"), list):
-            email_drafts = [draft for draft in dispatch_data["drafts"] if isinstance(draft, dict)]
-            unique_ids = [draft.get("unique_id") for draft in email_drafts]
-
-        dispatch_records = (
-            dispatch_data.get("dispatch_records")
-            if isinstance(dispatch_data.get("dispatch_records"), list)
-            else []
-        )
-        if dispatch_records:
-            tracked_unique_ids = [
-                str(record.get("unique_id")).strip()
-                for record in dispatch_records
-                if record.get("unique_id")
-            ]
-            tracked_unique_ids = [uid for uid in tracked_unique_ids if uid]
-            unique_ids = [record.get("unique_id") for record in dispatch_records]
-
-        coordinator = SupplierResponseWorkflow()
-        readiness: Dict[str, Dict[str, object]] = {}
-
-        if isinstance(dispatch_data.get("expected_dispatches"), int):
-            expected_email_count = int(dispatch_data["expected_dispatches"])
-        else:
-            expected_email_count = len(tracked_unique_ids) or drafted_email_count
-
-        try:
-            readiness = coordinator.ensure_ready(
-                workflow_id=workflow_hint,
-                unique_ids=unique_ids,
-                dispatch_timeout=dispatch_timeout,
-                dispatch_poll_interval=dispatch_poll,
-                response_timeout=response_timeout,
-                response_poll_interval=response_poll,
-            )
-        except TimeoutError:
-            logger.warning(
-                "Supplier response readiness timed out for workflow=%s",
-                workflow_hint,
-            )
-            normalised_ids = list(tracked_unique_ids) or [
-                uid for uid in unique_ids if uid
-            ]
-            readiness = {
-                "activation": {
-                    "activated": False,
-                    "timed_out": True,
-                    "workflow_id": workflow_hint,
-                    "unique_ids": normalised_ids,
-                },
-                "dispatch": {
-                    "complete": False,
-                    "timed_out": True,
-                    "workflow_id": workflow_hint,
-                    "expected_dispatches": expected_email_count,
-                    "completed_dispatches": 0,
-                    "unique_ids": normalised_ids,
-                },
-                "responses": {
-                    "complete": False,
-                    "timed_out": True,
-                    "workflow_id": workflow_hint,
-                    "expected_responses": expected_email_count,
-                    "completed_responses": 0,
-                    "unique_ids": normalised_ids,
-                },
-            }
-        except Exception:
-            logger.exception(
-                "Failed to coordinate supplier response readiness for workflow=%s",
-                workflow_hint,
-            )
-            readiness = {}
-
-        supplier_input: Dict[str, Any] = {}
-        if email_result and email_result.pass_fields:
-            supplier_input.update(dict(email_result.pass_fields))
-        if isinstance(supplier_payload, dict):
-            supplier_input.update(supplier_payload)
-        supplier_input["drafts"] = email_drafts
-        supplier_input.setdefault("expected_dispatch_count", expected_email_count)
-        # Retain legacy key for agents that still inspect the historical field.
-        supplier_input.setdefault("expected_email_count", expected_email_count)
-        if dispatch_records:
-            supplier_input.setdefault("dispatch_records", dispatch_records)
-        if dispatch_data.get("failures"):
-            supplier_input.setdefault("dispatch_failures", dispatch_data.get("failures"))
-        if dispatch_data:
-            supplier_input.setdefault("dispatch_metadata", dispatch_data)
-        if tracked_unique_ids:
-            supplier_input.setdefault("expected_unique_ids", tracked_unique_ids)
-        supplier_input.setdefault("await_response", True)
-        if len([uid for uid in unique_ids if uid]) > 1:
-            supplier_input.setdefault("await_all_responses", True)
-        supplier_input.setdefault("workflow_id", workflow_hint)
-        supplier_input.setdefault("response_timeout", response_timeout)
-        supplier_input.setdefault("response_timeout_seconds", response_timeout)
-        supplier_input.setdefault("response_poll_interval", response_poll)
-        supplier_input.setdefault("dispatch_timeout", dispatch_timeout)
-        supplier_input.setdefault("dispatch_timeout_seconds", dispatch_timeout)
-        supplier_input.setdefault("dispatch_poll_interval", dispatch_poll)
-        supplier_input.setdefault("action", "await_workflow_batch")
-
-        supplier_ctx = self._create_child_context(context, "supplier_interaction", supplier_input)
-        for key in (
-            "draft_payload",
-            "supplier_input",
-            "dispatch_timeout_seconds",
-            "dispatch_poll_interval",
-            "response_timeout_seconds",
-            "response_poll_interval",
-        ):
-            supplier_ctx.input_data.pop(key, None)
-
-        logger.info(
-            "Waiting for SupplierInteractionAgent to complete... workflow=%s",
-            workflow_hint,
-        )
-        supplier_result = self._execute_agent("supplier_interaction", supplier_ctx)
-        logger.info(
-            "SupplierInteractionAgent completed for workflow=%s with status=%s",
-            workflow_hint,
-            getattr(supplier_result, "status", None),
-        )
-
-        scheduler = getattr(self, "backend_scheduler", None)
-        if (
-            workflow_hint
-            and scheduler
-            and hasattr(scheduler, "notify_email_dispatch")
-        ):
-            try:
-                scheduler.notify_email_dispatch(workflow_hint)
-            except Exception:
-                logger.exception(
-                    "Failed to notify email watcher for workflow=%s from orchestrator",
-                    workflow_hint,
-                )
-
-        negotiation_result = None
-        if (
-            supplier_result
-            and supplier_result.status == AgentStatus.SUCCESS
-            and "negotiation" in self.agents
-        ):
-            negotiation_payload: Dict[str, Any] = {}
-            if supplier_result.pass_fields:
-                negotiation_payload.update(dict(supplier_result.pass_fields))
-            if supplier_result.data:
-                negotiation_payload.setdefault("negotiation_batch", True)
-                negotiation_payload.update(dict(supplier_result.data))
-
-            if isinstance(supplier_result.data, dict):
-                primary_reference = supplier_result.data.get("session_reference")
-                if primary_reference:
-                    negotiation_payload.setdefault("session_reference", primary_reference)
-
-            thread_headers_payload: Optional[Dict[str, Any]] = None
-            if isinstance(supplier_result.data, dict):
-                thread_headers_payload = supplier_result.data.get("thread_headers")
-            if not thread_headers_payload and isinstance(supplier_result.pass_fields, dict):
-                thread_headers_payload = supplier_result.pass_fields.get("thread_headers")
-            if thread_headers_payload:
-                negotiation_payload["thread_headers"] = thread_headers_payload
-
-            responses = negotiation_payload.get("supplier_responses")
-            if isinstance(responses, list) and responses:
-                negotiation_ctx = self._create_child_context(
-                    context, "negotiation", negotiation_payload
-                )
-                negotiation_result = self._execute_agent("negotiation", negotiation_ctx)
-
-        if supplier_result and supplier_result.status != AgentStatus.SUCCESS:
-            logger.warning(
-                "SupplierInteractionAgent returned non-success status %s for workflow=%s",
-                supplier_result.status,
-                workflow_hint,
-            )
-
-        activation_summary = readiness.get("activation", {}) if readiness else {}
-        if activation_summary and not activation_summary.get("activated", False):
-            logger.warning(
-                "Supplier interaction activation incomplete for workflow=%s", workflow_hint
-            )
-
-        results: Dict[str, Any] = {
-            "email_drafting": email_data,
-            "dispatch_monitor": readiness.get("dispatch") if readiness else None,
-            "response_monitor": readiness.get("responses") if readiness else None,
-            "activation_monitor": activation_summary,
-            "supplier_interaction": supplier_result.data if supplier_result else {},
-            "expected_email_count": expected_email_count,
-            "tracked_unique_ids": tracked_unique_ids,
-            "supplier_interaction_status": (
-                supplier_result.status.value if supplier_result else None
-            ),
-        }
-
-        if supplier_result and supplier_result.next_agents:
-            results["next_agents"] = list(supplier_result.next_agents)
-        if supplier_result and supplier_result.pass_fields:
-            results["supplier_pass_fields"] = dict(supplier_result.pass_fields)
-        if negotiation_result:
-            results["negotiation"] = negotiation_result.data if negotiation_result else {}
-            if negotiation_result and negotiation_result.pass_fields:
-                results["negotiation_pass_fields"] = dict(negotiation_result.pass_fields)
-            if negotiation_result and negotiation_result.status:
-                results["negotiation_status"] = negotiation_result.status.value
-            if negotiation_result and negotiation_result.next_agents:
-                existing = results.setdefault("next_agents", [])
-                for agent_name in negotiation_result.next_agents:
-                    if agent_name not in existing:
-                        existing.append(agent_name)
         return results
 
     @staticmethod

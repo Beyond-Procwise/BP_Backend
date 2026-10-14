@@ -361,3 +361,51 @@ def test_default_path_reuses_the_cached_engine(monkeypatch):
     rbac.reset_policy_cache()
     rbac._engine(None)
     assert len(builds) == 2
+
+
+# The user types the admin area (gateway admin.roles_and_access / Cognito)
+# actually assigns, and the product role each must act as. Before the
+# 2026-09-18 mapping every one of them fell through to unmapped_group_role,
+# so a PROCWISE_ADMIN was a Viewer everywhere the backend checked.
+ADMIN_AREA_GROUPS = {
+    "PROCWISE_TENANT_SUPER_ADMIN": "Admin",
+    "PROCWISE_ADMIN": "Admin",
+    "PROCWISE_POLICY_MANAGER": "Admin",
+    "PROCWISE_CHIEF_PROCUREMENT_OFFICER": "Approver",
+    "PROCWISE_FINANCE_REVIEWER_APPROVER": "Approver",
+    "PROCWISE_CATEGORY_MANAGER": "Buyer",
+    "PROCWISE_PROCUMENT_BUYER_ANALYST": "Buyer",
+    "PROCWISE_VIEWER": "Viewer",
+}
+
+
+@pytest.mark.parametrize("group,role", sorted(ADMIN_AREA_GROUPS.items()))
+def test_the_live_mapping_gives_every_admin_area_group_its_role(group, role):
+    """Reads the real role_assignment row, like the test above: a fixture
+    would pass while the database still sends these users to Viewer."""
+    import os
+
+    import psycopg2
+    from dotenv import load_dotenv
+
+    from src.engines.policy_engine import PolicyEngine
+
+    load_dotenv()
+
+    def factory():
+        return psycopg2.connect(
+            host=os.getenv("DB_HOST"),
+            port=os.getenv("DB_PORT", 5432),
+            dbname=os.getenv("DB_NAME"),
+            user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASSWORD"),
+            connect_timeout=10,
+        )
+
+    engine = PolicyEngine(connection_factory=factory)
+    rbac._ROLE_ASSIGNMENT_CACHE, rbac._ROLE_ASSIGNMENT_CACHED_AT = {}, float("inf")
+    try:
+        principal = FakePrincipal("sub-admin-area", {"cognito:groups": [group]})
+        assert rbac.effective_role(principal, policy_engine=engine) == role
+    finally:
+        rbac.reset_policy_cache()

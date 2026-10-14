@@ -16,9 +16,11 @@ import pandas as pd
 
 from utils.gpu import configure_gpu
 from utils.instructions import parse_instruction_sources
+from services.version_collapse import base_reference, version_ordinal
 from utils.db import read_sql_compat
 from utils.reference_loader import load_reference_dataset
 from services.supplier_relationship_service import SupplierRelationshipService
+from src.services.formulas import ensure_registered, evaluate_many
 from .base_agent import BaseAgent, AgentContext, AgentOutput, AgentStatus
 
 logger = logging.getLogger(__name__)
@@ -106,6 +108,119 @@ def _normalize_days_to_score(
         return 100.0
     score = (1.0 - (clamped - min_days) / (max_days - min_days)) * 100
     return float(round(score, 2))
+
+
+def _deal_price_scores(scored_df: pd.DataFrame) -> pd.DataFrame:
+    """Deal-scoped price scoring, through the registry.
+
+    One `evaluate_many` over the whole deal rather than a call per supplier:
+    the score is ratio-to-cheapest, so it is a property of the deal's bid set
+    and cannot be computed a row at a time.
+    """
+    if "price" not in scored_df.columns:
+        return scored_df
+    ensure_registered()
+    out = scored_df.copy()
+    batch = evaluate_many(
+        "supplier.deal_price_score",
+        [{"price": _price_or_none(v)} for v in out["price"]],
+    )
+    if batch.record.status != "ok":
+        # The contract refused the bid set. NaN, not zero: "we could not score
+        # price here" is not "every supplier priced worst".
+        logger.warning("deal price scoring unassessed: %s", batch[0].why())
+        out["price_score"] = np.nan
+        return out
+    out["price_score"] = list(batch.values)
+    return out
+
+
+def _price_or_none(value: Any) -> Optional[float]:
+    numeric = pd.to_numeric(value, errors="coerce")
+    return None if pd.isna(numeric) else float(numeric)
+
+
+def _composite_via_registry(
+    scored_df: pd.DataFrame, weights: Dict[str, float]
+) -> Tuple[Any, List[List[str]]]:
+    """Composite scoring, through the registry.
+
+    Population-scoped, so it goes through `evaluate_many` as one evaluation over
+    the whole frame. `scored_on` still comes from `composite_scores`, which is
+    the registered body: the registry hands back the numbers, and the frame
+    needs the per-supplier criterion list alongside them.
+    """
+    ensure_registered()
+    criteria = [c for c in weights if f"{c}_score" in scored_df.columns]
+    contexts = [
+        {"scores": {c: _score_or_nan(row.get(f"{c}_score")) for c in criteria}}
+        for _, row in scored_df.iterrows()
+    ]
+    batch = evaluate_many(
+        "supplier.composite_score", contexts, shared={"weights": dict(weights)}
+    )
+    _final, scored_on = composite_scores(scored_df, weights)
+    if batch.record.status != "ok":
+        logger.warning(
+            "composite scoring unassessed (%s); no supplier is ranked",
+            batch[0].why() if len(batch) else "empty frame",
+        )
+        return np.full(len(scored_df), np.nan), [[] for _ in range(len(scored_df))]
+    return np.asarray(batch.values, dtype=float), scored_on
+
+
+def _score_or_nan(value: Any) -> float:
+    numeric = pd.to_numeric(value, errors="coerce")
+    return float("nan") if pd.isna(numeric) else float(numeric)
+
+
+def composite_scores(
+    scored_df: pd.DataFrame, weights: Dict[str, float]
+) -> Tuple[Any, List[List[str]]]:
+    """Composite supplier score, and which criteria each supplier was scored on.
+
+    Population-scoped by nature: it reads the frame, not a row. Extracted from
+    ``run()`` verbatim so the registry can version and audit it without there
+    being two copies of the arithmetic.
+
+    Each supplier is scored only on the metrics we actually hold for them, with
+    that supplier's weights renormalised over those metrics. The earlier
+    ``fillna(0)`` charged a supplier the full weight of every metric while
+    scoring them 0 on any that were missing --- so a supplier whose payment
+    terms we simply never read ranked as though they had offered the worst
+    terms on the table. That punishes gaps in OUR data as if they were faults
+    in THEIR bid.
+
+    A supplier with no measurable metric at all scores NaN, not 0.0: we have no
+    opinion on them, and saying "0" would be inventing one.
+    """
+    criteria_cols = {
+        crit: f"{crit}_score"
+        for crit in weights
+        if f"{crit}_score" in scored_df.columns
+    }
+    for crit in weights:
+        if crit not in criteria_cols:
+            logger.warning("Criterion column missing: %s_score", crit)
+
+    if not criteria_cols:
+        return np.full(len(scored_df), np.nan), [[] for _ in range(len(scored_df))]
+
+    score_frame = scored_df[list(criteria_cols.values())].apply(
+        pd.to_numeric, errors="coerce"
+    )
+    weight_row = pd.Series(
+        {col: float(weights[crit]) for crit, col in criteria_cols.items()}
+    )
+    present = score_frame.notna()
+    weighted_sum = (score_frame.fillna(0) * weight_row).sum(axis=1)
+    weight_present = present.mul(weight_row, axis=1).sum(axis=1)
+    final_score = np.where(weight_present > 0, weighted_sum / weight_present, np.nan)
+    scored_on = present.apply(
+        lambda r: [c.removesuffix("_score") for c in present.columns[r.values]],
+        axis=1,
+    )
+    return final_score, scored_on
 
 
 def ensure_payment_terms_score(df: pd.DataFrame) -> pd.DataFrame:
@@ -594,8 +709,49 @@ class SupplierRankingAgent(BaseAgent):
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+    def _apply_requirement_shortlist(self, data: Dict[str, Any]) -> Optional[str]:
+        """Narrow ``supplier_candidates`` to suppliers that have sold what the
+        buyer asked for. Returns an error message, or None to carry on.
+
+        Untouched when the caller already chose candidates or supplied the
+        supplier data, or when the requirement names nothing searchable.
+        Delivery and risk alone shortlisted logistics firms for a laptop
+        requirement (capability audit 2026-10-08), so this fails closed: no
+        match, or a failed lookup, is reported rather than ranking everyone.
+        """
+        from src.services import supplier_shortlist
+
+        if data.get("supplier_candidates") or data.get("supplier_data") is not None:
+            return None
+        term = supplier_shortlist.product_term(data.get("requirement"))
+        if term is None:
+            return None
+        try:
+            conn = self.agent_nick.get_db_connection()
+            try:
+                sellers = supplier_shortlist.suppliers_selling(conn, term)
+            finally:
+                conn.close()
+        except Exception:
+            logger.exception("Shortlist lookup failed for %r", term)
+            return f"Could not check which suppliers sell '{term}', so no shortlist was made"
+        if not sellers:
+            return (
+                f"No supplier with a purchase, invoice or quote line for '{term}' "
+                "was found, so no shortlist was made"
+            )
+        data["supplier_candidates"] = sorted(sellers)
+        return None
+
     def run(self, context: AgentContext) -> AgentOutput:
         logger.info("SupplierRankingAgent: Starting ranking...")
+
+        shortlist_error = self._apply_requirement_shortlist(context.input_data)
+        if shortlist_error:
+            return self._with_plan(
+                context,
+                AgentOutput(status=AgentStatus.FAILED, data={}, error=shortlist_error),
+            )
 
         supplier_data = context.input_data.get("supplier_data")
         if supplier_data is None:
@@ -958,7 +1114,7 @@ class SupplierRankingAgent(BaseAgent):
         # competed. Runs after the generic normaliser so it overrides any global
         # price pass, which would rank a supplier against unrelated deals.
         if getattr(self, "_deal_priced", False):
-            scored_df = self._score_deal_price(scored_df)
+            scored_df = _deal_price_scores(scored_df)
 
         normalised_weights = self._normalise_weight_map(scored_df, weights)
         if normalised_weights:
@@ -974,35 +1130,9 @@ class SupplierRankingAgent(BaseAgent):
         #
         # A supplier with no measurable metric at all scores NaN, not 0.0: we have no
         # opinion on them, and saying "0" would be inventing one.
-        criteria_cols = {
-            crit: f"{crit}_score"
-            for crit in weights
-            if f"{crit}_score" in scored_df.columns
-        }
-        for crit in weights:
-            if crit not in criteria_cols:
-                logger.warning("Criterion column missing: %s_score", crit)
-
-        if criteria_cols:
-            score_frame = scored_df[list(criteria_cols.values())].apply(
-                pd.to_numeric, errors="coerce"
-            )
-            weight_row = pd.Series(
-                {col: float(weights[crit]) for crit, col in criteria_cols.items()}
-            )
-            present = score_frame.notna()
-            weighted_sum = (score_frame.fillna(0) * weight_row).sum(axis=1)
-            weight_present = present.mul(weight_row, axis=1).sum(axis=1)
-            scored_df["final_score"] = np.where(
-                weight_present > 0, weighted_sum / weight_present, np.nan
-            )
-            scored_df["scored_on"] = present.apply(
-                lambda r: [c.removesuffix("_score") for c in present.columns[r.values]],
-                axis=1,
-            )
-        else:
-            scored_df["final_score"] = np.nan
-            scored_df["scored_on"] = [[] for _ in range(len(scored_df))]
+        final_scores, scored_on = _composite_via_registry(scored_df, weights)
+        scored_df["final_score"] = final_scores
+        scored_df["scored_on"] = scored_on
 
         scored_df = self._apply_flow_bonus(
             scored_df, flow_index, flow_name_index, alias_tokens_map
@@ -1445,15 +1575,10 @@ class SupplierRankingAgent(BaseAgent):
     @staticmethod
     def _quote_version(quote_id: Any) -> Optional[int]:
         """Pull the bidding round out of a quote_id like 'STC-RFQ-2204 (V3 (BAFO))'."""
+        # The shared grammar (services/version_collapse): an unversioned id is round 1.
         if not isinstance(quote_id, str):
             return None
-        match = re.search(r"\(\s*V(\d+)", quote_id, re.IGNORECASE)
-        if not match:
-            return None
-        try:
-            return int(match.group(1))
-        except (TypeError, ValueError):
-            return None
+        return version_ordinal(quote_id)
 
     def _infer_deal_id(self, supplier_ids: Iterable[str]) -> Optional[str]:
         """Find the deal these suppliers actually competed on, when nobody named one.
@@ -1510,7 +1635,8 @@ class SupplierRankingAgent(BaseAgent):
         """
         quotes = self._read_table(
             "proc.bp_quote_trgt",
-            "deal_id = %s AND supplier_id IS NOT NULL",
+            # A bid whose supplier was not resolved is still a rival on the price.
+            "deal_id = %s",
             (deal_id,),
             columns=(
                 "quote_id",
@@ -1529,48 +1655,57 @@ class SupplierRankingAgent(BaseAgent):
         quotes["_version"] = quotes["quote_id"].apply(self._quote_version)
         quotes["_qdate"] = pd.to_datetime(quotes["quote_date"], errors="coerce")
 
-        rows: List[Dict[str, Any]] = []
-        for supplier_id, grp in quotes.groupby("supplier_id", dropna=True):
-            priced = grp.dropna(subset=["total_amount"])
-            if priced.empty:
-                continue
-            # Latest round wins: explicit version if the supplier used one, else date.
-            # If neither can order the bids, we cannot tell which offer stands, so we
-            # decline to guess -- we take the single row only when there is just one.
-            ordered = priced.sort_values(
-                by=["_version", "_qdate"], ascending=True, na_position="first"
-            )
-            if ordered["_version"].notna().any() or ordered["_qdate"].notna().any():
-                latest = ordered.iloc[-1]
-                opening = ordered.iloc[0]
-            elif len(ordered) == 1:
-                latest = opening = ordered.iloc[0]
-            else:
+        # One standing offer per BID -- a supplier's quote family (base reference) -- at its
+        # latest version. Grouping by supplier mixed a supplier's separate lots into one
+        # "round" history, and dropping unpriced rows before picking the latest let a V2 stand
+        # in for a V3 whose total could not be read.
+        quotes["_supplier"] = quotes["supplier_id"].where(quotes["supplier_id"].notna(), None)
+        quotes["_family"] = quotes["quote_id"].astype(str).apply(base_reference)
+        families: List[Dict[str, Any]] = []
+        for (_sup, family), grp in quotes.groupby(
+                [quotes["_supplier"].fillna(""), "_family"], sort=True):
+            ordered = grp.sort_values(by=["_version", "_qdate", "quote_id"], ascending=True,
+                                      na_position="first")
+            latest, opening = ordered.iloc[-1], ordered.iloc[0]
+            if pd.isna(latest["total_amount"]):
                 logger.warning(
-                    "Deal %s supplier %s: %d quotes with no version or date to order "
-                    "them by; cannot identify the standing offer, skipping",
-                    deal_id,
-                    supplier_id,
-                    len(ordered),
-                )
+                    "Deal %s quote %s: the latest version has no total, so there is no standing "
+                    "price for this bid; not ranking it on an earlier version's price",
+                    deal_id, latest.get("quote_id"))
                 continue
+            families.append({
+                "supplier_id": (str(_sup).strip() if _sup else f"quote {family}"),
+                "final": float(latest["total_amount"]),
+                "open": float(opening["total_amount"]) if pd.notna(opening["total_amount"]) else None,
+                "rounds": int(len(ordered)),
+                "currency": latest.get("currency"),
+                "quote_id": latest.get("quote_id"),
+            })
 
-            final_amount = float(latest["total_amount"])
-            open_amount = float(opening["total_amount"])
+        rows: List[Dict[str, Any]] = []
+        by_supplier: Dict[str, List[Dict[str, Any]]] = {}
+        for f in families:
+            by_supplier.setdefault(f["supplier_id"], []).append(f)
+        for supplier_id, fams in by_supplier.items():
+            # A supplier with two lots on one deal stands at both lots' latest prices together.
+            final_amount = sum(f["final"] for f in fams)
+            open_amount = (sum(f["open"] for f in fams)
+                           if all(f["open"] is not None for f in fams) else None)
+            rounds = max(f["rounds"] for f in fams)
             concession_pct = None
-            if open_amount > 0 and len(ordered) > 1:
+            if open_amount and open_amount > 0 and rounds > 1:
                 concession_pct = round((open_amount - final_amount) / open_amount * 100, 2)
-
+            lead = max(fams, key=lambda f: f["final"])
             rows.append(
                 {
-                    "supplier_id": str(supplier_id).strip(),
+                    "supplier_id": supplier_id,
                     "price": final_amount,  # lower is better; scored within the deal
                     "final_quote_amount": final_amount,
-                    "opening_quote_amount": open_amount,
-                    "quote_currency": latest.get("currency"),
-                    "quote_rounds": int(len(ordered)),
+                    "opening_quote_amount": open_amount if open_amount is not None else final_amount,
+                    "quote_currency": lead["currency"],
+                    "quote_rounds": rounds,
                     "concession_pct": concession_pct,
-                    "winning_quote_id": latest.get("quote_id"),
+                    "winning_quote_id": lead["quote_id"],
                 }
             )
 
@@ -2429,8 +2564,14 @@ class SupplierRankingAgent(BaseAgent):
             "invoice_count": _json_safe(row.get("invoice_count")),
             "lead_time_days": _json_safe(row.get("avg_lead_time_days")),
             "justification": _json_safe(row.get("justification")),
-            "contact_name": _json_safe(row.get("contact_name_1")),
-            "contact_email": _json_safe(row.get("contact_email_1")),
+            # No contact_name / contact_email. A ranking result is a commercial
+            # comparison; republishing a person's address here put it on the
+            # shared workflow context, into every downstream prompt and every
+            # serialised run record -- and EmailDraftingAgent took it as the RFQ
+            # recipient, so an address that had travelled through the workflow
+            # decided where mail went. Drafting now resolves the address from
+            # proc.bp_supplier by supplier_id (services/supplier_contact), which
+            # is what policy #674 says the source must be.
             "weights": dict(weights),
         }
         coverage = _json_safe(row.get("flow_coverage"))

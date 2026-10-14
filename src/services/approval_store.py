@@ -184,6 +184,47 @@ def find_dispatch_approval(
         return _run(own)
 
 
+def list_unsent_drafts(*, limit: int = 200, conn: Any = None) -> List[Dict[str, Any]]:
+    """Every unsent draft with its current approval, newest first.
+
+    ``list_pending_dispatch_approvals`` leaves out a draft once it is approved, so a
+    person could approve an email and then have nowhere to send it from. Each entry is
+    ``{"draft": <hydrated>, "approval": <row or None>, "created_on": <when drafted>}``;
+    the caller decides what of it to show.
+    """
+
+    sql = (
+        "SELECT " + ", ".join(DRAFT_COLUMNS) + ", created_on "
+        "  FROM proc.draft_rfq_emails "
+        " WHERE sent IS NOT TRUE "
+        "   AND unique_id IS NOT NULL "
+        " ORDER BY created_on DESC "
+        " LIMIT %s"
+    )
+
+    def _run(connection: Any) -> List[Dict[str, Any]]:
+        cur = _dict_cursor(connection)
+        cur.execute(sql, (int(limit),))
+        out: List[Dict[str, Any]] = []
+        for raw in cur.fetchall():
+            row = dict(raw)
+            draft = hydrate_draft(row)
+            # One lookup per draft, as the pending list does: fine at today's backlog.
+            approval = find_dispatch_approval(
+                rfq_id=draft.get("rfq_id"),
+                workflow_id=draft.get("workflow_id"),
+                unique_id=draft.get("unique_id"),
+                conn=connection,
+            )
+            out.append({"draft": draft, "approval": approval, "created_on": row.get("created_on")})
+        return out
+
+    if conn is not None:
+        return _run(conn)
+    with get_conn() as own:
+        return _run(own)
+
+
 def negotiation_workflow_exists(*, workflow_id: Optional[str], conn: Any = None) -> bool:
     """Whether ``workflow_id`` corresponds to a real negotiation.
 
@@ -229,6 +270,51 @@ def negotiation_workflow_exists(*, workflow_id: Optional[str], conn: Any = None)
         return _run(conn)
     with get_conn() as own:
         return _run(own)
+
+
+def workflow_initiator(workflow_id: Optional[str], conn: Any = None) -> Optional[str]:
+    """Who started ``workflow_id``, or ``None``.
+
+    Used to stop a person approving a round of a negotiation they started
+    themselves. A negotiation round has no artefact carrying a requester, so
+    the workflow's own initiator is the nearest thing the record holds.
+
+    Read HONESTLY: today ``proc.workflow_execution.user_id`` holds 'AgentNick',
+    'system', 'human' or NULL and never a Cognito subject, because the
+    orchestrator falls back to ``settings.script_user`` for anything not started
+    by a named person. So this returns something that cannot equal an approver's
+    subject, and the self-approval bar does not fire on that path yet. It will,
+    unchanged, as soon as workflow initiators are real people — which is the
+    point of resolving it from the record rather than hardcoding "no requester".
+    """
+
+    workflow = str(workflow_id or "").strip()
+    if not workflow:
+        return None
+
+    def _run(connection: Any) -> Optional[str]:
+        cur = connection.cursor()
+        cur.execute(
+            "SELECT user_id FROM proc.workflow_execution "
+            " WHERE workflow_id = %s AND user_id IS NOT NULL "
+            " ORDER BY created_at DESC LIMIT 1",
+            (workflow,),
+        )
+        row = cur.fetchone()
+        value = (row[0] if row else None) or None
+        return str(value).strip() or None if value else None
+
+    try:
+        if conn is not None:
+            return _run(conn)
+        with get_conn() as own:
+            return _run(own)
+    except Exception:  # noqa: BLE001
+        # Unknown, not "nobody". The caller treats unknown as "not a match" and
+        # a lookup failure must not silently become a permit for a collision it
+        # could not check, so it is logged loudly rather than swallowed quietly.
+        logger.exception("could not resolve the initiator of workflow %s", workflow)
+        raise
 
 
 def find_round_approval(
@@ -438,3 +524,105 @@ def revoke_approval(
         except Exception:
             own.rollback()
             raise
+
+
+# ---------------------------------------------------------------------------
+# Report sign-off (RGA). A report job's decisions are keyed by
+# grounding.report_job_id; the newest row wins, as for dispatch, so a later
+# decision (or a future revoke) supersedes an earlier one. A sign-off is an
+# ordinary record_approval; a refusal is written here.
+# ---------------------------------------------------------------------------
+_STATUS_REFUSED = "refused"
+_DECISION_DENY = "deny"
+
+
+def find_report_decision(job_id: str, conn: Any = None) -> Optional[Dict[str, Any]]:
+    """The newest sign-off decision on a report job, or ``None``."""
+
+    def _run(connection: Any) -> Optional[Dict[str, Any]]:
+        cur = _dict_cursor(connection)
+        cur.execute(
+            "SELECT approval_id, decision, status, actioned_by, actioned_at, grounding "
+            "  FROM proc.bp_approval WHERE grounding->>'report_job_id' = %s "
+            " ORDER BY created_date DESC, approval_id DESC LIMIT 1",
+            (str(job_id),),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+    if conn is not None:
+        return _run(conn)
+    with get_conn() as own:
+        return _run(own)
+
+
+def record_report_refusal(
+    *,
+    job_id: str,
+    run_id: Optional[str],
+    actioned_by: str,
+    reason: str,
+    policy_name: Optional[str],
+    conn: Any = None,
+    version: Optional[int] = None,
+) -> int:
+    """A person refused to sign a report off. The deck stays held, with their reason.
+    ``version`` is the report version refused; a later edit makes it no longer apply."""
+
+    signer = str(actioned_by or "").strip()
+    why = str(reason or "").strip()
+    if not signer:
+        raise ValueError("actioned_by is required: a refusal must name a person")
+    if not why:
+        raise ValueError("a refusal must say why")
+    sql = (
+        "INSERT INTO proc.bp_approval (workflow_id, decision, decision_reason, status, "
+        " actioned_by, actioned_at, policy_name, grounding, created_by, created_date) "
+        "VALUES (%s,%s,%s,%s,%s, now(), %s,%s,%s, now()) RETURNING approval_id"
+    )
+    params = (
+        job_id, _DECISION_DENY, why, _STATUS_REFUSED, signer, policy_name,
+        psycopg2.extras.Json({"report_job_id": job_id, "run_id": run_id, "reason": why,
+                              "version": version}),
+        signer,
+    )
+    if conn is not None:
+        cur = conn.cursor()
+        cur.execute(sql, params)
+        return int(cur.fetchone()[0])
+    with get_conn() as own:
+        own.autocommit = False
+        cur = own.cursor()
+        try:
+            cur.execute(sql, params)
+            approval_id = int(cur.fetchone()[0])
+            own.commit()
+            return approval_id
+        except Exception:
+            own.rollback()
+            raise
+
+
+def find_report_decisions(job_ids: List[str], conn: Any = None) -> Dict[str, Dict[str, Any]]:
+    """The newest decision for each of many report jobs, in one query -- what a list of jobs
+    needs (one connection per job was the alternative). Jobs with no decision are absent."""
+    ids = [str(j) for j in job_ids if j]
+    if not ids:
+        return {}
+
+    def _run(connection: Any) -> Dict[str, Dict[str, Any]]:
+        cur = _dict_cursor(connection)
+        cur.execute(
+            "SELECT DISTINCT ON (grounding->>'report_job_id') "
+            "       grounding->>'report_job_id' AS report_job_id, approval_id, decision, "
+            "       status, actioned_by, actioned_at, grounding "
+            "  FROM proc.bp_approval WHERE grounding->>'report_job_id' = ANY(%s) "
+            " ORDER BY grounding->>'report_job_id', created_date DESC, approval_id DESC",
+            (ids,),
+        )
+        return {row["report_job_id"]: dict(row) for row in cur.fetchall()}
+
+    if conn is not None:
+        return _run(conn)
+    with get_conn() as own:
+        return _run(own)

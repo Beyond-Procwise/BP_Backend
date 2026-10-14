@@ -8,8 +8,9 @@ from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Optional, Tuple
 from urllib.parse import unquote_plus
 
-import boto3
 from botocore.exceptions import BotoCoreError, ClientError
+
+from src.services import egress as _egress
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +133,7 @@ def sqs_email_loader(
     if visibility_timeout <= 0:
         raise ValueError("visibility_timeout must be positive")
 
-    sqs = sqs_client or boto3.client("sqs")
+    sqs = sqs_client or _egress.aws_client("sqs", purpose=_egress.Purpose.QUEUE)
 
     def _load(limit: Optional[int] = None) -> List[Dict[str, object]]:
         if limit is not None:

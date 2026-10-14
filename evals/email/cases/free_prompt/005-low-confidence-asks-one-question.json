@@ -1,0 +1,80 @@
+{
+ "id": "005-low-confidence-asks-one-question",
+ "family": "free_prompt",
+ "description": "Confidence 0.5: one clarifying question offering the top two; the draft is not ready until answered.",
+ "run": {
+  "path": "prompt",
+  "request": "Please ask Acme to confirm the price on PO-77123 and reply within the week",
+  "payload": {
+   "supplier_id": "S-1",
+   "workflow_id": "wf-1",
+   "recipients": [
+    "alex@acme.test"
+   ]
+  }
+ },
+ "reviewer": [
+  {
+   "confirmations": [
+    {
+     "id": "clarification",
+     "action": "confirm"
+    }
+   ]
+  }
+ ],
+ "model": {
+  "compose": "Subject: Price confirmation\nDear Alex Morgan,\n\nCould you please confirm the price on PO-77123 within the week?\n\nKind regards,\nProcurement Team",
+  "classify": {
+   "family_id": "free_prompt",
+   "confidence": 0.5,
+   "candidates": [
+    {
+     "family_id": "free_prompt",
+     "confidence": 0.5
+    },
+    {
+     "family_id": "negotiation_counter",
+     "confidence": 0.4
+    }
+   ],
+   "lookup_keys": {
+    "po_number": "PO-77123"
+   },
+   "user_instruction": "ask Acme to confirm the price"
+  },
+  "plan": {
+   "goal": "Get the price on PO-77123 confirmed",
+   "key_points": [
+    "Confirm the price"
+   ],
+   "explicit_ask": "Confirm the price",
+   "deadline": "within the week",
+   "tone_rationale": "Courteous",
+   "risks_to_avoid": [],
+   "reasoned": {},
+   "assumptions": []
+  },
+  "judge": {
+   "scores": {
+    "completeness": 4,
+    "clarity_of_ask": 5,
+    "tone_fit": 4,
+    "concision": 4
+   },
+   "rationale": "fine"
+  }
+ },
+ "expect": {
+  "rec.clarification.options": [
+   "free_prompt",
+   "negotiation_counter"
+  ],
+  "rec.clarification.reason": "low confidence",
+  "rec.ready": false,
+  "rec.assumption_items[*].id": {
+   "has": "clarification"
+  },
+  "confirm.ready": true
+ }
+}

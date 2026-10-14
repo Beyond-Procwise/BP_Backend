@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import json
 import logging
+from src.services.governed_limits import limit as _governed_limit
 import os
 import re
 
-import requests
+from src.services import egress
 
 from src.services.governance_tools import tools as GT
 
@@ -19,7 +20,10 @@ log = logging.getLogger(__name__)
 
 _OLLAMA_CHAT = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/") + "/api/chat"
 _MODEL = os.getenv("GOVERNED_REASONING_MODEL", "BeyondProcwise/AgentNick:unified")
-_MAX_ROUNDS = int(os.getenv("GOVERNED_REASONING_MAX_ROUNDS", "5"))
+def _MAX_ROUNDS() -> int:
+    """AgentReachPolicy (P9)."""
+    return _governed_limit("agent_reach", "governed_reasoning_max_rounds",
+                           env="GOVERNED_REASONING_MAX_ROUNDS", cast=int)
 
 _TOOLS = [
     {"type": "function", "function": {
@@ -198,11 +202,20 @@ def _audit(result: dict, task: str, agent: str | None) -> dict:
 
 
 def _chat(messages: list[dict]) -> dict:
-    r = requests.post(_OLLAMA_CHAT, json={
-        "model": _MODEL, "messages": messages, "tools": _TOOLS,
-        "stream": False, "think": False, "keep_alive": -1,
-        "options": {"temperature": 0, "num_predict": 2048},
-    }, timeout=180)
+    r = egress.post(
+        _OLLAMA_CHAT,
+        purpose=egress.Purpose.MODEL_INFERENCE,
+        json={
+            "model": _MODEL, "messages": messages, "tools": _TOOLS,
+            "stream": False, "think": False, "keep_alive": -1,
+            "options": {"temperature": 0, "num_predict": 2048},
+        },
+        timeout=180,
+        require_global=False,   # the model daemon is on localhost by design
+        raise_transport_errors=True,
+    )
+    if r is None:
+        return {}
     r.raise_for_status()
     return r.json().get("message", {})
 
@@ -232,7 +245,7 @@ def govern(task: str, agent: str | None = None) -> dict:
         {"role": "user", "content": (f"Agent: {agent}\n" if agent else "") + f"Task: {task}"},
     ]
     rounds = 0
-    for _ in range(_MAX_ROUNDS):
+    for _ in range(_MAX_ROUNDS()):
         rounds += 1
         try:
             msg = _chat(messages)

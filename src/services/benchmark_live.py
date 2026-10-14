@@ -2,7 +2,7 @@
 
 Loads a deal's quote lines and the pooled PO/invoice price history from
 bp_sqldb (_trgt tables), normalises the match keys, and runs
-services.benchmark.engine.compute_benchmark over each line.
+the registered `benchmark.adjusted_price` formula over each line.
 
 The ENGINE stays exact-match and pure; all live-data messiness is handled
 HERE, explicitly and disclosed in the response:
@@ -19,10 +19,14 @@ HERE, explicitly and disclosed in the response:
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
 
-from services.benchmark.engine import compute_benchmark
+from src.services.formulas import ensure_registered, evaluate
+from src.services.version_collapse import latest_quote_pred
 from services.benchmark.models import BenchmarkPoint, BenchmarkSettings, QuoteLine
+
+log = logging.getLogger(__name__)
 
 # Neutral midpoint used for BOTH the quote's requested scores and every
 # benchmark point's scores: identical values => spec/SLA factors == 1.0.
@@ -53,9 +57,14 @@ def _norm_currency(value: Optional[str]) -> str:
 
 
 def load_quote_lines(cur, deal_id: str) -> list[dict[str, Any]]:
-    """Quote lines for one deal, with header currency/country/region."""
+    """Quote lines for one deal -- each bid's CURRENT version only -- with header
+    currency/country/region.
+
+    Superseded versions are history: benchmarking them as well tripled a three-round deal's
+    benchmarked lines and flagged prices nobody is still offering. Lump sums (no unit price)
+    are not benchmarked: a market benchmark is a unit price, and a lump sum has no unit."""
     cur.execute(
-        """
+        f"""
         SELECT q.quote_line_id, q.quote_id, q.item_description, q.quantity,
                q.unit_price, q.unit_of_measure,
                COALESCE(q.currency, h.currency) AS currency,
@@ -63,6 +72,7 @@ def load_quote_lines(cur, deal_id: str) -> list[dict[str, Any]]:
         FROM proc.bp_quote_line_items_trgt q
         LEFT JOIN proc.bp_quote_trgt h ON h.quote_id = q.quote_id
         WHERE q.deal_id = %s AND q.unit_price IS NOT NULL
+          AND {latest_quote_pred('h')}
         ORDER BY q.quote_line_id
         """,
         (deal_id,),
@@ -171,6 +181,11 @@ def load_flagged_documents(cur) -> set[str]:
         SELECT DISTINCT doc_type, doc_pk_candidate
           FROM proc.bp_extraction_discrepancy
          WHERE status = 'open' AND doc_pk_candidate IS NOT NULL
+           -- A document-type finding says nothing about whether a price on that
+           -- document is wrong. Keep this in step with
+           -- extraction.persistence.TYPE_FINDING_ISSUE_TYPES (a test enforces it).
+           AND issue_type NOT IN ('document_type_disagreement',
+                                  'unresolved_document_type')
         """
     )
     flagged = set()
@@ -271,7 +286,20 @@ def benchmark_deal(
         )
         # No lookup tables exist in the DB yet: empty tables make every miss
         # explicit via fallbacks_used instead of silently pricing with 1.0.
-        result = compute_benchmark(quote, points, {}, {}, settings)
+        ensure_registered()
+        outcome = evaluate("benchmark.adjusted_price", {
+            "quote": quote, "points": points,
+            "location_index_table": {}, "index_table": {}, "settings": settings,
+        })
+        if outcome.unassessed:
+            # A refused contract is not a zero benchmark. Skip the line and say
+            # why, rather than publishing a variance computed from nothing.
+            log.warning(
+                "benchmark unassessed for quote line %s: %s",
+                row.get("quote_line_id"), outcome.why(),
+            )
+            continue
+        result = outcome.value
         payload = result.model_dump()
         payload["source_item_description"] = row["item_description"]
         payload["quote_line_id"] = row["quote_line_id"]

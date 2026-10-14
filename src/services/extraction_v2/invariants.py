@@ -212,11 +212,32 @@ class LineArithmetic(Validator):
             return ValidatorResult.na(self.name)
         residual_total = 0.0
         bad_rows: list[int] = []
+        skipped_credits = 0
         for i, item in enumerate(line_items):
             qty = _line_qty(item)
             price = _line_unit_price(item)
             amount = _line_amount(item)
             if qty is None or price is None or amount is None:
+                continue
+            if qty < 0:
+                # Credit lines are NOT asserted on, and this is a coverage gap
+                # stated rather than a rule.
+                #
+                # Measured on the live corpus 2026-08-11: 615 of 615
+                # negative-quantity lines fail qty x price = amount, against 0
+                # of 5,385 positive ones. The residual ratios cluster at 1.07,
+                # 1.09, 1.12, 1.15, 1.17, 1.19, 1.20 — the shape of a set of VAT
+                # rates — so a credit line's amount appears to carry tax that a
+                # debit line's does not. Neither line.tax_percent nor
+                # line.total_amount_incl_tax is populated on any of those rows,
+                # so the convention cannot be confirmed from the data and this
+                # check cannot model it.
+                #
+                # Asserting anyway would file a finding on 47.5% of documents
+                # and bury the real ones — the failure mode this codebase has
+                # already met once. Asserting nothing on these lines keeps the
+                # check trustworthy on the 90% it does understand.
+                skipped_credits += 1
                 continue
             expected = qty * price
             if not _approx(expected, amount):

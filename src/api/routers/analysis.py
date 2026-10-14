@@ -8,7 +8,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from api.auth import require_user
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from services.db import get_conn
@@ -40,11 +41,13 @@ class AnalysisStartIn(BaseModel):
 
 
 @router.post("", summary="Start an analysis event for an upload session")
-def post_analysis(body: AnalysisStartIn) -> dict:
+def post_analysis(body: AnalysisStartIn, principal=Depends(require_user)) -> dict:
     try:
+        # The token, never body.created_by -- which stays on the model because
+        # clients send it, and is simply not read as identity any more.
         analysis_id = analysis_store.start(
             session_id=body.session_id, name=body.name, mode=body.mode,
-            created_by=body.created_by)
+            created_by=getattr(principal, "subject", None) or None)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
@@ -130,12 +133,33 @@ def get_analysis(analysis_id: str) -> dict:
 
 def _hydrate(row: dict) -> dict:
     aid = row["analysis_id"]
+    # The supplier is read from the deal the document landed on, so the report
+    # can name each bid. NULL when the document never reached a deal.
     row["documents"] = _query(
-        "SELECT doc_type, doc_pk, file_path, file_name, outcome "
-        "  FROM proc.bp_analysis_document WHERE analysis_id = %s "
-        " ORDER BY file_name", (aid,))
+        "SELECT d.doc_type, d.doc_pk, d.file_path, d.file_name, d.outcome, "
+        "       (SELECT dd.supplier_name FROM proc.bp_deal_documents dd "
+        "         WHERE dd.doc_type = d.doc_type AND dd.doc_pk = d.doc_pk "
+        "           AND dd.deal_id IN (SELECT deal_id FROM proc.bp_analysis_deal "
+        "                               WHERE analysis_id = d.analysis_id) "
+        "         ORDER BY dd.supplier_name NULLS LAST, dd.deal_id LIMIT 1) AS supplier_name "
+        "  FROM proc.bp_analysis_document d WHERE d.analysis_id = %s "
+        " ORDER BY d.file_name", (aid,))
+    # The UI reads deals[0]. A deal that holds documents comes before one that
+    # holds none — a duplicate re-upload's own deal is empty, and reading it
+    # makes the report blank.
     row["deals"] = _query(
         "SELECT deal_id, version, is_latest, linked_at "
-        "  FROM proc.bp_analysis_deal WHERE analysis_id = %s "
-        " ORDER BY deal_id", (aid,))
+        "  FROM proc.bp_analysis_deal x WHERE analysis_id = %s "
+        " ORDER BY NOT EXISTS (SELECT 1 FROM proc.bp_deal_document_map m "
+        "                       WHERE m.deal_id = x.deal_id), deal_id", (aid,))
+    # Files in this upload the system already held: which deal they are on and
+    # when they first came in, so the user can be told and offered that deal.
+    # None means "could not check" -- [] would claim nothing was a repeat.
+    try:
+        row["already_uploaded"] = (
+            analysis_store.already_uploaded_for_session(row["session_id"])
+            if row.get("session_id") else [])
+    except Exception:
+        log.exception("already-uploaded lookup failed for analysis=%s", aid)
+        row["already_uploaded"] = None
     return row

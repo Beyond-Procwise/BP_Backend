@@ -700,10 +700,13 @@ class RAGQwen30b:
         # Stage F: generation via Ollama
         # Enforce exclusive model
         model_name = OLLAMA_MODEL
+        # Load-affecting options from ollama_client, sampling from here. Its own num_ctx
+        # made this path ask for a runner nobody else used, which reloaded the model.
+        from src.services.ollama_client import load_options as _load_options
         options = {
+            **_load_options(),
             "temperature": 0.2,
             "top_p": 0.9,
-            "num_ctx": 8192,
             "repeat_penalty": 1.05,
         }
         prompt_payload = {"query": query, "context": ctx}

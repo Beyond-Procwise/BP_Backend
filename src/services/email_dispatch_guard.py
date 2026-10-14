@@ -14,7 +14,13 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
-from src.services import approval_store, email_sensitivity, guardrail, rbac
+from src.services import (
+    approval_store,
+    email_sensitivity,
+    guardrail,
+    rbac,
+    supplier_contact,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,26 +36,15 @@ class DispatchDenied(PermissionError):
 def _supplier_emails(conn: Any, supplier_id: Optional[str]) -> List[str]:
     """Addresses on the supplier master for this supplier.
 
-    A test connection may answer directly; a real one is queried.
+    The lookup itself lives in :mod:`services.supplier_contact`, because the
+    drafting path needs the same answer and used to reach for a different one --
+    an address carried on the ranking payload. One lookup, so a draft is
+    addressed from the master rather than merely checked against it afterwards.
+
+    A test connection may still answer directly; that seam is unchanged.
     """
 
-    if hasattr(conn, "lookup_supplier_emails"):
-        return list(conn.lookup_supplier_emails(supplier_id) or [])
-    if not supplier_id:
-        return []
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT contact_email_1, contact_email_2 FROM proc.bp_supplier "
-        "WHERE supplier_id = %s",
-        (supplier_id,),
-    )
-    out: List[str] = []
-    for row in cur.fetchall():
-        for value in row:
-            text = str(value or "").strip()
-            if text:
-                out.append(text)
-    return out
+    return supplier_contact.resolve_emails(conn, supplier_id)
 
 
 def _supplier_clearance(conn: Any, supplier_id: Optional[str]) -> Optional[str]:
@@ -104,11 +99,15 @@ def _peer_prices(
         return []
     try:
         cur = conn.cursor()
+        # A competitor is another SUPPLIER. When the recipient's own supplier id is unknown
+        # (NULL), NULL-supplier quotes cannot be told apart from theirs, so they are not
+        # treated as a competitor's prices -- that denied a draft for quoting its own figures.
         cur.execute(
             "SELECT supplier_id, total_amount FROM proc.bp_quote_trgt "
             "WHERE deal_id = %s AND supplier_id IS DISTINCT FROM %s "
+            "AND NOT (%s IS NULL AND supplier_id IS NULL) "
             "AND total_amount IS NOT NULL",
-            (deal_id, supplier_id),
+            (deal_id, supplier_id, supplier_id),
         )
         return [{"supplier_id": r[0], "amount": r[1]} for r in cur.fetchall()]
     except Exception as exc:  # noqa: BLE001
@@ -327,6 +326,55 @@ def check_recipient_and_sensitivity(
         )
 
 
+def _facts_recheck(conn: Any, draft: Dict[str, Any], policy_engine: Optional[Any]) -> Dict[str, Any]:
+    """``draft_assurance.recheck_for_send``, which never raises."""
+
+    try:
+        from src.services.draft_assurance import recheck_for_send
+
+        engine = policy_engine if policy_engine is not None else rbac.policy_engine()
+        return recheck_for_send(conn, draft, engine)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("facts re-check could not run: %s", exc)
+        return {"checked": False, "changed": [], "reason": f"{type(exc).__name__}"}
+
+
+def check_daily_volume(
+    *, conn: Any, principal: Optional[Any], policy_engine: Optional[Any] = None
+) -> Optional[guardrail.Decision]:
+    """The per-user daily cap of check 5, on its own. A denial, or ``None``.
+
+    Factored out for a send path that is not an RFQ dispatch -- a customer
+    quote -- so it counts against, and is stopped by, the same cap rather than
+    a second copy of it. It counts ``email.send`` rows recorded as allowed for
+    this principal, so such a path must record its own sends under that name.
+    """
+
+    volume = _rules(policy_engine, "email_volume")
+    try:
+        max_per_day = int(volume.get("max_per_user_per_day"))
+    except (TypeError, ValueError):
+        return None
+    principal_subject = getattr(principal, "subject", None)
+    daily_count = _daily_send_count(conn, principal_subject)
+    if daily_count is None:
+        return guardrail.deny_from_policy(
+            "could not determine this user's daily send count; "
+            "denying rather than sending unmetered",
+            _policy(policy_engine, "email_volume"),
+            policy_name="EmailVolumePolicy",
+        )
+    if daily_count >= max_per_day:
+        return guardrail.deny_from_policy(
+            f"daily volume cap reached: {daily_count}/{max_per_day} "
+            "for this user",
+            _policy(policy_engine, "email_volume"),
+            policy_name="EmailVolumePolicy",
+            principal=principal_subject,
+        )
+    return None
+
+
 def check_dispatch(
     *,
     conn: Any,
@@ -472,6 +520,130 @@ def check_dispatch(
                     },
                 )
 
+        # --- 1b2. Bank and payment details: a hard rule, any family, any mode -----
+        # Ruling 2026-10-09. No outgoing email carries an account number, IBAN, sort code,
+        # SWIFT/BIC or routing number, approved or not. One that mentions new or changed
+        # bank or payment details (in its text, or in the request the draft was written
+        # from) goes only with a PERSON's approval, never on agent autonomy, and only if it
+        # points the supplier to the secure supplier portal. Nothing in config softens it.
+        from src.services.draft_assurance import payment_details
+
+        assurance_rec = draft.get("assurance") if isinstance(draft.get("assurance"), dict) else {}
+        details = payment_details.account_details(subject, body)
+        if details:
+            return guardrail.Decision(
+                allowed=False,
+                reason=("this email cannot be sent: it contains bank details ("
+                        + ", ".join(k.replace("_", " ") for k in details)
+                        + "). Point the supplier to the secure supplier portal instead"),
+                policy_name="EmailPaymentDetailsRule",
+                evidence={"account_details": details},           # kinds only, never the values
+            )
+        change = payment_details.mentions_change(subject, body) or (assurance_rec.get("payment_details_hold") or {}).get("payment_change")
+        if change:
+            if approval.get("autonomous"):
+                return guardrail.Decision(
+                    allowed=False,
+                    reason="this email mentions new or changed bank or payment details; it needs a person's approval, not agent autonomy",
+                    policy_name="EmailPaymentDetailsRule",
+                    evidence={"payment_change": change},
+                )
+            if not payment_details.points_to_portal(body):
+                return guardrail.Decision(
+                    allowed=False,
+                    reason=("this email mentions new or changed bank or payment details and does not point the supplier "
+                            "to the secure supplier portal"),
+                    policy_name="EmailPaymentDetailsRule",
+                    evidence={"payment_change": change},
+                )
+
+        # --- 1c. The facts the draft rests on have not moved ---------------
+        # An approval covers the text. It says nothing about whether the offer,
+        # currency or contact that text was written from still read the same in
+        # Postgres. Shadow mode reports a change in the decision's evidence and
+        # lets the send through; enforce mode refuses until it has been seen.
+        facts_recheck = _facts_recheck(conn, draft, policy_engine)
+        if facts_recheck.get("mode") == "enforce" and (
+            facts_recheck.get("changed")
+            or (not facts_recheck.get("checked") and (draft.get("assurance") or {}).get("facts"))
+        ):
+            changed = facts_recheck.get("changed") or []
+            return guardrail.Decision(
+                allowed=False,
+                reason=(
+                    "a fact this draft rests on changed since it was written: "
+                    + ", ".join(str(c.get("fact")) for c in changed)
+                    if changed else
+                    "the facts this draft rests on could not be re-checked; denying"
+                ),
+                policy_name="EmailFamilyPolicy",
+                evidence={"facts_recheck": facts_recheck},
+            )
+
+        # --- 1d. A person reviewed it, and the draft is ready to be sent ---------
+        # Drafts that carry an assurance record were started by an agent or by someone
+        # else; authority and style key off the HUMAN who reviewed and sends it, never
+        # the initiator. No resolvable reviewer means it cannot go -- not a shadow rule.
+        assurance = draft.get("assurance") if isinstance(draft.get("assurance"), dict) else None
+        reviewed_by = approval.get("actioned_by")
+        if assurance is not None:
+            from src.services.draft_assurance import accountability, capture
+
+            problem = accountability.reviewer_problem(
+                reviewed_by, assurance.get("accountability") and {
+                    "id": assurance["accountability"].get("initiated_by"),
+                    "kind": assurance["accountability"].get("kind")},
+                autonomous=bool(approval.get("autonomous")),
+            )
+            if problem:
+                return guardrail.Decision(
+                    allowed=False,
+                    reason=f"this draft cannot be sent: {problem}",
+                    policy_name="EmailFamilyPolicy",
+                    evidence={"accountability": {
+                        "initiated_by": (assurance.get("accountability") or {}).get("initiated_by"),
+                        "reviewed_by": reviewed_by}},
+                )
+            ready = capture.readiness(conn, draft.get("unique_id"))
+            if (facts_recheck.get("mode") == "enforce" or assurance.get("mode") == "enforce") \
+                    and ready.get("ready") is not True:
+                return guardrail.Decision(
+                    allowed=False,
+                    reason=("this draft is not ready to send: "
+                            + ("its assumptions or clarification are unresolved"
+                               if ready.get("ready") is False else str(ready.get("reason")))),
+                    policy_name="EmailFamilyPolicy",
+                    evidence={"readiness": ready},
+                )
+        else:
+            ready = {"ready": None, "reason": "draft carries no assurance record"}
+
+        # --- 1e. No unreviewed suspected payment-detail request on this thread ---
+        # A supplier reply asking for new or changed bank details is the classic invoice-redirection fraud. While one stands flagged
+        # (open or confirmed) nothing goes to that supplier on that thread, whoever approved it and whatever mode the family is in:
+        # clearing the flag needs approver-class authority and is the only way through. Not being able to look is a refusal, not a pass.
+        # A connection that cannot run SQL at all (a test double) holds no flags, so there is nothing to check.
+        if hasattr(conn, "cursor"):
+            from src.services.draft_assurance import inbound
+
+            try:
+                standing = inbound.blocking_flags(conn, draft.get("workflow_id"), draft.get("supplier_id"))
+            except inbound.FlagLookupFailed:
+                return guardrail.Decision(
+                    allowed=False,
+                    reason="this draft cannot be sent: whether the supplier's thread holds an unreviewed request to change payment details could not be checked",
+                    policy_name="EmailFamilyPolicy",
+                    evidence={"workflow_id": draft.get("workflow_id"), "supplier_id": draft.get("supplier_id")},
+                )
+            if standing:
+                return guardrail.Decision(
+                    allowed=False,
+                    reason=(f"this draft cannot be sent: a reply from this supplier {inbound.block_phrase(standing)} and has not been "
+                            "cleared by an approver"),
+                    policy_name="EmailFamilyPolicy",
+                    evidence={"flag_ids": [f["id"] for f in standing], "message_ids": [f.get("message_id") for f in standing]},
+                )
+
         # The draft has no deal_id; the approval does. Check 1 has already
         # fetched it by the time the classifier needs it.
         deal_id = approval.get("deal_id")
@@ -522,28 +694,11 @@ def check_dispatch(
                 policy_name="EmailVolumePolicy",
             )
 
-        try:
-            max_per_day = int(volume.get("max_per_user_per_day"))
-        except (TypeError, ValueError):
-            max_per_day = None
-        if max_per_day is not None:
-            principal_subject = getattr(principal, "subject", None)
-            daily_count = _daily_send_count(conn, principal_subject)
-            if daily_count is None:
-                return guardrail.deny_from_policy(
-                    "could not determine this user's daily send count; "
-                    "denying rather than sending unmetered",
-                    _policy(policy_engine, "email_volume"),
-                    policy_name="EmailVolumePolicy",
-                )
-            if daily_count >= max_per_day:
-                return guardrail.deny_from_policy(
-                    f"daily volume cap reached: {daily_count}/{max_per_day} "
-                    "for this user",
-                    _policy(policy_engine, "email_volume"),
-                    policy_name="EmailVolumePolicy",
-                    principal=principal_subject,
-                )
+        over_daily_cap = check_daily_volume(
+            conn=conn, principal=principal, policy_engine=policy_engine
+        )
+        if over_daily_cap is not None:
+            return over_daily_cap
 
         return guardrail.Decision(
             allowed=True,
@@ -556,6 +711,9 @@ def check_dispatch(
                 "approved_by": approval.get("actioned_by"),
                 "content_class": content_class,
                 "recipients": recipient_list,
+                "facts_recheck": facts_recheck,
+                "readiness": ready,
+                "reviewed_by": reviewed_by,
             },
         )
 

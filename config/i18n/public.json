@@ -1,0 +1,4 @@
+{
+  "_comment": "UI key prefixes a signed-out visitor may read translated, via GET /i18n/public/{lang}. Published into proc.bp_i18n_public_key by scripts/i18n_pretranslate.py --publish-public (audited).",
+  "key_prefixes": ["auth.", "auth2.", "landing.", "notFound.", "unauthorized."]
+}

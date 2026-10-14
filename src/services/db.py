@@ -592,6 +592,13 @@ class _FakeCursor:
             or "FROM PROC.BP_STYLE_PROFILE" in upper_stmt
             or "FROM PROC.WORKFLOW_EMAIL_TRACKING" in upper_stmt
             or "FROM PROC.SUPPLIER_RESPONSE" in upper_stmt
+            # And who started a workflow (approval_store.workflow_initiator):
+            # nothing has been executed in an in-memory store, so there is no
+            # initiator. "No rows" is the honest answer and means "unknown
+            # requester", which the self-approval bar reads as "not a match".
+            # It is NOT the same as the query failing -- that still raises, and
+            # the bar refuses rather than guessing.
+            or "FROM PROC.WORKFLOW_EXECUTION" in upper_stmt
         ):
             select_part = statement.split("SELECT", 1)[1].split("FROM", 1)[0]
             col_names = [c.strip() for c in select_part.split(",")]

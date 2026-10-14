@@ -11,7 +11,9 @@ support whatsoever, so no agent in the registry could call a tool, and AgentNick
 
 This is that loop, extracted once. It is deliberately dumb: it does not know what
 a policy or an agent is. Callers supply `Tool`s; the runtime calls them and keeps
-a record.
+a record. The one exception: immediately before a handler runs, the agent-policy gate
+(services.agent_policy.gate) is asked whether the call may run; a refused call never reaches
+its handler and the model is told why instead.
 
 The record is the point. Every tool call and every result is captured on the
 returned `ToolRunResult.calls`, so an answer or a decision can be traced back to
@@ -20,14 +22,17 @@ the facts that produced it instead of being taken on trust.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import json
 import logging
+from src.services.governed_limits import limit as _governed_limit
 import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-import requests
+from src.services import egress
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +41,10 @@ _OLLAMA_CHAT = (
 )
 # AgentNick is the only base model. Never repoint this at another family.
 _DEFAULT_MODEL = os.getenv("AGENTNICK_MODEL", "BeyondProcwise/AgentNick:unified")
-_DEFAULT_MAX_ROUNDS = int(os.getenv("TOOL_RUNTIME_MAX_ROUNDS", "6"))
+def _DEFAULT_MAX_ROUNDS() -> int:
+    """AgentReachPolicy (P9): how far one agent may go before it must answer."""
+    return _governed_limit("agent_reach", "tool_runtime_max_rounds",
+                           env="TOOL_RUNTIME_MAX_ROUNDS", cast=int)
 _DEFAULT_TIMEOUT_S = int(os.getenv("TOOL_RUNTIME_TIMEOUT_S", "180"))
 
 # Results are fed back to the model as text. A tool that returns a huge blob
@@ -94,6 +102,12 @@ class ToolRunResult:
     calls: List[ToolCall] = field(default_factory=list)
     rounds: int = 0
     error: Optional[str] = None
+    # What the run was actually given, for the record of it: the model that
+    # answered, the system prompt as sent, and the tools that were on offer.
+    # Never part of ``to_dict`` — that is what a caller is shown.
+    model: str = ""
+    system: str = ""
+    tools_offered: List[str] = field(default_factory=list)
     # The answer tried to describe the machine and was sent back to be re-framed.
     safety_retry: bool = False
     # …and the second attempt did it too, so the user got the safe reply instead.
@@ -117,6 +131,37 @@ class ToolRunResult:
             # out. Do not surface it to a user path that bypasses that gate.
             "trace": [c.to_dict() for c in self.calls],
         }
+
+
+# Token counting. Whoever wants to know what a piece of work cost opens a count
+# around it; every model call made inside notes what the model server reported.
+# Counts opened inside another add to both, so a run that starts another run
+# carries the whole cost. A call made outside any count is simply not counted.
+_COUNTS: contextvars.ContextVar[tuple] = contextvars.ContextVar("token_counts", default=())
+
+
+@contextlib.contextmanager
+def count_tokens():
+    usage = {"prompt_tokens": 0, "completion_tokens": 0, "model_calls": 0}
+    token = _COUNTS.set(_COUNTS.get() + (usage,))
+    try:
+        yield usage
+    finally:
+        _COUNTS.reset(token)
+
+
+def note_usage(body: Any) -> None:
+    """Add one model reply's token counts to every count that is open."""
+    counts = _COUNTS.get()
+    if not counts:
+        return
+    body = body if isinstance(body, dict) else {}
+    prompt = int(body.get("prompt_eval_count") or 0)
+    completion = int(body.get("eval_count") or 0)
+    for usage in counts:
+        usage["prompt_tokens"] += prompt
+        usage["completion_tokens"] += completion
+        usage["model_calls"] += 1
 
 
 def _coerce_args(raw: Any) -> Dict[str, Any]:
@@ -148,6 +193,58 @@ def _render_result(value: Any) -> str:
     return text
 
 
+@dataclass
+class _RanOnPrecedent:
+    """The gate allowed the call on precedent: the handler runs, and the model is told so in one
+    line after the tool's own result (``note``). Every other allow is ``None``, unchanged."""
+
+    note: str
+
+
+def _precedent_note(to_agent: Dict[str, Any]) -> str:
+    return ("Note: this action ran without a person approving it, on precedent (decided the same way "
+            f"{to_agent.get('precedentCount')} times before, case {to_agent.get('conflictCaseId')}).")
+
+
+def _with_note(content: str, allowed: Optional["_RanOnPrecedent"]) -> str:
+    """The tool message the model reads: the result as rendered, then the precedent note, if any."""
+    return content if allowed is None else f"{content}\n{allowed.note}"
+
+
+def _policy_refusal(
+    name: str,
+    args: Dict[str, Any],
+    *,
+    agent: Optional[str],
+    reason: Optional[str],
+    workflow_id: Optional[str],
+    user_id: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """The agent-policy gate, consulted immediately before a handler runs.
+
+    None means run the tool. A ``_RanOnPrecedent`` means run it too, and tell the model it ran
+    on precedent. Otherwise the dict is what the model is told instead, and the handler is never
+    called. The gate never raises; should it be unreachable at all, the call is refused (fail
+    closed) exactly as the gate refuses when policies cannot be checked.
+    """
+    # The kill switch is read here, before the gate is imported, so switching enforcement off
+    # works even when the gate itself cannot load. With it on, an import failure refuses.
+    if os.getenv("AGENT_POLICY_ENFORCEMENT", "on").strip().lower() == "off":
+        return None
+    try:
+        from services.agent_policy import gate
+    except Exception:  # noqa: BLE001
+        log.exception("agent policy gate unavailable; refusing tool %s", name)
+        return {"result": "blocked", "reasonCode": "policy_check_unavailable",
+                "reason": "Policy checks are unavailable, so this action was not run."}
+    verdict = gate.before_tool(tool_name=name, args=args, agent=agent, reason=reason,
+                               workflow_id=workflow_id, user_id=user_id)
+    if verdict.allow:
+        told = verdict.to_agent or {}
+        return _RanOnPrecedent(_precedent_note(told)) if told.get("precedent") is True else None
+    return verdict.to_agent or dict(gate.UNAVAILABLE)
+
+
 def _chat(
     messages: List[Dict[str, Any]],
     schemas: List[Dict[str, Any]],
@@ -166,9 +263,85 @@ def _chat(
     }
     if schemas:
         payload["tools"] = schemas
-    response = requests.post(_OLLAMA_CHAT, json=payload, timeout=timeout)
+    response = egress.post(
+        _OLLAMA_CHAT,
+        purpose=egress.Purpose.MODEL_INFERENCE,
+        json=payload,
+        timeout=timeout,
+        require_global=False,   # the model daemon is on localhost by design
+        raise_transport_errors=True,
+    )
+    if response is None:
+        return {}
     response.raise_for_status()
-    return response.json().get("message", {}) or {}
+    body = response.json()
+    note_usage(body)
+    return body.get("message", {}) or {}
+
+
+def structured(
+    system: str,
+    user: str,
+    schema: Dict[str, Any],
+    *,
+    model: Optional[str] = None,
+    timeout_s: Optional[int] = None,
+) -> Dict[str, Any]:
+    """One turn, no tools, answered as a JSON object in ``schema``.
+
+    The schema is passed as the model server's ``format``, so the answer is
+    constrained to it as it is generated rather than parsed out of prose
+    afterwards. Raises when the model cannot be reached or answers nothing.
+    """
+    from src.services import ollama_client
+
+    def _send() -> Any:
+        payload: Dict[str, Any] = {
+            "model": model or _DEFAULT_MODEL,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "stream": False,
+            "think": False,
+            "keep_alive": -1,
+            "format": schema,
+            # Every load-affecting option, as every other caller sends them. The
+            # model server keys a loaded model on these: a request that named
+            # none would ask for a runner of its own and evict the one everyone
+            # shares. Read afresh on each send, so a refusal just noted is honoured.
+            "options": {**ollama_client.load_options(), "temperature": 0, "num_predict": 2048},
+        }
+        return payload, egress.post(
+            _OLLAMA_CHAT,
+            purpose=egress.Purpose.MODEL_INFERENCE,
+            json=payload,
+            timeout=timeout_s or _DEFAULT_TIMEOUT_S,
+            require_global=False,   # the model daemon is on localhost by design
+            raise_transport_errors=True,
+        )
+
+    payload, response = _send()
+    asked = payload["options"].get("num_gpu")
+    if (response is not None and asked is not None
+            and getattr(response, "status_code", 200) >= 500
+            and ollama_client.is_layout_rejection(getattr(response, "text", ""))):
+        # The card will not take the whole model just now. Say so once, for
+        # every caller, and go again on the server's own split.
+        ollama_client.note_layout_rejection(asked)
+        payload, response = _send()
+    if response is None:
+        raise RuntimeError("the model could not be reached")
+    response.raise_for_status()
+    body = response.json()
+    note_usage(body)
+    content = (body.get("message") or {}).get("content") or ""
+    if not content.strip():
+        raise RuntimeError("the model answered nothing")
+    parsed = json.loads(content)
+    if not isinstance(parsed, dict):
+        raise RuntimeError("the model did not answer with an object")
+    return parsed
 
 
 def _gate(
@@ -229,10 +402,13 @@ def run_tools_stream(
     system: str,
     *,
     model: Optional[str] = None,
-    max_rounds: int = _DEFAULT_MAX_ROUNDS,
+    max_rounds: int = _DEFAULT_MAX_ROUNDS(),
     timeout_s: int = _DEFAULT_TIMEOUT_S,
     on_tool: Optional[Callable[[ToolCall], None]] = None,
     on_delta: Optional[Callable[[str], None]] = None,
+    agent: Optional[str] = None,
+    workflow_id: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> ToolRunResult:
     """Same loop, but the FINAL answer is streamed out through ``on_delta``.
 
@@ -250,7 +426,7 @@ def run_tools_stream(
         {"role": "system", "content": system},
         {"role": "user", "content": task},
     ]
-    result = ToolRunResult()
+    result = ToolRunResult(model=model, system=system, tools_offered=[t.name for t in tools])
 
     for _ in range(max_rounds):
         result.rounds += 1
@@ -264,9 +440,18 @@ def run_tools_stream(
                 "options": {"temperature": 0, "num_predict": 2048},
                 "tools": schemas,
             }
-            response = requests.post(
-                _OLLAMA_CHAT, json=payload, timeout=timeout_s, stream=True
+            response = egress.post(
+                _OLLAMA_CHAT,
+                purpose=egress.Purpose.MODEL_INFERENCE,
+                json=payload,
+                timeout=timeout_s,
+                stream=True,
+                require_global=False,
+                raise_transport_errors=True,
             )
+            if response is None:
+                result.error = "egress refused the model call"
+                return result
             response.raise_for_status()
 
             content_parts: List[str] = []
@@ -312,8 +497,17 @@ def run_tools_stream(
             args = _coerce_args(fn.get("arguments"))
             tool = by_name.get(name)
             started = time.monotonic()
+            refusal = None
+            if tool is not None:
+                refusal = _policy_refusal(name, args, agent=agent, reason=content,
+                                          workflow_id=workflow_id, user_id=user_id)
+            allowed = refusal if isinstance(refusal, _RanOnPrecedent) else None
+            if allowed is not None:
+                refusal = None
             if tool is None:
                 record = ToolCall(name=name, arguments=args, ok=False, error=f"unknown tool '{name}'")
+            elif refusal is not None:
+                record = ToolCall(name=name, arguments=args, ok=False, result=refusal, error=None)
             else:
                 try:
                     record = ToolCall(
@@ -330,8 +524,12 @@ def run_tools_stream(
                 {
                     "role": "tool",
                     "name": name,
-                    "content": _render_result(
-                        record.result if record.ok else {"error": record.error}
+                    "content": (
+                        json.dumps(refusal, default=str)
+                        if refusal is not None
+                        else _with_note(_render_result(
+                            record.result if record.ok else {"error": record.error}
+                        ), allowed)
                     ),
                 }
             )
@@ -346,10 +544,13 @@ def run_tools(
     system: str,
     *,
     model: Optional[str] = None,
-    max_rounds: int = _DEFAULT_MAX_ROUNDS,
+    max_rounds: int = _DEFAULT_MAX_ROUNDS(),
     timeout_s: int = _DEFAULT_TIMEOUT_S,
     require_tool_use: bool = False,
     nudge: Optional[str] = None,
+    agent: Optional[str] = None,
+    workflow_id: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> ToolRunResult:
     """Run AgentNick over ``task``, letting it call ``tools`` until it answers.
 
@@ -370,7 +571,7 @@ def run_tools(
         {"role": "user", "content": task},
     ]
 
-    result = ToolRunResult()
+    result = ToolRunResult(model=model, system=system, tools_offered=[t.name for t in tools])
     nudged = False
     any_tool_call = False
 
@@ -415,6 +616,14 @@ def run_tools(
             tool = by_name.get(name)
 
             started = time.monotonic()
+            refusal = None
+            if tool is not None:
+                refusal = _policy_refusal(name, args, agent=agent,
+                                          reason=message.get("content"),
+                                          workflow_id=workflow_id, user_id=user_id)
+            allowed = refusal if isinstance(refusal, _RanOnPrecedent) else None
+            if allowed is not None:
+                refusal = None
             if tool is None:
                 record = ToolCall(
                     name=name,
@@ -422,6 +631,9 @@ def run_tools(
                     ok=False,
                     error=f"unknown tool '{name}'",
                 )
+            elif refusal is not None:
+                # Refused by an agent policy: the handler never runs; the model is told why.
+                record = ToolCall(name=name, arguments=args, ok=False, result=refusal, error=None)
             else:
                 try:
                     value = tool.handler(**args)
@@ -446,8 +658,12 @@ def run_tools(
                 {
                     "role": "tool",
                     "name": name,
-                    "content": _render_result(
-                        record.result if record.ok else {"error": record.error}
+                    "content": (
+                        json.dumps(refusal, default=str)
+                        if refusal is not None
+                        else _with_note(_render_result(
+                            record.result if record.ok else {"error": record.error}
+                        ), allowed)
                     ),
                 }
             )

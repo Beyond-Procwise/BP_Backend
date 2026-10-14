@@ -230,13 +230,16 @@ class TestDocAction:
         with patch.object(w, "_get_connection", return_value=conn), \
              patch("src.services.extraction.content_hash.compute_content_hash",
                    return_value="abc123"), \
-             patch.object(w, "_data_needs_reextraction", return_value=False), \
+             patch.object(w, "_data_needs_reextraction", return_value=False) as gate, \
+             patch.object(w, "_await_file", return_value=True), \
              patch.object(w, "_mark_extracted") as mark_ext:
             with w._processing_lock:
                 w._processing_ids.add(42)
             w._process_record({"id": 42, "file_path": "documents/po/dup.pdf",
                                "category": "po", "user_id": 1,
                                "session_id": "S-1"})
+        # The gate traces the EARLIER upload (id 7), not a file name.
+        gate.assert_called_once_with(cur, 7, "po")
         sqls = " || ".join(s for s, _ in cur.executed)
         assert "doc_action = 'duplicate'" in sqls or "doc_action='duplicate'" in sqls
         # Session outcome recorded against THIS record's session_id (not by
@@ -254,6 +257,7 @@ class TestDocAction:
              patch("src.services.extraction.content_hash.compute_content_hash",
                    return_value="abc123"), \
              patch.object(w, "_data_needs_reextraction", return_value=False), \
+             patch.object(w, "_await_file", return_value=True), \
              patch.object(w, "_mark_extracted") as mark_ext:
             with w._processing_lock:
                 w._processing_ids.add(42)
@@ -308,3 +312,75 @@ class TestDocAction:
                 45, "documents/po/y.pdf", "h",
                 {"confidence": 0.4, "pk": "PO1", "missing": []})
         assert any(p and "needs_review" in p for _, p in cur.executed if p)
+
+
+class TestGraphSync:
+    def test_an_extraction_does_not_rebuild_the_whole_graph(self, dummy_nick):
+        """The graph mirrors _trgt and is synced per promoted row by the
+        scheduler. A clean, high-confidence extraction has only reached _stg,
+        so the watcher must not trigger a full Neo4j rebuild for it."""
+        w = ProcessMonitorWatcher(dummy_nick)
+        cur = _RecordingCursor(fetch_script=[None])
+        conn = _RecordingConn(cur)
+        with patch.object(w, "_get_connection", return_value=conn), \
+             patch("src.services.extraction.content_hash.compute_content_hash",
+                   return_value="abc123"), \
+             patch.object(w, "_await_file", return_value=True), \
+             patch("src.services.extraction.dispatch.dispatch_document",
+                   return_value={"status": "promoted", "pk": "PO123",
+                                 "confidence": 0.95, "errors": 0}), \
+             patch.object(w, "_mark_extracted"), \
+             patch.object(w, "_stamp_quality_action"), \
+             patch.object(w, "_collect_training_example"), \
+             patch("services.procurement_kg_builder.ProcurementKGBuilder") as builder:
+            with w._processing_lock:
+                w._processing_ids.add(46)
+            w._process_record({"id": 46, "file_path": "documents/po/new.pdf",
+                               "category": "po", "user_id": 1})
+        builder.assert_not_called()
+
+
+class TestReextractionGate:
+    """A re-upload identical to an earlier one is skipped as a duplicate unless
+    the earlier copy's data is provably gone. "Provably": its _raw row was
+    promoted, and that document is in neither _stg nor _trgt any more."""
+
+    def _gate(self, fetch_script, category="invoice"):
+        cur = _RecordingCursor(fetch_script=fetch_script)
+        needs = ProcessMonitorWatcher._data_needs_reextraction(cur, 7, category)
+        return needs, " || ".join(s for s, _ in cur.executed), cur
+
+    def test_promoted_document_that_is_gone_is_extracted_again(self):
+        # raw row promoted → not found in _stg → not found in _trgt
+        needs, _, _ = self._gate([("INV-001",), None, None])
+        assert needs is True
+
+    def test_promoted_document_still_held_is_a_duplicate(self):
+        needs, _, _ = self._gate([("INV-001",), (1,)])
+        assert needs is False
+
+    def test_traces_the_earlier_upload_not_the_file_name(self):
+        _, sql, cur = self._gate([("INV-001",), None, None])
+        assert "proc.bp_invoice_raw" in sql
+        assert "process_monitor_id" in sql
+        assert cur.executed[0][1][0] == 7
+        assert "proc.bp_invoice_stg" in sql and "proc.bp_invoice_trgt" in sql
+
+    def test_never_queries_tables_that_do_not_exist(self):
+        for cat in ("invoice", "po", "quote", "contract"):
+            _, sql, _ = self._gate([("X-1",), None, None], category=cat)
+            for bare in ("proc.bp_invoice ", "proc.bp_quote ", "proc.bp_purchase_order "):
+                assert bare not in sql + " "
+
+    def test_contract_is_checked_where_contracts_promote(self):
+        _, sql, _ = self._gate([("C-1",), None], category="contract")
+        assert "proc.bp_contract_raw" in sql and "proc.bp_contracts" in sql
+
+    def test_unpromoted_or_untraceable_earlier_copy_stays_a_duplicate(self):
+        # No promoted raw row: held for review, no PK, or nothing traceable.
+        needs, _, _ = self._gate([None])
+        assert needs is False
+
+    def test_unknown_category_stays_a_duplicate(self):
+        needs, sql, _ = self._gate([], category="brochure")
+        assert needs is False and sql == ""

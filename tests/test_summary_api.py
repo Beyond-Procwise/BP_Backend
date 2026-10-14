@@ -6,8 +6,13 @@ import src.services.summary_agent as sa
 
 
 def _client():
+    from api.auth import require_user
+
     app = FastAPI()
     app.include_router(summary_router.router)
+    # The POST routes resolve the caller (P8 phase 2); these tests are about
+    # the summaries, not authentication, so the principal is pinned: nobody.
+    app.dependency_overrides[require_user] = lambda: None
     return TestClient(app)
 
 

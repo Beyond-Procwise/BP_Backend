@@ -16,8 +16,8 @@ from orchestration.reasoning_engine import (
     Observation,
 )
 from orchestration.workflow_context import WorkflowContext, SignalType
+from src.services.formulas.unassessed import UNASSESSED
 from agents.auto_registry import AutoRegistry, AgentContract
-from engines.negotiation_strategy_engine import NegotiationStrategyEngine
 
 
 # ---------------------------------------------------------------------------
@@ -127,10 +127,12 @@ class TestPlanNegotiationIncludesStrategy(unittest.TestCase):
                 "alternative_quotes": 2,
             }
         )
-        self.assertIsNotNone(plan.negotiation_strategy,
-                              "WorkflowPlan must carry a negotiation_strategy for negotiation tasks")
-        # With 2 alternatives and no history → competitive
-        self.assertEqual(plan.negotiation_strategy.name, "competitive")
+        self.assertIsNotNone(plan.negotiation_batna,
+                             "WorkflowPlan must carry a BATNA assessment for negotiation tasks")
+        # 2 alternative quotes clears the strong-BATNA bar. This replaces the
+        # old assertion that the plan named a "competitive" Strategy whose
+        # target_discount (0.10) was a fabricated number.
+        self.assertEqual(plan.negotiation_batna.strength, "strong")
 
     def test_plan_negotiation_high_value_escalation(self):
         engine, _, _ = _engine_with_mock_agents("negotiation")
@@ -151,7 +153,21 @@ class TestPlanNegotiationIncludesStrategy(unittest.TestCase):
             {"task_type": "negotiation", "order_value": 10000}
         )
         neg_step = next(s for s in plan.steps if s.agent == "negotiation")
-        self.assertIn("strategy", neg_step.input_mapping)
+        self.assertIn("batna_strength", neg_step.input_mapping)
+        self.assertIn("batna_confidence", neg_step.input_mapping)
+
+    def test_plan_negotiation_without_counts_is_unassessed_not_defaulted(self):
+        """No alternative-supplier count means no BATNA, not a weak one.
+
+        The deleted engine coerced the absent count to 0 and selected its
+        most aggressive strategy off the back of it.
+        """
+        engine, _, _ = _engine_with_mock_agents("negotiation")
+        plan = engine.reason_and_plan(
+            {"task_type": "negotiation", "order_value": 10000}
+        )
+        self.assertIs(plan.negotiation_batna.strength, UNASSESSED)
+        self.assertTrue(plan.escalation_policy.get("batna_unassessed"))
 
 
 class TestPlanRFQ(unittest.TestCase):
@@ -377,7 +393,7 @@ class TestDataclasses(unittest.TestCase):
             steps=[PlanStep(agent="x")],
         )
         self.assertEqual(plan.goal, "test goal")
-        self.assertIsNone(plan.negotiation_strategy)
+        self.assertIsNone(plan.negotiation_batna)
         self.assertEqual(plan.escalation_policy, {})
 
     def test_observation_fields(self):

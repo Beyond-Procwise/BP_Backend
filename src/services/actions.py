@@ -1,0 +1,187 @@
+"""The canonical action names a policy may be written against.
+
+``guardrail.authorize`` matches a policy to an action by name, through
+``policies_for_action`` reading ``policy_details->'applies_to'``. A name that can
+be spelled two ways cannot be aggregated, cannot be reported on, and -- worst --
+a policy written against ``email_send`` simply never matches ``email.send``, so
+the rule silently governs nothing. That failure looks exactly like the rule
+working.
+
+So the vocabulary is closed and it lives here, in code, next to the gate that
+consumes it. Adding an action is a deliberate edit with a test behind it, not
+something a policy row can invent.
+
+SHAPE: ``domain.verb``. The domain is the thing acted on, the verb is what is
+done to it. Both lower case, dot separated, no plurals.
+
+Each entry carries the action class it belongs to, because that is what decides
+whether it is irreversible and therefore default-refused. The class vocabulary
+is RoleDefinitionPolicy's, not this module's -- these names must match the ones
+in ``rules.roles.*.allow``.
+"""
+
+from __future__ import annotations
+
+from typing import Dict, FrozenSet
+
+#: action name -> the class it belongs to (see RoleDefinitionPolicy)
+ACTIONS: Dict[str, str] = {
+    # --- reading ---------------------------------------------------------
+    "supplier.read": "read",
+    "style_pack.read": "read",
+    "contract.read": "read",
+    "quote.read": "read",
+    "account.read": "read",
+    # Internal cost and margin. A read, but restricted by required_role in
+    # SalesMarginReadAuthorityPolicy -- and the sales router refuses it unless
+    # that stated permit, not the reversible-read default, is what allowed it.
+    "margin.read": "read",
+    "invoice.read": "read",
+    "deal.read": "read",
+    "finding.read": "read",
+    "report.read": "read",
+    "policy.read": "read",
+    # --- computing -------------------------------------------------------
+    "quote.rank": "compute",
+    "quote.compare": "compute",
+    "opportunity.mine": "compute",
+    "document.extract": "compute",
+    "sales.calibrate": "compute",
+    # Building a report inside the tenant changes nothing; sending one out is
+    # report.export, a share, and is refused unless a rule says otherwise.
+    "report.generate": "compute",
+    # --- writing ---------------------------------------------------------
+    "supplier.write": "write",
+    "contract.write": "write",
+    "deal.write": "write",
+    "finding.resolve": "write",
+    # Rejecting an opportunity is permanent in the sense that matters: the reason is
+    # written against it and the stage moves, and the opportunity card is where a person
+    # does it. "Pursue", the card's other verb, gets NO name of its own -- it opens a
+    # draft to the supplier, which is email.draft below, and a second name for the same
+    # act is exactly what this module's header warns against.
+    "opportunity.reject": "write",
+    # Answering "new information has arrived on something you rejected": re-open it or
+    # keep it rejected. The same weight as the rejection it revisits.
+    "opportunity.review": "write",
+    "document.upload": "write",
+    "document.promote": "write",
+    "email.draft": "write",
+    # The queues the email-learning job leaves for people. Reading them is `read`; deciding one (resolving a data-quality
+    # item, accepting a review item, approving YOUR OWN style rule, exporting a candidate) is `write`. Approving an
+    # EXEMPLAR is `configure`, like a playbook: it changes what steers every user's drafts in that family.
+    # Reading ONE draft's assurance record (the facts it rests on, its brief, its violations). A read, so by default as open as
+    # before, but now a governed question with an audit record, and a policy can narrow it.
+    "email.draft.read": "read",
+    "email.learning.read": "read",
+    "email.learning.decide": "write",
+    "exemplar.approve": "configure",
+    "catalog.write": "write",
+    "account.write": "write",
+    "sales.write": "write",
+    # Drafting a customer quote and setting its prices. Only the company sees a draft, so
+    # these are writes; what cannot be taken back (approve, issue, send, sell below the
+    # floor) is named further down and refused unless a policy permits it.
+    "sales_quote.create": "write",
+    "sales_quote.price": "write",
+    # --- communicating ---------------------------------------------------
+    "email.send": "communicate",
+    "email.reply": "communicate",
+    "sales_quote.issue": "communicate",
+    "sales_quote.send": "communicate",
+    # --- transacting -----------------------------------------------------
+    "spend.approve": "transact",
+    "negotiation.counter": "transact",
+    "sales_quote.approve": "transact",
+    # Issuing a quote priced under the configured margin floor. Always a recorded
+    # decision by a named person, never a default.
+    "sales_quote.override_margin_floor": "transact",
+    # Signing off a report commits the company to what it says before it leaves;
+    # who may is policy (report_signoff_authority), which reports need it too.
+    "report.signoff": "transact",
+    # --- approving -------------------------------------------------------
+    "approval.email": "approve_email",
+    "approval.record": "approve_email",
+    "approval.revoke": "approve_email",
+    # Clearing a flagged inbound reply (a suspected request to change payment details) LIFTS the block on drafting and sending against
+    # it, so it needs the authority of approving an email, not of an ordinary write. Confirming it as fraud only keeps the block and
+    # is an ordinary `email.learning.decide`.
+    "inbound.flag.clear": "approve_email",
+    # Confirming a price or lead time read from a supplier's email makes it usable as a stated FACT in a draft, so it needs the authority
+    # of approving an email. Rejecting one only withholds trust and is an ordinary `email.learning.decide`.
+    "offer.extraction.confirm": "approve_email",
+    # --- sharing (leaves the tenant) -------------------------------------
+    "report.export": "share",
+    "research.web": "share",
+    "supplier.clearance.set": "share",
+    # --- configuring -----------------------------------------------------
+    # Agent policies (stage 1): reading is open to a Viewer; the gateway key + Approver/Admin
+    # minimums are enforced in api/routers/agent_policies.py.
+    "agent_policy.read": "read",
+    "agent_policy.write": "write",
+    "agent_policy.activate": "configure",
+    "agent_policy.admin": "configure",
+    "policy.write": "configure",
+    # The selling entity's own letterhead and bank details, printed on every quote sent.
+    "entity_profile.write": "configure",
+    # The templates every seller starts a customer quote from.
+    "quote_template.write": "configure",
+    "policy.reload": "configure",
+    # Which buyers a Buyer/Viewer may see in reports. Changes what every report shows that person.
+    "report.scope.write": "configure",
+    # Who reads which daily brief and what it shows. Changes what every person is told on Home.
+    "brief.settings.write": "configure",
+    "prompt.write": "configure",
+    # The prompt registry. Reading a prompt's wording is a read, but one that is
+    # logged and held to a stated role (PromptWordingAuthorityPolicy): the wording
+    # is internal. Saving a version is a `write` -- it changes nothing in use.
+    # Promoting or rolling back is `configure`: it changes what every agent that
+    # uses the prompt is told, until someone moves the pointer again.
+    "prompt.read": "read",
+    "prompt.author": "write",
+    "prompt.promote": "configure",
+    # Authoring a strategy and approving one are configuration: they change
+    # what the system will recommend, for every finding that matches, until
+    # someone changes it back. Approving a PROPOSAL is a different act -- it
+    # runs a workflow -- and gates on workflow.run, which already exists.
+    "playbook.write": "configure",
+    "playbook.approve": "configure",
+    # A style pack measured from an uploaded PowerPoint. Importing one is `write`: it lands as a
+    # candidate that no report can use. APPROVING one is `configure`, the same class as a
+    # playbook's approval, because it changes what every report built from that pack looks like.
+    "style_pack.write": "write",
+    "style_pack.approve": "configure",
+    "model.train": "configure",
+    "mailbox.bind": "configure",
+    # --- delegating ------------------------------------------------------
+    "agent.create": "delegate",
+    "agent.update": "delegate",
+    "agent.delete": "delegate",
+    "agent.run": "delegate",
+    "workflow.save": "delegate",
+    "workflow.run": "delegate",
+}
+
+KNOWN: FrozenSet[str] = frozenset(ACTIONS)
+
+
+def action_class(action: str) -> str:
+    """The class ``action`` belongs to.
+
+    Raises for an unknown name rather than guessing. A typo that resolved to a
+    default class would be governed by the wrong rules, which is worse than
+    being governed by none.
+    """
+
+    try:
+        return ACTIONS[action]
+    except KeyError:
+        raise KeyError(
+            f"{action!r} is not a known action. Add it to services/actions.ACTIONS "
+            "with its class, or correct the spelling -- a policy written against "
+            "an unknown name governs nothing."
+        ) from None
+
+
+def is_known(action: str) -> bool:
+    return action in KNOWN

@@ -8,6 +8,7 @@ import numpy as np
 from qdrant_client import models
 
 from agents.base_agent import BaseAgent, AgentContext, AgentOutput, AgentStatus
+from services.version_collapse import latest_per_family, latest_quote_pred
 from utils.db import read_sql_compat
 from utils.gpu import configure_gpu
 
@@ -403,9 +404,11 @@ class QuoteEvaluationAgent(BaseAgent):
                         )
                         params.append(lowered)
 
-                    where_sql = ""
+                    # Each quote's latest version only: earlier versions are history, and sending
+                    # them on made V1/V2 compete as separate bids from the same supplier.
+                    where_sql = f"WHERE {latest_quote_pred('q')}"
                     if where_clauses:
-                        where_sql = "WHERE " + " OR ".join(f"({clause})" for clause in where_clauses)
+                        where_sql += " AND (" + " OR ".join(f"({clause})" for clause in where_clauses) + ")"
 
                     params.append(50)
                     cursor.execute(
@@ -729,9 +732,9 @@ class QuoteEvaluationAgent(BaseAgent):
     def _get_responses_from_db(self, rfq_id: str) -> List[Dict]:
         if not rfq_id:
             return []
-        # TODO: no bp_supplier_responses table yet
+        # Supplier replies are filed in proc.supplier_response by the email watcher.
         sql = (
-            "SELECT supplier_id, price, lead_time, response_text FROM proc.supplier_responses WHERE rfq_id = %s"
+            "SELECT supplier_id, price, lead_time, response_text FROM proc.supplier_response WHERE rfq_id = %s"
         )
         pandas_conn = getattr(self.agent_nick, "pandas_connection", None)
         try:
@@ -751,9 +754,7 @@ class QuoteEvaluationAgent(BaseAgent):
         """Write evaluated quotes to proc.bp_quote_evaluation.
 
         This agent persisted nothing: its evaluation lived only in the workflow blackboard
-        and the HTTP response. The table an earlier design intended, proc.supplier_responses,
-        was never created — the agent still READS it (see the "TODO: no bp_supplier_responses
-        table yet" above), which is why the Quotes view has nothing to enrich its rows with.
+        and the HTTP response, which is why the Quotes view had nothing to enrich its rows with.
 
         Only the fields this agent actually computes are stored. Nothing is invented:
         `category` has no source anywhere in the extracted corpus and is deliberately absent.
@@ -1136,6 +1137,8 @@ class QuoteEvaluationAgent(BaseAgent):
     ) -> List[Dict]:
         """Order and limit quotes based on supplier ranking."""
 
+        # A bid is its latest version; every version of it must not compete (or be picked).
+        quotes = latest_per_family(quotes)
         if not supplier_order:
             return quotes[:limit] if limit else quotes
 

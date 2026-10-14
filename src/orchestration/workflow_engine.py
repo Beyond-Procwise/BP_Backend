@@ -61,7 +61,8 @@ class WorkflowState:
 
     workflow_id: str
     workflow_name: str
-    user_id: str
+    # Who started the run (a principal's subject), or None. Never a stand-in.
+    user_id: Optional[str]
     status: str = "running"
     current_node: Optional[str] = None
     node_statuses: Dict[str, NodeStatus] = field(default_factory=dict)
@@ -103,7 +104,7 @@ class WorkflowState:
         state = cls(
             workflow_id=data["workflow_id"],
             workflow_name=data["workflow_name"],
-            user_id=data.get("user_id", "system"),
+            user_id=data.get("user_id"),
         )
         state.status = data.get("status", "running")
         state.current_node = data.get("current_node")
@@ -194,6 +195,11 @@ class WorkflowNode:
     # declarative workflow compute fields (e.g. product_category from findings)
     # that the legacy path derived imperatively. Default None = no behaviour.
     post_process: Optional[Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]]] = None
+    # True for a node whose agent reasons with tools (programme item A4): the
+    # engine hands the flag to ``agent.execute`` and the agent runs the governed
+    # AgentNick loop under its own instructions instead of its fixed ``run``.
+    # The compiler sets this for canvas-made (derived) agents only.
+    tool_loop: bool = False
 
     def build_input_data(self, state: WorkflowState) -> Dict[str, Any]:
         """Build the agent's input_data from the workflow state."""
@@ -376,7 +382,7 @@ class WorkflowEngine:
         graph: WorkflowGraph,
         *,
         input_data: Optional[Dict[str, Any]] = None,
-        user_id: str = "system",
+        user_id: Optional[str] = None,
         workflow_id: Optional[str] = None,
         resume_state: Optional[WorkflowState] = None,
     ) -> WorkflowState:
@@ -562,7 +568,13 @@ class WorkflowEngine:
         attempts = node.retry_count + 1
         for attempt in range(attempts):
             try:
-                result = agent.execute(context)
+                # The keyword is passed only when set, so an agent whose
+                # ``execute(context)`` predates the flag keeps working.
+                result = (
+                    agent.execute(context, tool_loop=True)
+                    if node.tool_loop
+                    else agent.execute(context)
+                )
                 if result.status == AgentStatus.SUCCESS:
                     break
                 if attempt < attempts - 1:

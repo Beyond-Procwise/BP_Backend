@@ -9,25 +9,53 @@ deal_date is the order's expected delivery date stamped on every doc.
 """
 from __future__ import annotations
 
+import difflib
 import logging
+from src.services.governed_limits import limit as _governed_limit
+import math
 import os
 from typing import Any, Optional
 
 from src.services.db import get_conn
 from src.services.linking_engine import (
     _PO,
+    _norm_id,
     _norm_po,
     _rows,
     _table_columns,
+    cmp_supplier,
     score_link,
 )
+from src.services.resolution import (
+    CandidateEdge,
+    CardinalityRule,
+    ResolutionRequest,
+    resolve,
+)
+from src.services.resolution.model import DEGENERACY_FLOOR
 
 log = logging.getLogger(__name__)
 
-MIN_LINK_SCORE = float(os.getenv("PROMOTE_MIN_LINK_SCORE", "80"))
-# Bar for a quote to ANCHOR a PO (form/complete a deal). Defaults to the link bar.
-QUOTE_ANCHOR_MIN_SCORE = float(os.getenv("QUOTE_ANCHOR_MIN_SCORE",
-                                         os.getenv("PROMOTE_MIN_LINK_SCORE", "80")))
+# PromotionThresholdPolicy (P9). See linking_engine for why these are functions.
+def MIN_LINK_SCORE() -> float:
+    return _governed_limit("promotion_thresholds", "promote_min_link_score",
+                           env="PROMOTE_MIN_LINK_SCORE")
+
+
+def QUOTE_ANCHOR_MIN_SCORE() -> float:
+    """Bar for a quote to ANCHOR a PO (form/complete a deal).
+
+    Policy states it separately rather than defaulting to the link bar in code:
+    "the same as the other one" is a decision, and it should be written down
+    where it can be changed independently.
+    """
+    return _governed_limit("promotion_thresholds", "quote_anchor_min_score",
+                           env="QUOTE_ANCHOR_MIN_SCORE")
+
+# One quote anchors one purchase order: a quote is raised for a single sourcing
+# event, and an order is placed against a single quote.
+_ANCHOR_PROFILE = "po_quote_anchor"
+_ANCHOR_RULE = CardinalityRule(_ANCHOR_PROFILE, "1:1", 1, 1)
 
 
 def is_established_deal(cur, deal_id: Optional[str]) -> bool:
@@ -123,6 +151,14 @@ _DOC = {
     "po": ("po_id",
            "proc.bp_purchase_order_raw", "proc.bp_purchase_order_stg", "proc.bp_purchase_order_trgt",
            "proc.bp_po_line_items_stg", "proc.bp_po_line_items_trgt"),
+    # A goods receipt is grouped by its PO's deal, never on its own evidence --
+    # see extraction/goods_receipt_link.py. It is registered here so the generic
+    # helpers (_ensure_in_trgt, _persist_deal) apply to it unchanged.
+    "goods_receipt": ("grn_id",
+                      "proc.bp_goods_receipt_raw", "proc.bp_goods_receipt_stg",
+                      "proc.bp_goods_receipt_trgt",
+                      "proc.bp_goods_receipt_line_items_stg",
+                      "proc.bp_goods_receipt_line_items_trgt"),
 }
 _DEAL_COLS = ("deal_id", "deal_name", "document_id", "deal_date")
 # Permanent line-item _raw tables. They carry no natural doc pk of their own — each
@@ -132,12 +168,16 @@ _LINE_RAW = {
     "invoice": "proc.bp_invoice_line_items_raw",
     "quote": "proc.bp_quote_line_items_raw",
     "po": "proc.bp_po_line_items_raw",
+    "goods_receipt": "proc.bp_goods_receipt_line_items_raw",
 }
 _DOCTYPE_FROM_HINT = {"invoice": "invoice", "quote": "quote", "po": "po",
                       "purchase_order": "po", "purchaseorder": "po"}
 
-# SQL fragment normalizing a po_id column the same way as _norm_po().
-_PO_NORM_COND = "regexp_replace(regexp_replace(lower(po_id),'[^a-z0-9]','','g'),'^po','')"
+# SQL fragment normalizing a po_id column the same way as _norm_po(), revisions
+# ("<n> (Rev k)") folded onto their PO number.
+_PO_NORM_COND = ("regexp_replace(regexp_replace(lower("
+                 "regexp_replace(po_id,'\\s*\\(\\s*rev\\M.*$','','i')"
+                 "),'[^a-z0-9]','','g'),'^po','')")
 
 
 def _persist_deal(cur, doc_type, doc_pk, *, deal_id, deal_name, document_id, deal_date):
@@ -275,22 +315,39 @@ def _raw_index(cur, raw_table, pk) -> dict:
 
     Built once per raw table per run so the look-forward match is O(monitors),
     not O(monitors x raw-rows).
+
+    The document an upload stands for is its NEWEST read. A re-read run by script
+    carries no process_monitor_id, and may file the document under a corrected
+    reference: Orbis's V3 order form (upload 12) was first read as "ORB-Q-6612" (V1's
+    reference) and re-read on 2026-09-23 as "ORB-Q-6612 (V3)". Matching the upload by
+    its own id alone found the first read, so the corrected reference was never linked
+    to the deal. So an upload maps to the newest read that is either its own (same
+    process_monitor_id) or a later re-read of the same file with no upload id. Reads
+    belonging to OTHER uploads never count. "Newest" is the highest raw_id, compared
+    directly, so it is the same every run (it was whatever order the server returned).
     """
-    by_pmid: dict = {}     # process_monitor_id -> pk (exact)
-    by_basename: dict = {}  # basename(source_file) -> pk, ONLY for pmid-less raws
-    for r in _rows(cur, f"select {pk}, source_file, process_monitor_id from {raw_table}") or []:
+    by_pmid: dict = {}     # process_monitor_id -> (raw_id, pk, basename) of its newest own read
+    by_basename: dict = {}  # basename(source_file) -> pk of the newest pmid-less read
+    rereads: dict = {}      # basename(source_file) -> (raw_id, pk) of the newest pmid-less read
+    for r in _rows(cur, f"select raw_id, {pk}, source_file, process_monitor_id "
+                        f"from {raw_table} order by raw_id") or []:
+        key = _basename(r.get("source_file"))
         pmid = r.get("process_monitor_id")
         if pmid is not None:
-            # A raw that knows its triggering monitor row is matched ONLY by that
-            # exact id — never by basename. Otherwise other monitor rows sharing
-            # the filename (same file re-uploaded under a different deal) would
-            # cross-claim it, nondeterministically overwriting the right deal.
-            by_pmid[pmid] = r.get(pk)
+            # A raw that knows its triggering monitor row is matched by that exact id —
+            # never by basename. Otherwise other monitor rows sharing the filename (same
+            # file re-uploaded under a different deal) would cross-claim it.
+            if pmid not in by_pmid or (r.get("raw_id") or 0) > (by_pmid[pmid][0] or 0):
+                by_pmid[pmid] = (r.get("raw_id"), r.get(pk), key)
             continue
-        key = _basename(r.get("source_file"))
-        if key:
+        if key and (key not in rereads or (r.get("raw_id") or 0) > (rereads[key][0] or 0)):
             by_basename[key] = r.get(pk)
-    return {"by_pmid": by_pmid, "by_basename": by_basename}
+            rereads[key] = (r.get("raw_id"), r.get(pk))
+    resolved = {}
+    for pmid, (raw_id, pk_val, key) in by_pmid.items():
+        later = rereads.get(key) if key else None
+        resolved[pmid] = later[1] if later and later[0] > raw_id and later[1] else pk_val
+    return {"by_pmid": resolved, "by_basename": by_basename}
 
 
 def _ensure_in_trgt(cur, doc_type, doc_pk) -> bool:
@@ -398,45 +455,245 @@ def _deal_date_for_doc(cur, doc_type, doc_pk):
     inv_line = _invoice_line_delivery(cur, doc_pk) if doc_type == "invoice" else None
     if not po_ref:
         return resolve_deal_date(None, inv_line)
-    pr = _rows(cur, f"select expected_delivery_date from {_PO['trgt']} where {_PO_NORM_COND}=%s",
-               (_norm_po(po_ref),))
-    return resolve_deal_date(pr[0] if pr else None, inv_line)
+    from src.services.linking_engine import _pick_po   # of its revisions, the one cited
+    pr = _pick_po(cur, po_ref, cols="t.expected_delivery_date", tables=(_PO['trgt'],))
+    return resolve_deal_date(pr, inv_line)
 
 
 # ---------------------------------------------------------------------------
 # Look-back pass (quote-gated)
 # ---------------------------------------------------------------------------
-def _quote_anchor_for_po(cur, po, npo=None):
+class _AnchorCache:
+    """Everything `_quote_anchor_for_po` would otherwise re-query for every PO.
+
+    `_look_back` asks for the anchoring quote of every PO in the corpus, and each
+    ask ran up to four queries plus one line-items query PER candidate quote. The
+    same quotes and the same line items were fetched again for every PO that
+    considered them: measured live on 2026-08-01, ~40,000 round trips to RDS and
+    about four and a half minutes for a pass that linked nothing at all.
+
+    This is a pure memo — same rows, same scoring, so the same anchor. The one
+    deliberate change is that candidate order is now explicit (`order by
+    quote_id`) where it used to be whatever order the server happened to return;
+    that only matters for tie-breaks, which were previously unstable between runs.
+
+    Built once per pass and thrown away with it, so it cannot go stale mid-run.
+    """
+
+    def __init__(self, cur) -> None:
+        quo, qln = _DOC["quote"][3], _DOC["quote"][5]
+        poln, inv = _DOC["po"][5], _DOC["invoice"][3]
+
+        self.quotes_by_npo: dict = {}
+        self.quotes_by_supplier: dict = {}
+        self.quote_by_id: dict = {}
+        self.all_quotes: list = []
+        for q in _rows(cur, f"select * from {quo} order by quote_id"):
+            self.all_quotes.append(q)
+            # setdefault, not assignment: the uncached path takes the FIRST row a
+            # quote_id lookup returns, so a duplicate must not displace it.
+            self.quote_by_id.setdefault(str(q.get("quote_id")), q)
+            npo = _norm_po(q.get("po_id"))
+            if npo:
+                self.quotes_by_npo.setdefault(npo, []).append(q)
+            self.quotes_by_supplier.setdefault(q.get("supplier_id"), []).append(q)
+
+        self.quote_lines: dict = {}
+        for r in _rows(cur, f"select * from {qln}"):
+            self.quote_lines.setdefault(str(r.get("quote_id")), []).append(r)
+
+        self.po_lines: dict = {}
+        for r in _rows(cur, f"select * from {poln}"):
+            self.po_lines.setdefault(str(r.get("po_id")), []).append(r)
+
+        self.invoices_by_npo: dict = {}
+        for r in _rows(cur, f"select invoice_id, po_id, deal_id from {inv}"):
+            npo = _norm_po(r.get("po_id"))
+            if npo:
+                self.invoices_by_npo.setdefault(npo, []).append(r)
+
+
+def _explicit_anchor(cur, po, npo, cache):
+    """The quote a purchase order DECLARES as its own — a reference, not a guess.
+
+    1) a quote whose own po_id resolves to this canonical PO, then
+    2) the PO's line items naming a quote_number.
+    Both are unchanged; only what happens when neither exists has moved.
+    """
+    quo = _DOC["quote"][3]
+    poln = _DOC["po"][5]
+    po_id = po.get("po_id")
+    if npo:
+        ex = (cache.quotes_by_npo.get(npo, []) if cache is not None
+              else _rows(cur, f"select * from {quo} where {_PO_NORM_COND}=%s", (npo,)))
+        if ex:
+            return ex[0]
+    if cache is not None:
+        seen, numbers = set(), []
+        for r in cache.po_lines.get(str(po_id), []):        # SQL's DISTINCT, in order
+            qn = r.get("quote_number")
+            if qn is None or str(qn) == "" or str(qn) in seen:
+                continue
+            seen.add(str(qn))
+            numbers.append(str(qn))
+        for qn in numbers:
+            hit = cache.quote_by_id.get(qn)
+            if hit:
+                return hit
+    else:
+        for r in _rows(cur, f"select distinct quote_number from {poln} "
+                            f"where po_id=%s and coalesce(quote_number,'')<>''", (po_id,)):
+            qr = _rows(cur, f"select * from {quo} where quote_id=%s", (str(r["quote_number"]),))
+            if qr:
+                return qr[0]
+    return None
+
+
+def _anchor_candidates(cur, po, cache):
+    """The quotes worth scoring against this PO, and the PO's lines. Narrowed by
+    supplier exactly as before."""
+    quo = _DOC["quote"][3]
+    poln = _DOC["po"][5]
+    po_id = po.get("po_id")
+    sup = po.get("supplier_id")
+    if cache is not None:
+        cand = cache.quotes_by_supplier.get(sup, []) if sup else cache.all_quotes
+        po_lines = cache.po_lines.get(str(po_id), [])
+    else:
+        cand = (_rows(cur, f"select * from {quo} where supplier_id=%s", (sup,)) if sup
+                else _rows(cur, f"select * from {quo}"))
+        po_lines = _rows(cur, f"select * from {poln} where po_id=%s", (po_id,))
+    return cand, po_lines
+
+
+def _anchor_quote_lines(cur, q, cache):
+    if cache is not None:
+        return cache.quote_lines.get(str(q.get("quote_id")), [])
+    return _rows(cur, f"select * from {_DOC['quote'][5]} where quote_id=%s",
+                 (q.get("quote_id"),))
+
+
+def _anchor_log_odds(f: float) -> float:
+    """The engine's F score as log-odds, for the resolver's objective. Monotone in
+    F, so a single PO resolves to exactly the quote the old argmax returned."""
+    p = min(max(f / 100.0, 1e-9), 1.0 - 1e-9)
+    return math.log(p / (1.0 - p))
+
+
+def _quote_anchors(cur, pos, cache=None) -> dict:
+    """The anchoring quote per PO, one quote per PO NUMBER: a PO's revisions ("<n> (Rev
+    k)") are one order re-issued, not rival orders for one quote, so the family is
+    anchored once, through its first id, and every revision shares that anchor."""
+    reps: dict = {}
+    for po in sorted(pos, key=lambda p: str(p.get("po_id") or "")):
+        reps.setdefault(_norm_po(po.get("po_id")) or str(po.get("po_id")), po)
+    anchored = _quote_anchors_per_order(cur, list(reps.values()), cache=cache)
+    return {str(po.get("po_id")): anchored.get(str(reps[_norm_po(po.get("po_id"))
+                                                         or str(po.get("po_id"))].get("po_id")))
+            for po in pos}
+
+
+def _quote_anchors_per_order(cur, pos, cache=None) -> dict:
+    """str(po_id) -> the quote that ANCHORS it, or None, decided across all the
+    purchase orders at once.
+
+    A quote is the deal anchor, and a quote is raised for one sourcing event, so
+    it can anchor one purchase order. Asked one PO at a time, the same quote said
+    yes to several of them, and each then minted its own deal on the strength of
+    a quote already spent — which is how one sourcing event became two.
+
+    Declared references still win outright and are taken first; the quotes they
+    consume are withdrawn before anything is scored. What is left is scored
+    exactly as before, against the same QUOTE_ANCHOR_MIN_SCORE bar, and then
+    resolved as a set under a one-quote-one-order rule.
+
+    Scoring is grouped by supplier because candidates are already narrowed by
+    supplier, so no candidate edge can cross a group. Resolving the groups
+    separately is therefore the same answer as resolving them together, on
+    problems small enough to stay fast.
+    """
+    anchors: dict = {str(po.get("po_id")): None for po in pos}
+    claimed: set = set()
+
+    ordered = sorted(pos, key=lambda p: str(p.get("po_id") or ""))
+    for po in ordered:
+        quote = _explicit_anchor(cur, po, _norm_po(po.get("po_id")), cache)
+        if quote is None:
+            continue
+        qid = str(quote.get("quote_id"))
+        if qid in claimed:
+            # Two orders declaring the same quote is a contradiction in the
+            # documents, not a choice to make: the first by canonical order keeps
+            # it and the other falls through to scoring, so the outcome does not
+            # depend on the order rows came back in.
+            log.warning("quote %s is declared by more than one purchase order; "
+                        "%s keeps it", qid, po.get("po_id"))
+            continue
+        anchors[str(po.get("po_id"))] = quote
+        claimed.add(qid)
+
+    remaining = [po for po in ordered if anchors[str(po.get("po_id"))] is None]
+    groups: dict = {}
+    for po in remaining:
+        groups.setdefault(po.get("supplier_id"), []).append(po)
+
+    for supplier, group in sorted(groups.items(), key=lambda kv: str(kv[0])):
+        edges, quote_rows = [], {}
+        for po in group:
+            candidates, po_lines = _anchor_candidates(cur, po, cache)
+            for q in candidates:
+                qid = str(q.get("quote_id"))
+                if qid in claimed:
+                    continue
+                link = score_link(q, po, "quote_po",
+                                  source_lines=_anchor_quote_lines(cur, q, cache),
+                                  target_lines=po_lines)
+                f = float(link.get("F", 0) or 0)
+                if f < QUOTE_ANCHOR_MIN_SCORE():
+                    continue
+                quote_rows[qid] = q
+                edges.append(CandidateEdge(
+                    source_id=str(po.get("po_id")), target_id=qid,
+                    log_odds=_anchor_log_odds(f), confidence=f / 100.0,
+                    profile_id=_ANCHOR_PROFILE, consumes={},
+                ))
+        if not edges:
+            continue
+        result = resolve(ResolutionRequest(
+            request_id=f"anchor:{supplier}", edges=tuple(edges), capacities=(),
+            rules=(_ANCHOR_RULE,),
+            profile_registry_version="deal_assignment/quote_po",
+        ))
+        for link in result.links:
+            anchors[link.source_id] = quote_rows[link.target_id]
+            claimed.add(link.target_id)
+            if link.margin_normalised < DEGENERACY_FLOOR:
+                # The evidence did not really choose this anchor: a different
+                # quote would have served almost as well, and a deal is about to
+                # be minted on it.
+                log.warning("anchor %s -> quote %s is contested (margin %.3f); "
+                            "a deal is being formed on evidence that barely "
+                            "separates it from the alternative",
+                            link.source_id, link.target_id, link.margin)
+    return anchors
+
+
+def _quote_anchor_for_po(cur, po, npo=None, cache=None):
     """Return the quote that ANCHORS this PO (or None). Quote is the deal anchor:
     matched by explicit reference (quote.po_id, po_line_items.quote_number) or, when
     refs are absent, by relationship score >= QUOTE_ANCHOR_MIN_SCORE (supplier +
-    line-item/product overlap + amount + temporal). Candidates narrowed by supplier."""
-    quo = _DOC["quote"][3]
-    npo = npo or _norm_po(po.get("po_id"))
-    # 1) explicit: a quote whose own po_id resolves to this canonical PO
-    if npo:
-        ex = _rows(cur, f"select * from {quo} where {_PO_NORM_COND}=%s", (npo,))
-        if ex:
-            return ex[0]
-    # 2) the PO's line items naming a quote_number
-    poln = _DOC["po"][5]
-    for r in _rows(cur, f"select distinct quote_number from {poln} "
-                        f"where po_id=%s and coalesce(quote_number,'')<>''", (po.get("po_id"),)):
-        qr = _rows(cur, f"select * from {quo} where quote_id=%s", (str(r["quote_number"]),))
-        if qr:
-            return qr[0]
-    # 3) relationship score (supplier-narrowed; line items strengthen the match)
-    sup = po.get("supplier_id")
-    cand = (_rows(cur, f"select * from {quo} where supplier_id=%s", (sup,)) if sup
-            else _rows(cur, f"select * from {quo}"))
-    po_lines = _rows(cur, f"select * from {poln} where po_id=%s", (po.get("po_id"),))
-    best, best_f = None, 0.0
-    for q in cand:
-        q_lines = _rows(cur, f"select * from {_DOC['quote'][5]} where quote_id=%s", (q.get("quote_id"),))
-        link = score_link(q, po, "quote_po", source_lines=q_lines, target_lines=po_lines)
-        if link.get("F", 0) >= QUOTE_ANCHOR_MIN_SCORE and link["F"] > best_f:
-            best, best_f = q, link["F"]
-    return best
+    line-item/product overlap + amount + temporal). Candidates narrowed by supplier.
+
+    `cache` is an optional `_AnchorCache`. With it, every lookup below is served
+    from memory instead of the database; without it the queries run exactly as
+    they always have, so any caller that has no cache is unaffected.
+
+    One PO is a set of one, so this goes through the same resolver as the batch.
+    With nothing to compete against, the answer is the quote the old argmax
+    returned — except on an exact tie, which now resolves to the lexicographically
+    first quote_id rather than whichever order the rows arrived in.
+    """
+    return _quote_anchors(cur, [po], cache=cache)[str(po.get("po_id"))]
 
 
 def _look_back(cur) -> int:
@@ -447,14 +704,18 @@ def _look_back(cur) -> int:
     deal minted) — surfaced as Orphaned_Awaiting_Quote by reconcile_status. Only
     currently-unlinked docs are stamped, so authoritative look-forward deals are never
     clobbered. Returns the number of documents newly linked."""
-    inv_trgt = _DOC["invoice"][3]
     linked = 0
     pending = pending_batch_docs(cur)
-    for po in _rows(cur, f"select * from {_PO['trgt']}"):
+    # Read the corpus once instead of once per PO — see _AnchorCache.
+    cache = _AnchorCache(cur)
+    all_pos = [po for po in _rows(cur, f"select * from {_PO['trgt']}")
+               if _norm_po(po.get("po_id"))]
+    # Anchors are decided for the whole corpus at once, so one quote cannot end
+    # up anchoring two orders and minting two deals from one sourcing event.
+    anchors = _quote_anchors(cur, all_pos, cache=cache)
+    for po in all_pos:
         npo = _norm_po(po.get("po_id"))
-        if not npo:
-            continue
-        quote = _quote_anchor_for_po(cur, po, npo)
+        quote = anchors.get(str(po.get("po_id")))
         if quote is None:
             continue   # no anchoring quote -> PO + its invoices stay orphaned
         supplier = po.get("supplier_name") or po.get("supplier_id")
@@ -465,7 +726,7 @@ def _look_back(cur) -> int:
         deal_date = resolve_deal_date(po)
         members = [("po", po.get("po_id"), po.get("deal_id")),
                    ("quote", quote.get("quote_id"), quote.get("deal_id"))]
-        for inv in _rows(cur, f"select invoice_id, deal_id from {inv_trgt} where {_PO_NORM_COND}=%s", (npo,)):
+        for inv in cache.invoices_by_npo.get(npo, []):
             members.append(("invoice", inv["invoice_id"], inv.get("deal_id")))
         members = [(dt, dpk, cur_deal) for (dt, dpk, cur_deal) in members
                    if (dt, str(dpk)) not in pending]
@@ -566,6 +827,105 @@ def _flag_conflict_po_chains(cur) -> int:
                 if mid not in flagged:
                     _set_monitor_status(cur, mid, "Deal_Conflict_Review")
                     flagged.add(mid)
+    return len(flagged)
+
+
+# ---------------------------------------------------------------------------
+# Is everyone in this deal actually part of it?
+# ---------------------------------------------------------------------------
+# Supplier identity is not string equality, and treating it as such is how a
+# check like this gets switched off. A supplier master resolves the same company
+# to more than one id over time (SUP-Nexaspark / SUP-NexasparkMarketingLtd), and
+# extraction mis-reads a letter (SUP-AuariusMarketing for
+# SUP-AquariusMarketingLtd). Measured across both databases, pairs that ARE the
+# same company score 0.667-0.905 on a character-sequence ratio and pairs that are
+# genuinely different score 0.327-0.522, so 0.6 sits in the gap with room on
+# either side. Every one of those four same-company pairs is a live row.
+_SUPPLIER_SIM_MIN = 0.6
+
+
+def _same_supplier(a, b) -> bool:
+    """Do two supplier ids name the same company?
+
+    `cmp_supplier` already settles an exact match and a resolution drift, where
+    one normalised id is a prefix of the other. It calls a typo a CONFLICT, which
+    is what the ratio is here for. A missing id on either side is not a
+    disagreement — absence is not evidence.
+    """
+    _score, status = cmp_supplier(a, b)
+    if status in ("OK", "WEAK", "MISSING"):
+        return True
+    return difflib.SequenceMatcher(
+        None, _norm_id(a) or "", _norm_id(b) or ""
+    ).ratio() >= _SUPPLIER_SIM_MIN
+
+
+def _deal_supplier_conflicts(cur) -> list:
+    """Invoices billed into a deal by a supplier that holds no order in it.
+
+    A deal is a sourcing event, so its QUOTES are expected to come from several
+    suppliers at once: that is a competitive tender, and checking them would flag
+    every losing bid as a defect. The purchase order is what names the supplier
+    the business actually engaged. An invoice from anyone else is a document in
+    the wrong deal — you cannot be billed by a supplier who was never awarded the
+    order.
+
+    The case this was written for, live in bp_testdb: a batch upload labelled
+    every document it carried with one deal id, so three Kestrel Logistics
+    invoices citing PO-2025-0208 landed in a deal whose only purchase order is
+    PO-2025-0244, placed with Marlowe Construction. Neither PO chain nor deal id
+    disagrees anywhere, so nothing already in this module could see it.
+
+    Returns (doc_type, doc_pk, deal_id, supplier_id, awarded_suppliers) per
+    conflicting document. Two set-based reads, no per-document query.
+    """
+    po_pk, _pr, _ps, po_trgt, _pl, _plt = _DOC["po"]
+    inv_pk, _ir, _is, inv_trgt, _il, _ilt = _DOC["invoice"]
+
+    awarded: dict = {}
+    for r in _rows(cur, f"select deal_id, supplier_id from {po_trgt} "
+                        f"where deal_id is not null and deal_id <> '' "
+                        f"and supplier_id is not null and supplier_id <> ''"):
+        awarded.setdefault(r["deal_id"], set()).add(r["supplier_id"])
+
+    conflicts = []
+    for r in _rows(cur, f"select {inv_pk}, deal_id, supplier_id from {inv_trgt} "
+                        f"where deal_id is not null and deal_id <> '' "
+                        f"and supplier_id is not null and supplier_id <> ''"):
+        holders = awarded.get(r["deal_id"])
+        if not holders:
+            # No order in the deal at all, so there is nothing to be inconsistent
+            # with. An invoice with no purchase order is its own finding, raised
+            # by the three-way match, not a mis-grouping.
+            continue
+        if any(_same_supplier(r["supplier_id"], s) for s in holders):
+            continue
+        conflicts.append(("invoice", r[inv_pk], r["deal_id"],
+                          r["supplier_id"], sorted(holders)))
+    return conflicts
+
+
+def _flag_supplier_conflict_deals(cur) -> int:
+    """Surface those documents for human resolution.
+
+    Flagging, not moving. Which deal the document really belongs to is not
+    decidable here — the grouping is asserted upstream at upload, and this
+    service only ever propagates it — so the honest action is to say the deal is
+    incoherent and let a person settle it, exactly as `_flag_conflict_po_chains`
+    does for a PO chain that disagrees with itself. `reconcile_status` preserves
+    Deal_Conflict_Review, so the flag survives the rest of the run.
+    """
+    flagged: set = set()
+    for (dt, dpk, deal_id, supplier, holders) in _deal_supplier_conflicts(cur):
+        log.warning(
+            "deal %s: %s %s is billed by %s, which holds no purchase order in "
+            "that deal (ordered from %s)",
+            deal_id, dt, dpk, supplier, ", ".join(holders),
+        )
+        for mid in _monitor_ids_for_doc(cur, dt, dpk):
+            if mid not in flagged:
+                _set_monitor_status(cur, mid, "Deal_Conflict_Review")
+                flagged.add(mid)
     return len(flagged)
 
 
@@ -744,19 +1104,85 @@ def assign_deals_fast(conn: Any = None) -> dict:
     return _run(conn.cursor(), include_look_back=False)
 
 
+def _attach_rival_quotes(cur) -> int:
+    """Put the losing bids on the deal their sourcing event formed.
+
+    A requirement goes to market and several suppliers answer it. Only the winning
+    bid becomes a purchase order, and _quote_anchors_per_order forms the deal by
+    anchoring that one quote to that one order (po_quote_anchor is 1:1, and rightly
+    so -- an order IS placed against a single quote). The consequence nobody
+    intended is that the rival bids, having no order of their own, have no route
+    into the deal at all: they keep deal_id NULL, and because document_id is minted
+    as '{deal_id}::quote::{quote_id}' they keep that NULL too.
+
+    That is how a corpus of 21,054 quotes came to have 5,037 deals holding exactly
+    one quote each, and supplier ranking -- which reads competing quotes per deal --
+    came to have nothing to compare.
+
+    requirement_id is the join: the RFQ or tender reference the quotes cite. A quote
+    is attached only when a quote on the SAME requirement already sits on a deal, so
+    the deal is read off the sourcing event rather than inferred from content, and a
+    requirement whose quotes never reached an order forms no deal here.
+
+    The bids are marked not_awarded, which is what keeps them out of
+    proc.bp_deal_documents and therefore out of the deal's quote_count and
+    quote_total: a rival bid is evidence about the sourcing event, not part of the
+    transaction that gets three-way matched.
+    """
+    cur.execute(
+        """
+        UPDATE proc.bp_quote_trgt q
+           SET deal_id      = w.deal_id,
+               deal_name    = w.deal_name,
+               document_id  = w.deal_id || '::quote::' || q.quote_id,
+               award_status = COALESCE(q.award_status, 'not_awarded')
+          FROM (SELECT requirement_id,
+                       min(deal_id)   AS deal_id,
+                       min(deal_name) AS deal_name
+                  FROM proc.bp_quote_trgt
+                 WHERE requirement_id IS NOT NULL AND deal_id IS NOT NULL
+                 GROUP BY requirement_id
+                HAVING count(DISTINCT deal_id) = 1) w
+         WHERE q.requirement_id = w.requirement_id
+           AND q.deal_id IS NULL
+           AND q.po_id IS NULL
+        """
+    )
+    attached = cur.rowcount
+    if attached:
+        cur.execute(
+            """
+            UPDATE proc.bp_quote_line_items_trgt l
+               SET deal_id = q.deal_id, deal_name = q.deal_name,
+                   document_id = q.document_id
+              FROM proc.bp_quote_trgt q
+             WHERE l.quote_id = q.quote_id
+               AND q.award_status = 'not_awarded'
+               AND l.deal_id IS DISTINCT FROM q.deal_id
+            """
+        )
+    return attached
+
+
 def _run(cur, include_look_back: bool = True) -> dict:
     fwd = _look_forward(cur)
     back = _look_back(cur) if include_look_back else None
     rec = _reconcile_legacy(cur)
     prop = _propagate_deal_along_po(cur)
+    # After the PO-anchored deals exist, and before metadata/dates are filled, so a
+    # rival bid picks up the same treatment every other document on the deal gets.
+    rivals = _attach_rival_quotes(cur)
     conflicts = _flag_conflict_po_chains(cur)
+    supplier_conflicts = _flag_supplier_conflict_deals(cur)
     meta = _backfill_deal_metadata(cur)
     dates = _propagate_deal_date(cur)
     mirrored = _mirror_deal_to_raw_and_stg(cur)
     pruned = _prune_deal_document_map(cur)
     status = reconcile_status(cur)
     return {"forward_linked": fwd, "backward_linked": back, "reconciled": rec,
-            "propagated": prop, "conflicts_flagged": conflicts,
+            "propagated": prop, "rival_quotes_attached": rivals,
+            "conflicts_flagged": conflicts,
+            "supplier_conflicts_flagged": supplier_conflicts,
             "metadata_filled": meta, "deal_dates_set": dates,
             "tiers_mirrored": mirrored,
             "map_pruned": pruned, "status_reconciled": status}

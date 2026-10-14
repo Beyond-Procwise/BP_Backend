@@ -1,0 +1,88 @@
+name: Reference data checks
+
+# The document and relationship vocabulary is data, so a bad edit cannot be
+# caught by a type checker. These checks are what turns "two types now claim the
+# same alias" from something noticed in production into something noticed in the
+# pull request.
+
+on:
+  push:
+    branches: [main, Development]
+  pull_request:
+
+jobs:
+  reference-data:
+    runs-on: ubuntu-latest
+    env:
+      DB_HOST: ci-placeholder
+      DB_PORT: "5432"
+      DB_NAME: ci-placeholder
+      DB_USER: ci-placeholder
+      DB_PASSWORD: ci-placeholder
+      S3_BUCKET_NAME: ci-placeholder
+      S3_PREFIXES: '["ci"]'
+      QDRANT_URL: http://127.0.0.1:9
+      QDRANT_API_KEY: ci-placeholder
+      SES_DEFAULT_SENDER: ci-placeholder
+      CUDA_VISIBLE_DEVICES: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # pydantic/pydantic-settings are for config/settings.py, which
+          # src/services/extraction/persistence.py reaches transitively. They are
+          # the whole cost of running the doc-type-map and review-item tests here;
+          # everything else in this job needs only pytest/pyyaml/psycopg2-binary.
+          pip install pytest pyyaml psycopg2-binary pydantic pydantic-settings
+
+      # No database: these run over the seed, which a live test
+      # (tests/services/concepts/test_concept_table.py) separately asserts
+      # matches the tables.
+      - name: Validation checks over the seeded vocabulary
+        run: |
+          python -c "
+          import sys; sys.path.insert(0, '.')
+          from src.services.concepts.vocabulary import SEED_VOCABULARY, SEED_DOC_TYPE_ROWS
+          from src.services.concepts.validate import run_all
+          bad = run_all(SEED_VOCABULARY, SEED_DOC_TYPE_ROWS)
+          for x in bad:
+              print(f'{x.check}: {x.subject} - {x.detail}')
+          sys.exit(1 if bad else 0)
+          "
+
+      # Every test below is a deliverable of this layer that ran in NO automated
+      # job before. The repo has two workflows and neither runs the wider suite,
+      # so a file left out here is guarded only by whoever remembers to run it.
+      #
+      # Three files of this layer are still NOT here, each because it imports a
+      # production module with a heavy dependency chain that this deliberately
+      # light job will not carry (verified in a clean env with only the install
+      # step above):
+      #   * tests/services/concepts/test_gate_wiring.py — patches
+      #     src.services.extraction.dispatch, which imports spacy.
+      #   * tests/services/test_agent_manifest_slices.py — src/agents/base_agent.py
+      #     imports botocore and qdrant_client.
+      #   * tests/services/extraction/test_type_findings_lifecycle.py —
+      #     src/services/session_postprocess reaches numpy and scipy.
+      # Adding those four-to-six packages for three files would turn a 20-second
+      # reference-data job into a full-environment one; they stay a local and
+      # review-time responsibility, which the fix-wave report records.
+      - name: Vocabulary unit tests
+        run: |
+          python -m pytest -q \
+            tests/services/concepts/test_validation_checks.py \
+            tests/services/concepts/test_vocabulary_runtime_load.py \
+            tests/services/concepts/test_category_routing.py \
+            tests/services/test_language_index_not_matched.py \
+            tests/services/test_doc_type_map_single_owner.py \
+            tests/services/extraction/test_type_resolver.py \
+            tests/services/extraction/test_type_resolver_matched_evidence.py \
+            tests/services/extraction/test_type_resolution_review_items.py \
+            tests/services/test_telemetry_type_finding_filter.py

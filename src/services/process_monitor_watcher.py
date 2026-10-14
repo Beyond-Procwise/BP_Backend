@@ -191,61 +191,55 @@ class ProcessMonitorWatcher:
             logger.exception("Failed to claim record %s", record_id)
             return None
 
-    @staticmethod
-    def _data_needs_reextraction(cur, file_path: str, category: str) -> bool:
-        """Check if extracted data is missing from the target bp_ table.
+    # doc type → (_raw table, pk column, downstream tables that hold the promoted row)
+    _REEXTRACT_TABLES = {
+        "invoice": ("proc.bp_invoice_raw", "invoice_id",
+                    ("proc.bp_invoice_stg", "proc.bp_invoice_trgt")),
+        "purchase_order": ("proc.bp_purchase_order_raw", "po_id",
+                           ("proc.bp_purchase_order_stg", "proc.bp_purchase_order_trgt")),
+        "quote": ("proc.bp_quote_raw", "quote_id",
+                  ("proc.bp_quote_stg", "proc.bp_quote_trgt")),
+        # Contracts promote into bp_contracts, not a _stg/_trgt pair.
+        "contract": ("proc.bp_contract_raw", "contract_id", ("proc.bp_contracts",)),
+    }
+    _REEXTRACT_CATEGORY = {
+        "invoice": "invoice", "po": "purchase_order", "purchase_order": "purchase_order",
+        "purchaseorder": "purchase_order", "quote": "quote", "quotes": "quote",
+        "contract": "contract",
+    }
 
-        Returns True when the process_monitor says 'Extracted' but the
-        actual business data was deleted (e.g. during cleanup), meaning
-        the document must be re-extracted.
+    @classmethod
+    def _data_needs_reextraction(cls, cur, prior_id: int, category: str) -> bool:
+        """True only when the earlier upload's data is provably gone.
+
+        The earlier upload is traced by its process_monitor id to the _raw row
+        it produced. If that row was promoted and its document is now in none of
+        the tables a promoted row lives in (e.g. removed by a cleanup), the
+        re-upload must be extracted again. Anything short of that proof — a row
+        held for review, no PK, nothing traceable — stays a duplicate: extracting
+        it again would only queue the same review a second time.
         """
-        import re as _re
-
-        fname = file_path.rsplit("/", 1)[-1] if "/" in file_path else file_path
-        cat = (category or "").lower()
-
-        # Extract expected PK from filename
-        pk_val = None
-        table = None
-        pk_col = None
-        if cat == "po":
-            m = _re.search(r"PO\s*(\d{4,})", fname)
-            if m:
-                pk_val, table, pk_col = m.group(1), "proc.bp_purchase_order", "po_id"
-        elif cat == "invoice":
-            m = _re.search(r"(INV[\-]?\s*[\w\-]+)", fname, _re.I)
-            if m:
-                pk_val = _re.sub(r"\s+", "", m.group(1))
-                table, pk_col = "proc.bp_invoice", "invoice_id"
-        elif cat in ("quote", "quotes"):
-            # Try QUT first, then QTE, then bare numeric
-            for pat in (r"QUT[\-\s]*([\d][\d\-]{2,})", r"QTE[\-\s]*([\d][\d\-]{2,})", r"(\d{5,})"):
-                m = _re.search(pat, fname, _re.I)
-                if m:
-                    pk_val, table, pk_col = _re.sub(r"\s+", "", m.group(1)), "proc.bp_quote", "quote_id"
-                    break
-
-        if not pk_val or not table:
-            return False  # can't determine — assume no re-extraction needed
-
-        # Allowlist guard — table and pk_col must be one of the known bp_ pairs
-        # (they are derived from hardcoded branches above, but guard defensively)
-        _ALLOWED_TABLE_PK: dict = {
-            "proc.bp_purchase_order": "po_id",
-            "proc.bp_invoice": "invoice_id",
-            "proc.bp_quote": "quote_id",
-        }
-        if _ALLOWED_TABLE_PK.get(table) != pk_col:
-            logger.warning(
-                "_data_needs_reextraction: rejected disallowed table=%r pk_col=%r",
-                table, pk_col,
-            )
+        doc_type = cls._REEXTRACT_CATEGORY.get((category or "").lower())
+        if doc_type is None:
             return False
-
+        raw_table, pk_col, held_in = cls._REEXTRACT_TABLES[doc_type]
         try:
-            cur.execute(f"SELECT 1 FROM {table} WHERE {pk_col} = %s LIMIT 1", (pk_val,))
-            return cur.fetchone() is None  # True = data missing, needs re-extraction
+            cur.execute(
+                f"SELECT {pk_col} FROM {raw_table} "
+                "WHERE process_monitor_id = %s AND promotion_status = 'promoted' "
+                f"AND {pk_col} IS NOT NULL ORDER BY extracted_at DESC NULLS LAST LIMIT 1",
+                (prior_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return False
+            for table in held_in:
+                cur.execute(f"SELECT 1 FROM {table} WHERE {pk_col} = %s LIMIT 1", (row[0],))
+                if cur.fetchone():
+                    return False
+            return True
         except Exception:
+            logger.warning("re-extraction check failed for record %s", prior_id, exc_info=True)
             return False
 
     def _mark_extracted(self, record_id: int) -> None:
@@ -307,6 +301,33 @@ class ProcessMonitorWatcher:
         finally:
             with self._processing_lock:
                 self._processing_ids.discard(record_id)
+
+    def _embed_document(self, result: Dict[str, Any]) -> None:
+        """Write this document's text into the document vector index.
+
+        The live path never did this until 2026-10-08, so /ask searched an
+        empty collection. It runs after the rows are safely in the database and
+        is the one step allowed to fail: the error is logged at ERROR and
+        /health's vector_store count shows the gap; extraction still succeeds.
+        """
+        doc_type = result.get("doc_type")
+        doc_pk = result.get("doc_pk") or result.get("pk")
+        raw_id = result.get("raw_id")
+        if not (doc_type and doc_pk and raw_id is not None):
+            return
+        try:
+            from src.services.extraction.embed import embed_document
+
+            conn = self._get_connection()
+            try:
+                cur = conn.cursor()
+                n = embed_document(self._agent_nick, cur,
+                                   doc_type=doc_type, doc_pk=doc_pk, raw_id=raw_id)
+            finally:
+                conn.close()
+            logger.info("Embedded %s %s: %d chunk(s)", doc_type, doc_pk, n)
+        except Exception:
+            logger.exception("Embedding failed for %s %s (extraction kept)", doc_type, doc_pk)
 
     def _stamp_quality_action(
         self, record_id: int, file_path: str,
@@ -449,7 +470,7 @@ class ProcessMonitorWatcher:
                             )
                             prior = cur.fetchone()
                             if prior and not self._data_needs_reextraction(
-                                cur, prior[1], prior[2] or ""
+                                cur, prior[0], prior[2] or ""
                             ):
                                 logger.info(
                                     "Content duplicate: record %s identical to %s — marking duplicate",
@@ -526,20 +547,17 @@ class ProcessMonitorWatcher:
             # writes plausible-looking rows, and nothing tells you. The losing branch is
             # gone and the flag with it.
             from src.services.extraction.dispatch import dispatch_document as _dispatch
-            doc_type_map = {
-                "invoice": "invoice", "Invoice": "invoice",
-                "purchase_order": "purchase_order", "PurchaseOrder": "purchase_order",
-                "po": "purchase_order", "PO": "purchase_order",
-                "quote": "quote", "Quote": "quote",
-                "contract": "contract", "Contract": "contract",
-            }
-            doc_type = doc_type_map.get(category, category.lower() if category else "")
-            if doc_type not in ("invoice", "purchase_order", "quote", "contract"):
-                raise RuntimeError(f"unsupported doc_type: {category!r}")
+            # The acceptable spellings come from proc.bp_document_type, not from
+            # a literal here — see src/services/concepts/routing.py. Still
+            # raises on an unrecognised category: that error is the only signal
+            # a human gets today and a permissive gate would lose it.
+            from src.services.concepts.routing import pipeline_for_category
+            doc_type, declared_concept = pipeline_for_category(category)
             result = _dispatch(
                 process_monitor_id=record_id,
                 file_path=file_path,
                 doc_type=doc_type,
+                declared_concept=declared_concept,
             )
             status = str(result.get("status", "error")).lower()
             if status in ("error", "failed"):
@@ -566,6 +584,7 @@ class ProcessMonitorWatcher:
                 )
             self._mark_extracted(record_id)
             self._stamp_quality_action(record_id, file_path, content_hash, result)
+            self._embed_document(result)
             confidence = result.get("confidence", 0)
             error_count = result.get("errors", 0)
             # Legacy v3 dispatch returns result["pk"]; the renovation
@@ -574,21 +593,16 @@ class ProcessMonitorWatcher:
             pk = result.get("pk") or result.get("doc_pk") or ""
             doc_type = result.get("doc_type") or category or ""
 
-            # AgentNick → Knowledge Graph refresh: after a successful
-            # stg promotion, push the row into Neo4j so the graph stays
-            # in lock-step with the relational truth. KG sync is a
-            # post-commit side effect — failures are logged but never
-            # propagate, since the row is already durable in stg.
-            if status == "promoted" and pk:
-                try:
-                    from src.services.extraction.kg_sync import sync_row_to_kg
-                    _kg_doc_type = result.get("doc_type") or doc_type
-                    sync_row_to_kg(self._agent_nick, _kg_doc_type, pk)
-                except Exception:
-                    logger.exception(
-                        "KG sync failed for record %s (%s pk=%s)",
-                        record_id, doc_type, pk,
-                    )
+            # KG sync used to fire here. It does not any more, and the reason is
+            # a tier, not a preference: `status == "promoted"` at this point
+            # means the row reached _stg. The graph mirrors _trgt — the final,
+            # accepted state a document is approved and transacted against — so
+            # syncing here created nodes for documents still in flight, which
+            # the reconciling rebuild then swept as absent from _trgt. The graph
+            # oscillated for exactly the documents that had not settled.
+            #
+            # It now runs from BackendScheduler._sync_promoted_to_kg, against the
+            # rows that actually reach _trgt. See services/extraction/kg_sync.py.
 
             # Contract obligations: the field extractor above read the contract's TABLES.
             # This reads its PROSE — the clauses stating who must do what, when, and what
@@ -626,40 +640,6 @@ class ProcessMonitorWatcher:
                     record_id, doc_type, pk,
                 )
 
-            # --- PRE-KG VALIDATION GATE ---
-            # Only sync to Knowledge Graph when extraction meets quality bar.
-            # Bad data must not propagate to the graph where it would affect
-            # downstream agents (ranking, opportunities, negotiation).
-            kg_eligible = True
-            if not pk:
-                logger.warning(
-                    "KG BLOCKED for record %s: missing primary key — data not synced to graph",
-                    record_id,
-                )
-                kg_eligible = False
-            elif confidence < 0.70:
-                logger.warning(
-                    "KG BLOCKED for record %s: confidence %.2f below 0.70 threshold — data not synced to graph",
-                    record_id, confidence,
-                )
-                kg_eligible = False
-            elif error_count > 2:
-                logger.warning(
-                    "KG BLOCKED for record %s: %d errors — data not synced to graph",
-                    record_id, error_count,
-                )
-                kg_eligible = False
-
-            if kg_eligible:
-                try:
-                    from services.procurement_kg_builder import ProcurementKGBuilder
-                    builder = ProcurementKGBuilder(self._agent_nick)
-                    builder.build_full_graph()
-                    builder.close()
-                    logger.info("KG synced after extraction of record %s", record_id)
-                except Exception:
-                    logger.debug("KG sync after extraction failed", exc_info=True)
-
             # --- TRAINING DATA COLLECTION ---
             # High-confidence, error-free extractions are automatically
             # collected as verified training examples for recursive fine-tuning.
@@ -673,7 +653,16 @@ class ProcessMonitorWatcher:
 
         except Exception as exc:
             logger.exception("Extraction failed for record %s", record_id)
-            _da = "unsupported" if "unsupported" in str(exc).lower() else None
+            # A refused category is "unsupported" by TYPE, not by message
+            # wording: operators and the UI read doc_action, and a reworded
+            # refusal must not silently change it.
+            from src.services.concepts.routing import (
+                AmbiguousDocumentCategory, UnknownDocumentCategory,
+            )
+            if isinstance(exc, (UnknownDocumentCategory, AmbiguousDocumentCategory)):
+                _da = "unsupported"
+            else:
+                _da = "unsupported" if "unsupported" in str(exc).lower() else None
             self._mark_failed(record_id, str(exc), doc_action=_da)
 
     def _collect_training_example(

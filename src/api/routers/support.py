@@ -10,6 +10,9 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse
 
+from api.auth import require_user
+from services import rbac
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/support", tags=["Support"])
@@ -29,10 +32,20 @@ class SupportRequest(BaseModel):
     session_id: Optional[str] = None
 
 
+def _ticket_email(principal: Any, typed: Optional[str]) -> Optional[str]:
+    """The address a ticket is raised under: the token's, and the typed one only with sign-in off.
+
+    ``list_tickets`` shows a person the tickets stored under their address, so a
+    typed address here would let one person raise, and then read, as another.
+    """
+    return getattr(principal, "email", None) or typed
+
+
 @router.post("/contact")
 async def contact_support(
     req: SupportRequest,
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ) -> Dict[str, Any]:
     """Greet the user, try to solve their problem, and escalate if it can't.
 
@@ -50,7 +63,7 @@ async def contact_support(
         agent.handle,
         req.message,
         user_name=req.user_name,
-        user_email=req.user_email,
+        user_email=_ticket_email(principal, req.user_email),
         session_id=req.session_id,
     )
 
@@ -59,6 +72,7 @@ async def contact_support(
 async def contact_support_stream(
     req: SupportRequest,
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ):
     """The same support agent, streamed as SSE.
 
@@ -86,7 +100,7 @@ async def contact_support_stream(
             result = SupportAgent(agent_nick).handle_stream(
                 req.message,
                 user_name=req.user_name,
-                user_email=req.user_email,
+                user_email=_ticket_email(principal, req.user_email),
                 session_id=req.session_id,
                 emit=_emit,
             )
@@ -130,6 +144,7 @@ def confirm_support(
     reference: str,
     body: ConfirmRequest,
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ) -> Dict[str, Any]:
     """Did the guidance actually fix it?
 
@@ -149,21 +164,39 @@ def confirm_support(
 
 
 @router.get("/tickets")
-def list_tickets(agent_nick=Depends(get_agent_nick), limit: int = 25) -> Dict[str, Any]:
-    """Open support tickets, so escalations are visible rather than only emailed."""
+def list_tickets(
+    agent_nick=Depends(get_agent_nick),
+    limit: int = 25,
+    principal=Depends(require_user),
+) -> Dict[str, Any]:
+    """Open support tickets, so escalations are visible rather than only emailed.
+
+    An Admin sees every ticket. Anyone else sees the ones raised under their own
+    address: a ticket carries its author's name, email and message, and those
+    were listed to every signed-in caller. No principal means sign-in is
+    switched off, and the list is whole as it was.
+    """
+    owner: Optional[str] = None
+    if principal is not None and rbac.effective_role(principal) != "Admin":
+        owner = (getattr(principal, "email", None) or "").strip().lower()
+        if not owner:
+            return {"count": 0, "tickets": []}
+    where = "WHERE lower(user_email) = %s" if owner else ""
+    params: tuple = ((owner,) if owner else ()) + (max(1, min(limit, 200)),)
     rows: List[Dict[str, Any]] = []
     try:
         with agent_nick.get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
+                    f"""
                     SELECT reference, user_name, user_email, message, outcome,
                            email_status, status, created_at
                     FROM proc.bp_support_ticket
+                    {where}
                     ORDER BY created_at DESC
                     LIMIT %s
                     """,
-                    (max(1, min(limit, 200)),),
+                    params,
                 )
                 cols = [d[0] for d in cur.description]
                 rows = [dict(zip(cols, r)) for r in cur.fetchall()]

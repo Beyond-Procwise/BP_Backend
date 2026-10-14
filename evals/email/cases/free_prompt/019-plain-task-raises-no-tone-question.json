@@ -1,0 +1,63 @@
+{
+ "id": "019-plain-task-raises-no-tone-question",
+ "family": "free_prompt",
+ "description": "'Confirm the price' is a task, not a tone request.",
+ "run": {
+  "path": "prompt",
+  "request": "Please ask Acme to confirm the price on PO-77123 and reply within the week",
+  "payload": {
+   "supplier_id": "S-1",
+   "workflow_id": "wf-1",
+   "recipients": [
+    "alex@acme.test"
+   ]
+  }
+ },
+ "model": {
+  "compose": "Subject: Price confirmation\nDear Alex Morgan,\n\nCould you please confirm the price on PO-77123 within the week?\n\nKind regards,\nProcurement Team",
+  "classify": {
+   "family_id": "free_prompt",
+   "confidence": 0.9,
+   "candidates": [
+    {
+     "family_id": "free_prompt",
+     "confidence": 0.9
+    },
+    {
+     "family_id": "negotiation_counter",
+     "confidence": 0.1
+    }
+   ],
+   "lookup_keys": {
+    "po_number": "PO-77123"
+   },
+   "user_instruction": "ask Acme to confirm the price"
+  },
+  "plan": {
+   "goal": "Get the price on PO-77123 confirmed",
+   "key_points": [
+    "Confirm the price"
+   ],
+   "explicit_ask": "Confirm the price",
+   "deadline": "within the week",
+   "tone_rationale": "Courteous",
+   "risks_to_avoid": [],
+   "reasoned": {},
+   "assumptions": []
+  },
+  "judge": {
+   "scores": {
+    "completeness": 4,
+    "clarity_of_ask": 5,
+    "tone_fit": 4,
+    "concision": 4
+   },
+   "rationale": "fine"
+  }
+ },
+ "expect": {
+  "rec.assumption_items[*].id": {
+   "lacks": "tone:instruction"
+  }
+ }
+}

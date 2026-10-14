@@ -567,8 +567,38 @@ class SupportAgent:
         except Exception:
             logger.exception("failed to update support ticket email status")
 
+    @staticmethod
+    def _admin_is_internal() -> bool:
+        """True when SUPPORT_ADMIN_EMAIL is on our own sending domain.
+
+        This body carries the user's verbatim message and the assistant's reply
+        — their words, their email address, and whatever commercial detail they
+        pasted in to describe the problem. The default for SUPPORT_ADMIN_EMAIL
+        is a personal gmail.com address, so an unconfigured deployment mails all
+        of that to a third-party consumer mailbox.
+
+        No sending domain configured means we cannot tell internal from
+        external, and the escalation does not go. Failing the other way turns a
+        missing environment variable into an export of user support content.
+        """
+        sender = os.getenv("SES_DEFAULT_SENDER", "").strip()
+        domain = sender.partition("@")[2].strip().lower()
+        if not domain:
+            return False
+        return _ADMIN_EMAIL.partition("@")[2].strip().lower() == domain
+
     def _notify_admin(self, **kw: Any) -> tuple[str, Optional[str]]:
         """Email the admin. Returns (status, error)."""
+        if not self._admin_is_internal():
+            logger.warning(
+                "support escalation %s not emailed: SUPPORT_ADMIN_EMAIL (%s) is "
+                "not on the sending domain. The ticket row is written either "
+                "way, so nothing is lost — but the user's message is not sent "
+                "off-domain.",
+                kw.get("reference"), _ADMIN_EMAIL,
+            )
+            return "skipped", "admin address is not on the sending domain"
+
         subject = f"[ProcWise support] {kw['reference']} — {kw['summary'][:70]}"
         body = (
             f"A user has contacted support and the assistant could not resolve it.\n\n"

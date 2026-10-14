@@ -119,12 +119,20 @@ def compile_graph(name: str, graph: Dict[str, Any]) -> WorkflowGraph:
     )
     for n in nodes:
         defn = known[n["agent_slug"]]
+        # A canvas-made agent (catalogue entry with "derived_from") carries human
+        # instructions, so it reasons with tools; its answer is what the next
+        # step needs to see. A built-in agent keeps its own deterministic logic.
+        derived = bool(defn.get("derived_from"))
+        outputs = list(defn.get("outputs") or [])
+        if derived and "answer" not in outputs:
+            outputs.append("answer")
         wf.add_node(
             WorkflowNode(
                 name=n["id"],
                 agent_type=n["agent_slug"],
                 # Publish everything this agent declares, so downstream nodes can consume it.
-                output_to_shared=list(defn.get("outputs") or []),
+                output_to_shared=outputs,
+                tool_loop=derived,
             )
         )
     for e in edges:

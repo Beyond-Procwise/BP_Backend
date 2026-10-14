@@ -235,6 +235,23 @@ def test_negotiation_agent_composes_counter(monkeypatch):
             ],
             "supplier_performance": {"on_time_delivery": 0.82},
             "market_context": {"supply_risk": "high"},
+            # A counter is a commitment, so the agent will not name a price
+            # without a mandate that covers it (see _apply_authority). The
+            # orchestrator injects this block; supplying it here is what the
+            # production path does, and the quantity is what makes the
+            # commitment computable: 1 x 1250 USD against a 1,000,000 limit.
+            "quantity": 1,
+            "authority": {
+                "negotiation_agent": {
+                    "agent": "negotiation_agent",
+                    "governed": True,
+                    "policy_id": 7,
+                    "policy_name": "EmailReplyAutonomyPolicy",
+                    "limit_gbp": "1000000",
+                    "limit_currency": "USD",
+                    "reason": "resolved from governed policy",
+                }
+            },
         },
     )
 

@@ -10,8 +10,10 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+
+from api.auth import require_user
 
 # The public catalogue loader, not orchestration.workflow_compiler._known_agents.
 # That underscore-prefixed helper is workflow_compiler's own private convenience
@@ -92,18 +94,22 @@ def list_groups() -> Dict[str, Any]:
 
 
 @router.post("")
-def create_group(body: GroupBody) -> Dict[str, Any]:
+def create_group(body: GroupBody, principal=Depends(require_user)) -> Dict[str, Any]:
     _validate(body.members, body.links)
     gid = repo.create(
         name=body.name,
         members=[m.model_dump() for m in body.members],
         links=[e.model_dump() for e in body.links],
+        # The token, or nobody. The repo's default was the literal "system",
+        # written into created_by as though it named somebody.
+        created_by=getattr(principal, "subject", None) or None,
     )
     return {"group_id": gid}
 
 
 @router.put("/{group_id}")
-def update_group(group_id: int, body: GroupPatch) -> Dict[str, Any]:
+def update_group(group_id: int, body: GroupPatch,
+                 principal=Depends(require_user)) -> Dict[str, Any]:
     """A partial update validates only what was actually supplied.
 
     A PUT touching only ``links`` must still work -- it does not re-supply
@@ -137,6 +143,6 @@ def update_group(group_id: int, body: GroupPatch) -> Dict[str, Any]:
 
 
 @router.delete("/{group_id}")
-def delete_group(group_id: int) -> Dict[str, Any]:
+def delete_group(group_id: int, principal=Depends(require_user)) -> Dict[str, Any]:
     repo.soft_delete(group_id)
     return {"ok": True}

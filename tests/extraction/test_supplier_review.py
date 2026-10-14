@@ -53,7 +53,7 @@ def test_close_call_creates_review():
     seed_name = f"{PFX} Widgets Solutions Ltd"
     variant = f"{PFX} Widgets Solution Ltd"  # 'Solutions' -> 'Solution'
     score = fuzz.WRatio(SR._strip_biz_suffix(variant), SR._strip_biz_suffix(seed_name))
-    assert SR._REVIEW_LOW <= score < SR._REVIEW_HIGH, f"variant not in review band (score={score})"
+    assert SR._REVIEW_LOW() <= score < SR._REVIEW_HIGH(), f"variant not in review band (score={score})"
 
     _seed_supplier(f"SUP-{PFX}Widgets", seed_name)
     with get_conn() as c:

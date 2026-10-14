@@ -12,9 +12,12 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
-from src.services.deal_lifecycle import promote_deal, save_reference
+from api.auth import require_user
+from pydantic import BaseModel, Field
+
+from src.services.deal_lifecycle import promote_deal, save_deal, save_reference
 from src.services.reconciliation import reconcile_deal
 
 _NOT_AVAILABLE = "Summary not available"
@@ -51,8 +54,17 @@ def get_deal_summary(deal_id: str) -> dict[str, Any]:
     stored, respond 200 with a "Summary not available" message instead of
     regenerating or erroring."""
     from src.services.db import get_conn
+    from src.services.session_postprocess import refresh_session_summary
     try:
         with get_conn() as conn:
+            # A draft (upload) summary is re-rendered from today's facts before it is
+            # read, so a finding resolved or a proposal confirmed since the upload is
+            # reflected. Best-effort: on failure the stored text is served as before.
+            try:
+                refresh_session_summary(conn, deal_id)
+            except Exception:  # noqa: BLE001
+                logger.exception("session summary refresh failed for %s", deal_id)
+                conn.rollback()
             cur = conn.cursor()
             cur.execute(
                 "select summary, model, generated_at "
@@ -120,7 +132,7 @@ def get_analysis_summary(deal_id: str) -> dict[str, Any]:
 
 
 @router.post("/analysis-summary/sync", summary="Backfill analysis summaries for all linked deals")
-def post_analysis_summary_sync() -> dict[str, Any]:
+def post_analysis_summary_sync(principal=Depends(require_user)) -> dict[str, Any]:
     from src.services.deal_analysis_service import sync_deal_summaries
     try:
         result = sync_deal_summaries()
@@ -132,7 +144,7 @@ def post_analysis_summary_sync() -> dict[str, Any]:
 
 
 @router.post("/{deal_id}/reconcile", summary="Reconcile a deal's documents")
-def post_deal_reconcile(deal_id: str) -> dict[str, Any]:
+def post_deal_reconcile(deal_id: str, principal=Depends(require_user)) -> dict[str, Any]:
     try:
         result = reconcile_deal(deal_id)
     except Exception as exc:  # DB or unexpected error
@@ -145,7 +157,7 @@ def post_deal_reconcile(deal_id: str) -> dict[str, Any]:
 
 
 @router.post("/{deal_id}/promote", summary="Commit a draft analysis into a tracked Pipeline deal")
-def post_promote_deal(deal_id: str) -> dict:
+def post_promote_deal(deal_id: str, principal=Depends(require_user)) -> dict:
     try:
         promote_deal(deal_id)
     except Exception as exc:  # noqa: BLE001
@@ -154,8 +166,27 @@ def post_promote_deal(deal_id: str) -> dict:
     return {"status": "ok", "deal_id": deal_id, "is_tracked": True}
 
 
+class DealSaveIn(BaseModel):
+    name: str = Field(max_length=200)
+
+
+@router.post("/{deal_id}/save", summary="Name a deal and confirm it as a tracked deal")
+def post_save_deal(deal_id: str, body: DealSaveIn, principal=Depends(require_user)) -> dict:
+    try:
+        save_deal(deal_id, body.name, actor=getattr(principal, "subject", None))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("save failed for %s", deal_id)
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"status": "ok", "deal_id": deal_id, "name": " ".join(body.name.split()),
+            "is_tracked": True}
+
+
 @router.post("/{deal_id}/save-reference", summary="Keep an analysis as a saved (untracked) reference")
-def post_save_reference(deal_id: str) -> dict:
+def post_save_reference(deal_id: str, principal=Depends(require_user)) -> dict:
     try:
         save_reference(deal_id)
     except Exception as exc:  # noqa: BLE001

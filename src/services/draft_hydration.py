@@ -49,6 +49,10 @@ DRAFT_COLUMNS = (
     "run_id",
     "unique_id",
     "mailbox",
+    # Who asked for this draft, when a person did (P3). The approvals surface
+    # compares it with the approver to refuse self-approval, so it has to
+    # survive the hydration that every read of a draft goes through.
+    "requested_by",
     "dispatch_run_id",
     "dispatched_at",
     "attachments",
@@ -126,6 +130,15 @@ def hydrate_draft(row: Mapping[str, Any], *, default_sender: Optional[str] = Non
     }
     for key, value in defaults.items():
         hydrated.setdefault(key, value)
+
+    # The ONE field where the column beats the payload, and deliberately so.
+    # Everything above is payload-over-columns because the send path transmits
+    # the payload (C2). `requested_by` is not transmitted — it decides an
+    # authorization outcome, whether the approver is the person who asked — so
+    # it is read from the column the migration guarantees. A payload claiming a
+    # different requester would otherwise be able to talk its way past the
+    # self-approval bar by naming somebody else.
+    hydrated["requested_by"] = row.get("requested_by")
 
     if sent_on and "sent_on" not in hydrated:
         hydrated["sent_on"] = (

@@ -307,11 +307,13 @@ def _train_model(cfg: TrainConfig, dataset_path: Path) -> Optional[Path]:
             f"Training dependencies missing: {exc}"
         ) from exc
 
-    logger.info("Training model %s with adapter output to %s", cfg.base_model, cfg.output_dir)
-    # Actual training delegated to transformers/unsloth stack
-    if cfg.output_dir:
-        cfg.output_dir.mkdir(parents=True, exist_ok=True)
-    return cfg.output_dir
+    raise NotImplementedError(
+        "LoRA fine-tuning is not implemented. This function used to log "
+        "'Training model', create the output directory and return it, so a "
+        "caller received a path that looked like a trained adapter and was in "
+        "fact the base model untouched. Refusing is the honest answer until "
+        "training is real. See specs/2026-09-26-honest-measurement-design.md."
+    )
 
 
 def _merge_adapters(cfg: MergeConfig) -> Optional[Path]:
@@ -319,23 +321,17 @@ def _merge_adapters(cfg: MergeConfig) -> Optional[Path]:
     if not cfg.adapter_path or not cfg.adapter_path.exists():
         logger.warning("Adapter path not found; skipping merge")
         return None
-    logger.info("Merging adapters from %s into %s", cfg.adapter_path, cfg.output_dir)
-    if cfg.output_dir:
-        cfg.output_dir.mkdir(parents=True, exist_ok=True)
-    return cfg.output_dir
+    raise NotImplementedError(
+        "Adapter merging is not implemented; it created an output directory and "
+        "returned it without merging anything."
+    )
 
 
 def _convert_gguf(cfg: GGUFConfig) -> tuple:
     """Convert merged model to GGUF format and optionally quantize."""
-    gguf_path = None
-    quantized_path = None
-    if cfg.llama_cpp_dir and cfg.hf_model_dir:
-        logger.info("Converting to GGUF: %s -> %s", cfg.hf_model_dir, cfg.gguf_output)
-        gguf_path = cfg.gguf_output
-        if cfg.quantize and cfg.quantized_output:
-            logger.info("Quantizing to %s: %s", cfg.quantize, cfg.quantized_output)
-            quantized_path = cfg.quantized_output
-    return gguf_path, quantized_path
+    raise NotImplementedError(
+        "GGUF conversion is not implemented; it reported paths it never wrote."
+    )
 
 
 def run_full_pipeline(config: PipelineRunConfig) -> PipelineResult:

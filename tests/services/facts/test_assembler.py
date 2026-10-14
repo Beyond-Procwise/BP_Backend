@@ -178,6 +178,65 @@ def test_an_absent_uom_is_recorded_as_unstated_not_guessed():
         "the sentinel must not collide with a real unit"
 
 
+def _line_desc(desc, uom=None, **kw):
+    row = _line(uom=uom, **kw)
+    row[3] = desc  # item_description
+    return row
+
+
+def test_a_period_in_the_description_rescues_an_absent_uom():
+    """'HR Advisory & Employment Law Retainer (Quarterly)' is billed per
+    quarter, with the deliverable noun (or nothing) in the unit column. Without
+    this the line is an incomparable lump sum."""
+    from src.services.facts.uom import BASIS_FROM_DESCRIPTION
+    facts = _assemble(
+        [_line_desc("HR Advisory & Employment Law Retainer (Quarterly)")],
+        [_prov_row(0, "unit_price", "86.94")])
+    f = facts[0]
+    assert f.basis_uom == "quarter"
+    assert BASIS_FROM_DESCRIPTION in f.reason_codes
+    assert UOM_ABSENT not in f.reason_codes
+
+
+def test_a_period_in_the_description_rescues_an_unmappable_uom():
+    from src.services.facts.uom import BASIS_FROM_DESCRIPTION
+    facts = _assemble(
+        [_line_desc("Payroll Managed Service (Quarterly)", uom="retainer")],
+        [_prov_row(0, "unit_price", "86.94")])
+    f = facts[0]
+    assert f.basis_uom == "quarter"
+    assert BASIS_FROM_DESCRIPTION in f.reason_codes
+    # the column was still not a unit, and being rescued does not make it one
+    assert "UOM_UNMAPPED" in f.reason_codes
+    assert f.uom == "retainer"
+    assert f.uom_normalised is None
+
+
+def test_a_stated_unit_is_never_overridden_by_the_description():
+    """One product row carries unit_of_measure 'month' against a description
+    saying '(Quarterly)'. The column is the more direct statement, and letting
+    prose win over it would rewrite what the document said."""
+    from src.services.facts.uom import BASIS_FROM_DESCRIPTION
+    facts = _assemble(
+        [_line_desc("HR Advisory & Employment Law Retainer (Quarterly)", uom="month")],
+        [_prov_row(0, "unit_price", "86.94")])
+    f = facts[0]
+    assert f.basis_uom == "month"
+    assert BASIS_FROM_DESCRIPTION not in f.reason_codes
+
+
+def test_a_duration_in_the_description_is_not_treated_as_a_basis():
+    """'Enterprise Licence - 12 months' is a term length, not a rate."""
+    from src.services.facts.uom import BASIS_FROM_DESCRIPTION
+    facts = _assemble(
+        [_line_desc("Digital Learning Platform (Enterprise Licence - 12 months)")],
+        [_prov_row(0, "unit_price", "86.94")])
+    f = facts[0]
+    assert BASIS_FROM_DESCRIPTION not in f.reason_codes
+    assert f.basis_uom == BASIS_UOM_UNSTATED
+    assert UOM_ABSENT in f.reason_codes
+
+
 def test_a_non_gbp_line_stamps_the_rate_date_and_source():
     facts = _assemble([_line()], [_prov_row(0, "unit_price", "86.94")],
                       header=["INV-1", "USD", "SUP-1", "BUY-1", None, None, "DOC-1"],

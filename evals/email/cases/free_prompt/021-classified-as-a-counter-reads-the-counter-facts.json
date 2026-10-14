@@ -1,0 +1,62 @@
+{
+ "id": "021-classified-as-a-counter-reads-the-counter-facts",
+ "family": "free_prompt",
+ "description": "Free text classified as a negotiation counter resolves that family's facts from Postgres.",
+ "run": {
+  "path": "prompt",
+  "request": "Counter Acme's offer at 44.80",
+  "payload": {
+   "supplier_id": "S-1",
+   "workflow_id": "wf-1",
+   "recipients": [
+    "alex@acme.test"
+   ],
+   "response_deadline": "30 October 2026"
+  }
+ },
+ "model": {
+  "compose": "Subject: Counter\nDear Alex Morgan,\n\nThank you for your offer of 47.50 GBP. Could you please agree 44.80 GBP?\n\nKind regards,\nProcurement Team",
+  "classify": {
+   "family_id": "negotiation_counter",
+   "confidence": 0.9,
+   "candidates": [
+    {
+     "family_id": "negotiation_counter",
+     "confidence": 0.9
+    },
+    {
+     "family_id": "free_prompt",
+     "confidence": 0.1
+    }
+   ],
+   "lookup_keys": {},
+   "user_instruction": "Counter Acme's offer at 44.80"
+  },
+  "plan": {
+   "goal": "Counter the offer",
+   "key_points": [
+    "Counter at 44.80"
+   ],
+   "explicit_ask": "Agree 44.80",
+   "deadline": null,
+   "tone_rationale": "Courteous",
+   "risks_to_avoid": [],
+   "reasoned": {},
+   "assumptions": []
+  },
+  "judge": {
+   "scores": {
+    "completeness": 4,
+    "clarity_of_ask": 5,
+    "tone_fit": 4,
+    "concision": 4
+   },
+   "rationale": "fine"
+  }
+ },
+ "expect": {
+  "rec.family_id": "negotiation_counter",
+  "rec.family_source": "classified",
+  "rec.facts.supplier_current_offer.row_id": "2"
+ }
+}

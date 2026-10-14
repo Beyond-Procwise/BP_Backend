@@ -5,12 +5,29 @@ and services can rely on a single, consistent configuration.  The
 ``configure_gpu`` function is idempotent – it will apply settings only
 once and return the detected device (``"cuda"`` or ``"cpu"``).
 
-The module also exposes :func:`load_cross_encoder` which initialises
-``sentence_transformers`` cross encoders with a graceful fallback for the
-``meta`` tensor initialisation error introduced in newer versions of
-PyTorch.  When this happens the model is first constructed on CPU and
-then moved to the requested GPU, ensuring that GPU acceleration remains
-available without crashing the agent.
+The module also exposes :func:`load_cross_encoder`, which initialises
+``sentence_transformers`` cross encoders with two distinct fallbacks.  They
+end in different places, and the difference is the point:
+
+``meta`` tensor initialisation error
+    A PyTorch-version quirk, not a capacity problem.  The model is built on
+    CPU and then **moved to the requested GPU**, so GPU acceleration is
+    retained.
+
+out of memory
+    The card is genuinely full — usually because another process legitimately
+    owns it; on this host Ollama's runner holds 19.5 GiB of 23 GiB for the
+    model every agent depends on.  The model is built on CPU and **stays
+    there**, because moving it back is the OOM again.  Reranking is slower;
+    slower is not broken.  Before this existed the OOM propagated out of
+    ``RAGPipeline`` into the API lifespan's outer ``except Exception``, which
+    nulls ``agent_nick``, the orchestrator, the agent registry and eleven other
+    pieces of state and then serves requests anyway — so one optional reranker
+    cost the whole system a degraded boot, announced only by a CRITICAL line.
+
+Note that the CPU retry must suspend the process-global default device that
+``configure_gpu`` installs; see :func:`_construct_on_cpu` for why passing
+``device="cpu"`` alone is not enough.
 """
 
 from __future__ import annotations
@@ -72,6 +89,45 @@ def configure_gpu() -> str:
     return _DEVICE
 
 
+#: What "the GPU is full" looks like. ``torch.OutOfMemoryError`` is a
+#: ``RuntimeError`` subclass and older PyTorch raised the bare parent with the
+#: reason only in the message, so both are recognised. Anything else propagates
+#: -- a wrong model name must still be an error, not a silent CPU load.
+_OUT_OF_MEMORY_ERRORS: tuple = tuple(
+    err for err in (
+        getattr(torch, "OutOfMemoryError", None) if torch is not None else None,
+        getattr(getattr(torch, "cuda", None), "OutOfMemoryError", None)
+        if torch is not None else None,
+    ) if isinstance(err, type)
+) or (RuntimeError,)
+
+
+def _brief(exc: BaseException) -> str:
+    """First sentence of a torch OOM message; they run to a full paragraph."""
+    return str(exc).split(".")[0][:120]
+
+
+def _construct_on_cpu(cross_encoder_cls: Any, model_name: str):
+    """Build the encoder on the CPU, with the global default device suspended.
+
+    ``configure_gpu`` calls ``torch.set_default_device("cuda")`` process-wide,
+    and that alone is enough to defeat a CPU fallback: transformers resolves a
+    CUDA device map from the ambient default and warms its allocator there, so
+    ``cross_encoder_cls(model_name, device="cpu")`` **still raises
+    OutOfMemoryError**. Verified against BAAI/bge-reranker-large on a full card
+    before this helper was written -- passing ``device="cpu"`` on its own is not
+    a fallback, it is the same crash one argument later.
+
+    ``torch.device`` as a context manager overrides that default for the
+    duration of the construction, which is what makes the retry actually land
+    on the CPU.
+    """
+    if torch is None:  # pragma: no cover - torch is optional at import time
+        return cross_encoder_cls(model_name, device="cpu")
+    with torch.device("cpu"):
+        return cross_encoder_cls(model_name, device="cpu")
+
+
 def load_cross_encoder(
     model_name: str,
     cross_encoder_cls: Any,
@@ -112,6 +168,28 @@ def load_cross_encoder(
 
     try:
         encoder = cross_encoder_cls(model_name, device=target_device)
+        _CROSS_ENCODER_CACHE[cache_key] = encoder
+        return encoder
+    except _OUT_OF_MEMORY_ERRORS as exc:
+        # The card is full. Almost always because something else legitimately
+        # owns it -- on this host Ollama's runner holds 19.5 GiB of 23 GiB for
+        # the model every agent depends on, leaving ~1.1 GiB against this
+        # reranker's 2.07 GiB.
+        #
+        # Before this branch existed the OOM propagated out of RAGPipeline into
+        # lifespan's outer `except Exception`, which nulls agent_nick, the
+        # orchestrator, the agent registry and eleven other pieces of state and
+        # serves requests anyway. An optional reranker is not worth a degraded
+        # API: reranking on CPU is slower, and slower is not broken.
+        logger.warning(
+            "Cross encoder %s did not fit on %s (%s); loading on CPU instead. "
+            "Reranking will be slower until the GPU has room.",
+            model_name, target_device, _brief(exc),
+        )
+        encoder = _construct_on_cpu(cross_encoder_cls, model_name)
+        # Cached under the *requested* device, deliberately: the next caller
+        # asking for cuda gets this CPU encoder rather than paying the OOM
+        # again. A process restart is what re-tries the GPU.
         _CROSS_ENCODER_CACHE[cache_key] = encoder
         return encoder
     except NotImplementedError as exc:  # pragma: no cover - hardware dependent

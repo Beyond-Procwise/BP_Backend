@@ -212,6 +212,31 @@ def resolve_roles(
     return resolved
 
 
+def role_basis(principal: Optional[Any], policy_engine: Optional[Any] = None) -> Dict[str, List[str]]:
+    """What a principal's role was resolved FROM: the groups on the sign-in, and any direct grant.
+
+    For the record of a refusal. "Role Viewer may not ..." cannot be acted on without
+    knowing whether the sign-in carried the wrong groups, none, or ones the mapping
+    does not know. Group names only: nothing else from the token is returned. Never raises.
+    """
+
+    try:
+        rules = _rules(_ROLE_ASSIGNMENT_SLUG, policy_engine)
+        claim = str(rules.get("claim") or "cognito:groups")
+        claims = getattr(principal, "claims", None)
+        raw = claims.get(claim) if isinstance(claims, dict) else None
+        if isinstance(raw, str):
+            groups = [raw]
+        elif isinstance(raw, (list, tuple, set)):
+            groups = [str(g) for g in raw]
+        else:
+            groups = []
+        subject = getattr(principal, "subject", None)
+        return {"groups": groups, "direct_grants": list(_direct_roles(subject)) if subject else []}
+    except Exception:  # noqa: BLE001 - describing a refusal must never become a second failure
+        return {"groups": [], "direct_grants": []}
+
+
 def effective_role(
     principal: Optional[Any], policy_engine: Optional[Any] = None
 ) -> str:

@@ -17,6 +17,7 @@ from pydantic import BaseModel, EmailStr, Field, field_validator, model_validato
 
 from orchestration.orchestrator import Orchestrator
 from api.auth import require_user
+from api.endpoint_gate import require as gate
 from services.model_selector import RAGPipeline
 from services.opportunity_service import record_opportunity_feedback
 from services.email_dispatch_service import EmailDispatchService
@@ -26,8 +27,6 @@ from agents.email_drafting_agent import EmailDraftingAgent
 
 # Ensure GPU-related environment variables are set
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
-os.environ.setdefault("OLLAMA_USE_GPU", "1")
-os.environ.setdefault("OLLAMA_NUM_PARALLEL", "4")
 os.environ.setdefault("OMP_NUM_THREADS", "8")
 
 
@@ -68,8 +67,30 @@ class AskRequest(BaseModel):
         "user is currently viewing). Folded into the same redacted ad-hoc context slot as "
         "uploaded-file notes.",
     )
+    display_currency: Optional[str] = Field(
+        default=None,
+        max_length=12,
+        description="The currency the reader has selected on screen (the control on "
+        "Procurement Home's top bar), or 'native' for as-billed. An analytic answer is "
+        "stated in it, converted from the same rate batch GET /fx/rates serves the client, "
+        "so a figure in the answer and the same figure on the tile beside it agree.",
+    )
+    persona: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description="Who is reading — cpo, category manager, finance. Orders the next "
+        "steps offered under an analytic answer; ignored elsewhere.",
+    )
+    action_id: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description="A next step the reader clicked, dispatched by id (e.g. "
+        "analytic.supplier_concentration). The chip's label is not a question and must "
+        "not be re-parsed as one; the id names the answer that was offered.",
+    )
 
-    @field_validator("doc_type", "product_type", "file_path", "session_id", "context", mode="before")
+    @field_validator("doc_type", "product_type", "file_path", "session_id", "context",
+                     "display_currency", "persona", "action_id", mode="before")
     @classmethod
     def _empty_to_none(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
@@ -193,6 +214,18 @@ class AgentType(BaseModel):
     # decide which agent cards get a delete control -- built-ins can't be
     # deleted via DELETE /agents/{slug} and shouldn't invite the attempt.
     derived_from: Optional[str] = None
+    # "draft" while a created agent can be run only by the person who made it;
+    # "published" once someone else has released it. None for built-in agents
+    # and for agents created before drafts existed, which are all published.
+    stage: Optional[str] = None
+    created_by: Optional[str] = None
+    # Whose draft it is after an edit; that person cannot be the one to publish it.
+    draft_by: Optional[str] = None
+    # What a created agent was given, so the edit console can show it as it
+    # is rather than as blank: its tools (None = not narrowed, [] = none) and
+    # the outputs it was defined to return ([{name, description}]).
+    tools: Optional[List[str]] = None
+    output_spec: Optional[List[Dict[str, Any]]] = None
 
 
 class OpportunityRejectionRequest(BaseModel):
@@ -835,6 +868,16 @@ async def build_email_dispatch_request(request: Request) -> EmailDispatchRequest
 # Endpoints
 # ---------------------------------------------------------------------------
 
+def _asker(principal: Any, typed: Optional[str]) -> Optional[str]:
+    """Whose question this is: the token's subject, and the typed name only with sign-in off.
+
+    The history a question is filed under is keyed by this. The UI's default for
+    the typed field is the constant ``ui``, so keyed by that every signed-in
+    person shared one history, and each one's questions were the next one's context.
+    """
+    return getattr(principal, "subject", None) or typed
+
+
 @router.post("/ask")
 async def ask_question(
     req: AskRequest,
@@ -866,19 +909,23 @@ async def ask_question(
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Could not read file: {exc}")
 
+    asker = _asker(principal, req.user_id)
     header_session = _clean(request.headers.get("x-session-id"))
-    resolved_session = _clean(req.session_id) or header_session or _clean(req.user_id)
+    resolved_session = _clean(req.session_id) or header_session or _clean(asker)
 
     result = await run_in_threadpool(
         pipeline.answer_question,
         query=req.query,
-        user_id=req.user_id,
+        user_id=asker,
         session_id=resolved_session,
         model_name=req.model_name,
         files=file_data or None,
         doc_type=req.doc_type,
         product_type=req.product_type,
         screen_context=req.context,
+        display_currency=req.display_currency,
+        persona=req.persona,
+        action_id=req.action_id,
     )
     return result
 
@@ -915,7 +962,8 @@ async def ask_question_stream(
     _DONE = object()
 
     header_session = (request.headers.get("x-session-id") or "").strip() or None
-    resolved_session = req.session_id or header_session or req.user_id
+    asker = _asker(principal, req.user_id)
+    resolved_session = req.session_id or header_session or asker
 
     def _on_event(kind: str, payload: Dict[str, Any]) -> None:
         events.put({"type": kind, **payload})
@@ -924,12 +972,15 @@ async def ask_question_stream(
         try:
             result = pipeline.answer_question(
                 query=req.query,
-                user_id=req.user_id,
+                user_id=asker,
                 session_id=resolved_session,
                 model_name=req.model_name,
                 doc_type=req.doc_type,
                 product_type=req.product_type,
                 screen_context=req.context,
+                display_currency=req.display_currency,
+                persona=req.persona,
+                action_id=req.action_id,
                 on_event=_on_event,
             )
             events.put(
@@ -938,6 +989,9 @@ async def ask_question_stream(
                     "answer": result.get("answer") or "",
                     "follow_ups": result.get("follow_ups") or [],
                     "retrieved_documents": result.get("retrieved_documents") or [],
+                    # An analytic answer's steps: an action and the ids it
+                    # applies to, so a chip dispatches rather than re-asks.
+                    "next_steps": result.get("next_steps") or [],
                 }
             )
         except Exception as exc:  # noqa: BLE001
@@ -975,6 +1029,7 @@ async def ask_question_stream(
 def rank_suppliers(
     req: RankingRequest,
     orchestrator: Orchestrator = Depends(get_orchestrator),
+    principal=Depends(require_user),
 ):
     # Use execute_ranking_flow which derives criteria from the query text
     # before calling execute_workflow. This satisfies the policy engine's
@@ -986,20 +1041,28 @@ def rank_suppliers(
 def evaluate_quotes(
     req: QuoteEvaluationRequest,
     orchestrator: Orchestrator = Depends(get_orchestrator),
+    principal=Depends(require_user),
 ):
     """Evaluate and compare supplier quotes."""
-    return orchestrator.execute_workflow("quote_evaluation", req.model_dump())
+    return orchestrator.execute_workflow("quote_evaluation", req.model_dump(),
+                                         user_id=_started_by(principal))
 
 
 @router.post("/opportunities")
 def mine_opportunities(
     req: OpportunityMiningRequest,
     orchestrator: Orchestrator = Depends(get_orchestrator),
+    principal=Depends(require_user),
 ):
     prs = orchestrator.agent_nick.process_routing_service
+    # A person started this run; without the principal the service filled
+    # created_by with settings.script_user ("AgentNick").
+    subject = getattr(principal, "subject", None) or None
     process_id = prs.log_process(
         process_name="opportunity_mining",
         process_details=req.model_dump(),
+        created_by=subject,
+        user_id=subject,
     )
     if process_id is None:
         raise HTTPException(status_code=500, detail="Failed to log process")
@@ -1012,7 +1075,7 @@ def mine_opportunities(
     )
     try:
         result = orchestrator.execute_workflow(
-            "opportunity_mining", req.model_dump()
+            "opportunity_mining", req.model_dump(), user_id=subject
         )
         prs.log_action(
             process_id=process_id,
@@ -1041,19 +1104,34 @@ def reject_opportunity(
     opportunity_id: str,
     req: OpportunityRejectionRequest,
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ):
     if not opportunity_id or not opportunity_id.strip():
         raise HTTPException(status_code=400, detail="opportunity_id must be provided")
 
+    # Before the write, not after. The opportunity card's Reject button lands here, and
+    # until now `require_user` asked only WHO was calling -- a Viewer could reject any
+    # opportunity in the corpus. `write` is reversible under RoleDefinitionPolicy, so with
+    # no policy row the role cap decides: Viewer refused, Buyer and above through, every
+    # attempt audited. A policy row can narrow it later without touching this line.
+    gate("opportunity.reject", principal, agent="workflows_api",
+         context={"opportunity_id": opportunity_id.strip()})
+
     try:
+        # Who rejected it is the token. `req.user_id` is kept -- clients send
+        # it and it sometimes carries something a person meant -- but as a
+        # label inside metadata, where nothing reads it as identity.
+        metadata = dict(req.metadata or {})
+        if req.user_id:
+            metadata["user_id_label"] = req.user_id
         record = record_opportunity_feedback(
             agent_nick,
             opportunity_id.strip(),
             opportunity_ref_id=req.opportunity_ref_id,
             status="rejected",
             reason=req.reason,
-            user_id=req.user_id,
-            metadata=req.metadata,
+            user_id=getattr(principal, "subject", None) or None,
+            metadata=metadata,
         )
     except Exception as exc:  # pragma: no cover - database/network
         logger.exception("Failed to record rejection for opportunity %s", opportunity_id)
@@ -1083,8 +1161,10 @@ def reject_opportunity(
 async def extract_documents(
     req: ExtractRequest,
     orchestrator: Orchestrator = Depends(get_orchestrator),
+    principal=Depends(require_user),
 ):
     prs = orchestrator.agent_nick.process_routing_service
+    subject = getattr(principal, "subject", None) or None
     process_id = prs.log_process(
         process_name="document_extraction",
         process_details={
@@ -1092,6 +1172,8 @@ async def extract_documents(
             "s3_object_key": req.s3_object_key,
         },
         # process_status=1,
+        created_by=subject,
+        user_id=subject,
     )
     if process_id is None:
         raise HTTPException(status_code=500, detail="Failed to log process")
@@ -1218,96 +1300,8 @@ def _draft_payload(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
-def _reply_thread_headers(
-    *, source_draft: Dict[str, Any], source_payload: Dict[str, Any]
-) -> Dict[str, List[str]]:
-    """``In-Reply-To``/``References`` that put a reply in the supplier's own thread.
+from src.services.reply_threading import reply_thread_headers as _reply_thread_headers  # noqa: E402
 
-    Where the values come from, in the order they matter:
-
-      * ``proc.workflow_email_tracking.response_message_id`` -- the Message-ID of the
-        SUPPLIER'S reply, which is the message we are answering, so it is the correct
-        ``In-Reply-To``. Written by the watcher when it matched the reply.
-      * ``...message_id`` -- the Message-ID of OUR outbound RFQ. Used as ``In-Reply-To``
-        only when the supplier's own is not recorded (an older row), and always folded
-        into ``References`` so the chain is complete.
-      * any ``References`` already recorded against the thread, kept in front.
-
-    Nothing is fabricated. A thread with no recorded message ids returns ``{}`` and the
-    caller reports that, rather than sending a reply that looks like a new conversation
-    while claiming otherwise.
-    """
-    tracked = None
-    workflow_id = source_draft.get("workflow_id")
-    unique_id = source_draft.get("unique_id")
-    if workflow_id and unique_id:
-        try:
-            tracked = workflow_email_tracking_repo.lookup_dispatch_row(
-                workflow_id=str(workflow_id), unique_id=str(unique_id)
-            )
-        except Exception:  # noqa: BLE001 - absence of threading is reported, not raised
-            logger.exception(
-                "could not read the dispatch row for unique_id=%s while preparing a reply",
-                unique_id,
-            )
-
-    # Whatever the thread already recorded, from the tracking row or the draft itself.
-    prior: Dict[str, Any] = {}
-    for candidate in (
-        getattr(tracked, "thread_headers", None),
-        source_draft.get("thread_headers"),
-        source_payload.get("thread_headers"),
-        (source_payload.get("metadata") or {}).get("thread_headers")
-        if isinstance(source_payload.get("metadata"), dict) else None,
-    ):
-        if isinstance(candidate, dict) and candidate:
-            prior = candidate
-            break
-
-    def _as_list(value: Any) -> List[str]:
-        """Message ids in one canonical ``<id>`` form.
-
-        The two sources disagree on form and both end up in ``References``:
-        ``workflow_email_tracking._parse_thread_headers`` strips ``<>`` off everything it
-        reads back, while the ``message_id``/``response_message_id`` columns come back
-        verbatim with their brackets. RFC 5322 requires every msg-id in ``In-Reply-To``/
-        ``References`` to be bracketed, so a bare one makes the header malformed; and
-        without a single form, the same message listed both ways survives the dedupe
-        twice. A ``References`` string may also carry several space-separated ids.
-        """
-        if value is None:
-            return []
-        if isinstance(value, (list, tuple, set)):
-            tokens = [str(v) for v in value]
-        else:
-            tokens = [str(value)]
-
-        ids: List[str] = []
-        for token in tokens:
-            for part in token.split():
-                bare = part.strip().strip("<>").strip()
-                if bare:
-                    ids.append(f"<{bare}>")
-        return ids
-
-    our_outbound = _as_list(getattr(tracked, "message_id", None) or prior.get("Message-ID"))
-    their_reply = _as_list(getattr(tracked, "response_message_id", None))
-
-    # The message we are actually answering. Their reply if we recorded it; our own
-    # outbound otherwise -- which still lands in the right conversation, one hop up.
-    in_reply_to = (their_reply or our_outbound)[:1]
-    if not in_reply_to:
-        return {}
-
-    references: List[str] = []
-    for item in _as_list(prior.get("References")) + our_outbound + their_reply:
-        if item not in references:
-            references.append(item)
-
-    headers: Dict[str, List[str]] = {"In-Reply-To": in_reply_to}
-    if references:
-        headers["References"] = references
-    return headers
 
 
 @router.post(
@@ -1318,6 +1312,7 @@ def _reply_thread_headers(
 def prepare_email_draft(
     payload: EmailPrepareRequest,
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ) -> EmailPrepareResponse:
     """Persist ``payload`` into ``proc.draft_rfq_emails`` and return its identifier.
 
@@ -1355,6 +1350,15 @@ def prepare_email_draft(
             status_code=400, detail="At least one recipient email is required"
         )
 
+    # `email.draft` has been in the vocabulary since it was written and had never been
+    # called from anywhere -- a governed name nothing consulted. This is where it belongs:
+    # the opportunity card's "Pursue" and the report panel both reach this handler, and a
+    # persisted draft addressed to a supplier is a write. SENDING it is a separate,
+    # stricter gate (email.send, in email_dispatch_guard); this one does not stand in for it.
+    gate("email.draft", principal, agent="workflows_api",
+         context={"deal_id": payload.deal_id, "recipients": len(recipients),
+                  "reply_to_unique_id": payload.reply_to_unique_id})
+
     source_draft: Optional[Dict[str, Any]] = None
     if payload.reply_to_unique_id:
         source_draft = draft_rfq_emails_repo.load_by_unique_id(
@@ -1378,12 +1382,21 @@ def prepare_email_draft(
         else f"report-panel:{uuid.uuid4().hex[:12]}"
     )
 
+    # This is the human path into proc.draft_rfq_emails, so the row records who
+    # asked. The approvals surface reads it back to refuse an approval signed by
+    # the person who requested it (P3) -- which it could not do while no draft
+    # named a requester at all. Taken from the principal and never from
+    # ``payload``: a caller who could name the requester could name someone else
+    # and approve their own draft freely.
+    requested_by = str(getattr(principal, "subject", "") or "").strip() or None
+
     draft: Dict[str, Any] = {
         "supplier_id": supplier_id,
         "subject": payload.subject,
         "body": payload.body,
         "recipients": recipients,
         "receiver": recipients[0],
+        "requested_by": requested_by,
         "metadata": {
             "source": "report_email_panel",
             "deal_id": payload.deal_id,
@@ -1413,6 +1426,17 @@ def prepare_email_draft(
             draft["metadata"]["thread_headers"] = thread_headers
 
     drafting_agent = EmailDraftingAgent(agent_nick)
+    # Shadow assurance of the person's own text: what they wrote is stored exactly as before; the record
+    # beside it says which figures Postgres confirms and which it does not. It can never stop the draft.
+    draft["metadata"]["intent"] = "REPLY_PANEL" if source_draft else "REPORT_PANEL"
+    try:
+        draft["assurance"] = drafting_agent.assure_human_written(
+            text=payload.body, recipients=recipients,
+            supplier_id=(source_draft or {}).get("supplier_id"),
+            workflow_id=draft.get("workflow_id"), requested_by=requested_by,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("could not assure the prepared email for deal_id=%s", payload.deal_id)
     try:
         drafting_agent._store_draft(draft)
     except ValueError as exc:
@@ -1661,6 +1685,20 @@ async def send_email(
             },
         )
 
+    except PermissionError as exc:
+        # The send guard said no (email_dispatch_guard.DispatchDenied). That is an
+        # answer for the person, with its reason, not a server fault: the catch-all
+        # below turned it into a 500 and the reason reached nobody.
+        prs.log_action(
+            process_id=process_id,
+            agent_type="email_dispatch",
+            action_desc=input_data,
+            status="failed",
+            action_id=action_id,
+        )
+        prs.update_process_status(process_id, -1)
+        raise HTTPException(status_code=403, detail=str(exc))
+
     except Exception as exc:  # pragma: no cover - network/runtime
         prs.log_action(
             process_id=process_id,
@@ -1851,6 +1889,7 @@ async def add_email_attachments(
     files: List[UploadFile] = File(...),
     user_id: str = Form(default="api"),
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ) -> Dict[str, Any]:
     """Store attachments against a draft, in S3 plus a record on the draft row.
 
@@ -1923,7 +1962,12 @@ async def add_email_attachments(
                 "content_type": upload.content_type or "application/octet-stream",
                 "bytes": len(data),
                 "s3_key": key,
-                "added_by": user_id,
+                # These attachments ride out to a supplier on a real email, so
+                # who added one is the token. The Form field stays as a label:
+                # it defaults to the literal string "api", which was being
+                # written as though it named somebody.
+                "added_by": getattr(principal, "subject", None) or None,
+                "added_by_label": user_id or None,
                 "added_at": datetime.now(timezone.utc).isoformat(),
             }
         )
@@ -1940,6 +1984,7 @@ def remove_email_attachment(
     unique_id: str,
     index: int,
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ) -> Dict[str, Any]:
     draft = draft_rfq_emails_repo.load_by_unique_id(unique_id)
     if not draft:
@@ -2066,40 +2111,68 @@ async def dispatch_workflow_drafts(
 
 
 
+def _payload_as_caller(req: BaseModel, principal: Any) -> Dict[str, Any]:
+    """The request as the agent's payload, with `user_id` taken from the token.
+
+    These four request models carry a `user_id` the caller types, and it rode
+    into the agent payload as though it were the user -- a negotiation batch
+    entry reads it as its sub-run's user. It stays on the models because
+    clients send it; the payload carries the token's subject, or nobody.
+    """
+    payload = req.model_dump()
+    payload["user_id"] = getattr(principal, "subject", None) or None
+    return payload
+
+
+def _started_by(principal: Any) -> Optional[str]:
+    """Who started a workflow: the token's subject, or nobody. Never a stand-in."""
+    return getattr(principal, "subject", None) or None
+
+
 @router.post("/negotiate")
 def negotiate(
     req: NegotiationRequest,
     orchestrator: Orchestrator = Depends(get_orchestrator),
+    principal=Depends(require_user),
 ):
     """Execute the negotiation agent."""
-    return orchestrator.execute_workflow("negotiation", req.model_dump())
+    return orchestrator.execute_workflow("negotiation", _payload_as_caller(req, principal),
+                                         user_id=_started_by(principal))
 
 
 @router.post("/approvals")
 def approvals(
     req: ApprovalRequest,
     orchestrator: Orchestrator = Depends(get_orchestrator),
+    principal=Depends(require_user),
 ):
     """Run the approvals agent."""
-    return orchestrator.execute_workflow("approvals", req.model_dump())
+    return orchestrator.execute_workflow("approvals", _payload_as_caller(req, principal),
+                                         user_id=_started_by(principal))
 
 
 @router.post("/supplier-interaction")
 def supplier_interaction(
     req: SupplierInteractionRequest,
     orchestrator: Orchestrator = Depends(get_orchestrator),
+    principal=Depends(require_user),
 ):
     """Trigger the supplier interaction agent."""
-    return orchestrator.execute_workflow("supplier_interaction", req.model_dump())
+    return orchestrator.execute_workflow("supplier_interaction",
+                                         _payload_as_caller(req, principal),
+                                         user_id=_started_by(principal))
 
 
 @router.post("/discrepancy")
 def detect_discrepancy(
     req: DiscrepancyRequest,
     orchestrator: Orchestrator = Depends(get_orchestrator),
+    principal=Depends(require_user),
 ):
     """Expose the discrepancy detection agent."""
-    return orchestrator.execute_workflow("discrepancy_detection", req.model_dump())
+    return orchestrator.execute_workflow("discrepancy_detection",
+                                         _payload_as_caller(req, principal),
+                                         user_id=_started_by(principal))
 
 
 @router.get(

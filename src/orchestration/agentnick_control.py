@@ -25,10 +25,11 @@ it knew when it did it — is inspectable afterwards rather than taken on faith.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from services.tool_runtime import Tool, ToolRunResult, run_tools
 
@@ -62,8 +63,28 @@ Arithmetic:
 - Report the figures as given. Do not round, rescale, or restate them in other units."""
 
 
-def _agent_tools(agent_nick: Any) -> List[Tool]:
-    """Wrap every instantiable agent as a callable tool."""
+# The created agents currently reasoning on this thread, outermost first. One
+# created agent may be asked from inside a run; the agent it was asked from
+# cannot start another. Each loop is minutes of model time, and a chain nobody
+# drew on a canvas has no natural end.
+MAX_CREATED_AGENT_DEPTH = 1
+_CREATED_AGENT_CHAIN: contextvars.ContextVar[Tuple[str, ...]] = contextvars.ContextVar(
+    "created_agent_chain", default=()
+)
+
+
+def _agent_tools(
+    agent_nick: Any,
+    *,
+    workflow_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> List[Tool]:
+    """Wrap every instantiable agent as a callable tool.
+
+    ``workflow_id`` / ``user_id`` tie the agent's routing rows to the run that
+    called it (a workflow node reasoning with tools); without them each call
+    gets its own id, as the Ask path always has.
+    """
     registry = getattr(agent_nick, "auto_registry", None)
     agents = getattr(agent_nick, "agents", None)
     if registry is None or not agents:
@@ -73,6 +94,10 @@ def _agent_tools(agent_nick: Any) -> List[Tool]:
     for schema in registry.tool_schemas():
         fn = schema["function"]
         slug = fn["name"][len("run_") :]
+        # A draft agent is not on offer to anyone but the person who created it.
+        owner = getattr(agents.get(slug), "draft_owner", None)
+        if owner is not None and (not user_id or user_id != owner):
+            continue
 
         def _make(slug: str):
             def _run(**kwargs: Any) -> Dict[str, Any]:
@@ -93,15 +118,40 @@ def _agent_tools(agent_nick: Any) -> List[Tool]:
                 if agent is None:
                     return {"error": f"agent '{slug}' is not registered"}
 
+                # A created agent is its task: run as the class it was copied
+                # from, it would do that class's job and ignore what a person
+                # wrote for it. So it reasons here exactly as it does on the canvas.
+                created = bool(getattr(agent, "governance_slug", None))
+                chain = _CREATED_AGENT_CHAIN.get()
+                if created:
+                    if slug in chain:
+                        return {"error": f"agent '{slug}' cannot call itself"}
+                    if len(chain) >= MAX_CREATED_AGENT_DEPTH:
+                        return {
+                            "error": (
+                                f"agent '{slug}' was not run: this is too many created "
+                                "agents deep. Answer with what you already have."
+                            )
+                        }
+
                 from agents.base_agent import AgentContext
 
                 ctx = AgentContext(
-                    workflow_id=uuid.uuid4().hex,
+                    workflow_id=workflow_id or uuid.uuid4().hex,
                     agent_id=slug,
-                    user_id="AgentNick",
+                    user_id=user_id,
                     input_data=payload,
                 )
-                output = agent.run(ctx)
+                # execute(), not run(): a tool call is an agent run like any other
+                # and must leave the same proc.routing / bp_action record.
+                if created:
+                    token = _CREATED_AGENT_CHAIN.set(chain + (slug,))
+                    try:
+                        output = agent.execute(ctx, tool_loop=True)
+                    finally:
+                        _CREATED_AGENT_CHAIN.reset(token)
+                else:
+                    output = agent.execute(ctx)
                 data = dict(output.data or {})
                 # The agentic_plan is narration for a human reader; feeding it back
                 # into the loop just burns context the model needs for facts.
@@ -246,9 +296,263 @@ def _corpus_tools(agent_nick: Any) -> List[Tool]:
     ]
 
 
-def build_tools(agent_nick: Any) -> List[Tool]:
-    """Every tool AgentNick can reach: the agents, governance, and the corpus."""
-    return _agent_tools(agent_nick) + _governance_tools() + _corpus_tools(agent_nick)
+_MINER_SLUG = "opportunity_miner"
+
+
+def _opportunity_tools(
+    agent_nick: Any,
+    *,
+    workflow_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> List[Tool]:
+    """The saving levers, as tools: what exists, what a bucket holds, and try one.
+
+    The levers are the detection rules in proc.bp_rule, each bound to a calculation
+    in the Opportunity Miner. An agent chooses which to apply to a supplier and item
+    and explains the result; every figure comes from the calculation, never from
+    the model.
+    """
+    agents = getattr(agent_nick, "agents", None) or {}
+    miner = agents.get(_MINER_SLUG)
+    if miner is None:
+        return []
+
+    def _catalogue() -> Dict[str, Dict[str, Any]]:
+        return miner._get_policy_registry()
+
+    def _levers() -> Any:
+        try:
+            registry = _catalogue()
+        except Exception as exc:  # noqa: BLE001 - e.g. the rule book is unreadable
+            # Not an empty list: "no levers" and "could not read them" differ.
+            return {"levers": None, "note": f"the lever catalogue could not be read: {exc}"}
+        return {
+            "levers": [
+                {
+                    "lever": slug,
+                    "name": cfg.get("policy_name"),
+                    "kind": cfg.get("finding_type"),
+                    "looks_at": cfg.get("scope"),
+                    "needs": list(cfg.get("required_fields") or []),
+                    "thresholds": dict(cfg.get("default_conditions") or {}),
+                }
+                for slug, cfg in registry.items()
+            ],
+            "note": (
+                "Use evaluate_opportunity_lever to apply one to a supplier and item. "
+                "A lever's saving comes from its calculation; do not estimate one."
+            ),
+        }
+
+    def _bucket(supplier_id: str, item_id: str) -> Any:
+        from src.services import opportunity_buckets
+
+        found = opportunity_buckets.get_bucket(str(supplier_id), str(item_id))
+        if found is None:
+            return {
+                "bucket": None,
+                "note": (
+                    "No lever with a unit price and a volume is recorded for this "
+                    "supplier and item. That is not the same as 'no saving exists'."
+                ),
+            }
+        return {"bucket": found}
+
+    def _evaluate(lever: str, supplier_id: str, item_id: Optional[str] = None) -> Any:
+        try:
+            registry = _catalogue()
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"the lever catalogue could not be read: {exc}"}
+        if lever not in registry:
+            return {
+                "found": False,
+                "note": f"No lever is called '{lever}'. Retry with one of 'available'.",
+                "available": sorted(registry),
+            }
+        from agents.base_agent import AgentContext
+
+        conditions: Dict[str, Any] = {"supplier_id": str(supplier_id)}
+        if item_id:
+            conditions["item_id"] = str(item_id)
+        ctx = AgentContext(
+            workflow_id=workflow_id or uuid.uuid4().hex,
+            agent_id=_MINER_SLUG,
+            user_id=user_id,
+            # One lever, one supplier (and item): a scoped run, so it retires nothing.
+            input_data={"workflow": lever, "conditions": conditions},
+        )
+        output = miner.execute(ctx)
+        data = dict(output.data or {})
+        findings = data.get("findings") or []
+        return {
+            "lever": lever,
+            "status": getattr(output.status, "value", str(output.status)),
+            "error": output.error,
+            "found_a_saving": bool(findings),
+            "results": [
+                {
+                    "saving_gbp": f.get("financial_impact_gbp"),
+                    "supplier_id": f.get("supplier_id"),
+                    "item_id": f.get("item_id"),
+                    "working": f.get("calculation_details"),
+                    "evidence": f.get("source_records"),
+                    "previously_rejected": bool(f.get("is_rejected")),
+                }
+                for f in findings
+            ],
+            # Why nothing fired, in the miner's own words (a missing input, a
+            # threshold not met) -- so "no saving" is never a bare empty list.
+            "events": (data.get("policy_events") or [])[-5:],
+        }
+
+    return [
+        Tool(
+            name="list_opportunity_levers",
+            description=(
+                "List the saving levers that exist (price against benchmark, volume "
+                "consolidation, overbilling and so on), what each one needs and its "
+                "thresholds. Call this before choosing levers for a supplier and item."
+            ),
+            parameters={"type": "object", "properties": {}},
+            handler=_levers,
+        ),
+        Tool(
+            name="get_opportunity_bucket",
+            description=(
+                "Fetch the opportunity bucket for one supplier and item: the unit "
+                "price, the volume, and every lever already found on it with its "
+                "saving, its stage, and whether new information is waiting on a "
+                "rejected lever. The bucket's saving is its largest open lever; "
+                "levers overlap and must not be added together."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "supplier_id": {"type": "string"},
+                    "item_id": {"type": "string"},
+                },
+                "required": ["supplier_id", "item_id"],
+            },
+            handler=_bucket,
+        ),
+        Tool(
+            name="evaluate_opportunity_lever",
+            description=(
+                "Apply ONE saving lever to a supplier (and item) and return the "
+                "computed saving with its working and evidence. The lever name must "
+                "come from list_opportunity_levers. The result is recorded on the "
+                "supplier and item's bucket; a lever a person rejected stays rejected "
+                "and is marked for review if the evidence has changed."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "lever": {"type": "string"},
+                    "supplier_id": {"type": "string"},
+                    "item_id": {"type": "string"},
+                },
+                "required": ["lever", "supplier_id"],
+            },
+            handler=_evaluate,
+        ),
+    ]
+
+
+def _calculation_tools(*, workflow_id: Optional[str] = None) -> List[Tool]:
+    """The registered formulas, as tools: what can be calculated, and run one.
+
+    For the calculation nobody could schedule in advance — a "what if" in a
+    conversation, a percentage an agent needs part-way through. A calculation an
+    agent must ALWAYS have is not left to these: it is declared on the agent and
+    run before it reasons (``BaseAgent.run_tool_loop``).
+    """
+    try:
+        from services import calculation_tools as CT
+    except Exception:  # noqa: BLE001
+        log.exception("calculation tools unavailable")
+        return []
+
+    return [
+        Tool(
+            name="list_calculations",
+            description=(
+                "List the exact calculations that exist (scores, savings, price "
+                "variances, negotiation positions and so on). With no argument: "
+                "every calculation by name and purpose. With a family or a name: "
+                "the inputs it needs. Call this before run_calculation."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "family": {"type": "string",
+                               "description": "e.g. 'negotiation', 'supplier', 'deal'"},
+                    "name": {"type": "string",
+                             "description": "One calculation, e.g. 'deal.pct_change'"},
+                },
+            },
+            handler=lambda family=None, name=None: CT.list_calculations(family, name),
+        ),
+        Tool(
+            name="run_calculation",
+            description=(
+                "Run ONE exact calculation and return its value. Use this instead of "
+                "doing arithmetic yourself. The name and the input names must come "
+                "from list_calculations, and every input value must be one a tool "
+                "returned or the task stated — never one you estimated. If it "
+                "reports assessed=false, say the figure could not be calculated and "
+                "why; do not supply one."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "inputs": {"type": "object",
+                               "description": "Input names and values for the calculation."},
+                    "rows": {"type": "array", "items": {"type": "object"},
+                             "description": ("Only for a calculation that scores a whole "
+                                             "set: one object per member.")},
+                },
+                "required": ["name"],
+            },
+            handler=lambda name=None, inputs=None, rows=None: CT.run_calculation(
+                name, inputs, rows, trace_id=workflow_id),
+        ),
+    ]
+
+
+def build_tools(
+    agent_nick: Any,
+    *,
+    exclude: Sequence[str] = (),
+    only: Optional[Sequence[str]] = None,
+    workflow_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> List[Tool]:
+    """Every tool AgentNick can reach: the agents, governance, the corpus, the
+    saving levers and the registered calculations.
+
+    ``exclude`` names tools to leave out — a workflow node's loop, for one,
+    must never be handed the tool that sends real email.
+
+    ``only`` is the list of tools an agent was given. ``None`` means no list was
+    ever set; an empty list means none at all, which is why it is not tested for
+    truth. It narrows and never widens: a name in ``exclude`` stays out even
+    when it is also in ``only``.
+    """
+    tools = (
+        _agent_tools(agent_nick, workflow_id=workflow_id, user_id=user_id)
+        + _governance_tools()
+        + _corpus_tools(agent_nick)
+        + _opportunity_tools(agent_nick, workflow_id=workflow_id, user_id=user_id)
+        + _calculation_tools(workflow_id=workflow_id)
+    )
+    if exclude:
+        blocked = set(exclude)
+        tools = [t for t in tools if t.name not in blocked]
+    if only is not None:
+        given = set(only)
+        tools = [t for t in tools if t.name in given]
+    return tools
 
 
 def reason(
@@ -258,14 +562,33 @@ def reason(
     max_rounds: int = 6,
     require_tool_use: bool = True,
     extra_system: Optional[str] = None,
+    exclude: Sequence[str] = (),
+    only: Optional[Sequence[str]] = None,
+    workflow_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    agent: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> ToolRunResult:
     """Let AgentNick plan and act on ``task`` by calling tools.
+
+    ``model`` is the model the calling agent was given, if it was given one.
+    ``None`` is the standard model. It used to be impossible to pass: an agent's
+    model was validated and stored at creation and then ignored here.
+
+    ``agent`` names the calling agent (its slug) for the agent-policy gate, which sees every
+    tool call with the agent, workflow and user it belongs to.
 
     ``require_tool_use`` defaults to True: for a grounded system, an answer
     produced without consulting a single tool is a guess, and the loop nudges once
     before accepting it.
     """
-    tools = build_tools(agent_nick)
+    tools = build_tools(
+        agent_nick, exclude=exclude, only=only, workflow_id=workflow_id, user_id=user_id
+    )
+    if not tools:
+        # An agent given no tools has nothing to consult; insisting that it
+        # consult something would only buy a wasted round and a nudge.
+        require_tool_use = False
     system = _SYSTEM if not extra_system else f"{_SYSTEM}\n\n{extra_system}"
     result = run_tools(
         task,
@@ -273,7 +596,17 @@ def reason(
         system,
         max_rounds=max_rounds,
         require_tool_use=require_tool_use,
+        model=model,
+        agent=agent,
+        workflow_id=workflow_id,
+        user_id=user_id,
     )
+    # The record of a run needs what it was actually given. The loop fills
+    # these; anything that stands in for the loop may not.
+    if not result.system:
+        result.system = system
+    if not result.tools_offered:
+        result.tools_offered = [t.name for t in tools]
     log.info(
         "AgentNick.reason rounds=%s tools=%s error=%s",
         result.rounds,

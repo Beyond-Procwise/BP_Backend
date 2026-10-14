@@ -17,9 +17,10 @@ from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from api.auth import require_user
 from src.services import requirement_service
 
 logger = logging.getLogger(__name__)
@@ -67,7 +68,9 @@ def _run_requirements_turn(app_state: Any, payload: Dict[str, Any]) -> Dict[str,
     ctx = AgentContext(
         workflow_id=payload.get("session_id") or uuid.uuid4().hex,
         agent_id="requirements",
-        user_id=payload.get("created_by") or "api",
+        # Whoever the route resolved from the token, or nobody -- not "api",
+        # which the agent then wrote to bp_requirement.created_by as a person.
+        user_id=payload.get("created_by") or None,
         input_data=dict(payload),
     )
     output = agent.run(ctx)
@@ -99,7 +102,10 @@ def _launch_workflow(app_state: Any, payload: Dict[str, Any], job_id: str) -> No
 
     def _run() -> None:
         try:
-            result = orchestrator.execute_workflow("requirements_to_ranking", dict(payload))
+            # _payload put the token's subject in created_by, and only there.
+            result = orchestrator.execute_workflow(
+                "requirements_to_ranking", dict(payload),
+                user_id=payload.get("created_by") or None)
             _set_job(job_id, status="completed", result=result)
         except Exception as exc:  # pragma: no cover - background failure path
             logger.exception("async requirements workflow failed")
@@ -139,10 +145,27 @@ def _events_for(result: Dict[str, Any]) -> List[Dict[str, str]]:
     return events
 
 
+def _payload(body: RequirementMessage, principal: Any) -> Dict[str, Any]:
+    """The turn's input, with the requirement's author taken from the token.
+
+    `body.created_by` stays on the model because clients send it, but it is not
+    read: it became bp_requirement.created_by, so a caller could open a
+    requirement in someone else's name. With no principal the key is absent and
+    the requirement names nobody.
+    """
+    payload = body.model_dump(exclude_none=True)
+    payload.pop("created_by", None)
+    subject = getattr(principal, "subject", None) or None
+    if subject:
+        payload["created_by"] = subject
+    return payload
+
+
 @router.post("/message", summary="Run one requirements elicitation turn")
-def post_message(body: RequirementMessage, request: Request) -> Dict[str, Any]:
+def post_message(body: RequirementMessage, request: Request,
+                 principal=Depends(require_user)) -> Dict[str, Any]:
     try:
-        result = _run_requirements_turn(request.app.state, body.model_dump(exclude_none=True))
+        result = _run_requirements_turn(request.app.state, _payload(body, principal))
     except HTTPException:
         raise
     except Exception as exc:
@@ -156,9 +179,10 @@ def post_message(body: RequirementMessage, request: Request) -> Dict[str, Any]:
 
 
 @router.post("/run-workflow", summary="Start the requirements→sourcing workflow (async)")
-def post_run_workflow(body: RequirementMessage, request: Request) -> Dict[str, Any]:
+def post_run_workflow(body: RequirementMessage, request: Request,
+                      principal=Depends(require_user)) -> Dict[str, Any]:
     job_id = uuid.uuid4().hex
-    _launch_workflow(request.app.state, body.model_dump(exclude_none=True), job_id)
+    _launch_workflow(request.app.state, _payload(body, principal), job_id)
     return {
         "workflow": "requirements_to_ranking",
         "job_id": job_id,

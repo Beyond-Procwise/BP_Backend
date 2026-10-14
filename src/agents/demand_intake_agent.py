@@ -1,0 +1,487 @@
+"""Demand Intake: read a procurement request, return values for fields already named.
+
+This agent does ONE thing, and the narrowness is the design. The intake conversation (the
+SpendIQ Demand screen) owns the questions: which step comes next, what it asks, which tier
+switches it on, and what counts as a valid answer all live in the intake configuration, which an
+admin edits. The model is never asked for a question, never asked for an opinion, and never
+writes to the record — it reads what the requester typed and proposes values, every one of which
+the browser validates against that same configuration before it is kept.
+
+Two rules hold it up:
+
+**The instruction is governed.** The prompt is `demand_intake_extract` in proc.bp_prompt, and
+this agent resolves it the way every other agent resolves its own. The browser sends only the
+VALUES to fill it with — the categories this tenant uses, the field list, what is already known,
+the question just asked, and the requester's text. It used to build the prompt itself and hand it
+over, which meant the instruction travelled from the client: anyone who could reach the endpoint
+could tell the model to do something else. If the governed row is missing this agent REFUSES,
+because falling back to a caller's instruction is worse than not extracting at all — and the
+conversation degrades gracefully, asking its next question either way.
+
+**An example the instruction quoted is not a value the requester gave.** Measured live on
+2026-10-05 against a resident AgentNick, one request came back with thirty fields — every one of
+them claiming "high" confidence — and `criteria` was `['99.95% SLA', '≤1 weekly outage',
+'≥15% unit-rate reduction']`. Two of the three are copied verbatim out of the governed template,
+which offers them as what a measurable outcome looks like; the requester wrote neither. The same
+template offers "IT-3300" as what a cost centre looks like, and a cost centre nobody named is
+what a demand gets routed for approval by. So a value the INSTRUCTION supplied is dropped — but
+only when the requester's own text does not contain it, which is why a genuine reading can never
+be caught by this (see `_leaked`).
+
+**Confidence is measured, not reported.** The same live run showed the model's confidence word
+carries no information: "high" on all thirty fields (thirteen in no part of the request), then
+"low" on all nineteen once the guards removed the inventions. The browser lets a HIGH reading
+correct an earlier machine one, so the word has to be earned. It now comes from `_grounding`:
+HIGH when the request itself carries the value (verbatim, or the same figure under another
+spelling — "240000" for "£240k"), MEDIUM when most of its words are the request's own and every
+figure in it is, LOW otherwise. The model's word is ignored. Dates the browser has normalised
+("2027-03-31" for "31 March 2027") read LOW, which fails safe: LOW never overwrites an answer.
+
+**Nothing leaves in a shape the caller has to defend itself against.** A model answers
+`{"title": "x"}` as readily as `{"title": {"value": "x"}}` and occasionally answers in prose.
+All of that is normalised here, so what comes back is always
+`{path: {"value": …, "confidence": "high"|"medium"|"low"}}`.
+
+The placeholders are filled with str.replace, NOT str.format: the template ends with a JSON
+example, and format() reads `{"fields": …}` as a field reference and raises.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import re
+from typing import Any, Dict, Iterable, Optional
+
+from agents.base_agent import BaseAgent
+from services.prompt_engine import client as prompt_client
+from services.prompt_engine.convert import typed_to_braces
+
+logger = logging.getLogger(__name__)
+
+PROMPT_NAME = "demand_intake_extract"
+
+_CONFIDENCE = ("high", "medium", "low")
+# Filled from the caller's context. Every one is DATA about this tenant's configuration or the
+# requester's own words — never an instruction.
+_PLACEHOLDERS = ("categories", "fields", "known", "asked_field", "text", "today", "currency")
+# Keys a JSON object should never carry into a record. The browser validates every path against
+# its configuration and would drop these anyway; they are refused here too so that a reply which
+# is nonsense cannot be mistaken for one that merely failed validation.
+_FORBIDDEN_PATHS = frozenset({"__proto__", "constructor", "prototype"})
+_MAX_PATHS = 60
+
+# ---------------------------------------------------------------------------
+# Fields a procurement REQUEST does not state, and the cues that show it does after all.
+#
+# Measured live 2026-10-05 against a resident AgentNick. Prompt v2 says in words "Do not
+# calculate a saving, split a budget into years, set a target", and the model returned three
+# of them anyway on a request that states none:
+#
+#   finance.saving = 95000  -- 95000 is the CURRENT MPLS cost in that request. Arithmetic
+#                              would have said 45000 (3 x 95k = 285k against a 240k budget),
+#                              so the figure is both unasked-for and wrong.
+#   finance.tco    = 240000 -- the budget, relabelled.
+#   finance.type   = 'Hard / cash' -- a finance classification nobody wrote down.
+#
+# These three set an approval route and feed the savings KPI, so an invented number is worse
+# than a blank. Asking the prompt more firmly has been tried.
+#
+# NOT a deny-list. A requester may well state a saving, and deleting that would be the same
+# fault in the other direction, so the value travels when the text carries a cue for THAT
+# field — or when the field is the one the conversation just asked about, because then the
+# question itself is the claim.
+#
+# The cues are about MONEY on purpose. "reduce outages" must not license an invented saving,
+# which is why the bare words "reduce" and "reduction" are not cues, and "over three years"
+# is a budget period rather than a statement of total cost of ownership.
+# ---------------------------------------------------------------------------
+_CLAIM_CUES: Dict[str, tuple] = {
+    "finance.saving": ("save", "saves", "saving", "savings", "cost reduction",
+                       "unit-rate reduction", "rate reduction", "cost avoidance",
+                       "avoided cost", "cheaper"),
+    "finance.tco": ("tco", "total cost", "cost of ownership", "whole-life", "whole life",
+                    "lifetime cost", "life-cycle cost", "lifecycle cost"),
+    "finance.type": ("hard saving", "cash saving", "cashable", "cost avoidance",
+                     "non-financial", "non financial", "hard / cash", "soft saving"),
+    # The other five from the same reply. Prompt v2 stopped them, which means they were held
+    # back by wording alone and one prompt edit from returning:
+    #   finance.phasing = 'Year 1: £80k, Year 2: £80k, Year 3: £80k'
+    #   benefit.target  = '£80k/year SD-WAN cost'   (no 80k appears anywhere in that request)
+    #   benefit.owner   = 'IT Operations'
+    #   pillar          = 'Cost Efficiency'
+    #   alignment       = 'Digital Transformation'
+    #
+    # "£95k a year" and "over three years" say how much and for how long; they are NOT a
+    # phasing profile, so no cue here is built out of "year" on its own.
+    "finance.phasing": ("phased", "phasing", "year 1", "year one", "first year",
+                        "second year", "split over", "split across", "spread over",
+                        "spread across", "instalments", "installments"),
+    "benefit.target": ("target", "targets", "targeted", "aim", "aims", "aiming", "goal",
+                       "goals", "down to", "get to", "reduce to"),
+    # NOT bare "owner": this conversation talks about the COST CENTRE owner constantly — it has
+    # an ask_owner turn — and that is a different person from whoever owns the benefit.
+    "benefit.owner": ("benefit owner", "owned by", "owner is", "will own", "accountable",
+                      "responsible for", "sponsor", "sponsored by", "sponsors"),
+    "pillar": ("pillar", "pillars", "strategic priority", "strategic priorities"),
+    "alignment": ("align", "aligns", "aligned", "alignment", "okr", "okrs", "strategy",
+                  "strategic", "objective", "objectives", "initiative", "initiatives"),
+    # The last three, read off the model's words rather than measured in the same run:
+    #   party                    = 'UK Branch Sites' -- where the thing is GOING, not somebody
+    #                                                   you contract with
+    #   intake.existing_contract = 'No'              -- the request says MPLS circuits run today,
+    #                                                   which points the other way if anything
+    #   intake.po_required       = 'Yes'             -- nowhere in the request
+    #
+    # A counterparty is named, not inferred from a delivery address, so the cues are the words
+    # that mark somebody as the other side of a deal. A requester who writes "buy from Vodafone"
+    # is covered by "buy from"; one who writes only "from Vodafone" is not, and waits to be asked.
+    "party": ("supplier", "suppliers", "vendor", "vendors", "incumbent", "sole source",
+              "sole-source", "single source", "provider", "providers", "reseller",
+              "distributor", "manufacturer", "oem", "buy from", "quote from",
+              "purchase from", "award to", "contract with", "partner with"),
+    # A renewal is itself a statement that something is already contracted, which is why "renew"
+    # belongs here even though it never says the word "contract".
+    "intake.existing_contract": ("framework", "frameworks", "existing contract",
+                                 "current contract", "contract in place", "under contract",
+                                 "contracted", "renewal", "renew", "renewing", "off-contract",
+                                 "off contract", "expiring", "expires", "incumbent",
+                                 "call-off", "call off"),
+    # "po" is two letters and lives inside plenty of words, so the word boundaries in
+    # _CLAIM_PATTERNS are doing real work here.
+    # A restated NEED is not a criterion: live 2026-10-08 the model returned the request's own first
+    # sentence as `criteria`. These are the words of a threshold or a test; "live by 31 March" and
+    # "42 sites" are scope, so neither "by" nor a bare number is a cue.
+    "criteria": ("sla", "slas", "uptime", "availability", "latency", "throughput",
+                 "service level", "service levels", "acceptance", "criteria", "criterion",
+                 "must", "must not", "at least", "at most", "no more than", "no less than",
+                 "no fewer than", "minimum", "maximum", "within", "under", "less than",
+                 "more than", "guarantee", "guaranteed", "success", "kpi", "kpis", "threshold"),
+    "intake.po_required": ("po", "pos number", "p.o.", "purchase order", "purchase orders",
+                           "p-card", "pcard", "procurement card", "invoice without"),
+}
+# DELIBERATELY ABSENT: benefit.baseline. "Today the MPLS circuits cost us £95k a year" is a
+# baseline the requester really did state, and putting it in this table would turn a rule against
+# fabrication into a rule that destroys evidence.
+# Word boundaries matter: a bare "tco" would otherwise match inside "bitcoin".
+_CLAIM_PATTERNS = {
+    path: re.compile(r"\b(?:" + "|".join(re.escape(c) for c in cues) + r")\b", re.I)
+    for path, cues in _CLAIM_CUES.items()
+}
+# The quoted literals in the instruction's own prose — "IT-3300", "99.95% SLA". Both quote styles,
+# because the governed template is edited by hand and uses whichever the editor's keyboard gave.
+_QUOTED = re.compile(r'"([^"\n]{2,60})"|“([^”\n]{2,60})”')
+
+
+# A figure as a requester writes it: "£95k", "240,000", "1.5m". Not preceded by a word character
+# or a point, so the 95 inside "1950" or "2.95" is not a figure of its own.
+_FIGURE = re.compile(r"(?<![\w.])[£$€]?(\d[\d,]*(?:\.\d+)?)\s?(k|m|bn)?(?![\w])", re.I)
+_SCALE = {"": 1, "k": 1_000, "m": 1_000_000, "bn": 1_000_000_000}
+# Words that say nothing about whether a value was read out of a request.
+_FILLER = frozenset("a an the of to for and or in on at by with our we is are be it its this that".split())
+# Share of a value's words that must be the request's own for it to count as a paraphrase.
+_PARAPHRASE_SHARE = 0.6
+
+
+class DemandIntakeUnavailable(RuntimeError):
+    """The governed prompt is not installed, so there is nothing authorised to run."""
+
+
+class DemandIntakeAgent(BaseAgent):
+    """Extraction for the demand intake conversation. No questions, no opinions."""
+
+    def extract(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """-> {"fields": {path: {"value", "confidence"}}, "governed": True[, "failed": True]}.
+
+        Raises DemandIntakeUnavailable when the governed prompt is missing. Every other failure
+        — a model that is down, a timeout, a reply that is not JSON — returns no fields, because
+        one model call is not worth losing the requester's session over.
+        """
+        template, prompt = self._governed_prompt(context or {})
+        try:
+            # think=False is required: AgentNick is a reasoning model and returns an empty
+            # `response` without it (Model Routing Policy). format="json" is what makes the
+            # reply parseable at all.
+            raw = self.call_ollama(prompt=prompt, format="json", think=False)
+        except Exception:
+            logger.debug("demand intake extraction: model call failed", exc_info=True)
+            return {"fields": {}, "governed": True, "failed": True}
+        parsed, answered = self._parse(raw)
+        # The guard below needs BOTH sides: what the instruction quoted, and what the requester
+        # actually wrote. It reads the live template rather than a copy, so an admin who edits
+        # the governed row changes the example set in the same edit.
+        leaked = self._instruction_examples(str(template))
+        said = self._said(context or {})
+        offered = self._offered(context or {})
+        asked = str((context or {}).get("asked_field") or "").strip()
+        # `failed` says the model did not answer — NOT that it found nothing. call_ollama does
+        # not raise when Ollama refuses; it returns {"response": "", "error": …}, so without this
+        # distinction a model that never ran looked exactly like a request with nothing in it,
+        # and the screen would tell the requester their words held no values.
+        return {"fields": self._fields(parsed, leaked, said, offered, asked),
+                "governed": True, "failed": not answered}
+
+    # ------------------------------------------------------------------
+    def _governed_prompt(self, context: Dict[str, Any]) -> tuple[str, str]:
+        """-> (the wording with its blanks marked `{name}`, the prompt as the model is given it).
+
+        Two ways in, and which one runs is decided by the prompt registry, not by this code:
+
+          * the version in use is a typed template: the prompt engine fills it, checks every
+            value against its declaration, and records exactly what was rendered for this run;
+          * the version in use is still the wording as it was imported (or the registry does not
+            hold it): filled here, as it always was.
+
+        Promoting the typed version switches this agent over; rolling it back switches it back.
+        If the registry cannot be read in the time allowed there is no wording to run under, and
+        this refuses rather than use some other.
+        """
+        try:
+            live = prompt_client.in_use(PROMPT_NAME)
+            if live is not None and live.get("syntax") == "v1":
+                names = [d["name"] for d in live.get("variables") or []]
+                out = prompt_client.render(
+                    PROMPT_NAME, version=live["version"],
+                    vars={name: self._one(context.get(name)) for name in names},
+                    trace=prompt_client.trace(context.get("run_id"), "demand_intake.extract"))
+                return typed_to_braces(live["template"], names), out["instructions"]
+        except prompt_client.PromptUnavailable as exc:
+            raise DemandIntakeUnavailable(
+                f"the prompt {PROMPT_NAME} could not be read, so extraction is not authorised"
+            ) from exc
+        except prompt_client.REFUSALS as exc:
+            raise DemandIntakeUnavailable(
+                f"the prompt {PROMPT_NAME} could not be rendered ({exc.code}), so extraction "
+                f"is not authorised") from exc
+
+        template = self.resolve_prompt(PROMPT_NAME)
+        if not template:
+            raise DemandIntakeUnavailable(
+                f"the prompt {PROMPT_NAME} is not installed, so extraction is not authorised")
+        return str(template), self._render(str(template), context)
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _one(value: Any) -> str:
+        """A context value as one line of prompt text. A list is joined the way the prompt's own
+        wording expects ("Valid categories: a | b"); anything else is stringified as given."""
+        if isinstance(value, (list, tuple)):
+            return " | ".join(str(v) for v in value if str(v).strip())
+        if value is None:
+            return ""
+        return str(value)
+
+    @classmethod
+    def _render(cls, template: str, context: Dict[str, Any]) -> str:
+        out = template
+        for name in _PLACEHOLDERS:
+            out = out.replace("{" + name + "}", cls._one(context.get(name)))
+        return out
+
+    @staticmethod
+    def _parse(raw: Any) -> tuple[Dict[str, Any], bool]:
+        """-> (the object the model sent, whether it answered at all).
+
+        call_ollama returns a GenerateResponse, a dict or a string depending on the client — and
+        on failure it returns {"response": "", "error": …} rather than raising, which is why the
+        second element exists.
+        """
+        text: Optional[str]
+        error: Any = None
+        if isinstance(raw, str):
+            text = raw
+        else:
+            text = getattr(raw, "response", None)
+            error = getattr(raw, "error", None)
+            if hasattr(raw, "get"):
+                if text is None:
+                    text = raw.get("response")
+                if error is None:
+                    error = raw.get("error")
+        if error:
+            logger.debug("demand intake extraction: the model host refused: %s", error)
+            return {}, False
+        if not isinstance(text, str) or not text.strip():
+            return {}, False
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            logger.debug("demand intake extraction: reply was not JSON")
+            return {}, False
+        return (parsed, True) if isinstance(parsed, dict) else ({}, False)
+
+    @staticmethod
+    def _norm(value: Any) -> str:
+        """One spelling for comparing a value against a text: case-folded, whitespace collapsed,
+        and stripped of the punctuation a model puts round a value it is quoting."""
+        return " ".join(str(value).split()).strip(" .,;:()[]\"\u2018\u2019\u201c\u201d").casefold()
+
+    @classmethod
+    def _instruction_examples(cls, template: str) -> frozenset:
+        """The literals the INSTRUCTION itself quotes, as its own illustrations.
+
+        The placeholders are blanked FIRST, which is the whole reason this reads the template and
+        not the rendered prompt: `{text}` is the requester's words and `{fields}` is this tenant's
+        configuration, and a literal quoted in either of those is not something the instruction
+        made up. What is left is the governed prose, and the strings it quotes there are examples.
+        """
+        skeleton = template
+        for name in _PLACEHOLDERS:
+            skeleton = skeleton.replace("{" + name + "}", " ")
+        out = set()
+        for match in _QUOTED.finditer(skeleton):
+            literal = cls._norm(match.group(1) or match.group(2) or "")
+            if literal:
+                out.add(literal)
+        return frozenset(out)
+
+    @classmethod
+    def _said(cls, context: Dict[str, Any]) -> str:
+        """The requester's own words, normalised the same way, for the absence half of the test."""
+        return cls._norm(context.get("text") or "")
+
+    @classmethod
+    def _offered(cls, context: Dict[str, Any]) -> str:
+        """What this tenant's configuration offers: the field list and the category names.
+
+        A value the configuration offers belongs to the tenant, not to the instruction. Without
+        this the harvested example set — which really does contain "high", "medium" and "low",
+        because the template names the confidence words and quotes them — would refuse 'High' on
+        a tenant's own High | Medium | Low field whenever the requester said "urgent" instead.
+        """
+        return cls._norm(" | ".join([cls._one(context.get("fields")),
+                                     cls._one(context.get("categories"))]))
+
+    @classmethod
+    def _unclaimed(cls, path: str, said: str, asked: str = "") -> bool:
+        """Is this a field the request never claims a figure for?
+
+        True only for the handful of fields in _CLAIM_CUES, and only when neither the text nor
+        the question just asked shows the requester talking about that field. Every other path
+        is none of this method's business.
+        """
+        pattern = _CLAIM_PATTERNS.get(path)
+        if pattern is None:
+            return False
+        if path == asked:
+            # The conversation asked for exactly this, so the answer is about this.
+            return False
+        return not pattern.search(said or "")
+
+    @classmethod
+    def _leaked(cls, value: Any, leaked: frozenset, said: str, offered: str = "") -> bool:
+        """Is this value the instruction's example rather than the requester's evidence?
+
+        THREE conditions, and the last two are what make the guard safe. A value is refused only
+        when the instruction quoted it, the request does not contain it, and this tenant's
+        configuration does not offer it. So a requester who really did ask for a 99.95% SLA keeps
+        it; an option the configuration lists is never refused; and a value the model merely
+        normalised — a date read out of "March", money stripped of its separators — is not an
+        example the instruction quoted at all, so this never sees it.
+        """
+        norm = cls._norm(value)
+        return (bool(norm) and norm in leaked
+                and norm not in said and norm not in offered)
+
+    @classmethod
+    def _fields(cls, parsed: Dict[str, Any], leaked: frozenset = frozenset(),
+                said: str = "", offered: str = "",
+                asked: str = "") -> Dict[str, Dict[str, Any]]:
+        """The fields the model found, in one shape.
+
+        `{"fields": {...}}` is what the prompt asks for; a reply that IS the fields is accepted
+        too, because that is the other half of what models actually send back.
+        """
+        found = parsed.get("fields")
+        if not isinstance(found, dict):
+            found = parsed if parsed and "fields" not in parsed else {}
+        out: Dict[str, Dict[str, Any]] = {}
+        for path, entry in list(found.items())[:_MAX_PATHS]:
+            key = str(path).strip()
+            if not key or key in _FORBIDDEN_PATHS:
+                continue
+            if cls._unclaimed(key, said, asked):
+                logger.debug("demand intake extraction: %s is not something this request "
+                             "claims, so the model's figure is dropped", key)
+                continue
+            value = cls._value_of(entry)
+            if isinstance(value, (list, tuple)):
+                # Each element on its own: the live reply mixed two of the template's examples in
+                # with one real reading, and the real one must survive.
+                kept = [v for v in value if not cls._leaked(v, leaked, said, offered)]
+                if len(kept) != len(value):
+                    logger.debug("demand intake extraction: dropped %d quoted example(s) from %s",
+                                 len(value) - len(kept), key)
+                value = kept
+            elif cls._leaked(value, leaked, said, offered):
+                logger.debug("demand intake extraction: %s came back as the instruction's own "
+                             "example and is not in the request", key)
+                continue
+            # A field left with nothing but examples falls out here rather than travelling empty.
+            if not cls._has_value(value):
+                continue
+            out[key] = {"value": value, "confidence": cls._grounding(value, said)}
+        return out
+
+    @staticmethod
+    def _figures(text: str) -> set:
+        """Every number in a text, as a number: "£95k" and "95,000" are both 95000."""
+        out = set()
+        for m in _FIGURE.finditer(text or ""):
+            try:
+                out.add(round(float(m.group(1).replace(",", "")) * _SCALE[(m.group(2) or "").lower()], 2))
+            except ValueError:
+                continue
+        return out
+
+    @classmethod
+    def _grounding(cls, value: Any, said: str) -> str:
+        """How much of this value is the requester's own words: "high" | "medium" | "low".
+
+        A list is only as sure as its least sure element. `said` is already normalised.
+        """
+        if isinstance(value, (list, tuple)):
+            order = ("low", "medium", "high")
+            return min((cls._grounding(v, said) for v in value), key=order.index, default="low")
+        if isinstance(value, bool) or value is None:
+            return "low"                     # a yes/no is never read out of a sentence
+        norm = cls._norm(value)
+        if not norm or not said:
+            return "low"
+        if re.search(r"(?<!\w)" + re.escape(norm) + r"(?!\w)", said):
+            return "high"
+        value_figs, said_figs = cls._figures(norm), cls._figures(said)
+        bare = re.sub(r"[£$€\s,]", "", norm)
+        if value_figs and re.fullmatch(r"\d+(?:\.\d+)?(?:k|m|bn)?", bare) and value_figs <= said_figs:
+            return "high"                    # the same figure, spelt differently
+        words = [w for w in re.findall(r"\w+", norm) if w not in _FILLER]
+        if not words:
+            return "low"
+        # A figure in the value that the request does not state sinks it, whatever else overlaps.
+        if not value_figs <= said_figs:
+            return "low"
+        said_words = set(re.findall(r"\w+", said))
+        share = sum(w in said_words for w in words) / len(words)
+        return "medium" if share >= _PARAPHRASE_SHARE else "low"
+
+    @staticmethod
+    def _value_of(entry: Any) -> Any:
+        # The model's own confidence word is deliberately not read: see `_grounding`.
+        return entry.get("value") if isinstance(entry, dict) else entry
+
+    @staticmethod
+    def _has_value(value: Any) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return bool(value.strip())
+        if isinstance(value, (list, tuple, dict)):
+            return len(value) > 0
+        return True
+
+
+def extract_fields(agent_nick, context: Dict[str, Any]) -> Dict[str, Any]:
+    """One call for a request handler: build the agent, extract, return."""
+    return DemandIntakeAgent(agent_nick).extract(context)
+
+
+__all__ = ["DemandIntakeAgent", "DemandIntakeUnavailable", "extract_fields", "PROMPT_NAME"]

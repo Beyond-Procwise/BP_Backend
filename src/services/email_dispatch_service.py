@@ -41,6 +41,8 @@ from .email_thread_store import (
 
 configure_gpu()
 
+from src.services import egress as _egress
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_THREAD_TABLE = DEFAULT_THREAD_TABLE
@@ -507,6 +509,29 @@ class EmailDispatchService:
             if sent:
                 dispatch_payload["sent_on"] = datetime.utcnow().isoformat()
                 dispatch_payload["message_id"] = message_id
+                # What was actually sent, measured against what the model drafted. Only a
+                # score and the changed figures are kept; record_sent never raises.
+                try:
+                    from src.services.draft_assurance import capture, retention
+
+                    # The governed period decides whether the sent text is kept at all: None (unreadable
+                    # or unset) means only the score and changed figures are stored, never the words.
+                    try:
+                        from src.services import rbac
+
+                        keep_days = retention.raw_text_days(
+                            getattr(self.agent_nick, "policy_engine", None) or rbac.policy_engine()
+                        )
+                    except Exception:  # noqa: BLE001
+                        keep_days = None
+                    capture.record_sent(
+                        conn, unique_id, body,
+                        reviewed_by=(getattr(gate, "evidence", None) or {}).get("reviewed_by"),
+                        sent_by=getattr(principal, "subject", None),
+                        retention_days=keep_days,
+                    )
+                except Exception:  # pragma: no cover - bookkeeping only
+                    self.logger.exception("send outcome capture failed for %s", unique_id)
                 updated_thread_headers = self._augment_thread_headers(
                     thread_headers,
                     message_id,
@@ -1054,10 +1079,9 @@ class EmailDispatchService:
 
     def _read_s3_bytes(self, s3_key: str) -> bytes:
         """Fetch one attachment's bytes. Separated so tests can stand it in."""
-        import boto3
         from config.settings import settings
 
-        client = boto3.client("s3")
+        client = _egress.aws_client("s3", purpose=_egress.Purpose.OBJECT_STORAGE)
         obj = client.get_object(Bucket=settings.s3_bucket_name, Key=s3_key)
         return obj["Body"].read()
 
@@ -1068,10 +1092,9 @@ class EmailDispatchService:
         the extraction pipeline, and a supplier's countersigned contract
         arriving there would raise discrepancy findings against itself.
         """
-        import boto3
         from config.settings import settings
 
-        client = boto3.client("s3")
+        client = _egress.aws_client("s3", purpose=_egress.Purpose.OBJECT_STORAGE)
         client.put_object(
             Bucket=settings.s3_bucket_name,
             Key=s3_key,

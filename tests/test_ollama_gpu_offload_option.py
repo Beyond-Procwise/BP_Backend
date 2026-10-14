@@ -53,9 +53,28 @@ def test_cpu_does_not_ask_for_gpu_layers():
     assert "num_gpu_layers" not in options
 
 
-def test_keep_alive_is_preserved_on_both_paths():
-    """Unrelated to placement, but reloading a 20GB model per request is its own
-    latency bug — the existing keep_alive must survive the fix."""
+def test_keep_alive_does_not_travel_inside_options():
+    """Reloading a 20GB model per request is its own latency bug — but `keep_alive` inside
+    `options` was never preventing it.
 
-    assert _options_for("cuda").get("keep_alive") == "10m"
-    assert _options_for("cpu").get("keep_alive") == "10m"
+    This used to assert `options["keep_alive"] == "10m"`, which is the SAME class of
+    mistake the rest of this file is about: a key Ollama accepts and ignores. The live
+    server says so in as many words, on every request —
+
+        level=WARN source=types.go:977 msg="invalid option provided" option=keep_alive
+
+    — so the model expired on the daemon's 5m default and the first caller after any lull
+    paid a cold load of about 150 seconds. `keep_alive` is a TOP-LEVEL request field.
+    model_selector already popped it out to the top level and said why; this path did not.
+    """
+    for device in ("cuda", "cpu"):
+        assert "keep_alive" not in _options_for(device), (
+            f"{device}: Ollama ignores keep_alive inside options — it belongs beside the "
+            "request, not in it")
+
+
+def test_the_shared_pin_is_what_callers_send_alongside_the_request():
+    # The value itself still has to exist somewhere, and in one place, or the two paths
+    # disagree about how long the model stays resident.
+    from src.services.ollama_client import KEEP_ALIVE
+    assert KEEP_ALIVE is not None

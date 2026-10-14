@@ -1,7 +1,7 @@
 import logging
 import time
 
-import requests
+from src.services import egress
 
 from src.services.structural_extractor.derivation import rule
 
@@ -12,8 +12,12 @@ _CACHE_TTL = 3600  # 1h
 
 def _fetch_json(ccy: str) -> dict | None:
     try:
-        r = requests.get(f"https://open.er-api.com/v6/latest/{ccy}", timeout=5)
-        if r.status_code == 200:
+        r = egress.get(
+            f"https://open.er-api.com/v6/latest/{ccy}",
+            purpose=egress.Purpose.FX_RATES,
+            timeout=5,
+        )
+        if r is not None and r.status_code == 200:
             return r.json()
     except Exception:
         log.debug("FX fetch failed for %s", ccy, exc_info=True)

@@ -12,9 +12,13 @@ from orchestration.orchestrator import Orchestrator
 
 # Ensure GPU-related environment variables are set for agent operations
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
-os.environ.setdefault("OLLAMA_USE_GPU", "1")
-os.environ.setdefault("OLLAMA_NUM_PARALLEL", "4")
 os.environ.setdefault("OMP_NUM_THREADS", "8")
+
+from api.auth import require_user
+from repositories import agent_definition_repo
+from services import rbac
+from services.prompt_engine import agent_prompts
+from api.endpoint_gate import require as gate
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +74,8 @@ async def list_tools(agent_nick=Depends(get_agent_nick)):
 
 
 @router.post("/reason")
-async def agent_nick_reason(req: ReasonRequest, agent_nick=Depends(get_agent_nick)):
+async def agent_nick_reason(req: ReasonRequest, agent_nick=Depends(get_agent_nick),
+                            principal=Depends(require_user)):
     """Let AgentNick plan and act on a task by calling tools.
 
     Returns the answer AND the full trace — every tool call, its arguments, and
@@ -83,6 +88,9 @@ async def agent_nick_reason(req: ReasonRequest, agent_nick=Depends(get_agent_nic
             req.task,
             max_rounds=req.max_rounds,
             require_tool_use=req.require_tool_use,
+            agent="agent_nick",
+            # the requester, so an approval this call triggers is never decided by them
+            user_id=getattr(principal, "subject", None) or None,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("AgentNick.reason failed")
@@ -116,8 +124,15 @@ async def get_agent_manifest(agent_name: str, orchestrator: Orchestrator = Depen
 
 
 @router.post("/reload-policies")
-async def reload_policies(agent_nick=Depends(get_agent_nick)):
-    """Reload policy configurations"""
+async def reload_policies(
+    agent_nick=Depends(get_agent_nick), principal=Depends(require_user)
+):
+    """Reload policy configurations.
+
+    Gated: this re-reads the rules that govern every other decision in the
+    product, so it is the sharpest configure action there is.
+    """
+    gate("policy.reload", principal, agent="AgentsRouter")
     try:
         agent_nick.policy_engine.reload_policies()
         return {"status": "success", "message": "Policies reloaded"}
@@ -127,21 +142,48 @@ async def reload_policies(agent_nick=Depends(get_agent_nick)):
 
 
 def _do_reload_governance(agent_nick) -> Dict[str, Any]:
-    """The one governance hot-reload: prompts + policies + extraction hints."""
+    """The one governance hot-reload: prompts + policies + rules + hints.
+
+    Rules are in here for the same reason prompts are: a threshold you have to
+    restart the service to change is a threshold nobody changes.
+    """
     agent_nick.policy_engine.reload_policies()
     agent_nick.prompt_engine.refresh()
     from src.services.extraction_feedback.hint_store import HINT_STORE
     hints = HINT_STORE.refresh()
+
+    # A rule book that was unreadable at boot is retried here, so recovering
+    # from an outage does not need a restart either.
+    rule_book = getattr(agent_nick, "rule_book", None)
+    if rule_book is None:
+        from engines.rule_book import load_rule_book
+
+        rule_book = load_rule_book(agent_nick)
+        agent_nick.rule_book = rule_book
+    else:
+        from engines.rule_book import RuleBookUnavailable
+
+        try:
+            rule_book.reload()
+        except RuleBookUnavailable as exc:
+            # Keep serving the rules we already hold rather than dropping to
+            # none: stale detection beats silent no detection.
+            logger.error("rule book reload failed, keeping cached rules: %s", exc)
+
     return {
         "prompts": len(agent_nick.prompt_engine.all_prompts()),
         "policies": len(agent_nick.policy_engine.list_policies()),
+        "rules": len(rule_book.active_rules()) if rule_book else 0,
         "extraction_vendor_hints": hints,
     }
 
 
 @router.post("/reload-governance")
-async def reload_governance(agent_nick=Depends(get_agent_nick)):
+async def reload_governance(
+    agent_nick=Depends(get_agent_nick), principal=Depends(require_user)
+):
     """Reload both prompt and policy governance from the bp_ tables."""
+    gate("prompt.write", principal, agent="AgentsRouter")
     try:
         return {"status": "success", **_do_reload_governance(agent_nick)}
     except Exception as e:  # pragma: no cover - defensive
@@ -163,7 +205,9 @@ class CreateAgentBody(BaseModel):
     slug: Optional[str] = None
     description: str = ""
     backing_slug: str
-    instructions: str
+    # Optional on purpose: the workspace console sends only a description —
+    # the governed prompt is derived from it. Explicit instructions still win.
+    instructions: str = ""
     capabilities: Optional[List[str]] = None
     # Both optional, and both meaning "leave it alone" when absent. An agent
     # created without them behaves exactly as one created before they existed:
@@ -171,6 +215,53 @@ class CreateAgentBody(BaseModel):
     model_key: Optional[str] = None      # a key from proc.bp_model, never a model name
     prompt_ids: Optional[List[int]] = None
     policy_ids: Optional[List[int]] = None
+    # The tools this agent reasons with. Absent means it is not narrowed; an
+    # empty list means it is given none. Keys come from GET /agents/tools.
+    tools: Optional[List[str]] = None
+    # The outputs this agent returns, by name: [{"name", "description"}]. Each
+    # run fills them in from what its tools returned, and reports one the
+    # evidence does not establish as missing. Absent, the agent answers in prose only.
+    outputs: Optional[List[Dict[str, Any]]] = None
+    # The registered calculations this agent must always have, by name. Each is
+    # run before the agent reasons and stated in its task; the agent does not
+    # choose. Keys come from GET /agents/calculation-options.
+    calculations: Optional[List[str]] = None
+
+
+def _checked_calculations(names: List[str]) -> List[str]:
+    """The list as it will be stored, or a 422 naming what cannot be in it."""
+    from services import calculation_tools
+
+    try:
+        return calculation_tools.checked_required(names)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+def _checked_tools(agent_nick, tools: List[str]) -> List[str]:
+    """The list as it will be stored, or a 422 naming what cannot be in it.
+
+    Refused here rather than dropped at run time: a list that names a tool the
+    agent will never be handed reads, to whoever reviews it, as a statement of
+    what the agent can do.
+    """
+    from agents.base_agent import NODE_TOOL_EXCLUSIONS
+
+    wanted = list(dict.fromkeys(str(t).strip() for t in tools if str(t).strip()))
+    known = {t.name for t in agent_nick.tools()}
+    unknown = [t for t in wanted if t not in known]
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"not a tool on this installation: {', '.join(unknown)}",
+        )
+    barred = [t for t in wanted if t in NODE_TOOL_EXCLUSIONS]
+    if barred:
+        raise HTTPException(
+            status_code=422,
+            detail=f"no agent can be given: {', '.join(barred)}",
+        )
+    return wanted
 
 
 @router.get("/governance-options")
@@ -304,9 +395,65 @@ async def creatable_bases():
     }
 
 
+@router.get("/tool-options")
+async def tool_options(agent_nick=Depends(get_agent_nick)):
+    """The tools an agent may be given, in the shape the authoring console picks
+    from: ``{key, name, description}``.
+
+    Distinct from GET /agents/tools, which answers "what can AgentNick call" for
+    diagnostics and keys on the raw handler name. This is the pickable list, so
+    the key is what a caller sends back and the name is a label.
+
+    No ``writes`` flag: services.tool_runtime.Tool carries no side-effect
+    metadata, and inferring one from a tool's name would be a guess presented to
+    a reviewer as a fact about what the agent may do.
+    """
+    from agents.base_agent import NODE_TOOL_EXCLUSIONS
+
+    # Only what an agent can actually be given: offering the tool that sends
+    # email here would invite a pick that the create and edit calls refuse.
+    tools = [t for t in agent_nick.tools() if t.name not in NODE_TOOL_EXCLUSIONS]
+    return {
+        "count": len(tools),
+        "tools": [
+            {
+                "key": t.name,
+                "name": _tool_label(t.name),
+                "description": t.description,
+            }
+            for t in tools
+        ],
+    }
+
+
+@router.get("/calculation-options")
+async def calculation_options():
+    """The registered calculations an agent may be declared to need, with the
+    inputs each reads from a run, by name: ``{key, family, purpose, reads}``.
+
+    A declared calculation is run on every run of the agent, before it reasons.
+    One that scores a whole set of rows is not listed: it cannot be declared yet.
+    """
+    from services import calculation_tools
+
+    options = calculation_tools.required_options()
+    return {"count": len(options), "calculations": options}
+
+
+def _tool_label(key: str) -> str:
+    """`run_data_extraction` -> `Data extraction`. Presentation only: the key is
+    unchanged and remains what the caller sends back."""
+    stem = key[4:] if key.startswith("run_") else key
+    words = stem.replace("-", " ").replace("_", " ").strip()
+    return words[:1].upper() + words[1:] if words else key
+
+
 @router.post("")
 async def create_agent(
-    body: CreateAgentBody, request: Request, agent_nick=Depends(get_agent_nick)
+    body: CreateAgentBody,
+    request: Request,
+    agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ):
     """Create a DERIVED agent: a new catalogue entry backed by an existing
     agent class, plus a bp_prompt row carrying its instructions.
@@ -315,14 +462,21 @@ async def create_agent(
     compiler validates, the engine resolves from the live registry, and
     governance links through prompt_linked_agents — all existing paths.
     """
-    from agents.definitions import DEFINITIONS_PATH, load_agent_definitions
+    gate("agent.create", principal, agent="AgentsRouter",
+         context={"name": (body.name or "").strip()})
+
+    from agents.definitions import load_agent_definitions
 
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(status_code=422, detail="name must not be empty")
-    instructions = body.instructions or ""
-    if not instructions.strip():
-        raise HTTPException(status_code=422, detail="instructions must not be empty")
+    instructions = (body.instructions or "").strip() or (body.description or "").strip()
+    if not instructions:
+        raise HTTPException(
+            status_code=422,
+            detail="instructions or description required: one of them becomes "
+                   "the governed prompt that tells this agent what to do",
+        )
 
     slug = (body.slug or _kebab(name)).strip()
     if not _KEBAB_RE.match(slug):
@@ -376,6 +530,17 @@ async def create_agent(
         # agent would leave it behind the next time the standard moves.
         model_ref = model_repo.resolve_ref(body.model_key)
 
+    tools = _checked_tools(agent_nick, body.tools) if body.tools is not None else None
+
+    output_spec: Optional[List[Dict[str, str]]] = None
+    if body.outputs is not None:
+        from agents import named_outputs
+
+        try:
+            output_spec = named_outputs.checked_spec(body.outputs)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
     # The derived entry IS the backing entry (class_path, inputs, outputs,
     # elicit, dependencies, ...) under a new identity. Nothing is invented.
     entry = copy.deepcopy(backing)
@@ -385,7 +550,34 @@ async def create_agent(
     if body.capabilities is not None:
         entry["capabilities"] = list(body.capabilities)
     entry["derived_from"] = body.backing_slug
-    entry["created_by"] = "workspace"
+    # Who made it. "workspace" was written here for every agent ever created,
+    # which named a screen, not a person; it remains only for a server running
+    # with sign-in off, where there is nobody to name.
+    created_by = getattr(principal, "subject", None) or None
+    entry["created_by"] = created_by or "workspace"
+    # A new agent is a draft: its creator can run it, nobody else can, until a
+    # second person publishes it (POST /agents/{slug}/publish). With sign-in
+    # off there is no creator to keep it to and no second person to release
+    # it, so it is published at once, as every agent was before drafts existed.
+    entry["stage"] = "draft" if created_by else "published"
+    entry.pop("published_by", None)
+    entry.pop("draft_by", None)
+    # A base's own list is never inherited: the base is not narrowed by one, and
+    # a copy must not start life narrowed by a list nobody chose for it.
+    entry.pop("tools", None)
+    if tools is not None:
+        entry["tools"] = tools
+    # Nor the base's required calculations: they are declared, never inherited.
+    entry.pop("calculations", None)
+    if body.calculations:
+        entry["calculations"] = _checked_calculations(body.calculations)
+    # Likewise the base's named outputs. With its own, the copied "outputs" —
+    # the base class's, which an agent that reasons never produces — are
+    # replaced by the ones it was actually defined to return.
+    entry.pop("output_spec", None)
+    if output_spec is not None:
+        entry["output_spec"] = output_spec
+        entry["outputs"] = [o["name"] for o in output_spec]
     if model_ref:
         entry["model_key"] = body.model_key   # what was chosen, for the UI to echo back
         entry["model"] = model_ref            # what AgentNick calls (see get_agent_model)
@@ -418,17 +610,13 @@ async def create_agent(
         logger.exception("create_agent: bp_prompt insert failed")
         raise HTTPException(status_code=500, detail=f"could not store instructions: {exc}")
 
-    # 2) Append to agent_definitions.json atomically (tmp file + rename).
+    # 2) Store the agent. In the database, not the catalogue file: the file is
+    #    tracked in git and a redeploy replaces it, taking with it every agent a
+    #    person had made. The store records who made it and keeps each version.
     try:
-        with DEFINITIONS_PATH.open(encoding="utf-8") as fh:
-            data = json.load(fh)
-        if isinstance(data, dict):
-            data.setdefault("agents", []).append(entry)
-        else:
-            data.append(entry)
-        tmp = DEFINITIONS_PATH.with_name(DEFINITIONS_PATH.name + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp, DEFINITIONS_PATH)
+        agent_definition_repo.create(
+            slug, entry, derived_from=body.backing_slug, by=created_by
+        )
     except Exception as exc:
         # A failed create must leave no trace: deactivate the prompt row.
         try:
@@ -447,8 +635,16 @@ async def create_agent(
                 "create_agent: could not deactivate prompt %s after catalogue failure",
                 prompt_id,
             )
+        if isinstance(exc, agent_definition_repo.AgentExists):
+            raise HTTPException(
+                status_code=422, detail=f"slug {slug!r} already exists in the agent catalogue"
+            )
         logger.exception("create_agent: catalogue write failed")
         raise HTTPException(status_code=500, detail=f"could not update agent catalogue: {exc}")
+
+    # The instructions also go into the prompt registry, with who wrote them.
+    # The agent still reads them from bp_prompt, so this cannot fail the create.
+    agent_prompts.record(prompt_name, instructions, by=created_by, linked_agent=gov_slug)
 
     # 3) Reload in-process — same registry-build startup does, same governance
     #    reload POST /agents/reload-governance does — so the new slug runs NOW.
@@ -516,15 +712,367 @@ async def create_agent(
         "prompt_id": prompt_id,
         "prompt_name": prompt_name,
         "model_key": body.model_key or None,
+        "tools": tools,
+        "outputs": output_spec,
+        "stage": entry["stage"],
         "registered": slug in agent_nick.agents,
         "governance": reload_report,
         "linked": linked,
     }
 
 
+class UpdateAgentBody(BaseModel):
+    """A PARTIAL update: every field is optional and an omitted field is left
+    alone. Field names deliberately match CreateAgentBody, and `tools` is spelled
+    `tools` (not `tool_keys`) — both as the authoring console asked.
+
+    Omitted and null are different answers, and the handler tells them apart with
+    ``model_fields_set``: omitting ``model_key`` keeps the current model, while
+    sending it as null moves the agent back to the standard model. An emptied
+    governance list is sent as ``[]``, which unlinks; omitting it keeps the links.
+    """
+
+    name: Optional[str] = None
+    description: Optional[str] = None
+    instructions: Optional[str] = None
+    backing_slug: Optional[str] = None
+    model_key: Optional[str] = None
+    tools: Optional[List[str]] = None
+    # The named outputs, [{"name", "description"}]. Omitted keeps them; null
+    # removes them, and the agent answers in prose only.
+    outputs: Optional[List[Dict[str, Any]]] = None
+    # The calculations the agent must always have. Omitted keeps them; null or
+    # an empty list removes them.
+    calculations: Optional[List[str]] = None
+    capabilities: Optional[List[str]] = None
+    prompt_ids: Optional[List[int]] = None
+    policy_ids: Optional[List[int]] = None
+    # The governance half of an edit. Accepted rather than rejected as unknown
+    # (which would 422 every save), and carried into the gate's context so they
+    # land in proc.bp_agent_actions — the same log GET /spendiq/audit-logs reads.
+    change_reason: Optional[str] = None
+    authorised_by: Optional[str] = None
+
+
+def _relink_governance(agent_nick, gov_slug: str, table: str, id_col: str,
+                       link_col: str, name_col: Optional[str],
+                       keep_name: Optional[str], ids: List[int]) -> List[int]:
+    """Make ``ids`` the complete set of rows in ``table`` that govern this agent.
+
+    _link_governance only ever appends, which is right for create but cannot
+    express "this one is no longer linked". This removes the token from rows the
+    caller did not list and adds it to the ones they did, so ``[]`` really does
+    unlink everything.
+
+    ``keep_name`` is the agent's OWN instructions row, which create wrote and
+    which is not one of the optional links. Unlinking it because it was absent
+    from prompt_ids would leave the agent with no instructions at all — a
+    governance edit silently lobotomising the agent it was editing.
+    """
+    wanted = set(ids or [])
+    conn = agent_nick.get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            select_cols = f"{id_col}, {link_col}" + (f", {name_col}" if name_col else "")
+            cur.execute(
+                f"SELECT {select_cols} FROM proc.{table} "
+                f"WHERE {link_col} IS NOT NULL AND {link_col} <> ''"
+            )
+            for record in cur.fetchall():
+                row_id, linked_agents = record[0], record[1]
+                row_name = record[2] if name_col else None
+                tokens = [t.strip() for t in re.split(r"[,;]", linked_agents or "") if t.strip()]
+                if gov_slug not in tokens or row_id in wanted:
+                    continue
+                if keep_name and row_name == keep_name:
+                    continue
+                kept = [t for t in tokens if t != gov_slug]
+                cur.execute(
+                    f"UPDATE proc.{table} SET {link_col} = %s WHERE {id_col} = %s",
+                    (", ".join(kept), row_id),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+    return _link_governance(agent_nick, gov_slug, table, id_col, link_col, list(wanted))
+
+
+@router.patch("/{slug}")
+async def update_agent(
+    slug: str,
+    body: UpdateAgentBody,
+    request: Request,
+    agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
+):
+    """Edit a DERIVED agent in place, changing only the fields that were sent.
+
+    The same boundary as DELETE /agents/{slug}: a slug that is not in the
+    catalogue is a 404, and a built-in agent (no ``derived_from``) is a 403. The
+    console hides the control in those cases, but the API is the boundary, not
+    the screen.
+    """
+    sent = body.model_fields_set
+    gate(
+        "agent.update",
+        principal,
+        agent="AgentsRouter",
+        context={
+            "slug": slug,
+            "fields": sorted(sent - {"change_reason", "authorised_by"}),
+            "change_reason": (body.change_reason or "").strip() or None,
+            "authorised_by": (body.authorised_by or "").strip() or None,
+        },
+    )
+
+    from agents.definitions import load_agent_definitions
+
+    definitions = load_agent_definitions()
+    entry = next((a for a in definitions if a.get("slug") == slug), None)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"agent {slug!r} not found in catalogue")
+    if not entry.get("derived_from"):
+        raise HTTPException(
+            status_code=403,
+            detail=f"agent {slug!r} is a built-in agent and cannot be edited",
+        )
+    editor = getattr(principal, "subject", None) or None
+
+    updated = copy.deepcopy(entry)
+    applied: Dict[str, Any] = {}
+
+    # --- backing class -----------------------------------------------------
+    # Re-derives the executable half (class_path, inputs, outputs, elicit,
+    # dependencies) from the new base while identity stays put, which is exactly
+    # what create does — the difference is that slug and description survive.
+    if "backing_slug" in sent:
+        backing = next((a for a in definitions if a.get("slug") == body.backing_slug), None)
+        if backing is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"backing_slug {body.backing_slug!r} is not in the agent catalogue",
+            )
+        if not backing.get("class_path"):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"backing_slug {body.backing_slug!r} has no class_path and cannot "
+                    "execute; pick one of GET /agents/creatable-bases"
+                ),
+            )
+        carried = copy.deepcopy(backing)
+        for keep in ("agentId", "slug", "description", "created_by", "name",
+                     "capabilities", "model", "model_key", "tools", "output_spec",
+                     "calculations", "stage", "draft_by", "published_by"):
+            carried.pop(keep, None)
+        updated.update(carried)
+        updated["derived_from"] = body.backing_slug
+        applied["backing_slug"] = body.backing_slug
+
+    if "name" in sent:
+        updated["name"] = (body.name or "").strip()
+        applied["name"] = updated["name"]
+    if "description" in sent:
+        updated["description"] = (body.description or "").strip()
+        applied["description"] = updated["description"]
+    if "capabilities" in sent:
+        updated["capabilities"] = list(body.capabilities or [])
+        applied["capabilities"] = updated["capabilities"]
+
+    # --- tools -------------------------------------------------------------
+    # The list IS the agent's tools at run time (the registry stamps it on the
+    # agent and the loop is built from it). A list is the whole answer: [] is
+    # no tools. Null removes the list, and the agent is no longer narrowed.
+    if "tools" in sent:
+        if body.tools is None:
+            updated.pop("tools", None)
+            applied["tools"] = None
+        else:
+            updated["tools"] = _checked_tools(agent_nick, body.tools)
+            applied["tools"] = updated["tools"]
+
+    # --- required calculations ---------------------------------------------
+    if "calculations" in sent:
+        if not body.calculations:
+            updated.pop("calculations", None)
+            applied["calculations"] = None
+        else:
+            updated["calculations"] = _checked_calculations(body.calculations)
+            applied["calculations"] = updated["calculations"]
+
+    # --- named outputs -----------------------------------------------------
+    if "outputs" in sent:
+        if body.outputs is None:
+            updated.pop("output_spec", None)
+            updated["outputs"] = []
+            applied["outputs"] = None
+        else:
+            from agents import named_outputs
+
+            try:
+                spec = named_outputs.checked_spec(body.outputs)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc))
+            updated["output_spec"] = spec
+            updated["outputs"] = [o["name"] for o in spec]
+            applied["outputs"] = spec
+
+    # --- model -------------------------------------------------------------
+    if "model_key" in sent:
+        if body.model_key is None:
+            updated.pop("model_key", None)
+            updated.pop("model", None)
+            applied["model_key"] = None
+        else:
+            from repositories import model_catalogue_repo as model_repo
+
+            row = model_repo.get(body.model_key)
+            if row is None or not row.get("model_status"):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"model {body.model_key!r} is not offered on this installation",
+                )
+            if not row.get("selectable"):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"model {row['display_name']!r} needs an API key to be configured first",
+                )
+            model_ref = model_repo.resolve_ref(body.model_key)
+            if model_ref:
+                updated["model_key"] = body.model_key
+                updated["model"] = model_ref
+            else:
+                # "standard" resolves to no ref on purpose; pinning today's
+                # standard would leave this agent behind when the standard moves.
+                updated.pop("model_key", None)
+                updated.pop("model", None)
+            applied["model_key"] = body.model_key
+
+    gov_slug = slug.replace("-", "_")
+    prompt_name = f"{gov_slug}_instructions"
+
+    # --- instructions ------------------------------------------------------
+    # Only when explicitly sent. A description edit does NOT rewrite the governed
+    # prompt: create seeds the prompt from the description, but after that they
+    # are different things, and silently rewriting an agent's instructions
+    # because someone tidied its one-line summary is not an edit anyone asked for.
+    instructions_updated = 0
+    if "instructions" in sent:
+        text = (body.instructions or "").strip()
+        if not text:
+            raise HTTPException(
+                status_code=422, detail="instructions must not be empty when sent"
+            )
+        try:
+            conn = agent_nick.get_db_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE proc.bp_prompt "
+                        "SET prompts_desc = to_jsonb(%s::text), "
+                        "    version = COALESCE(version, 0) + 1, "
+                        "    last_modified_by = 'workspace' "
+                        "WHERE prompt_name = %s AND prompt_linked_agents = %s",
+                        (text, prompt_name, gov_slug),
+                    )
+                    instructions_updated = cur.rowcount
+                conn.commit()
+            finally:
+                conn.close()
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("update_agent: bp_prompt update failed")
+            raise HTTPException(status_code=500, detail=f"could not store instructions: {exc}")
+        applied["instructions"] = True
+        # A new version in the prompt registry; the wording it replaces is kept.
+        agent_prompts.record(prompt_name, text, by=editor, linked_agent=gov_slug)
+
+    # --- back to draft -----------------------------------------------------
+    # An edit changes what the agent does, so it has to be released again: were
+    # it to stay published, one person could have a harmless agent published
+    # and then rewrite it, and the second pair of eyes would have seen nothing
+    # of what everyone now runs. Any edit counts — deciding which edits are
+    # harmless is exactly the judgement the second person is there to make.
+    # It is the EDITOR's draft: they can try it, and they cannot publish it.
+    # With sign-in off there is nobody to hold it to, so its stage is left alone.
+    if editor:
+        updated["stage"] = "draft"
+        updated["draft_by"] = editor
+        updated.pop("published_by", None)
+    applied["stage"] = updated.get("stage") or "published"
+
+    # --- catalogue write ---------------------------------------------------
+    # To the store, where created agents live, and recorded as a version. This
+    # used to rewrite agent_definitions.json, which no longer holds them: the
+    # edit reported success and changed nothing.
+    try:
+        version = agent_definition_repo.update(slug, updated, by=editor)
+    except agent_definition_repo.AgentNotFound:
+        raise HTTPException(status_code=404, detail=f"agent {slug!r} not found in catalogue")
+    except Exception as exc:
+        logger.exception("update_agent: catalogue write failed")
+        raise HTTPException(status_code=500, detail=f"could not update agent catalogue: {exc}")
+
+    # --- governance links --------------------------------------------------
+    linked: Dict[str, List[int]] = {}
+    if "prompt_ids" in sent:
+        linked["prompts"] = _relink_governance(
+            agent_nick, gov_slug, "bp_prompt", "prompt_id", "prompt_linked_agents",
+            "prompt_name", prompt_name, body.prompt_ids or [],
+        )
+        applied["prompt_ids"] = linked["prompts"]
+    if "policy_ids" in sent:
+        linked["policies"] = _relink_governance(
+            agent_nick, gov_slug, "bp_policy", "policy_id", "policy_linked_agents",
+            None, None, body.policy_ids or [],
+        )
+        applied["policy_ids"] = linked["policies"]
+
+    # --- in-process reload -------------------------------------------------
+    reload_report: Dict[str, Any] = {}
+    try:
+        registry = getattr(agent_nick, "auto_registry", None)
+        if registry is not None:
+            registry.refresh_from_json()
+
+        Orchestrator._load_agent_definitions.cache_clear()
+        orchestrator = getattr(request.app.state, "orchestrator", None)
+        if orchestrator is not None:
+            orchestrator._prompt_cache = None
+            orchestrator._policy_cache = None
+
+        if hasattr(agent_nick, "refresh_agent_model_registry"):
+            agent_nick.refresh_agent_model_registry()
+
+        reload_report = _do_reload_governance(agent_nick)
+    except Exception as exc:
+        # Disk and bp_prompt already carry the change; a restart catches the
+        # in-process view up.
+        logger.exception("update_agent: in-process reload failed")
+        reload_report = {"error": str(exc)}
+
+    return {
+        "status": "updated",
+        "slug": slug,
+        "applied": applied,
+        "instructions_rows_updated": instructions_updated,
+        # The saved list is what the agent reasons with from this moment.
+        "tools_enforced": True,
+        "stage": applied["stage"],
+        "version": version,
+        "change_reason": (body.change_reason or "").strip() or None,
+        "authorised_by": (body.authorised_by or "").strip() or None,
+        "governance": reload_report,
+    }
+
+
 @router.delete("/{slug}")
 async def delete_agent(
-    slug: str, request: Request, agent_nick=Depends(get_agent_nick)
+    slug: str,
+    request: Request,
+    agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ):
     """Delete a DERIVED agent: the exact reverse of POST /agents.
 
@@ -534,7 +1082,8 @@ async def delete_agent(
     A derived agent still referenced by a saved workflow 409s instead of
     cascade-deleting the workflow — workflows are never silently destroyed.
     """
-    from agents.definitions import DEFINITIONS_PATH, load_agent_definitions
+    gate("agent.delete", principal, agent="AgentsRouter", context={"slug": slug})
+    from agents.definitions import load_agent_definitions
 
     definitions = load_agent_definitions()
     entry = next((a for a in definitions if a.get("slug") == slug), None)
@@ -600,20 +1149,17 @@ async def delete_agent(
     except Exception as exc:
         logger.exception("delete_agent: bp_prompt delete failed")
         raise HTTPException(status_code=500, detail=f"could not remove instructions: {exc}")
+    # The registry keeps every wording the agent ran under; it is retired, not removed.
+    agent_prompts.retire(f"{gov_slug}_instructions",
+                         by=getattr(principal, "subject", None) or None)
 
-    # 2) Remove from agent_definitions.json atomically (tmp file + rename),
-    #    same shape create's step 2 writes (indent=2 + trailing newline).
+    # 2) Mark it deleted in the store. The row and its history stay; a copy an
+    #    older version left in the catalogue file stays hidden behind it.
     try:
-        with DEFINITIONS_PATH.open(encoding="utf-8") as fh:
-            data = json.load(fh)
-        if isinstance(data, dict):
-            remaining = [a for a in data.get("agents", []) if a.get("slug") != slug]
-            data["agents"] = remaining
-        else:
-            data = [a for a in data if a.get("slug") != slug]
-        tmp = DEFINITIONS_PATH.with_name(DEFINITIONS_PATH.name + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp, DEFINITIONS_PATH)
+        agent_definition_repo.delete(
+            slug, entry, derived_from=entry["derived_from"],
+            by=getattr(principal, "subject", None) or None,
+        )
     except Exception as exc:
         logger.exception("delete_agent: catalogue write failed")
         raise HTTPException(status_code=500, detail=f"could not update agent catalogue: {exc}")
@@ -671,6 +1217,136 @@ async def delete_agent(
     }
 
 
+@router.get("/{slug}/history")
+async def agent_history(slug: str, principal=Depends(require_user)):
+    """Every recorded change to one created agent, newest first: what changed,
+    who changed it and when, and what the agent looked like afterwards.
+
+    A built-in agent has no history here — a release changes it, not a person —
+    and answers 404 like a slug that was never created.
+    """
+    versions = agent_definition_repo.history(slug)
+    if not versions:
+        raise HTTPException(status_code=404, detail=f"no created agent {slug!r}")
+    return {"slug": slug, "versions": versions}
+
+
+def _require_role(principal, minimum: str, what: str) -> str:
+    """The caller's role, or a 403 naming the role ``what`` needs. Nobody
+    signed in is a Viewer, so this refuses rather than waves through."""
+    role = rbac.effective_role(principal)
+    if rbac.role_rank(role) < rbac.role_rank(minimum):
+        raise HTTPException(status_code=403, detail=f"{what} needs the {minimum} role or higher")
+    return role
+
+
+@router.post("/{slug}/publish")
+async def publish_agent(
+    slug: str,
+    request: Request,
+    agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
+):
+    """Release a draft agent to everyone.
+
+    Two conditions, and both are the point: the caller has approval rights, and
+    the caller is not the person who created the agent. One person cannot both
+    write an agent's task and decide it is fit for everyone else to run.
+    """
+    from agents.definitions import load_agent_definitions
+
+    entry = next((a for a in load_agent_definitions() if a.get("slug") == slug), None)
+    if entry is None or not entry.get("derived_from"):
+        raise HTTPException(status_code=404, detail=f"no created agent {slug!r}")
+    if entry.get("stage") != "draft":
+        raise HTTPException(status_code=409, detail=f"agent {slug!r} is not a draft")
+
+    _require_role(principal, "Approver", "publishing an agent")
+    subject = getattr(principal, "subject", None) or None
+    # Whose draft it is: whoever last edited it, or failing that whoever created it.
+    author = entry.get("draft_by") or entry.get("created_by")
+    if not subject or subject == author:
+        raise HTTPException(
+            status_code=403,
+            detail="an agent cannot be published by the person who created or last edited it",
+        )
+
+    published = {**entry, "stage": "published", "published_by": subject}
+    published.pop("draft_by", None)
+    try:
+        version = agent_definition_repo.publish(slug, published, by=subject)
+    except agent_definition_repo.AgentNotFound:
+        raise HTTPException(status_code=404, detail=f"no created agent {slug!r}")
+
+    # The agent that is already running must stop being a draft NOW.
+    try:
+        registry = getattr(agent_nick, "auto_registry", None)
+        if registry is not None:
+            registry.refresh_from_json()
+        Orchestrator._load_agent_definitions.cache_clear()
+    except Exception:
+        logger.exception("publish_agent: in-process reload failed; a restart picks it up")
+
+    return {"status": "published", "slug": slug, "stage": "published",
+            "published_by": subject, "version": version}
+
+
+@router.get("/usage")
+async def agent_usage(since: str, until: str, principal=Depends(require_user)):
+    """Tokens used by created agents in a period, by agent, model and person.
+
+    ``since`` is included and ``until`` is not (ISO dates or date-times), so
+    one month's report ends where the next begins. Admin only: this is what a
+    customer is charged from, and it names who ran what.
+    """
+    _require_role(principal, "Admin", "reading agent usage")
+    from datetime import datetime as _dt
+
+    from repositories import agent_run_repo
+
+    try:
+        start, end = _dt.fromisoformat(since), _dt.fromisoformat(until)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="since and until must be ISO dates")
+    if end <= start:
+        raise HTTPException(status_code=422, detail="until must be after since")
+
+    rows = agent_run_repo.usage_summary(start, end)
+    totals = {
+        key: sum(r[key] for r in rows)
+        for key in ("runs", "model_calls", "prompt_tokens", "completion_tokens")
+    }
+    return {"since": since, "until": until, "rows": rows, "totals": totals}
+
+
+@router.get("/runs/{run_id}")
+async def agent_run(run_id: str, principal=Depends(require_user)):
+    """The record of one reasoning run: what the agent was told (its system
+    prompt, as sent), which model answered, each tool call with what it was
+    asked and what it returned, and the answer.
+
+    Asked of the same gate as running an agent: the record holds what the tools
+    returned, which is as much as running the agent would show.
+    """
+    gate("agent.run", principal, agent="AgentsRouter", context={"run_id": run_id})
+    from repositories import agent_run_repo
+
+    run = agent_run_repo.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"no recorded run {run_id!r}")
+    return run
+
+
+@router.get("/{slug}/runs")
+async def agent_runs(slug: str, limit: int = 50, principal=Depends(require_user)):
+    """The recorded runs of one agent, newest first. A summary of each — who,
+    when, which model, how it ended; GET /agents/runs/{run_id} has the rest."""
+    gate("agent.run", principal, agent="AgentsRouter", context={"slug": slug})
+    from repositories import agent_run_repo
+
+    return {"slug": slug, "runs": agent_run_repo.list_for_agent(slug, limit)}
+
+
 class AgentExecutionRequest(BaseModel):
     agent_type: str
     payload: Dict[str, Any] = {}
@@ -683,17 +1359,21 @@ class DocumentProcessRequest(BaseModel):
 
 @router.post("/process-document")
 def process_document(
-    req: DocumentProcessRequest, orchestrator: Orchestrator = Depends(get_orchestrator)
+    req: DocumentProcessRequest, orchestrator: Orchestrator = Depends(get_orchestrator),
+    principal=Depends(require_user),
 ):
     """Convenience endpoint to run the document extraction workflow."""
     payload = {"s3_prefix": req.s3_prefix, "s3_object_key": req.s3_object_key}
-    return orchestrator.execute_workflow("document_extraction", payload)
+    return orchestrator.execute_workflow(
+        "document_extraction", payload,
+        user_id=getattr(principal, "subject", None) or None)
 
 
 @router.post("/execute")
 def execute_agent(
     req: AgentExecutionRequest,
     orchestrator: Orchestrator = Depends(get_orchestrator),
+    principal=Depends(require_user),
 ):
     """Execute a specified agent workflow."""
     if orchestrator.agent_nick is None:
@@ -701,9 +1381,14 @@ def execute_agent(
     prs = orchestrator.agent_nick.process_routing_service
     if prs is None:
         raise HTTPException(status_code=503, detail="Process routing service unavailable")
+    # A person started this, so the routing row names them. Without it the
+    # service filled created_by with settings.script_user ("AgentNick").
+    subject = getattr(principal, "subject", None) or None
     process_id = prs.log_process(
         process_name=req.agent_type,
         process_details=req.payload,
+        created_by=subject,
+        user_id=subject,
     )
     if process_id is None:
         raise HTTPException(status_code=500, detail="Failed to log process")
@@ -714,7 +1399,7 @@ def execute_agent(
         status="started",
     )
     try:
-        result = orchestrator.execute_workflow(req.agent_type, req.payload)
+        result = orchestrator.execute_workflow(req.agent_type, req.payload, user_id=subject)
         prs.log_action(
             process_id=process_id,
             agent_type=req.agent_type,

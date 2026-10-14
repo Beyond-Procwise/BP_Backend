@@ -3,3 +3,107 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../src"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+
+# ---------------------------------------------------------------------------
+# The governed limits (P9).
+#
+# Thirty-three limits are read from proc.bp_policy now, and a missing one
+# REFUSES rather than falling back to a number carried in the code -- which is
+# the whole point of the change. The in-memory database the suite runs against
+# cannot serve policies at all (PolicyEngine does `with conn.cursor()`, and the
+# fake cursor is not a context manager), so without this every test that touches
+# a threshold would fail on a governance store that is simply not there.
+#
+# This seeds the same values the migration writes. It is a COPY, and a copy can
+# drift into proving a value the product does not use, so
+# tests/governance/test_governed_limits.py compares it against the LIVE rows and
+# fails if they disagree. That comparison is the only thing that makes a second
+# copy safe to have.
+#
+# Tests about the limit machinery itself patch `governed_limits._engine`
+# directly; being function-scoped they are applied after this and win.
+# ---------------------------------------------------------------------------
+GOVERNED_LIMIT_SEED = {
+    "promotion_thresholds": {
+        "promote_min_confidence": 50, "promote_min_link_score": 80,
+        "promote_review_min": 65, "propose_min_link_score": 40,
+        "propose_max_candidates": 5, "quote_anchor_min_score": 80,
+        "contract_parent_min_score": 65, "contract_parent_separation": 8},
+    "reconciliation_tolerances": {
+        "amount_tolerance_pct": 0.01, "amount_tolerance_abs": 1.00,
+        "tax_tolerance_pct": 0.1, "uplift_tolerance_pp": 0.25},
+    "supplier_identity": {
+        "review_low": 82, "review_high": 96, "sweep_min_score": 88,
+        "research_name_match": 85, "research_propose_conf": 0.75},
+    "negotiation_bounds": {
+        "max_volume_limit": 1000, "max_term_days": 120,
+        "max_supplier_replies": 3, "first_counter_aggr_pct": 0.12,
+        "market_review_pct": 0.2, "market_escalation_pct": 0.4,
+        "lt_value_pct_per_week": 0.01, "cost_of_capital_apr": 0.12,
+        "max_rounds": 3, "round1_anchor_gap_pct": 0.10, "round2_gap_share": 0.6,
+        "closing_risk_buffer_pct": 0.06, "closing_min_abs_buffer": 3.0,
+        "closing_step_pct_of_gap": 0.12,
+        "final_offer_phrases": [
+            "best and final", "best final", "best offer we can", "best price we can",
+            "cannot go lower", "final offer", "final price", "final quotation", "last price",
+            "lowest we can do", "our best price", "rock bottom", "take it or leave it",
+            "ultimatum"]},
+    "agent_reach": {
+        "max_dynamic_agents": 3, "tool_runtime_max_rounds": 6,
+        "governed_reasoning_max_rounds": 5, "supplier_research_max_rounds": 4,
+        "neg_thread_transcript_limit": None},
+    "extraction_effort": {"judge_max_calls": 12, "judge_budget_s": 25},
+    "autonomous_operation": {
+        "opportunity_mining_min_impact": 100, "capture_retention_days": 30,
+        "duplicate_invoice_detector_enabled": False,
+        "supplier_research_enabled": True,
+        "contract_parent_proposals_enabled": True,
+        "contract_parent_proposal_sweep_hours": 24},
+    "reseller_catalog": {"fuzzy_propose_min": 88, "calibration_min_closed": 30},
+    "sales_quote_pricing": {"margin_floor_pct": None, "discount_corridor_max_pct": None},
+    "receipt_tolerances": {
+        "over_delivery_pct": 0.00, "billed_over_received_qty": 0,
+        "uom_conversion_required": True},
+    "triage_tolerances": {
+        "unit_price_over_pct": 1.0, "unit_price_over_abs": 5.0,
+        "unit_price_combine": "min", "unit_price_under_pct": 5.0,
+        "quantity_over_pct": 5.0, "rounding_per_line": 0.01,
+        "cumulative_total_pct": 0.5, "cumulative_total_abs": 50.0,
+        "cumulative_total_combine": "min", "allowed_tax_rates": [0, 5, 20],
+        "min_link_confidence": 0.8, "unlinked_below": 0.5,
+        "min_extraction_confidence": 0.7, "description_min_similarity": 0.4,
+        "materiality_pct_of_total": 0.5, "materiality_floor": 25,
+        "materiality_ceiling": 5000, "band_s1": 70, "band_s2": 40,
+        "uplift_min_lines": 3, "uplift_same_pct_within": 0.1, "batch_size": 200},
+    # 2026-10-13: how many same-way decisions by people make a precedent (design §3.3, ruling R4)
+    # 2026-10-14: how far above the largest earlier value precedent still applies (Task 12)
+    "agent_policy_conflicts": {"precedent_count": 5, "precedent_value_range_pct": 20},
+    # 2026-10-13: the prompt engine. How long rendered prompt text is kept, and whether a
+    # prompt's wording is passed through the output-safety scrubber to its own screen.
+    "prompt_engine": {"manifest_retention_days": 7, "wording_read_passthrough": True,
+                      "render_retry_seconds": 30},
+}
+
+
+class _SeededPolicyEngine:
+    def get_policy(self, slug):
+        rules = GOVERNED_LIMIT_SEED.get(slug)
+        if rules is None:
+            return None
+        return {"policyName": slug, "details": {"policy_identifier": slug,
+                                                "rules": dict(rules)}}
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _governed_limits_available(monkeypatch):
+    from src.services import governed_limits
+
+    governed_limits.reset_cache()
+    monkeypatch.setattr(governed_limits, "_engine", lambda: _SeededPolicyEngine())
+    monkeypatch.setattr(governed_limits, "_fresh_engine", lambda: _SeededPolicyEngine())
+    yield
+    governed_limits.reset_cache()

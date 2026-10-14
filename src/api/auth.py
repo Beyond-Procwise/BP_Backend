@@ -45,6 +45,15 @@ class AuthError(Exception):
     """The caller could not be identified. Carries no detail for the client."""
 
 
+class AuthNotConfigured(AuthError):
+    """Enforcement was asked for and cannot be performed.
+
+    Distinct from a bad token: nothing the caller sends can succeed. Both
+    refuse — the difference is only in what the transport reports, 503 over
+    HTTP against 401.
+    """
+
+
 @dataclass(frozen=True)
 class Principal:
     """The authenticated caller."""
@@ -208,6 +217,46 @@ def auth_mode() -> str:
     return _mode
 
 
+def _active_verifier() -> Optional[CognitoVerifier]:
+    """The verifier to check a token against, or ``None`` when auth is off.
+
+    The single place ASK_AUTH_MODE is interpreted. Every entry point — the HTTP
+    dependency below, the WebSocket handshake in ``routers/ws.py`` — reads the
+    mode through here, so a surface cannot end up meaning something different
+    by the setting than the rest of the product does.
+
+    Raises ``AuthNotConfigured`` when enforcement was asked for but could not be
+    set up: that state refuses, it does not fall open.
+    """
+
+    if _mode == "off":
+        return None
+    if _mode != "enforce" or _verifier is None:
+        raise AuthNotConfigured("authentication is not configured")
+    return _verifier
+
+
+def principal_from_token(token: Optional[str]) -> Optional[Principal]:
+    """Identify a caller from a raw token, for handshakes that carry no header.
+
+    A browser cannot set ``Authorization`` on a WebSocket upgrade, so the token
+    arrives as a query parameter instead. The mode semantics are identical to
+    ``require_user``; only the transport differs.
+
+    Returns ``None`` only when auth is explicitly switched off. Raises
+    ``AuthError`` on every failure to identify the caller.
+    """
+
+    verifier = _active_verifier()
+    if verifier is None:
+        return None
+
+    token = (token or "").strip()
+    if not token:
+        raise AuthError("no token supplied")
+    return verifier.verify(token)
+
+
 def require_user(request: Request) -> Optional[Principal]:
     """FastAPI dependency for the ask endpoints.
 
@@ -220,10 +269,12 @@ def require_user(request: Request) -> Optional[Principal]:
     explicitly switched off.
     """
 
-    if _mode == "off":
+    try:
+        verifier = _active_verifier()
+    except AuthNotConfigured as exc:
+        raise HTTPException(status_code=503, detail="authentication is not configured") from exc
+    if verifier is None:
         return None
-    if _mode != "enforce" or _verifier is None:
-        raise HTTPException(status_code=503, detail="authentication is not configured")
 
     header = (request.headers.get("authorization") or "").strip()
     scheme, _, token = header.partition(" ")
@@ -231,7 +282,7 @@ def require_user(request: Request) -> Optional[Principal]:
         raise HTTPException(status_code=401, detail="a bearer token is required")
 
     try:
-        return _verifier.verify(token)
+        return verifier.verify(token)
     except AuthError as exc:
         # Logged in full, returned as a single generic line: a precise reason
         # ("expired", "wrong audience") tells an attacker which knob to turn.

@@ -1,0 +1,15 @@
+"""Fact Pack builders, one per report type.
+
+Importing this package is what puts a report type in the registry. A builder
+that is written but never imported is a report type that raises
+``NoBuilderRegistered`` at run time and passes every test that imports it
+directly — so the import lives here rather than being left to the caller.
+"""
+
+from src.services.rga.builders import exec_procurement_summary  # noqa: F401
+from src.services.rga.builders import supplier_criticality_review  # noqa: F401
+from src.services.rga.builders import board_paper  # noqa: F401
+from src.services.rga.builders import sales_quote  # noqa: F401
+
+__all__ = ["exec_procurement_summary", "supplier_criticality_review", "board_paper",
+           "sales_quote"]

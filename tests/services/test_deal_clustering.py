@@ -150,11 +150,12 @@ def test_cluster_batch_reproduces_four_events_freight_has_three_bidders():
         quotes=gb.quotes(), quote_lines=gb.quote_lines(),
         purchase_orders=gb.purchase_orders(), po_lines=gb.po_lines(),
         invoices=gb.invoices())
+    bid_roles = ("anchor_quote", "competing_quote")   # earlier rounds are not bidders
     multi = [p for p in res["proposals"]
-             if len([m for m in p["members"] if m["doc_type"] == "quote"]) >= 2]
+             if len([m for m in p["members"] if m["role"] in bid_roles]) >= 2]
     assert len(multi) == 4
     freight = _proposal_with(res, "MFS-Q-3391")
-    freight_suppliers = {m["doc_pk"] for m in freight["members"] if m["doc_type"] == "quote"}
+    freight_suppliers = {m["doc_pk"] for m in freight["members"] if m["role"] in bid_roles}
     assert len(freight_suppliers) == 3          # Swift + Condor + Meridian Freight
 
 
@@ -241,3 +242,92 @@ def test_idempotent_and_nondestructive():
     b = dc.cluster_batch(**kw)
     def sig(r): return sorted(tuple(sorted(m["doc_pk"] for m in p["members"])) for p in r["proposals"])
     assert sig(a) == sig(b)   # stable; pure function writes nothing
+
+
+def test_earlier_rounds_join_their_bid_so_confirm_links_every_version():
+    # A bid's V1/V2 were dropped from the proposal, so confirming it left them with no
+    # deal and the deal page had only one version per supplier -- nothing to compare.
+    res = dc.cluster_batch(quotes=gb.quotes(), quote_lines=gb.quote_lines(),
+                           purchase_orders=gb.purchase_orders(), po_lines=gb.po_lines(),
+                           invoices=gb.invoices())
+    bids_by_id = {b["quote_id"]: b for b in collapse_versions(gb.quotes())}
+    checked = 0
+    for p in res["proposals"]:
+        quote_pks = {m["doc_pk"] for m in p["members"] if m["doc_type"] == "quote"}
+        for m in p["members"]:
+            if m["role"] not in ("anchor_quote", "competing_quote"):
+                continue
+            rounds = bids_by_id[m["doc_pk"]]["rounds"]
+            assert set(rounds) <= quote_pks
+            for r in rounds:
+                if r != m["doc_pk"]:
+                    er = next(x for x in p["members"] if x["doc_pk"] == r)
+                    assert er["role"] == "earlier_round"
+                    assert er["base_reference"] == m["base_reference"]
+                    checked += 1
+    assert checked > 0
+
+
+def test_earlier_rounds_are_not_counted_as_bidders():
+    res = dc.cluster_batch(quotes=gb.quotes(), quote_lines=gb.quote_lines(),
+                           purchase_orders=gb.purchase_orders(), po_lines=gb.po_lines(),
+                           invoices=gb.invoices())
+    for p in res["proposals"]:
+        quotes = [m for m in p["members"] if m["doc_type"] == "quote"]
+        bidders = [m for m in quotes if m["role"] in ("anchor_quote", "competing_quote")]
+        # One bidder per bid family, however many rounds it went through.
+        assert len(bidders) == len({m["base_reference"] for m in quotes})
+        # The count lives in the members, never in the name (which becomes the deal's
+        # name on confirm, and was summarised twice when it carried "— N bidders").
+        assert "bidder" not in p["proposed_name"]
+
+
+def test_proposed_name_does_not_depend_on_row_order():
+    # The batch fetch has no fixed order, so the same upload came back named after a
+    # Meridian line one run and an Apex line the next. The name must be a function of
+    # the documents, not of the order the database happened to return them in.
+    # Like the Vantage upload: every bid opens with its own line (a role only that
+    # supplier names) ahead of the shared requirement, and lines carry line_number.
+    import random
+
+    def numbered(quote_lines):
+        out = {}
+        for qid, ls in quote_lines.items():
+            own = {"item_description": f"Lead role named by {qid.split()[0]}",
+                   "quantity": 1, "unit_price": 1.0, "line_number": 1}
+            out[qid] = [own] + [dict(l, line_number=i + 2) for i, l in enumerate(ls)]
+        return out
+
+    kw = dict(purchase_orders=gb.purchase_orders(), po_lines=gb.po_lines(), invoices=gb.invoices())
+    seen = set()
+    rng = random.Random(7)
+    for _ in range(8):
+        quotes = gb.quotes(); rng.shuffle(quotes)
+        lines = {k: rng.sample(v, len(v)) for k, v in numbered(gb.quote_lines()).items()}
+        res = dc.cluster_batch(quotes=quotes, quote_lines=lines, **kw)
+        seen.add(tuple(sorted(p["proposed_name"] for p in res["proposals"])))
+    assert len(seen) == 1, seen
+
+
+def test_grouping_does_not_depend_on_row_order():
+    # ORB correlates with both NXF and CPS, which do not correlate with each other.
+    # Merging "the first qualifying pair met" let input order decide ORB's rival; the
+    # closest pair must win instead, whatever order the batch arrives in.
+    import random
+    kw = dict(purchase_orders=gb.purchase_orders(), po_lines=gb.po_lines(), invoices=gb.invoices())
+
+    def own_first_line(quote_lines):
+        return {k: [{"item_description": f"Lead role named by {k.split()[0]}",
+                     "quantity": 1, "unit_price": 1.0}] + v for k, v in quote_lines.items()}
+
+    def groups(res):
+        return tuple(sorted(tuple(sorted(m["doc_pk"] for m in p["members"]
+                                         if m["role"] in ("anchor_quote", "competing_quote")))
+                            for p in res["proposals"]))
+    seen = set()
+    rng = random.Random(7)
+    for _ in range(8):
+        quotes = gb.quotes(); rng.shuffle(quotes)
+        seen.add(groups(dc.cluster_batch(quotes=quotes,
+                                         quote_lines=own_first_line(gb.quote_lines()), **kw)))
+    assert len(seen) == 1, seen

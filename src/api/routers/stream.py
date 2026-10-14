@@ -7,9 +7,11 @@ import logging
 from datetime import datetime
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
-from fastapi import APIRouter, Request, status
+from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+
+from api.auth import require_user
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +142,8 @@ async def _emit_plan_stream(
 
 
 @router.post("/plan", response_class=StreamingResponse, status_code=status.HTTP_200_OK)
-async def stream_plan(request: Request, payload: PlanStreamRequest) -> StreamingResponse:
+async def stream_plan(request: Request, payload: PlanStreamRequest,
+                      principal=Depends(require_user)) -> StreamingResponse:
     """Stream the execution plan for a procurement task via SSE."""
 
     async def event_publisher() -> AsyncGenerator[str, None]:

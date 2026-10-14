@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-import requests
+from src.services import egress
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,35 @@ DEFAULT_MODEL = os.getenv("PROCWISE_EXTRACTION_MODEL", "BeyondProcwise/AgentNick
 OLLAMA_CLOUD_BASE_URL = os.getenv("OLLAMA_CLOUD_BASE_URL", "https://api.ollama.com")
 OLLAMA_CLOUD_API_KEY = os.getenv("OLLAMA_CLOUD_API_KEY")
 
-# Max concurrent Ollama requests — match OLLAMA_NUM_PARALLEL (default 2)
+# ---------------------------------------------------------------------------
+# Which OLLAMA_* variable is read by whom
+#
+# Ollama's *server* is a separate systemd unit and takes its environment from
+# /etc/systemd/system/ollama.service.d/, NOT from this project's .env. Setting a
+# server variable in .env or via os.environ.setdefault() here therefore does
+# nothing at all, silently. That cost real debugging time: .env carried
+# OLLAMA_FLASH_ATTENTION="1" while the server's own startup log reported
+# `OLLAMA_FLASH_ATTENTION: false`, and OLLAMA_NUM_PARALLEL was setdefault() in
+# eight modules with three different values (4, 8, and .env's 8) while the
+# server ran with systemd's 2. Thirteen of those lines are now deleted; if you
+# are about to add another, this is the note that says not to.
+#
+#   Server-side, set ONLY in the systemd unit:
+#       OLLAMA_NUM_PARALLEL, OLLAMA_KEEP_ALIVE, OLLAMA_MAX_LOADED_MODELS,
+#       OLLAMA_FLASH_ATTENTION, OLLAMA_KV_CACHE_TYPE, OLLAMA_GPU_OVERHEAD
+#   Client-side, read here from .env and honoured:
+#       OLLAMA_MAX_CONCURRENT, OLLAMA_KEEP_ALIVE (per-request; see below),
+#       OLLAMA_TIMEOUT, OLLAMA_NUM_GPU_LAYERS, OLLAMA_CLOUD_*
+#
+# OLLAMA_KEEP_ALIVE is in both lists deliberately: we send it per request, and a
+# per-request value overrides the server's. That is why `ollama ps` reports
+# "Forever" even though the unit says 5m. The unit's value is dead as long as
+# this client sets one.
+# ---------------------------------------------------------------------------
+
+# Max concurrent Ollama requests. This is the real client-side limit; keep it
+# equal to the server's OLLAMA_NUM_PARALLEL (currently 2 in the systemd unit) so
+# we do not queue more work than it will run at once.
 _MAX_CONCURRENT = int(os.getenv("OLLAMA_MAX_CONCURRENT", "2"))
 _semaphore = threading.Semaphore(_MAX_CONCURRENT)
 
@@ -38,6 +67,139 @@ _semaphore = threading.Semaphore(_MAX_CONCURRENT)
 # One value, used by every call site AND by the preload, means one instance.
 # Any number at or above the model's layer count means "all of them"; llama.cpp clamps.
 ALL_GPU_LAYERS = int(os.getenv("OLLAMA_NUM_GPU_LAYERS", "999"))
+
+# A pin, not a preference. Ollama refuses outright when the layout will not fit
+# — `500 {"error":"memory layout cannot be allocated with num_gpu = 999"}` — and
+# on 2026-09-08 that took out every model call in the product for as long as the
+# API held 3.8GB of a 23GB card. When the card refuses, the pin comes off and the
+# server picks the split: ten times slower, and an answer.
+#
+# The refusal sticks for a window rather than being rediscovered per call.
+# Ollama keys a loaded model on its load-affecting options, so alternating
+# between pinned and unpinned would load a second copy of a 20GB model and block
+# every caller while it did.
+LAYOUT_RETRY_SECONDS = int(os.getenv("OLLAMA_LAYOUT_RETRY_SECONDS", "600"))
+_LAYOUT_REJECTED_UNTIL = 0.0
+_layout_lock = threading.Lock()
+
+
+# The server's own words for "I cannot place this model the way you asked". There are TWO, and
+# recognising only the first cost us the fallback on this host: with AgentNick resident in VRAM
+# and OLLAMA_NUM_GPU=1, a 15GiB machine was told
+#     model requires more system memory (18.4 GiB) than is available (4.6 GiB)
+# which is the same situation as a layout rejection — num_gpu=1 leaves almost every layer in RAM
+# — reported differently. Unrecognised, the retry that drops num_gpu and lets the model's own
+# Modelfile decide (AgentNick pins num_gpu 25) never ran, and the caller got an error where it
+# could have had an answer.
+_LAYOUT_REFUSALS = (
+    "memory layout cannot be allocated",
+    "requires more system memory",
+    "requires more memory than is available",
+)
+
+
+def is_layout_rejection(text: Any) -> bool:
+    """True for the server's own words when it cannot place the model as asked.
+
+    Narrow on purpose. A generic "CUDA error: out of memory" mid-generation is NOT this: that is
+    a failure while running, and dropping num_gpu would not change it.
+    """
+    body = str(text or "").lower()
+    return any(phrase in body for phrase in _LAYOUT_REFUSALS)
+
+
+def note_layout_rejection(detail: Any = "", now: Optional[float] = None) -> None:
+    """Record that the card will not take the whole model just now."""
+    global _LAYOUT_REJECTED_UNTIL
+    with _layout_lock:
+        was_pinned = _LAYOUT_REJECTED_UNTIL <= (now or time.time())
+        _LAYOUT_REJECTED_UNTIL = (now or time.time()) + LAYOUT_RETRY_SECONDS
+    if was_pinned:
+        logger.warning(
+            "Ollama refused the GPU layout (%s) — falling back to the server's own "
+            "split for %ds. Generation will be several times slower until there is "
+            "room for the whole model.", detail, LAYOUT_RETRY_SECONDS,
+        )
+
+
+def clear_layout_rejection() -> None:
+    """Forget the refusal. For tests, and for a caller that knows memory freed."""
+    global _LAYOUT_REJECTED_UNTIL
+    with _layout_lock:
+        _LAYOUT_REJECTED_UNTIL = 0.0
+
+
+def gpu_options(now: Optional[float] = None) -> Dict[str, Any]:
+    """``{"num_gpu": ...}``, or nothing at all while the card is refusing.
+
+    Every path to this server reads it from here, so one refusal moves all of
+    them at once and only one copy of the model is ever loaded.
+    """
+    with _layout_lock:
+        rejected_until = _LAYOUT_REJECTED_UNTIL
+    if (now or time.time()) < rejected_until:
+        return {}
+    return {"num_gpu": ALL_GPU_LAYERS}
+
+
+# ---------------------------------------------------------------------------
+# EVERY option Ollama keys a loaded runner on, in ONE place.
+#
+# num_gpu was unified here on 2026-09-11 for exactly this reason, and the comment above
+# states the rule: "One value, used by every call site AND by the preload, means one
+# instance." num_ctx, num_batch and num_thread are keyed the same way and were NOT
+# unified, which is what a demand-intake turn's 159 seconds turned out to be.
+#
+# Measured 2026-10-05. Three callers in one process wanted three different runners of the
+# same 18GB model:
+#
+#   preload_model()              {num_gpu: 999}                      -> Ollama auto-sized,
+#                                                                       ctx 12288
+#   BaseAgent.call_ollama        + num_ctx 8192, num_batch, num_thread -> ctx 8192
+#   model_selector (/api/chat)   ollama_options() + sampling           -> back to ctx 12288
+#
+# So each caller evicted the one before it. Ollama logged FOUR loads of the model in one
+# five-minute window; one /api/chat took 7m44s, one /api/generate 4m43s, and the 159s
+# turn was 153s of "llama runner started" with about six seconds of generation in it.
+#
+# num_ctx is 12288 because that is what the auto-sized runner was already giving the
+# RAG and chat paths. Unifying DOWN to 8192 would have shrunk their context and started
+# truncating retrieved context, which is an accuracy regression; 12288 is strictly more
+# permissive than either path had, so nothing that fits today begins to truncate.
+# Measured on this card at 12288: 49/49 layers offloaded, 18.9 GiB total, fully on GPU.
+#
+# keep_alive is NOT here. It is a top-level request field, and inside `options` Ollama
+# logs `invalid option provided option=keep_alive` and ignores it — which silently reset
+# the preload's "pin forever" to the daemon's 5m default.
+# ---------------------------------------------------------------------------
+CONTEXT_WINDOW = int(os.getenv("OLLAMA_CONTEXT_WINDOW", "12288"))
+NUM_BATCH = int(os.getenv("OLLAMA_NUM_BATCH", "256"))
+NUM_THREAD = int(os.getenv("OLLAMA_NUM_THREAD", str(max(1, os.cpu_count() or 1))))
+
+
+def load_options(now: Optional[float] = None, include_gpu: bool = True) -> Dict[str, Any]:
+    """Every load-affecting option, for every caller including the preload.
+
+    A caller that sends a subset, or a different value, asks Ollama for a runner nobody
+    else is using — and gets a fresh multi-minute load of the whole model while the
+    previous runner is evicted. There is no such thing as a harmless difference here.
+
+    num_gpu comes from gpu_options(), so a card that has just refused the full layout
+    moves every caller at once and the rest of the set still matches.
+    """
+    options: Dict[str, Any] = {
+        "num_ctx": CONTEXT_WINDOW,
+        "num_batch": NUM_BATCH,
+        "num_thread": NUM_THREAD,
+    }
+    if include_gpu:
+        options.update(gpu_options(now))
+    # include_gpu=False is the no-card path: asking for GPU layers there is meaningless, but
+    # num_ctx still decides what the model can see, so it must not quietly differ. The caller
+    # does not name the keys itself — that is what keeps them owned by this module, and what
+    # test_no_module_outside_ollama_client_sets_a_load_affecting_option enforces.
+    return options
+
 
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 10  # seconds
@@ -54,29 +216,77 @@ SEMAPHORE_TIMEOUT = 600  # wait up to 10 min for a slot — Ollama queues intern
 # Ollama accepts keep_alive as an int (seconds; -1 = never unload) OR a duration
 # string ("24h"), but NOT a numeric string ("-1" → 400 Bad Request). Coerce a
 # numeric env value to int so both "-1" and "24h" are valid on the wire.
-def _coerce_keep_alive(v: str | int) -> str | int:
+DEFAULT_KEEP_ALIVE = -1
+
+# Ollama's own duration spelling. Anything else is not a keep_alive.
+_DURATION = re.compile(r"^\d+(?:\.\d+)?(?:ns|us|µs|ms|s|m|h)$")
+
+
+def _coerce_keep_alive(v: str | int | None) -> str | int:
+    """The value Ollama will accept, whatever the environment handed us.
+
+    .env carries `OLLAMA_KEEP_ALIVE="-1"   # sent per-request; ...`. python-dotenv
+    strips that trailing comment; systemd's EnvironmentFile does not, so the
+    service ran with
+
+        OLLAMA_KEEP_ALIVE=-1# sent per-request; overrides the server's 5m
+
+    which went onto the wire verbatim and came back 400 Bad Request — every
+    single ollama_generate call the API made, instantly, with nothing in the log
+    but the status. The comment is off its own line in .env now; this is the
+    second lock, because a value this function cannot read must never become a
+    request the server refuses.
+    """
+    raw = "" if v is None else str(v).split("#", 1)[0].strip()
     try:
-        return int(v)
+        return int(raw)
     except (TypeError, ValueError):
-        return v
+        pass
+    if _DURATION.match(raw):
+        return raw
+    if raw:
+        logger.warning(
+            "OLLAMA_KEEP_ALIVE=%r is not a number or a duration; using %s instead. "
+            "Ollama rejects the whole request when this value is malformed.",
+            raw, DEFAULT_KEEP_ALIVE,
+        )
+    return DEFAULT_KEEP_ALIVE
 
 
 KEEP_ALIVE = _coerce_keep_alive(os.getenv("OLLAMA_KEEP_ALIVE", "-1"))
 
 
-def ollama_generate(
+def shares_the_runner(model: Optional[str], base_url: Optional[str] = None) -> bool:
+    """True when a request names the one shared runner the preload pins on this host.
+
+    User ruling 2026-10-08: the default request path asks for load_options(), so every
+    caller of the shared model wants the SAME runner. Before it, a call without
+    use_load_options sent num_gpu alone, Ollama fell back to the Modelfile's num_ctx (8192),
+    and that is a different runner from the preload's 12288 -- one evicted the other. A
+    different model (AgentNick:extract, a model under evaluation) is untouched: its own
+    Modelfile options are what its accuracy was measured on. So is another server (the
+    translator's own endpoint), which is not this host's runner.
+    """
+    if (model or DEFAULT_MODEL) != DEFAULT_MODEL:
+        return False
+    return base_url is None or base_url.rstrip("/") == OLLAMA_BASE_URL.rstrip("/")
+
+
+def _ollama_generate(
     prompt: str,
     *,
     model: Optional[str] = None,
     timeout: int = DEFAULT_TIMEOUT,
     temperature: float = 0,
     num_predict: int = 8192,
-    num_gpu: int = ALL_GPU_LAYERS,
+    num_gpu: Optional[int] = None,
     retries: int = MAX_RETRIES,
     stop: Optional[list] = None,
     keep_alive: str | int = KEEP_ALIVE,
     think: Optional[bool] = None,
     format: Optional[Any] = None,
+    base_url: Optional[str] = None,
+    use_load_options: Optional[bool] = None,
 ) -> Optional[str]:
     """Send a generation request to Ollama with queuing and retry.
 
@@ -93,13 +303,33 @@ def ollama_generate(
     extraction specialist). Pass ``think=False`` for reasoning models so the
     answer lands in ``response`` instead of a separate ``thinking`` field that
     this function does not return — otherwise ``response`` comes back empty.
+
+    ``base_url`` overrides OLLAMA_BASE_URL for one call (the translation
+    provider's own endpoint); the GPU semaphore is still shared.
+
+    ``use_load_options`` merges load_options() into the request options, so the call
+    matches the shared runner (num_ctx/num_batch/num_thread/num_gpu) and does not trigger
+    a reload. Left as None it is decided by shares_the_runner(): on for the shared model
+    on this host's server, off for any other model (the extraction specialist keeps its
+    own Modelfile options) or another server. True forces it, False keeps the old body
+    (num_gpu only). An explicit ``num_gpu`` pin still wins over the shared one.
     """
     model = model or DEFAULT_MODEL
+    if use_load_options is None:
+        use_load_options = shares_the_runner(model, base_url)
     options: Dict[str, Any] = {
         "temperature": temperature,
         "num_predict": num_predict,
-        "num_gpu": num_gpu,
     }
+    # The caller may pin explicitly; otherwise the shared state decides, and a
+    # card that has just refused the layout is not asked again.
+    if num_gpu is not None:
+        options["num_gpu"] = num_gpu
+    elif not use_load_options:
+        options.update(gpu_options())
+    if use_load_options:
+        # One read of the GPU option, taken inside load_options(); a pin is kept.
+        options.update(load_options(include_gpu=num_gpu is None))
     if stop:
         options["stop"] = stop
     payload: Dict[str, Any] = {
@@ -128,12 +358,40 @@ def ollama_generate(
             )
             return None
 
-        try:
-            response = requests.post(
-                f"{OLLAMA_BASE_URL}/api/generate",
-                json=payload,
+        def _send(body: Dict[str, Any]) -> Any:
+            return egress.post(
+                f"{base_url or OLLAMA_BASE_URL}/api/generate",
+                purpose=egress.Purpose.MODEL_INFERENCE,
+                json=body,
                 timeout=timeout,
+                # The model daemon is on localhost by design, so the
+                # non-global address check does not apply here.
+                require_global=False,
+                # The retry loop below branches on ReadTimeout vs
+                # ConnectionError with different backoffs; it needs the real
+                # exception, not None.
+                raise_transport_errors=True,
             )
+
+        response = None
+        try:
+            response = _send(payload)
+            if response is None:
+                return None
+            # The card will not take the whole model. That is not a transient
+            # failure to back off from — it is an answer, and the answer is
+            # "ask for less". Retrying here rather than in the loop is
+            # deliberate: a caller that asked for one attempt is asking for one
+            # real attempt, not one spent discovering how full the card is.
+            if getattr(response, "status_code", 0) == 500 and \
+                    is_layout_rejection(getattr(response, "text", "")) and \
+                    "num_gpu" in payload.get("options", {}):
+                note_layout_rejection(payload["options"].get("num_gpu"))
+                unpinned = {k: v for k, v in payload["options"].items() if k != "num_gpu"}
+                payload = {**payload, "options": unpinned}
+                response = _send(payload)
+                if response is None:
+                    return None
             response.raise_for_status()
             body = response.json()
             text = (body.get("response") or "").strip()
@@ -149,7 +407,7 @@ def ollama_generate(
                     if match:
                         text = match.group(0).strip()
             return text
-        except requests.exceptions.ReadTimeout:
+        except egress.ReadTimeout:
             delay = min(RETRY_BASE_DELAY * (2 ** (attempt - 1)), RETRY_MAX_DELAY)
             logger.warning(
                 "Ollama read timeout (attempt %d/%d, model=%s, timeout=%ds) — "
@@ -158,7 +416,7 @@ def ollama_generate(
             )
             if attempt < retries:
                 time.sleep(delay)
-        except requests.exceptions.ConnectionError:
+        except egress.ConnectionError:
             delay = min(RETRY_BASE_DELAY * (2 ** (attempt - 1)), RETRY_MAX_DELAY)
             logger.warning(
                 "Ollama connection error (attempt %d/%d) — retrying in %ds",
@@ -167,7 +425,13 @@ def ollama_generate(
             if attempt < retries:
                 time.sleep(delay)
         except Exception as exc:
-            logger.exception("Ollama request failed (attempt %d/%d): %s", attempt, retries, exc)
+            # The status alone is not a diagnosis. A 400 from this server always
+            # carries a reason ("does not support thinking", "invalid options"),
+            # and without it the failure reads as "the model is broken" when it
+            # is the request that is wrong.
+            detail = (getattr(response, "text", "") or "")[:300]
+            logger.exception("Ollama request failed (attempt %d/%d): %s %s",
+                             attempt, retries, exc, detail)
             if attempt < retries:
                 time.sleep(RETRY_BASE_DELAY)
         finally:
@@ -228,12 +492,16 @@ def ollama_cloud_generate(
 
     for attempt in range(1, retries + 1):
         try:
-            response = requests.post(
+            response = egress.post(
                 f"{base}/api/generate",
+                purpose=egress.Purpose.MODEL_INFERENCE,
                 json=payload,
                 headers=headers,
                 timeout=timeout,
+                raise_transport_errors=True,
             )
+            if response is None:
+                return None
             response.raise_for_status()
             body = response.json()
             # Return only the user-facing response. Deliberately do NOT fall back
@@ -253,7 +521,7 @@ def ollama_cloud_generate(
                 time.sleep(min(RETRY_BASE_DELAY * (2 ** (attempt - 1)), RETRY_MAX_DELAY))
                 continue
             return text
-        except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError) as exc:
+        except (egress.ReadTimeout, egress.ConnectionError) as exc:
             delay = min(RETRY_BASE_DELAY * (2 ** (attempt - 1)), RETRY_MAX_DELAY)
             logger.warning(
                 "Ollama Cloud transient error (attempt %d/%d, model=%s): %s — retrying in %ds",
@@ -270,25 +538,151 @@ def ollama_cloud_generate(
     return None
 
 
-def preload_model(model: Optional[str] = None, timeout: int = 120) -> bool:
-    """Preload model into Ollama VRAM with keep_alive."""
-    model = model or DEFAULT_MODEL
+def loaded_models() -> List[str]:
+    """The models Ollama is holding in memory right now, or [] if it cannot say.
+
+    Unreadable means empty on purpose: the caller then behaves exactly as it did
+    before this existed, and a server that cannot be asked does not stop a
+    preload.
+    """
     try:
-        response = requests.post(
+        response = egress.get(
+            f"{OLLAMA_BASE_URL}/api/ps",
+            purpose=egress.Purpose.MODEL_INFERENCE,
+            require_global=False,
+            timeout=10,
+        )
+        if getattr(response, "status_code", 0) != 200:
+            return []
+        payload = response.json()
+    except Exception:  # noqa: BLE001 - unreadable is "nothing known", not an error
+        logger.debug("could not read Ollama's loaded models", exc_info=True)
+        return []
+
+    models = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(models, list):
+        return []
+    return [str(m.get("name")) for m in models
+            if isinstance(m, dict) and m.get("name")]
+
+
+def preload_model(model: Optional[str] = None, timeout: int = DEFAULT_TIMEOUT) -> bool:
+    """Preload the model into VRAM, and find out here whether it fits.
+
+    The wait must outlast the load. A cold load of AgentNick:unified measured
+    114-141 s on 2026-09-24, and this used to wait 120: a client that hangs up
+    cancels the load ("timed out waiting for llama runner to start: context
+    canceled"), so most restarts ended with nothing resident, and the failure
+    below then sent ten minutes of callers to the half-GPU layout. The startup
+    only waits as long as the load actually takes; this is a ceiling.
+
+    This runs at startup, which is the right place to discover that the card
+    cannot hold the model whole: the alternative is the first reader's question
+    paying for the discovery, which live cost them 47 seconds. A refusal here
+    tells every other caller at once, and the preload then goes ahead in the
+    configuration those callers will actually use — giving up would leave the
+    first real request with a two-minute cold load on top of everything else.
+
+    A model that is ALREADY loaded is left alone. Ollama keys a runner on its
+    load-affecting options, so asking for a different num_gpu than the resident
+    runner was loaded with does not reuse it: it loads another ~20GB copy, and
+    on 2026-09-11 that alternation (999 refused, fall back to the Modelfile's
+    25, back-off expires, 999 again) left the product with no model at all for
+    minutes at a time. There is no cold load left to pay for here, which is the
+    only thing this function exists to do.
+    """
+    model = model or DEFAULT_MODEL
+
+    if model in loaded_models():
+        logger.info(
+            "Ollama already holds '%s'; not preloading, because asking for a "
+            "different layout would reload it", model)
+        return True
+
+    def _body() -> Dict[str, Any]:
+        return {
+            "model": model,
+            "prompt": "",
+            "keep_alive": KEEP_ALIVE,
+            # EVERY load-affecting option must match what callers ask for, not just the
+            # layer count, or this pins an instance nothing else can use and the first
+            # real request stalls loading another. That is precisely what happened: this
+            # sent num_gpu alone, Ollama auto-sized the context to 12288, and callers
+            # asking for num_ctx 8192 reloaded the whole model. One set, from one place.
+            "options": load_options(),
+        }
+
+    try:
+        response = egress.post(
             f"{OLLAMA_BASE_URL}/api/generate",
-            # The layer count MUST match what callers ask for, or this pins an instance
-            # nothing else can use and the first real request stalls loading another.
-            json={
-                "model": model,
-                "prompt": "",
-                "keep_alive": KEEP_ALIVE,
-                "options": {"num_gpu": ALL_GPU_LAYERS},
-            },
+            purpose=egress.Purpose.MODEL_INFERENCE,
+            require_global=False,
+            json=_body(),
             timeout=timeout,
         )
+        if getattr(response, "status_code", 0) == 500 and \
+                is_layout_rejection(getattr(response, "text", "")):
+            note_layout_rejection(ALL_GPU_LAYERS)
+            response = egress.post(
+                f"{OLLAMA_BASE_URL}/api/generate",
+                purpose=egress.Purpose.MODEL_INFERENCE,
+                require_global=False,
+                json=_body(),
+                timeout=timeout,
+            )
         response.raise_for_status()
         logger.info("Preloaded Ollama model '%s' with keep_alive=%s", model, KEEP_ALIVE)
         return True
     except Exception as exc:
+        # Whatever the words -- killed, timed out, runner never came up -- the
+        # card would not take this layout now. Only the server's own "memory
+        # layout cannot be allocated" used to take the pin off, so a load that
+        # died any other way left every later caller still demanding the whole
+        # card, and the next one started the same failing load again.
+        note_layout_rejection(f"preload failed: {exc}")
         logger.warning("Ollama model preload failed (non-critical): %s", exc)
         return False
+
+
+# ---------------------------------------------------------------------------------------
+# Foreground vs background.
+#
+# Every call counts as FOREGROUND -- extraction, chat, agents -- from the moment it asks
+# for a slot until it returns, unless the caller says background=True. Background work
+# (bulk translation, src/services/i18n) checks foreground_busy() before each batch and
+# waits, so pre-translating a whole language can never slow extraction down.
+# ---------------------------------------------------------------------------------------
+_foreground_lock = threading.Lock()
+_foreground_count = 0
+
+
+def foreground_busy() -> bool:
+    """True while any foreground generation in this process is waiting or running."""
+    return _foreground_count > 0
+
+
+def ollama_generate(
+    prompt: str,
+    *,
+    background: bool = False,
+    use_load_options: Optional[bool] = None,
+    **kwargs: Any,
+) -> Optional[str]:
+    global _foreground_count
+    if use_load_options is not None:
+        kwargs["use_load_options"] = use_load_options
+    if background:
+        return _ollama_generate(prompt, **kwargs)
+    with _foreground_lock:
+        _foreground_count += 1
+    try:
+        return _ollama_generate(prompt, **kwargs)
+    finally:
+        with _foreground_lock:
+            _foreground_count -= 1
+
+
+ollama_generate.__doc__ = (_ollama_generate.__doc__ or "") + """
+    ``background=True`` marks the call as yieldable work (bulk translation): it is not
+    counted by foreground_busy(). Everything else counts.
+    """

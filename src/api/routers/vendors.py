@@ -21,9 +21,11 @@ import uuid
 from dataclasses import asdict
 from typing import Any, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
+
+from api.auth import require_user
 
 from src.services.extraction_v2.pipeline import ExtractionPipelineV2
 from src.services.extraction_v2.template_store import (
@@ -218,7 +220,8 @@ def build_router(store: Optional[TemplateStore] = None) -> APIRouter:
 
     @router.post("/onboard/upload")
     async def upload(file: UploadFile = File(...),
-                     doc_type: str = Form(...)):
+                     doc_type: str = Form(...),
+                     principal=Depends(require_user)):
         body = await file.read()
         if not body:
             raise HTTPException(400, "empty upload")
@@ -240,7 +243,7 @@ def build_router(store: Optional[TemplateStore] = None) -> APIRouter:
         return JSONResponse({"session_id": sid, **preview})
 
     @router.post("/onboard/{sid}/correct")
-    def correct(sid: str, req: CorrectionRequest):
+    def correct(sid: str, req: CorrectionRequest, principal=Depends(require_user)):
         sess = _SESSIONS.get(sid)
         if sess is None:
             raise HTTPException(404, "session not found")
@@ -248,7 +251,7 @@ def build_router(store: Optional[TemplateStore] = None) -> APIRouter:
         return {"ok": True, "field": req.field}
 
     @router.post("/onboard/{sid}/save")
-    def save(sid: str, req: SaveRequest):
+    def save(sid: str, req: SaveRequest, principal=Depends(require_user)):
         sess = _SESSIONS.get(sid)
         if sess is None:
             raise HTTPException(404, "session not found")

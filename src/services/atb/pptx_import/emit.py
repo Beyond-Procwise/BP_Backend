@@ -1,0 +1,138 @@
+"""Assemble the measurements into a pack the existing validators accept."""
+from __future__ import annotations
+
+import hashlib
+
+from . import derived
+from . import grid as grid_module
+from . import palette, typescale
+from .cluster import EMPTY_ROW, Cluster
+from .contract import PackInvalid, validate_layout, validate_pack
+from .evidence import Evidence
+from .example import example_fill
+from .read import Deck
+from .slots import regions_and_slots
+
+
+def build_pack(deck: Deck, ev: Evidence, key: str, name: str) -> dict:
+    colours = palette.colours(deck, ev)
+    scale = typescale.type_scale(deck, ev)
+    fonts = typescale.fonts(deck, ev, title_pt=scale.get('title'))
+    grid = grid_module.grid(deck, ev)
+    chip = grid_module.chapter_chip_in(deck, ev)
+
+    is_deck = deck.width_in > deck.height_in
+    fmt: dict = {'kind': 'deck' if is_deck else 'a4-portrait'}
+    if is_deck:
+        fmt['width_in'] = deck.width_in
+        fmt['height_in'] = deck.height_in
+    if deck.theme.get('colours'):
+        ev.ignored('theme.colours', deck.theme['colours'],
+                   'the deck paints its own shapes; a theme colour is not what it looks like')
+
+    pack = {
+        # The shape the hand-authored packs use; without these two the browser's validateStyle
+        # rejects the pack and silently falls back to the bundled layouts.
+        'kind': 'atb_style',
+        'schema_version': 1,
+        'key': key,
+        'name': name,
+        'format': fmt,
+        'colours': colours,
+        'type_scale_pt': scale,
+        'fonts': fonts,
+        'grid': grid,
+        'series_palette': derived.series_palette(deck, ev, colours),
+        'rating_scales': derived.rating_scales(deck, ev),
+        'writing': derived.writing(deck, ev),
+    }
+    if chip:
+        pack['chapter_chip_in'] = chip
+
+    errors = validate_pack(pack)
+    if errors:
+        # Never stored, never served: a half-valid pack renders a page with a missing colour and
+        # nothing downstream would say why.
+        raise PackInvalid('; '.join(errors))
+    return pack
+
+
+def proposed_name(cluster: Cluster) -> str:
+    """A geometric description, never a name. Design §9.2: naming is the human's."""
+    if cluster.signature == (EMPTY_ROW,):
+        return 'title only'
+    parts = []
+    for row in cluster.signature:
+        columns, kind = row[0], row[1]
+        repeat = ' repeating' if len(row) > 2 else ''
+        word = {'TABLE': 'table', 'CHART': 'chart'}.get(kind,
+                                                        'cards' if columns > 1 else 'panel')
+        parts.append(f'{columns}-up {word}{repeat}' if columns > 1
+                     else f'full-width {word}{repeat}')
+    return ' + '.join(parts)
+
+
+def layout_key(cluster: Cluster, pack_key: str = '') -> str:
+    """Stable across runs, and lower_snake_case as the contract requires.
+
+    Derived from the signature AND the pack it belongs to, rather than from a counter or a uuid:
+    importing the same deck twice has to produce the same ids (an acceptance criterion), but two
+    DIFFERENT packs with the same structure must not collide — the browser keys its layout
+    registry by this id, so two approved packs would otherwise offer one picker entry and render
+    the other pack's geometry.
+    """
+    digest = hashlib.sha256(f'{pack_key}|{cluster.signature!r}'.encode()).hexdigest()[:10]
+    return f'imported_{digest}'
+
+
+_PAGE_NAME_MAX = 80
+
+
+def page_name(fill: dict, slides: list[int]) -> str:
+    """What to call one arranged page.
+
+    `proposed_name` describes where the boxes sit — "6-up cards + 3-up table" — which the step 1
+    design called a true description of the geometry and a useless description of the page. The
+    slide says what it is in its own title band, so that is the name; 25 of the reference deck's
+    26 single-use slides carry one. The structure is kept as `proposed_name` either way, so the
+    review screen can still show what the importer measured.
+    """
+    title = (((fill or {}).get('slots') or {}).get('title') or {}).get('text') or ''
+    title = ' '.join(str(title).split())
+    if title:
+        return title if len(title) <= _PAGE_NAME_MAX else title[:_PAGE_NAME_MAX - 1].rstrip() + '…'
+    # A slide with no title band text still needs calling something a human can point at.
+    return 'Slide %d' % (slides[0] if slides else 0)
+
+
+def build_layout(cluster: Cluster, deck: Deck, pack: dict, ev: Evidence, filename: str,
+                 kind: str = 'template') -> dict:
+    regions, slots, problems = regions_and_slots(cluster, deck, pack, ev)
+    fill, source = example_fill(cluster, deck, slots)
+    structure = proposed_name(cluster)
+    # A template is named by its reusable shape; a page by what its slide says. See page_name.
+    name = structure if kind == 'template' else page_name(fill, list(cluster.slides))
+    layout = {
+        'id': layout_key(cluster, pack.get('key', '')),
+        'version': 1,
+        # The contract requires a non-empty `name`. For a template it starts as the proposed one so
+        # the layout is valid from the moment it is built; `proposed_name` is kept beside it either
+        # way so the review screen can show what the importer suggested against what a human called
+        # it — and for a page, what it MEASURED against what the slide says.
+        'name': name,
+        'proposed_name': structure,
+        'kind': kind,
+        'formats': [pack['format']['kind']],
+        'regions': regions,
+        'slots': slots,
+        'slide_refs': list(cluster.slides),
+        'example_fill': fill,
+        'example_source': {'file': filename, **source},
+        'problems': problems,
+        'writing_guidance': '',
+        'pagination': None,
+    }
+    errors = validate_layout(layout)
+    if errors:
+        raise PackInvalid(f'layout {layout["id"]}: ' + '; '.join(errors))
+    return layout

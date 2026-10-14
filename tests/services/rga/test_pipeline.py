@@ -1,0 +1,392 @@
+"""The state machine end to end: what runs, in what order, and what stops it.
+
+No database and no model. A stub builder stands in for the deterministic
+queries so the whole path — scope, pack, style, compose, render, post-check,
+release — can be exercised on a laptop with nothing switched on.
+
+The event-ordering test is the point of the file. §7 lists the events a run must
+emit; a run that quietly stopped emitting one would still produce a correct
+report, and nobody would notice until they needed the trail.
+"""
+
+from __future__ import annotations
+
+import json
+from decimal import Decimal
+
+import pytest
+
+from src.services.analytics.models import Confidence
+from src.services.rga import audit, factpack
+from src.services.rga.factpack import FactBuilder, register
+from src.services.rga.models import (
+    FormatHint,
+    MetricBlock,
+    NarrativeBlock,
+    ReportAST,
+    Section,
+    TableBlock,
+)
+from src.services.rga.pipeline import ReportRun, generate_report
+
+SCOPE = {"period_label": "2026 Q1", "period_start": "2026-01-01",
+         "period_end": "2026-03-31", "currency": "GBP"}
+
+
+@pytest.fixture
+def stub_type():
+    """A report type whose facts come from nowhere but this function."""
+    name = "_pipeline_test_type"
+
+    @register(name)
+    def _build(fb: FactBuilder) -> None:
+        fb.add(label="Invoiced spend (GBP)", value=Decimal("5833817.90"),
+               derivation="stub.spend", confidence=Confidence.CORROBORATED,
+               format_hint=FormatHint.MONEY, currency="GBP")
+        fb.add(label="Deals in period", value=Decimal(376),
+               derivation="stub.deals", confidence=Confidence.ASSERTED,
+               format_hint=FormatHint.INT, unit="deals")
+
+    yield name
+    factpack._BUILDERS.pop(name, None)
+
+
+@pytest.fixture
+def hand_written():
+    return ReportAST(sections=[
+        Section(id="exec_summary", title="Executive summary", blocks=[
+            MetricBlock(fact_ref="F0001", emphasis="primary"),
+            NarrativeBlock(text="Invoiced spend was {{F0001}} across {{F0002}} deals.",
+                           fact_refs=["F0001", "F0002"]),
+        ]),
+    ])
+
+
+class Recorder:
+    def __init__(self, explode_on=None):
+        self.rows = []
+        self.explode_on = explode_on
+
+    def __call__(self, **kwargs):
+        if kwargs.get("action_type") == self.explode_on:
+            raise RuntimeError("the audit spine is unreachable")
+        self.rows.append(kwargs)
+
+    @property
+    def order(self):
+        return [r["action_type"] for r in self.rows]
+
+
+def run(stub_type, ast, **kwargs) -> ReportRun:
+    return generate_report(stub_type, scope=SCOPE, as_of="2026-03-31", ast=ast,
+                           **kwargs)
+
+
+class TestTheHappyPath:
+    def test_a_clean_report_reaches_release(self, stub_type, hand_written):
+        result = run(stub_type, hand_written, emit_audit=False)
+
+        assert result.released is True
+        assert result.blocked is False
+        assert result.stage_reached == "RELEASE"
+        assert result.artefact is not None
+        assert result.result.passed
+
+    def test_the_run_id_is_the_pack_id(self, stub_type, hand_written):
+        """A run and the snapshot it was computed from are the same thing."""
+        result = run(stub_type, hand_written, emit_audit=False)
+
+        assert result.run_id == result.pack.pack_id
+
+
+class TestEventsEndToEnd:
+    def test_every_stage_emits_its_event_in_order(self, stub_type, hand_written):
+        writer = Recorder()
+        run(stub_type, hand_written, writer=writer)
+
+        assert writer.order == [
+            audit.FACTPACK_BUILT,     # emitted inside build_fact_pack
+            audit.SCOPE_RESOLVED,
+            audit.STYLEBRIEF_RESOLVED,
+            audit.COMPOSED,
+            audit.RENDERED,           # the deck
+            audit.RENDERED,           # the printable page (2026-09-24)
+            audit.POSTCHECK_PASSED,   # the deck
+            audit.POSTCHECK_PASSED,   # the page
+            audit.RELEASED,
+        ]
+
+    def test_every_event_carries_the_run_id_and_the_pack_hash(
+            self, stub_type, hand_written):
+        writer = Recorder()
+        result = run(stub_type, hand_written, writer=writer)
+
+        for row in writer.rows:
+            if row["action_type"] == audit.FACTPACK_BUILT:
+                continue  # factpack writes its own shape, tested separately
+            assert row["trace_id"] == result.run_id
+            assert row["details"]["run_id"] == result.run_id
+            assert row["details"]["pack_hash"] == result.pack.hash
+
+    def test_a_run_that_used_no_model_says_so(self, stub_type, hand_written):
+        writer = Recorder()
+        run(stub_type, hand_written, writer=writer)
+
+        composed = [r for r in writer.rows if r["action_type"] == audit.COMPOSED][0]
+        assert composed["details"]["model"] is None
+        assert "no model" in composed["summary"]
+
+    def test_the_style_event_records_what_it_could_not_resolve(
+            self, stub_type, hand_written):
+        writer = Recorder()
+        run(stub_type, hand_written, writer=writer)
+
+        row = [r for r in writer.rows
+               if r["action_type"] == audit.STYLEBRIEF_RESOLVED][0]
+        assert "business_unit" in row["details"]["unresolved_scopes"]
+        assert row["details"]["style_version"]
+
+
+class TestItFailsClosed:
+    def test_a_blocked_report_is_not_released(self, stub_type):
+        """A fabricated figure in a column header — author text, so the type
+        allows it and the post-check on the rendered bytes is what catches it."""
+        ast = ReportAST(sections=[Section(id="s", title="S", blocks=[
+            MetricBlock(fact_ref="F0001"),
+            TableBlock(columns=["Target £9.9M"], rows=[["F0001"]])])])
+
+        result = run(stub_type, ast, emit_audit=False)
+
+        assert result.released is False
+        assert result.blocked is True
+        assert result.stage_reached == "POST_CHECK"
+        assert any("9.9" in r for r in result.blocking_reasons())
+
+    def test_a_blocked_run_still_produces_an_artefact_to_look_at(self, stub_type):
+        ast = ReportAST(sections=[Section(id="s", title="S", blocks=[
+            MetricBlock(fact_ref="F0001"),
+            TableBlock(columns=["Target £9.9M"], rows=[["F0001"]])])])
+
+        result = run(stub_type, ast, emit_audit=False)
+
+        assert result.artefact is not None
+        assert len(result.artefact.content) > 0
+
+    def test_a_blocked_run_emits_no_release_event(self, stub_type):
+        ast = ReportAST(sections=[Section(id="s", title="S", blocks=[
+            MetricBlock(fact_ref="F0001"),
+            TableBlock(columns=["Target £9.9M"], rows=[["F0001"]])])])
+        writer = Recorder()
+
+        run(stub_type, ast, writer=writer)
+
+        assert audit.POSTCHECK_FAILED in writer.order
+        assert audit.RELEASED not in writer.order
+
+    def test_a_renderer_fault_blocks_the_report_rather_than_raising(
+            self, stub_type, hand_written):
+        """generate_report promises never to raise for a report that merely
+        failed. Live, a degenerate table took python-pptx down with a
+        ZeroDivisionError and the whole call went with it."""
+        class Exploding:
+            @staticmethod
+            def render(*a, **k):
+                raise ZeroDivisionError("integer division or modulo by zero")
+
+        writer = Recorder()
+        result = run(stub_type, hand_written, renderer=Exploding, writer=writer)
+
+        assert result.released is False
+        assert result.stage_reached == "RENDER"
+        assert result.artefact is None
+        assert any("ZeroDivisionError" in r for r in result.blocking_reasons())
+        assert audit.RELEASED not in writer.order
+
+    def test_a_failed_composition_stops_before_rendering(self, stub_type):
+        def explode(prompt, *, schema=None, temperature=0.0):
+            raise ConnectionError("ollama is not listening")
+
+        writer = Recorder()
+        result = generate_report(stub_type, scope=SCOPE, as_of="2026-03-31",
+                                 generate=explode, writer=writer)
+
+        assert result.released is False
+        assert result.stage_reached == "COMPOSE"
+        assert result.artefact is None
+        assert audit.RENDERED not in writer.order
+        assert audit.RELEASED not in writer.order
+
+    def test_a_release_whose_audit_cannot_be_written_does_not_happen(
+            self, stub_type, hand_written):
+        """The one event that must raise rather than swallow. An unauditable
+        release is not a release."""
+        writer = Recorder(explode_on=audit.RELEASED)
+
+        with pytest.raises(RuntimeError, match="audit spine is unreachable"):
+            run(stub_type, hand_written, writer=writer)
+
+        assert audit.RELEASED not in writer.order
+
+
+class TestRegeneration:
+    def test_rerunning_produces_an_identical_artefact_never_a_patch(
+            self, stub_type, hand_written):
+        first = run(stub_type, hand_written, emit_audit=False)
+        second = run(stub_type, hand_written, emit_audit=False)
+
+        assert second.pack.hash == first.pack.hash
+        assert second.artefact.content == first.artefact.content
+        # Frozen all the way down: nothing could have been edited in place.
+        with pytest.raises(Exception):
+            first.pack.facts[0].value = Decimal("1")
+
+    def test_a_different_scope_is_a_different_run(self, stub_type, hand_written):
+        first = run(stub_type, hand_written, emit_audit=False)
+        second = generate_report(
+            stub_type, scope=dict(SCOPE, period_label="2025 Q1",
+                                  period_start="2025-01-01"),
+            as_of="2026-03-31", ast=hand_written, emit_audit=False)
+
+        assert second.run_id != first.run_id
+
+
+class TestRunContext:
+    """Every event a job's run writes can be told apart from another run's.
+
+    The run id is the Fact Pack id, derived from report, scope and as-of, so two
+    runs of the same quarter on the same day share it -- live 2026-09-24 a blocked
+    and a released Q2 run interleaved under one trace id with nothing to separate
+    them. The job id and the requester ride on every event, and the SCOPE event
+    carries the entitlement decision the job was filed under."""
+
+    ENT = {"action": "report.generate", "principal": "buyer-1", "allowed": True,
+           "role": "Buyer", "policy_name": "RoleDefinitionPolicy",
+           "resolution": "resolved", "shadowed": False}
+
+    def test_every_event_carries_the_job_and_who_asked(self, stub_type, hand_written):
+        writer = Recorder()
+        with audit.run_context(job_id="rpt-9", requested_by="buyer-1", entitlement=self.ENT):
+            run(stub_type, hand_written, writer=writer)
+        assert len(writer.rows) == 9     # two formats: rendered and checked twice
+        for row in writer.rows:          # factpack_built included
+            assert row["details"]["job_id"] == "rpt-9", row["action_type"]
+            assert row["details"]["requested_by"] == "buyer-1", row["action_type"]
+
+    def test_the_scope_event_records_the_entitlement_decision(self, stub_type, hand_written):
+        writer = Recorder()
+        with audit.run_context(job_id="rpt-9", requested_by="buyer-1", entitlement=self.ENT):
+            run(stub_type, hand_written, writer=writer)
+        scope = [r for r in writer.rows if r["action_type"] == audit.SCOPE_RESOLVED][0]
+        assert scope["details"]["entitlement_checked"] is True
+        assert scope["details"]["entitlement"] == self.ENT
+
+    def test_a_direct_call_says_no_entitlement_was_checked(self, stub_type, hand_written):
+        """Honest outside a job: a script calling the pipeline passed no gate."""
+        writer = Recorder()
+        run(stub_type, hand_written, writer=writer)
+        scope = [r for r in writer.rows if r["action_type"] == audit.SCOPE_RESOLVED][0]
+        assert scope["details"]["entitlement_checked"] is False
+        assert "entitlement" not in scope["details"]
+        assert all("job_id" not in r["details"] for r in writer.rows)
+
+    def test_the_context_ends_with_the_block_even_on_error(self):
+        with pytest.raises(RuntimeError):
+            with audit.run_context(job_id="rpt-9"):
+                assert audit.current_context()["job_id"] == "rpt-9"
+                raise RuntimeError("boom")
+        assert audit.current_context() == {}
+
+
+class TestThePrintablePage:
+    """Every report is drawn twice from one AST -- the deck and the page -- and both must pass."""
+
+    def test_a_release_carries_both_formats(self, stub_type, hand_written):
+        result = run(stub_type, hand_written, emit_audit=False)
+        assert result.released is True
+        assert result.artefact.renderer == "pptx" and result.page.renderer == "html"
+        assert result.page.ast_hash == result.artefact.ast_hash
+        assert result.page.pack_hash == result.artefact.pack_hash
+
+    def test_the_page_is_deterministic_too(self, stub_type, hand_written):
+        a = run(stub_type, hand_written, emit_audit=False)
+        b = run(stub_type, hand_written, emit_audit=False)
+        assert a.page.content == b.page.content
+
+    def test_a_page_that_fails_its_check_blocks_the_report(self, stub_type, hand_written):
+        import dataclasses
+        from types import SimpleNamespace
+        from src.services.rga.render import html as real
+
+        def render(ast, pack, brief, *, title):
+            art = real.render(ast, pack, brief, title=title)
+            bad = art.content.decode().replace("</body>", "<p data-chunk>An extra £9,999.</p></body>")
+            return dataclasses.replace(art, content=bad.encode())
+
+        result = run(stub_type, hand_written, emit_audit=False,
+                     page_renderer=SimpleNamespace(render=render))
+        assert result.released is False and result.stage_reached == "POST_CHECK"
+        assert "REPORT_UNTRACED_FIGURE" in {f.code for f in result.findings if f.blocks_release}
+
+    def test_a_page_renderer_fault_blocks_the_report(self, stub_type, hand_written):
+        from types import SimpleNamespace
+
+        def render(*a, **k):
+            raise ZeroDivisionError("a degenerate block")
+
+        result = run(stub_type, hand_written, emit_audit=False,
+                     page_renderer=SimpleNamespace(render=render))
+        assert result.released is False and result.stage_reached == "RENDER"
+        assert any("page" in f.detail for f in result.findings)
+
+    def test_each_format_is_rendered_and_checked_on_the_record(self, stub_type, hand_written):
+        writer = Recorder()
+        run(stub_type, hand_written, writer=writer)
+        rendered = [r["details"]["renderer"] for r in writer.rows if r["action_type"] == audit.RENDERED]
+        checked = [r["details"]["renderer"] for r in writer.rows if r["action_type"] == audit.POSTCHECK_PASSED]
+        assert rendered == ["pptx", "html"]
+        assert [c.split("/")[0] for c in checked] == ["pptx", "html"]
+
+
+def test_the_release_event_says_whether_sign_off_is_required(stub_type, hand_written, monkeypatch):
+    """It said "unknown — no approval matrix exists" until sign-off shipped; the policy now
+    decides, and the release record says what it decided."""
+    from src.services.rga import signoff
+    for needed in (True, False):
+        monkeypatch.setattr(signoff, "required", lambda report_type, engine=None, _n=needed: _n)
+        writer = Recorder()
+        run(stub_type, hand_written, writer=writer)
+        released = [r for r in writer.rows if r["action_type"] == audit.RELEASED][0]
+        assert released["details"]["approval_required"] is needed
+        assert released["details"]["approval_policy"] == "ReportSignoffPolicy"
+
+
+class TestOneReasonOnce:
+    """Final review: the deck and the page are post-checked separately, and checks that look
+    at the DRAFT (an unknown fact, nothing stated) fire on both -- so one defect was stored
+    twice under one finding id and shown as "2 checks failed" with the same sentence twice."""
+
+    def test_a_draft_defect_is_listed_once(self, stub_type):
+        broken = ReportAST(sections=[Section(id="s", title="S", blocks=[
+            MetricBlock(fact_ref="F0001"), MetricBlock(fact_ref="F0099")])])
+        result = run(stub_type, broken, emit_audit=False)
+        blocking = [f for f in result.findings if f.blocks_release]
+        unknown = [f for f in blocking if f.code.value == "UNKNOWN_FACT_REF"]
+        assert len(unknown) == 1
+        ids = [f.finding_id for f in blocking]
+        assert len(ids) == len(set(ids))
+
+    def test_a_page_only_defect_says_it_is_the_page(self, stub_type, hand_written):
+        import dataclasses
+        from types import SimpleNamespace
+        from src.services.rga.render import html as real
+
+        def render(ast, pack, brief, *, title):
+            art = real.render(ast, pack, brief, title=title)
+            bad = art.content.decode().replace("</body>", "<p>An extra £9,999.</p></body>")
+            return dataclasses.replace(art, content=bad.encode())
+
+        result = run(stub_type, hand_written, emit_audit=False,
+                     page_renderer=SimpleNamespace(render=render))
+        page_only = [f for f in result.findings if f.blocks_release]
+        assert len(page_only) == 1
+        assert "-PG" in page_only[0].finding_id and "printable page" in page_only[0].detail

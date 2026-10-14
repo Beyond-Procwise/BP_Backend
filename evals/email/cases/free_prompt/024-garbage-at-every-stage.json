@@ -1,0 +1,30 @@
+{
+ "id": "024-garbage-at-every-stage",
+ "family": "free_prompt",
+ "description": "A model that returns nonsense everywhere never breaks the draft and every stage says why.",
+ "run": {
+  "path": "prompt",
+  "request": "Please ask Acme to confirm the price on PO-77123 and reply within the week",
+  "payload": {
+   "supplier_id": "S-1",
+   "workflow_id": "wf-1",
+   "recipients": [
+    "alex@acme.test"
+   ]
+  }
+ },
+ "model": {
+  "compose": "Subject: Price confirmation\nDear Alex Morgan,\n\nCould you please confirm the price on PO-77123 within the week?\n\nKind regards,\nProcurement Team",
+  "classify": "???",
+  "plan": "???",
+  "judge": "???"
+ },
+ "expect": {
+  "rec.stage_status.classify.status": "invalid",
+  "rec.stage_status.brief.status": "invalid",
+  "rec.stage_status.judge.status": "invalid",
+  "draft.text": {
+   "contains": "confirm the price"
+  }
+ }
+}

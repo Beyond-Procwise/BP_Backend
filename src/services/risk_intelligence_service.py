@@ -32,10 +32,19 @@ class PredictiveRiskModel:
         self,
         supplier_metrics: Dict[str, float],
         signals: Sequence[SupplierRiskSignal],
+        as_of: Optional[datetime] = None,
     ) -> Dict[str, float]:
-        """Return score components for downstream aggregation."""
+        """Return score components for downstream aggregation.
 
-        now = datetime.now(timezone.utc)
+        ``as_of`` is the point in time the signal decay is measured from. It
+        defaults to now, which is what every existing caller gets and therefore
+        changes no live number --- but a score computed against an implicit
+        wall clock cannot be reproduced, back-tested or re-checked, because the
+        same supplier and the same signals give a different answer tomorrow.
+        Passing it explicitly is what makes an evaluation auditable.
+        """
+
+        now = as_of if as_of is not None else datetime.now(timezone.utc)
         total_decay = 0.0
         weighted_severity = 0.0
         for signal in signals:

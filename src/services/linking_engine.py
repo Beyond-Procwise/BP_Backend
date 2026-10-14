@@ -18,6 +18,7 @@ score, field quality, reliability, signed contribution, and status.
 from __future__ import annotations
 
 import logging
+from src.services.governed_limits import limit as _governed_limit
 import math
 import os
 import re
@@ -25,7 +26,9 @@ import weakref
 from typing import Any, Optional
 
 from src.services.db import get_conn
+from src.services.extraction.po_revision import pick_key, po_base, revision_of
 from src.services.agent_actions import record_action, PHASE_CONSOLIDATION
+from src.services.version_collapse import latest_per_family
 
 log = logging.getLogger(__name__)
 
@@ -50,9 +53,27 @@ log = logging.getLogger(__name__)
 # `missing_required` discrepancy and the row never reaches _stg. So the floor's only job is
 # to catch a near-empty extraction, and 50 -- the score of a document with all its required
 # fields and no optional ones -- is where that line actually sits.
-MIN_CONFIDENCE = float(os.getenv("PROMOTE_MIN_CONFIDENCE", "50"))   # _stg extraction conf
-MIN_LINK_SCORE = float(os.getenv("PROMOTE_MIN_LINK_SCORE", "80"))   # F auto-promote gate
-REVIEW_MIN = float(os.getenv("PROMOTE_REVIEW_MIN", "65"))           # F floor for human review
+# Read from PromotionThresholdPolicy, not from the environment (P9). Functions
+# rather than constants because the value has to be resolved when it is used: a
+# module-level read happens at import, before anything can tell whether the
+# governance store answered, and a missing limit has to REFUSE rather than fall
+# back to a number carried in the code.
+def MIN_CONFIDENCE() -> float:
+    """_stg extraction confidence floor."""
+    return _governed_limit("promotion_thresholds", "promote_min_confidence",
+                           env="PROMOTE_MIN_CONFIDENCE")
+
+
+def MIN_LINK_SCORE() -> float:
+    """F auto-promote gate."""
+    return _governed_limit("promotion_thresholds", "promote_min_link_score",
+                           env="PROMOTE_MIN_LINK_SCORE")
+
+
+def REVIEW_MIN() -> float:
+    """F floor for human review."""
+    return _governed_limit("promotion_thresholds", "promote_review_min",
+                           env="PROMOTE_REVIEW_MIN")
 
 # Decision band thresholds (PDF Stage 7C)
 _BAND_AUTO = 92.0
@@ -85,7 +106,17 @@ def _norm_po(v: Any) -> Optional[str]:
     inconsistent formats: the PO table stores it bare ('506789'), quotes prefix
     it ('PO506789'), invoices are mixed ('PO507269' / '389948'). Strip
     non-alphanumerics AND a leading 'po' so every form maps to the bare number,
-    so quote->PO and invoice->PO joins actually connect."""
+    so quote->PO and invoice->PO joins actually connect.
+
+    A revision ('506789 (Rev 3)', see extraction/po_revision.py) is the same PO:
+    invoices print the bare number, so every revision shares it and joins the same
+    deal. Where one PO has to be picked, _PO_PICK_ORDER_SQL picks the revision."""
+    return _norm_po_id(po_base(v)) if v is not None else None
+
+
+def _norm_po_id(v: Any) -> Optional[str]:
+    """_norm_po without folding revisions: one row's identity, '506789 (Rev 3)'
+    distinct from '506789'."""
     s = _norm_id(v)
     if s is None:
         return None
@@ -329,7 +360,8 @@ def _band(F: float) -> str:
 
 def score_link(source_row: dict, target_row: dict, profile_name: str,
                source_lines: Optional[list] = None, target_lines: Optional[list] = None,
-               set_amount_usd: Optional[float] = None) -> dict:
+               set_amount_usd: Optional[float] = None,
+               cluster_overrides: Optional[dict] = None) -> dict:
     """Deterministically score the relationship source→target. Returns the full
     auditable result (PDF stages 1A..7C).
 
@@ -370,9 +402,15 @@ def score_link(source_row: dict, target_row: dict, profile_name: str,
         signals.append({**spec, "s": s, "q": q, "r": r, "c": c, "status": status})
 
     # Stage 2: cluster dampening
+    #
+    # `cluster_overrides` lets a composing caller route signals that drew on the
+    # same observation into one cluster, so the dampening below discounts them as
+    # the correlated evidence they are. Absent (the default), every existing
+    # caller and golden vector is byte-identical.
     clusters: dict[str, list[dict]] = {}
     for sig in signals:
-        clusters.setdefault(sig["cluster"], []).append(sig)
+        name = (cluster_overrides or {}).get(sig["id"], sig["cluster"])
+        clusters.setdefault(name, []).append(sig)
     total_cluster_score = 0.0
     for sigs in clusters.values():
         n_active = sum(1 for x in sigs if x["status"] != "MISSING")
@@ -417,6 +455,10 @@ def score_link(source_row: dict, target_row: dict, profile_name: str,
         "Q": round(Q, 4),
         "F_cap": F_cap,
         "L": round(L, 6),
+        # The evidence term WITHOUT the prior. Persisted on derived edges so a
+        # later composition can reuse the evidence without inheriting a prior it
+        # did not intend (spec 4.2). L itself keeps the prior, unchanged.
+        "L_evidence": round(profile["alpha"] * total_cluster_score, 6),
         "signals": [
             {"id": s["id"], "cluster": s["cluster"], "tier": s["tier"], "weight": s["weight"],
              "s": round(s["s"], 4), "q": round(s["q"], 4), "r": round(s["r"], 4),
@@ -500,22 +542,62 @@ def _table_columns(cur, schema_table: str) -> list[str]:
 
 
 # SQL fragment that normalizes a po_id column the same way as _norm_po()
-# (strip non-alphanumerics, lowercase, drop a leading 'po').
-_PO_NORM_SQL = "regexp_replace(regexp_replace(lower({col}), '[^a-z0-9]', '', 'g'), '^po', '')"
+# (drop a "(Rev n)" suffix, strip non-alphanumerics, lowercase, drop a leading 'po'),
+# and the same without the revision fold, as _norm_po_id().
+_PO_ID_NORM_SQL = "regexp_replace(regexp_replace(lower({col}), '[^a-z0-9]', '', 'g'), '^po', '')"
+_PO_NORM_SQL = _PO_ID_NORM_SQL.format(
+    col="regexp_replace({col}, '\\s*\\(\\s*rev\\M.*$', '', 'i')")
+
+# Which row of a PO family a citation means, as an ORDER BY over a PO table aliased t
+# (params: _po_pick_params). The revision the citation names; else the latest revision
+# whose approval is approved or unstated; else the row the citation matches. Revision
+# columns are read through to_jsonb so it runs on a table that predates them.
+_PO_PICK_ORDER_SQL = (
+    "(%s AND " + _PO_ID_NORM_SQL.format(col="t.po_id") + " = %s) DESC, "
+    "(coalesce(to_jsonb(t)->>'approval_status', 'approved') = 'approved') DESC, "
+    "CASE WHEN coalesce(to_jsonb(t)->>'approval_status', 'approved') = 'approved' "
+    "THEN coalesce((to_jsonb(t)->>'po_revision')::int, "
+    "(regexp_match(t.po_id, '\\(\\s*rev\\s*(\\d+)', 'i'))[1]::int, 1) ELSE 0 END DESC, "
+    "(" + _PO_ID_NORM_SQL.format(col="t.po_id") + " = %s) DESC"
+)
+
+
+def _po_pick_params(po_id: Any) -> tuple:
+    ident = _norm_po_id(po_id)
+    return (revision_of(po_id) is not None, ident, ident)
+
+
+def _pick_po(cur, po_id, cols: str = "t.*", tables=None) -> Optional[dict]:
+    """The PO row a citation of ``po_id`` means, across _trgt and _stg together, so a
+    revision still in _stg outranks an older one already promoted; _trgt wins a tie.
+    Tolerant of PO-prefix and separator differences (_norm_po)."""
+    npo = _norm_po(po_id)
+    if npo is None:
+        return None
+    cond = _PO_NORM_SQL.format(col="t.po_id")
+    tables = tables or (_PO["trgt"], _PO["stg"])
+    best, best_key = None, None
+    for pref, tbl in enumerate(reversed(tables)):
+        rows = _rows(cur, f"select {cols}, to_jsonb(t)->>'approval_status' as _approval, "
+                          f"to_jsonb(t)->>'po_revision' as _revision, t.po_id as _po_id "
+                          f"from {tbl} t where {cond} = %s "
+                          f"order by {_PO_PICK_ORDER_SQL} limit 1",
+                     (npo, *_po_pick_params(po_id)))
+        if not rows:
+            continue
+        row = rows[0]
+        key = (pick_key({"po_id": row.pop("_po_id"), "approval_status": row.pop("_approval"),
+                         "po_revision": row.pop("_revision")}, po_id), pref)
+        if best_key is None or key > best_key:
+            best, best_key = row, key
+    return best
 
 
 def _find_parent_po(cur, po_id) -> Optional[dict]:
     """Resolve the parent PO by canonical PO number, tolerant of PO-prefix and
-    separator differences between the reference and the PO table."""
-    npo = _norm_po(po_id)
-    if npo is None:
-        return None
-    cond = _PO_NORM_SQL.format(col="po_id")
-    for tbl in (_PO["trgt"], _PO["stg"]):
-        rows = _rows(cur, f"select * from {tbl} where {cond} = %s limit 1", (npo,))
-        if rows:
-            return rows[0]
-    return None
+    separator differences between the reference and the PO table. Of a PO's
+    revisions, the one the reference means (_pick_po)."""
+    return _pick_po(cur, po_id)
 
 
 def _copyable_cols(cur, stg_table: str, trgt_table: str) -> list[str]:
@@ -662,7 +744,7 @@ def _evaluate(cur, doc_type: str, row: dict) -> tuple[Optional[dict], Optional[d
         # Invoices still require their PO: that reference is the three-way match, and an
         # invoice without one is a genuine exception for a human to look at.
         if doc_type == "quote":
-            if conf < MIN_CONFIDENCE:
+            if conf < MIN_CONFIDENCE():
                 return None, None, "low_extraction_confidence"
             return None, None, None
         return None, None, "no_parent_reference"
@@ -672,10 +754,10 @@ def _evaluate(cur, doc_type: str, row: dict) -> tuple[Optional[dict], Optional[d
     tgt_lines = _rows(cur, "select * from proc.bp_po_line_items_stg where po_id = %s", (po["po_id"],))
     set_amount = _set_amount_for_invoice(cur, po["po_id"]) if doc_type == "invoice" else None
     link = score_link(row, po, cfg["profile"], src_lines, tgt_lines, set_amount_usd=set_amount)
-    if conf < MIN_CONFIDENCE:
+    if conf < MIN_CONFIDENCE():
         return po, link, "low_extraction_confidence"
 
-    if link["F"] < MIN_LINK_SCORE:
+    if link["F"] < MIN_LINK_SCORE():
         # "Does this document belong to this PO?" and "is this document correct?" are two
         # different questions, and the F score was answering them as one.
         #
@@ -750,7 +832,7 @@ def _promote_purchase_orders(cur) -> tuple[int, int]:
                  f"and not exists (select 1 from {_PO['trgt']} t where t.po_id = s.po_id)")
     for row in rows:
         conf = _to_float(row.get("confidence_score")) or 0.0
-        if conf < MIN_CONFIDENCE:
+        if conf < MIN_CONFIDENCE():
             held += 1
             record_action(
                 phase=PHASE_CONSOLIDATION, action_type="promote_held",
@@ -839,7 +921,121 @@ def _promote(conn, doc_types, limit) -> dict:
                 details.append({"doc_type": doc_type, "doc_pk": pk_val, "action": "held",
                                 "reason": reason, "F": link["F"] if link else None})
 
-    return {"promoted": promoted, "held": held, "by_reason": by_reason, "details": details}
+    # A document already in _trgt that has since been re-read: carry the better read across.
+    reread = refresh_rereads(cur)
+    return {"promoted": promoted, "held": held, "by_reason": by_reason, "details": details,
+            "reread": reread}
+
+
+# ---------------------------------------------------------------------------
+# Re-reads: a document already in _trgt, read again
+# ---------------------------------------------------------------------------
+# Both promotion paths copied a document into _trgt only while it was ABSENT there, so a
+# re-read fixed _stg and left _trgt -- the only tier the product reads -- on the old figures
+# (Aureus AUR-2025-0619 V1 kept its 3-year subtotals as line costs for ten weeks). But most
+# re-reads on record are WORSE, not better: of 22 documents whose _stg is newer than _trgt on
+# 2026-10-09, 19 had lost their total and every priced line. So a re-read refreshes _trgt
+# only when it is at least as complete as what _trgt holds; a less complete one never
+# overwrites it, and says so once, as a finding on the document.
+#
+# doc_type -> (stg, trgt, pk, lines_stg, lines_trgt, header money column, line money column,
+#              line number column)
+_REREAD = {
+    "quote": ("proc.bp_quote_stg", "proc.bp_quote_trgt", "quote_id", "proc.bp_quote_line_items_stg",
+              "proc.bp_quote_line_items_trgt", "total_amount", "line_total", "line_number"),
+    "invoice": ("proc.bp_invoice_stg", "proc.bp_invoice_trgt", "invoice_id", "proc.bp_invoice_line_items_stg",
+                "proc.bp_invoice_line_items_trgt", "invoice_amount", "line_amount", "line_no"),
+    "purchase_order": ("proc.bp_purchase_order_stg", "proc.bp_purchase_order_trgt", "po_id",
+                       "proc.bp_po_line_items_stg", "proc.bp_po_line_items_trgt", "total_amount",
+                       "line_total", "line_number"),
+}
+# Kept from the _trgt row on a refresh: who and when it was first recorded.
+_REREAD_KEEP = {"created_date", "created_by"}
+# Per line, the deal stamps _copy_lines would drop (deal columns are never copied stg->trgt,
+# and document_id exists only in _trgt). Restored by line number.
+_LINE_STAMPS = ("deal_id", "deal_name", "document_id")
+
+
+def reread_verdict(stg_total, trgt_total, stg_priced: int, trgt_priced: int) -> Optional[str]:
+    """None when a re-read may replace what _trgt holds; else why it may not. Pure."""
+    if trgt_total is not None and stg_total is None:
+        return "the re-read has no total"
+    if stg_priced < trgt_priced:
+        return f"the re-read prices {stg_priced} lines, the record {trgt_priced}"
+    return None
+
+
+def refresh_rereads(cur, doc_types=("quote", "invoice", "purchase_order")) -> dict:
+    """Refresh each _trgt document whose _stg read is newer and no less complete; leave the
+    rest and raise one open finding on each. Returns {doc_type: {"refreshed": n, "kept": n}}."""
+    out: dict = {}
+    for dt in doc_types:
+        stg, trgt, pk, lstg, ltrgt, tot, amt, lno = _REREAD[dt]
+        rows = _rows(cur, f"""
+            select s.{pk} as pk, s.{tot} as stg_total, t.{tot} as trgt_total,
+                   (select count(*) from {lstg} l where l.{pk} = s.{pk} and l.{amt} is not null) as stg_priced,
+                   (select count(*) from {ltrgt} l where l.{pk} = s.{pk} and l.{amt} is not null) as trgt_priced
+              from {stg} s join {trgt} t on t.{pk} = s.{pk}
+             where s.last_modified_date > coalesce(t.last_modified_date, t.created_date, '-infinity'::timestamp)""")
+        done = kept = 0
+        for r in rows:
+            why = reread_verdict(r["stg_total"], r["trgt_total"], int(r["stg_priced"]), int(r["trgt_priced"]))
+            if why:
+                kept += 1
+                _flag_reread_kept(cur, dt, r["pk"], why)
+                continue
+            staged = _rows(cur, f"select * from {stg} where {pk} = %s", (r["pk"],))[0]
+            cols = [c for c in _copyable_cols(cur, stg, trgt) if c not in _REREAD_KEEP]
+            stamps = {}
+            if all(c in _table_columns(cur, ltrgt) for c in (lno,)):
+                have = [c for c in _LINE_STAMPS if c in _table_columns(cur, ltrgt)]
+                if have:
+                    for ln in _rows(cur, f"select {lno} as n, {', '.join(have)} from {ltrgt} where {pk} = %s", (r["pk"],)):
+                        stamps[ln["n"]] = {c: ln[c] for c in have}
+            _upsert(cur, trgt, pk, staged, cols)
+            n_lines = _copy_lines(cur, pk, r["pk"], lstg, ltrgt)
+            for n, vals in stamps.items():
+                vals = {c: v for c, v in vals.items() if v is not None}
+                if vals:
+                    cur.execute(f"update {ltrgt} set " + ", ".join(f"{c} = coalesce({c}, %s)" for c in vals)
+                                + f" where {pk} = %s and {lno} = %s", [*vals.values(), r["pk"], n])
+            done += 1
+            # A re-read that was once refused and is now applied: its finding no longer holds.
+            cur.execute("update proc.bp_extraction_discrepancy set status = 'resolved', resolved_at = now(), "
+                        "resolution_action = 'dismiss', resolved_by = 'refresh_rereads', "
+                        "notes = coalesce(notes, '') || ' [resolved: a later read was applied]' "
+                        "where doc_pk_candidate = %s and issue_type = 'reread_not_applied' and status = 'open'",
+                        (str(r["pk"]),))
+            record_action(
+                phase=PHASE_CONSOLIDATION, action_type="refresh_from_reread", doc_type=dt,
+                doc_pk=str(r["pk"]), agent="linking_engine", status="ok",
+                summary=f"refreshed {dt} {r['pk']} from its re-read: total {r['trgt_total']} -> {r['stg_total']}",
+                details={"total_before": str(r["trgt_total"]), "total_after": str(r["stg_total"]),
+                         "priced_lines_before": int(r["trgt_priced"]), "priced_lines_after": int(r["stg_priced"]),
+                         "lines": n_lines})
+        out[dt] = {"refreshed": done, "kept": kept}
+    return out
+
+
+def _flag_reread_kept(cur, doc_type: str, doc_pk, why: str) -> None:
+    """One open finding per document whose re-read was not applied, so a person sees that the
+    record still holds the earlier read and why. Not repeated while it is open."""
+    cur.execute("select 1 from proc.bp_extraction_discrepancy where doc_pk_candidate = %s "
+                "and issue_type = 'reread_not_applied' and status = 'open' limit 1", (str(doc_pk),))
+    if cur.fetchone():
+        return
+    raw_t = {"quote": "proc.bp_quote_raw", "invoice": "proc.bp_invoice_raw",
+             "purchase_order": "proc.bp_purchase_order_raw"}[doc_type]
+    cur.execute(f"select raw_id, source_file from {raw_t} where doc_pk_candidate = %s "
+                f"order by raw_id desc limit 1", (str(doc_pk),))
+    raw = cur.fetchone()
+    cur.execute(
+        "insert into proc.bp_extraction_discrepancy (doc_type, raw_id, source_file, doc_pk_candidate, "
+        " field_name, issue_type, severity, status, notes, blocks_promotion, created_at) "
+        "values (%s, %s, %s, %s, 'document', 'reread_not_applied', 'warning', 'open', %s, false, now())",
+        (doc_type, raw[0] if raw else None, raw[1] if raw else f"trgt:{doc_pk}", str(doc_pk),
+         f"A later read of this document was not applied because {why}; the record keeps the "
+         f"earlier read. Re-read it again, or check the earlier figures stand."))
 
 
 # ---------------------------------------------------------------------------
@@ -916,6 +1112,9 @@ def _quote_chains(conn) -> dict:
                    confidence_score, quote_date, country, region
               from proc.bp_quote_trgt where quote_id is not null
           ) u group by quote_id order by quote_id""")
+    # A chain starts at a bid's CURRENT version. Its earlier versions are not separate quotes
+    # and never carry the PO, so each used to be counted as an orphan quote.
+    quotes = latest_per_family(quotes)
 
     inv_cond = _PO_NORM_SQL.format(col="po_id")
     chains, linked, orphan = [], 0, 0
@@ -975,7 +1174,7 @@ def review_queue(conn: Any = None, doc_types=("invoice", "quote"),
     ``deal_id`` filters to one deal (matched on the stg row's own deal_id
     column). Applies to both modes.
     """
-    floor = REVIEW_MIN if min_score is None else float(min_score)
+    floor = REVIEW_MIN() if min_score is None else float(min_score)
     if conn is None:
         with get_conn() as own:
             return _review_queue(own, doc_types, floor, all_held, deal_id)
@@ -1010,7 +1209,7 @@ def _review_queue(conn, doc_types, floor, all_held: bool = False,
                     item["amount_usd"] = _to_float(row.get("converted_amount_usd"))
                 out.append(item)
                 continue
-            if link is None or not (floor <= link["F"] < MIN_LINK_SCORE):
+            if link is None or not (floor <= link["F"] < MIN_LINK_SCORE()):
                 continue
             # gap report: signals sorted by impact = |w * r * (2s-1)| (PDF Stage 8)
             gaps = sorted(link["signals"], key=lambda s: abs(s["c"]), reverse=True)

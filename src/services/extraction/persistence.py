@@ -33,31 +33,40 @@ _RAW_TABLES = {
     "purchase_order": "proc.bp_purchase_order_raw",
     "quote": "proc.bp_quote_raw",
     "contract": "proc.bp_contract_raw",
+    "goods_receipt": "proc.bp_goods_receipt_raw",
 }
 _LINE_RAW_TABLES = {
     "invoice": "proc.bp_invoice_line_items_raw",
     "purchase_order": "proc.bp_po_line_items_raw",
     "quote": "proc.bp_quote_line_items_raw",
-    # contract has no line items
+    "contract": "proc.bp_contract_line_items_raw",
+    "goods_receipt": "proc.bp_goods_receipt_line_items_raw",
 }
 # The line-index column on each line_items_raw table (differs across doc types).
 _LINE_RAW_INDEX_COL = {
     "invoice": "line_no",
     "purchase_order": "line_number",
     "quote": "line_number",
+    "contract": "line_number",
+    "goods_receipt": "line_no",
 }
 _DOC_PK_FIELD = {
     "invoice": "invoice_id",
     "purchase_order": "po_id",
     "quote": "quote_id",
     "contract": "contract_id",
+    # A goods receipt is identified by its own note number, not by the PO it
+    # cites: two deliveries against one order are two receipts.
+    "goods_receipt": "grn_id",
 }
 
 
 @dataclass
 class Discrepancy:
     field_name: str
-    issue_type: str          # invariant_failed | missing_required | type_bind_error | judge_incoherent
+    issue_type: str          # invariant_failed | missing_required | type_bind_error
+                             # | judge_incoherent | document_type_disagreement
+                             # | unresolved_document_type
     severity: str            # critical | warning | info
     raw_value: str | None = None
     expected_value: str | None = None
@@ -163,10 +172,20 @@ def write_raw(
     columns: Mapping[str, Any],
     parser_snapshot: Mapping[str, Any],
     promotion_status: str,
+    resolved_doc_type: str | None = None,
+    resolved_role: str | None = None,
+    type_agreement: str | None = None,
 ) -> int:
     """INSERT one row into proc.bp_<doctype>_raw. Returns raw_id.
 
     `columns` already has only db_columns present in the _raw table.
+
+    The three ``resolved_*`` / ``type_agreement`` arguments carry what the
+    document's own text said it was. They are accepted for every doc_type and
+    WRITTEN only for 'contract', because only proc.bp_contract_raw has the
+    columns -- sending them elsewhere would be an UndefinedColumn error on the
+    live ingestion path for the other three pipelines. Callers therefore need no
+    doc-type branch of their own.
     """
     table = _RAW_TABLES[doc_type]
     pk_field = _DOC_PK_FIELD[doc_type]
@@ -186,6 +205,13 @@ def write_raw(
         json.dumps(parser_snapshot), str(trace_id), promotion_status, doc_pk_candidate,
         "{}",
     ]
+    # Only proc.bp_contract_raw has these columns
+    # (deploy/sql/2026-10-02_contract_raw_resolved_type.sql). Gated here rather
+    # than at the call site so dispatch stays free of a doc-type branch, and so
+    # the gate lives next to the SQL it protects.
+    if doc_type == "contract":
+        base_cols += ["resolved_doc_type", "resolved_role", "type_agreement"]
+        base_vals += [resolved_doc_type, resolved_role, type_agreement]
     field_cols = list(columns.keys())
     field_vals = [columns[c] for c in field_cols]
 
@@ -352,6 +378,54 @@ def write_provenance(
             raise
 
 
+#: Two or more consecutive separators. Not anchored, so it also catches them mid-path.
+_REPEATED_SEPARATOR = re.compile(r"/{2,}")
+
+
+def normalise_source_file(value: str | None) -> str | None:
+    """One canonical spelling per document reference.
+
+    source_file is part of the open-findings key (see write_discrepancies), so from the
+    moment it became load-bearing, the SAME document arriving spelled two ways would split
+    into two findings instead of refreshing one -- the stacking bug the key exists to
+    prevent. This collapses the spellings that mean the same thing: surrounding whitespace,
+    repeated separators, a leading ``./`` and a leading ``/``.
+
+    IT FIXES SPELLING, NOT IDENTITY, and the distinction is the whole design. It does NOT
+    reduce the value to a basename: that is currently lossless (38,511 distinct document
+    references across the raw tables give 38,511 distinct basenames) but it would make the
+    key blind to the directory, so two folders each holding ``invoice.pdf`` would merge two
+    DIFFERENT documents and silently discard one's findings -- the defect
+    2026-10-01_discrepancy_open_key_per_document.sql exists to fix. Nothing here may ever
+    map two distinct references onto one.
+
+    source_file is not uniformly a filesystem path, so the shapes in use survive intact:
+    ``triage:<ref>``, ``process_monitor:<id>`` and ``file:<path>`` synthetic references
+    (4,539 of 5,373 findings rows on bp_testdb are ``triage:``), and ``s3://`` URIs, whose
+    scheme separator is deliberately not read as a repeated separator.
+
+    Applied on write at every point a value enters a findings row, and verified against the
+    live tables not to alter a single stored value -- which is why it shipped with no
+    backfill (tests/extraction/test_source_file_normalised.py holds that invariant).
+    """
+
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return text
+
+    scheme, separator, remainder = text.partition("://")
+    if separator:
+        # A URI: keep the scheme's own "//" and canonicalise only the part after it.
+        return f"{scheme}://{_REPEATED_SEPARATOR.sub('/', remainder.lstrip('/'))}"
+
+    text = _REPEATED_SEPARATOR.sub("/", text)
+    if text.startswith("./"):
+        text = text[2:]
+    return text.lstrip("/")
+
+
 def write_discrepancies(
     *,
     doc_type: str,
@@ -365,13 +439,25 @@ def write_discrepancies(
     Re-processing a document (new raw_id, same findings) must REFRESH its open
     findings, not stack duplicates — the Test Data_300726 re-extraction left
     identical warnings 7-deep. The open-findings identity is
-    (doc_type, doc_pk_candidate, issue_type, field_name), enforced by the
-    partial unique index ix_bp_extraction_discrepancy_open_key (deploy/sql/
-    2026-07-30_discrepancy_dedup.sql); on conflict the row's evidence is
-    refreshed from the latest run while created_at/status survive. Resolved
-    rows sit outside the partial index, so a finding that recurs after being
-    resolved is a NEW row — resolution history is never overwritten.
+    (doc_type, doc_pk_candidate, source_file, issue_type, field_name), enforced
+    by the partial unique index ix_bp_extraction_discrepancy_open_key (deploy/
+    sql/2026-10-01_discrepancy_open_key_per_document.sql); on conflict the row's
+    evidence is refreshed from the latest run while created_at/status survive.
+    Resolved rows sit outside the partial index, so a finding that recurs after
+    being resolved is a NEW row — resolution history is never overwritten.
+
+    source_file is in the key because doc_pk_candidate is the number read OUT of
+    the document, not an identifier OF it. Without it, two DIFFERENT documents
+    carrying one invoice number collided and the later overwrote the earlier --
+    which is the same invoice submitted twice, the case
+    duplicate_invoice_detector exists to catch. A re-read keeps the same
+    source_file so it still refreshes; raw_id could not be used for this because
+    it changes on every re-read, restoring the stacking bug.
     """
+    # Canonical spelling before the value reaches the key. See normalise_source_file:
+    # source_file is part of the open-findings identity, so two spellings of one document
+    # would stack two findings instead of refreshing one.
+    source_file = normalise_source_file(source_file)
     # Materialize: `discrepancies` may be a one-shot generator that we iterate
     # twice (rows build below + action_rows comprehension).
     discrepancies = list(discrepancies)
@@ -397,6 +483,7 @@ def write_discrepancies(
               evidence_page, evidence_bbox, evidence_text, notes)
              VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
              ON CONFLICT (doc_type, coalesce(doc_pk_candidate, ''),
+                          coalesce(source_file, ''),
                           issue_type, coalesce(field_name, ''))
              WHERE coalesce(status, 'open') <> 'resolved'
              DO UPDATE SET
@@ -442,6 +529,144 @@ def write_discrepancies(
         except Exception:
             conn.rollback()
             raise
+
+
+#: The findings the document-type resolver raises. They share field_name
+#: 'document_type', never block promotion, and are the only rows the helpers
+#: below touch.
+#: 'unknown_document_type' is deliberately NOT here: with a declared concept the
+#: resolver always returns status 'matched', and dispatch queues nothing when
+#: nothing was declared, so the pipeline can never write it. Re-adding it needs a
+#: real subject first (the type_resolver builder can still produce it for a
+#: direct caller that passes declared_concept=None).
+TYPE_FINDING_ISSUE_TYPES = (
+    "document_type_disagreement",
+    "unresolved_document_type",
+)
+TYPE_FINDING_FIELD = "document_type"
+TYPE_FINDING_RESOLVER = "extraction_type_resolution"
+
+
+def type_finding_doc_key(
+    doc_pk: str | None, process_monitor_id: int | None, file_path: str | None,
+) -> str | None:
+    """The doc_pk_candidate to file a type finding under.
+
+    A real primary key when the document has one. Otherwise a visibly-not-a-key
+    reference ('process_monitor:<id>', or 'file:<path>' when there is no
+    monitor row) so two pk-less documents do not share the open-row identity
+    (doc_type, coalesce(doc_pk_candidate,''), issue_type, field_name) and
+    overwrite each other.
+    """
+    if doc_pk:
+        return doc_pk
+    if process_monitor_id is not None:
+        return f"process_monitor:{process_monitor_id}"
+    if file_path:
+        return f"file:{file_path}"
+    return None
+
+
+def type_finding_doc_keys(
+    doc_pk: str | None, process_monitor_id: int | None, file_path: str | None,
+) -> list[str]:
+    """Every key form one document can be filed under across runs. A run that
+    extracts a pk files under the pk, a later one that does not files under
+    process_monitor:<id>; clearing must see both or one of them is stranded."""
+    keys = []
+    if doc_pk:
+        keys.append(doc_pk)
+    if process_monitor_id is not None:
+        keys.append(f"process_monitor:{process_monitor_id}")
+    if file_path:
+        keys.append(f"file:{file_path}")
+    return keys
+
+
+def resolve_stale_type_findings(
+    *, doc_type: str, doc_pk_candidate: str | None, current_issue_types,
+    other_doc_keys=(), source_file: str | None = None,
+) -> int:
+    """Close this document's OPEN type findings that the latest read no longer
+    raises. Follows the table's existing convention for a finding that went away
+    on its own (dedup-migration, session_postprocess, reextraction_*): status
+    'resolved', resolution_action 'dismiss', a system resolved_by, and an
+    '[auto-resolved: ...]' note. Never deleted.
+
+    Under ``doc_pk_candidate`` (the key the latest run filed under) a row closes
+    when its issue type is not in ``current_issue_types``. Under any of
+    ``other_doc_keys`` (the same document's other key forms), and under any other
+    key carrying the same ``source_file``, every open type finding closes: the
+    current run's own row supersedes them. source_file is what makes this work in
+    BOTH directions (a run that gained a pk, and a later one that lost it): the
+    stranded row's key is unknowable from the new run, its file is not.
+
+    Rows with resolved_by set are skipped too: the gateway's resolveDiscrepancy
+    maps flag (and any unrecognised verb) to status 'open' / resolution_action
+    NULL, writes no bp_decision row, and does stamp resolved_by.
+
+    A row somebody has acted on is never closed. The decision engine's
+    escalations (flag/hold/escalate/assign/investigate/query) deliberately keep
+    status='open' and resolution_action NULL, so the row alone cannot say so;
+    the trace is a proc.bp_decision row (subject_type='finding', subject_id =
+    the discrepancy id) and, for 'query', query_sent_at. Either one protects it.
+    Returns rows closed."""
+    keep = list(current_issue_types)
+    others = [k for k in other_doc_keys if k and k != doc_pk_candidate]
+    sql = """UPDATE proc.bp_extraction_discrepancy e
+                SET status = 'resolved',
+                    resolved_at = now(),
+                    resolution_action = 'dismiss',
+                    resolved_by = %s,
+                    notes = coalesce(e.notes, '')
+                        || ' [auto-resolved: the document was re-read and its type no longer raises this finding]'
+              WHERE e.doc_type = %s
+                AND e.field_name = %s
+                AND e.issue_type = ANY(%s)
+                AND coalesce(e.status, 'open') = 'open'
+                AND e.query_sent_at IS NULL
+                AND e.resolved_by IS NULL
+                AND NOT EXISTS (SELECT 1 FROM proc.bp_decision d
+                                 WHERE d.subject_type = 'finding'
+                                   AND d.subject_id = e.discrepancy_id::text)
+                AND ( (coalesce(e.doc_pk_candidate, '') = coalesce(%s, '')
+                       AND NOT (e.issue_type = ANY(%s)))
+                      OR coalesce(e.doc_pk_candidate, '') = ANY(%s)
+                      -- ACCEPTED RESIDUAL (ruled, not an oversight). This branch
+                      -- is how the pk-LOST direction gets closed: a later run
+                      -- with no doc_pk cannot name the pk-keyed row, so the row
+                      -- is found by the source_file it already carries. The
+                      -- cost is that it does NOT apply the keep-list, so a
+                      -- DIFFERENT key under the same file is closed whatever
+                      -- its issue type. Everything else still binds it:
+                      -- doc_type, field_name, the type-finding issue types,
+                      -- open status, no query sent, no resolved_by, no
+                      -- bp_decision row — so it cannot cross doc_type and
+                      -- cannot touch anything a human, the gateway or the
+                      -- decision engine has acted on.
+                      --
+                      -- It is quote-only BY CORPUS ACCIDENT, NOT BY STRUCTURE:
+                      -- one file yielding several documents is what makes a
+                      -- sibling reachable, and in bp_testdb only
+                      -- bp_quote_raw has that shape (4 source_file values
+                      -- mapping to more than one quote_id; invoices, POs and
+                      -- contracts have none). Any pipeline that later ingests
+                      -- several documents from one workbook inherits it.
+                      -- Low risk because the type evidence comes from the
+                      -- file's text and the declared concept, which are shared
+                      -- per file, so siblings almost always raise the same
+                      -- finding. Cost if wrong: an occasional still-valid type
+                      -- finding closed for a sibling document in the same file.
+                      OR (e.source_file = %s
+                          AND coalesce(e.doc_pk_candidate, '') <> coalesce(%s, '')) )"""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, (TYPE_FINDING_RESOLVER, doc_type, TYPE_FINDING_FIELD,
+                          list(TYPE_FINDING_ISSUE_TYPES), doc_pk_candidate, keep,
+                          others, source_file, doc_pk_candidate))
+        n = cur.rowcount or 0
+        conn.commit()
+        return n
 
 
 def update_promotion_status(*, doc_type: str, raw_id: int, status: str,

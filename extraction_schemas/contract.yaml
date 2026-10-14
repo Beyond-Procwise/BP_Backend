@@ -1,6 +1,6 @@
 doc_type: contract
 db_table: proc.bp_contracts
-db_lines_table: null
+db_lines_table: proc.bp_contract_line_items_raw
 
 fields:
   - name: contract_id
@@ -19,6 +19,8 @@ fields:
       - "Ref No"
       - "Document Number"
       - "Agreement Reference"
+      - "Order Form No"
+      - "Order Form Number"
     patterns:
       # The stacked lookbehinds refuse every label that names a DIFFERENT
       # contract: "Parent Contract Number:", "Master Agreement No:",
@@ -39,6 +41,39 @@ fields:
         value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
         max_span_after_anchor_chars: 60
         prior_confidence: 0.92
+      # An order form's own number. Added 2026-10-03 after a real order form
+      # promoted under its FRAMEWORK's identifier: the page's only
+      # "Agreement No" belonged to the framework, so anchored_agreement_no
+      # claimed it. Priced above that pattern so the document's own number wins
+      # when the page prints one. The type-aware guard in dispatch
+      # (_drop_self_parent_reference) is what covers the pages that print none.
+      - name: anchored_order_form_no
+        anchor: '(?i)\border\s+form\s*(?:(?:number|no)(?![A-Za-z0-9])\.?|reference|ref\.?|#)\s*[:\-\.]?\s*'
+        value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
+        max_span_after_anchor_chars: 60
+        prior_confidence: 0.90
+      # A side letter's and a guarantee's own number. Added 2026-10-11, the day
+      # those types were switched on: a live side letter and a live guarantee
+      # printed "Side Letter No. SL-2026-0302" / "Guarantee No. PCG-2026-0304",
+      # nothing here knew either caption, and the only number recognised on the
+      # page was the framework's -- so both were held as missing_required.
+      #
+      # Unlike the order form's pattern these demand the START OF A LINE (after
+      # table or heading markup). An agreement CITES its guarantee and its side
+      # letters in prose ("secured by Guarantee No. PCG-9"), and at 0.90 an
+      # unanchored match would outrank the agreement's own "Agreement No" and
+      # hand it another document's key. A caption begins its line; a citation
+      # sits inside a sentence.
+      - name: anchored_side_letter_no
+        anchor: '(?im)^[ \t|#*>]*side\s+letter\s*(?:(?:number|no)(?![A-Za-z0-9])\.?|reference|ref\.?|#)[ \t|]*[:\-\.]?[ \t|]*'
+        value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
+        max_span_after_anchor_chars: 60
+        prior_confidence: 0.90
+      - name: anchored_guarantee_no
+        anchor: '(?im)^[ \t|#*>]*(?:(?:parent\s+company|deed\s+of)\s+)?guarant(?:ee|y)\s*(?:(?:number|no)(?![A-Za-z0-9])\.?|reference|ref\.?|#)[ \t|]*[:\-\.]?[ \t|]*'
+        value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
+        max_span_after_anchor_chars: 60
+        prior_confidence: 0.90
       - name: anchored_agreement_no
         anchor: '(?i)(?<!parent )(?<!master )(?<!principal )(?<!amends )(?<!amendment to )(?<!supplements )(?<!varies )\bagreement\s*(?:number|no\.?|reference|ref\.?|#)\s*[:\-\.]\s*'
         value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
@@ -318,6 +353,48 @@ fields:
       ner_type_check: "none"
     invariants: []
 
+  # The BUYER's signatory. A contract has two, one per party; the pair above holds
+  # the SUPPLIER's (see deploy/sql/2026-10-04_contract_buyer_signatory.sql for why
+  # that pair is not renamed). Both of these are filled by
+  # engineered/contract_signatories.py reading the signature block.
+  #
+  # ner_type_check is "none" ON PURPOSE. A PERSON-typed field with no party-aware
+  # branch in SpacyNERExtractor falls through to its default path, which emits
+  # every entity of the right type for any field -- that is exactly what stored
+  # "Email Marketing" as the person who signed the real Marketing Agreement.
+  # These columns are read from the block or they stay NULL.
+  - name: buyer_signatory_name
+    type: string
+    required: false
+    db_column: buyer_signatory_name
+    canonical_labels:
+      - "Buyer Signatory"
+      - "Client Signatory"
+      - "Signed For Buyer"
+      - "Signed For Client"
+    extractors:
+      - qwen_vlm
+    judge:
+      tiebreaker: true
+      grounded_last_resort: false
+      ner_type_check: "none"
+    invariants: []
+
+  - name: buyer_signatory_role
+    type: string
+    required: false
+    db_column: buyer_signatory_role
+    canonical_labels:
+      - "Buyer Title"
+      - "Client Title"
+    extractors:
+      - qwen_vlm
+    judge:
+      tiebreaker: true
+      grounded_last_resort: false
+      ner_type_check: "none"
+    invariants: []
+
   - name: auto_renew_flag
     type: string
     required: false
@@ -373,7 +450,94 @@ fields:
       # The connector stays optional here — "amends Contract MSA-1234" is prose
       # and carries no colon. The value regex does the rejecting instead.
       - name: amends_contract
-        anchor: '(?i)\b(?:amends|amendment\s+to|supplements|varies)\s+(?:the\s+)?(?:contract|agreement)\s*(?:number|no\.?|#)?\s*[:\-]?\s*'
+        anchor: '(?i)\b(?:amends|amendment\s+to|supplements|varies)\s+(?:the\s+)?(?:contract|agreement)\s*(?:(?:number|no)(?![A-Za-z0-9])\.?|#)?\s*[:\-]?\s*'
+        value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
+        max_span_after_anchor_chars: 60
+        prior_confidence: 0.84
+    confidence_threshold: 0.75
+    judge:
+      tiebreaker: true
+      grounded_last_resort: false
+      ner_type_check: "none"
+    invariants: []
+
+  # The framework this document is called off under. proc.bp_document_type has
+  # declared this field as doctype.call_off_contract's pointer at its framework
+  # since the vocabulary was seeded; until now no field filled it.
+  - name: framework_ref
+    type: string
+    required: false
+    db_column: framework_ref
+    canonical_labels:
+      - "Framework Agreement"
+      - "Framework Contract"
+      - "Framework Reference"
+      - "Framework No"
+    patterns:
+      # Either the number label (then the colon is optional -- "Framework
+      # Agreement No. FA-2026-0042" is how contracts are actually typeset, and
+      # demanding a colon is why a real order form read NULL on 2026-10-03), or a
+      # colon with no label. Prose carrying NEITHER -- "This Framework Agreement
+      # sets out", "The Framework Agreement shall commence" -- matches no branch,
+      # which is what keeps a framework's own page from citing itself.
+      - name: anchored_framework_ref
+        anchor: '(?i)\bframework\s+(?:agreement|contract)\s*(?:(?:(?:number|no)(?![A-Za-z0-9])\.?|reference|ref\.?|#)\s*[:\-]?|[:\-])\s*'
+        value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
+        max_span_after_anchor_chars: 60
+        prior_confidence: 0.90
+      # "made under Framework Agreement RM6187" is prose and carries no colon,
+      # so the connector stays optional and the value regex does the rejecting.
+      # "incorporated into", "incorporated by reference" and "governed by" are
+      # three of the phrases §4 of the design counts as parent evidence, so the
+      # rule that recognises the sentence and the extractor that reads the
+      # reference out of it now agree on the same wording.
+      - name: made_under_framework
+        anchor: '(?i)\b(?:(?:made|issued|called\s+off|placed)\s+under|incorporated\s+(?:into|by\s+reference\s+into)|governed\s+by|subject\s+to)\s+(?:the\s+)?framework\s+(?:agreement|contract)\s*(?:(?:number|no)(?![A-Za-z0-9])\.?|#)?\s*[:\-]?\s*'
+        value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
+        max_span_after_anchor_chars: 60
+        prior_confidence: 0.84
+    confidence_threshold: 0.75
+    judge:
+      tiebreaker: true
+      grounded_last_resort: false
+      ner_type_check: "none"
+    invariants: []
+
+  # The agreement this document sits under WITHOUT amending it -- a SOW under its
+  # MSA. Deliberately separate from parent_contract_id, which anchors on
+  # amends/supplements/varies: "sits under" and "changes" are different facts,
+  # and the hierarchy maths needs to tell a child from an amendment.
+  - name: parent_agreement_ref
+    type: string
+    required: false
+    db_column: parent_agreement_ref
+    canonical_labels:
+      - "Master Agreement"
+      - "Master Services Agreement"
+      - "Under Agreement"
+      - "Pursuant To"
+    patterns:
+      # Same two branches as framework_ref, for the same reason: "Master
+      # Agreement No. MSA-4417" is the commonest shape a SOW has.
+      - name: anchored_parent_agreement
+        anchor: '(?i)\bmaster\s+(?:services?\s+)?agreement\s*(?:(?:(?:number|no)(?![A-Za-z0-9])\.?|reference|ref\.?|#)\s*[:\-]?|[:\-])\s*'
+        value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
+        max_span_after_anchor_chars: 60
+        prior_confidence: 0.90
+      - name: issued_under_agreement
+        anchor: '(?i)\b(?:issued|made|entered\s+into|executed)\s+(?:under|pursuant\s+to)\s+(?:the\s+)?(?:master\s+(?:services?\s+)?)?agreement\s*(?:(?:number|no)(?![A-Za-z0-9])\.?|#)?\s*[:\-]?\s*'
+        value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
+        max_span_after_anchor_chars: 60
+        prior_confidence: 0.84
+      # "This Renewal Agreement renews Service Agreement No. SA-2026-0310".
+      # Added 2026-10-11: a live renewal named the agreement it renews in exactly
+      # these words and read no parent, so no link could be proposed. Up to three
+      # words may qualify the agreement ("Master Services", "the Service"). The
+      # value regex does the rejecting: "renewal of this Agreement the charges"
+      # and "renews Service Agreement dated" name no number and read nothing.
+      # This fills the REFERENCE a person confirms, never parent_contract_id.
+      - name: renews_agreement
+        anchor: '(?i)\b(?:renews|renewal\s+of)\s+(?:the\s+)?(?:[A-Za-z][A-Za-z\-]*\s+){0,3}?(?:agreement|contract)\s*(?:(?:number|no)(?![A-Za-z0-9])\.?|#)?\s*[:\-]?\s*'
         value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
         max_span_after_anchor_chars: 60
         prior_confidence: 0.84
@@ -637,7 +801,80 @@ fields:
       ner_type_check: "none"
     invariants: []
 
-line_items: null
+line_items:
+  primary_extractor: qwen_vlm
+  fields:
+    - name: item_description
+      type: string
+      required: true
+      db_column: item_description
+      canonical_labels:
+        - "Description"
+        - "Service"
+        - "Item"
+        - "Deliverable"
+        - "Role"
+        - "Rate Card Item"
+      extractors:
+      - qwen_vlm
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+    - name: unit_price
+      type: money
+      required: false
+      db_column: unit_price
+      canonical_labels:
+        - "Rate"
+        - "Day Rate"
+        - "Unit Price"
+        - "Price"
+        - "Cap"
+        - "Not to Exceed"
+        - "Maximum"
+      extractors:
+      - qwen_vlm
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+    - name: unit_of_measure
+      type: string
+      required: false
+      db_column: unit_of_measure
+      canonical_labels:
+        - "Unit"
+        - "UoM"
+        - "Per"
+        - "Basis"
+      extractors:
+      - qwen_vlm
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+    - name: qualifier
+      type: string
+      required: false
+      db_column: qualifier
+      canonical_labels:
+        - "Notes"
+        - "Terms"
+        - "Conditions"
+      extractors:
+      - qwen_vlm
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
 
 document_invariants:
   - currency_consistency

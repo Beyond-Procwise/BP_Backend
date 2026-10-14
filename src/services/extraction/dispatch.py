@@ -234,6 +234,136 @@ def _map_recovered_lines(doc_type: str, recovered: list[dict]) -> list[dict[str,
     return mapped
 
 
+def _contract_party_candidates(doc_type: str, full_text: str):
+    """``(candidates, fields the entity sweep may not fill)`` for a contract.
+
+    Measured 2026-10-03 on the first six contract documents this product ever
+    ingested: `supplier_id` held the BUYER's name on five and the fragment
+    "Framework Agreement No" on the sixth, and `buyer_org_id` held the SAME value
+    as `supplier_id` on all six. `SpacyNERExtractor` only has party-aware branches
+    for the INVOICE field names (`supplier_name`, `buyer_id`), so a contract's
+    `supplier_id` / `buyer_org_id` fell through to its default path, which emits
+    every entity of the right TYPE for any field — identical lists for both
+    fields, including `Services`, `LIABILITY` and `Arbitration`.
+
+    The two fields are barred from the sweep EVEN WHEN THE CLAUSE SAYS NOTHING.
+    That is the point: a contract states its parties in words, and if this
+    document does not, the honest answer is NULL — the context layer can still
+    ground one from the whole document, and `missing_required` flags it for a
+    person. "The first ORG in the document" was wrong five times out of six, and
+    the sweep cannot tell a party from a clause heading.
+
+    Only for `doc_type == "contract"`. An invoice's `supplier_name` and `buyer_id`
+    have working position-aware branches and are untouched.
+    """
+    if doc_type != "contract":
+        return [], set()
+    try:
+        from src.services.extraction.engineered.contract_parties import (
+            BUYER_FIELD, SUPPLIER_FIELD, party_candidates,
+        )
+        from src.services.extraction.engineered.contract_signatories import (
+            BUYER_NAME_FIELD, BUYER_ROLE_FIELD, NAME_FIELD, signatory_candidates,
+        )
+        # The term, for the same reason as the parties: contract_start_date and
+        # contract_end_date declare sixteen canonical_labels between them and have
+        # no patterns, so nothing deterministic read a contract's dates. The real
+        # Marketing Agreement states its start date three times and promoted
+        # nowhere because the field was NULL and blocking.
+        from src.services.extraction.engineered.contract_dates import date_candidates
+        # The total value and its currency, pattern-less and NULL on all 7 live
+        # rows while every one of those documents states a figure. The one that
+        # costs money: a contract whose value is NULL contributes nothing to any
+        # spend or savings number.
+        from src.services.extraction.engineered.contract_value import value_candidates
+        # Title, governing law and payment terms: the last three of the
+        # pattern-less group. Each one stated in the documents and NULL in every
+        # row before this.
+        from src.services.extraction.engineered.contract_header import header_candidates
+        # contract_signatory_name is barred for the same reason and by the same
+        # evidence: the PERSON default path stored "Email Marketing" (a line from
+        # the services list) as the person who signed the real Marketing
+        # Agreement. jurisdiction is NOT barred -- it comes from that same path and
+        # it is correct ("United Kingdom" on five of six live documents), so
+        # barring the path wholesale would throw good values away.
+        return (party_candidates(full_text) + signatory_candidates(full_text)
+                + date_candidates(full_text) + value_candidates(full_text)
+                + header_candidates(full_text),
+                {SUPPLIER_FIELD, BUYER_FIELD, NAME_FIELD,
+                 BUYER_NAME_FIELD, BUYER_ROLE_FIELD})
+    except Exception:
+        log.exception("contract party/signature read failed; left to the context "
+                      "layer (the entity sweep stays barred)")
+        return [], {"supplier_id", "buyer_org_id", "contract_signatory_name",
+                    "buyer_signatory_name", "buyer_signatory_role"}
+
+
+#: A parent-reference column and the structure it points AT. A document whose own
+#: structure is that structure cannot be its own parent, so the value it read is
+#: its own identifier and the pointer is the mistake; for any other structure the
+#: pointer is right and a contract_id equal to it is the mistake.
+_PARENT_REFERENCE_POINTS_AT = {
+    "framework_ref": "doctype.framework_agreement",
+    "parent_agreement_ref": "doctype.master_agreement",
+}
+
+
+def _drop_self_parent_reference(columns: dict, resolved_doc_type: str | None) -> list[str]:
+    """Resolve a reference the page gave to two fields at once. In place.
+
+    Returns the names of the columns it cleared, so the caller can say WHY a
+    required value is missing instead of reporting the generic "could not ground
+    a value": the value was found, it just belongs to another contract.
+
+    Measured on a real order form, 2026-10-03. The page said "incorporated into
+    and governed by Framework Agreement No. FA-2026-0042" and nothing else that
+    looked like an identifier, so contract_id AND framework_ref both read
+    FA-2026-0042. contract_id is the upsert key for proc.bp_contracts, so
+    promoting that row OVERWROTE the framework agreement's own row: one
+    contract_id, two documents, and the framework silently stopped existing as a
+    separate contract.
+
+    The pattern layer cannot tell these apart -- a framework agreement's own first
+    page writes its identifier in the same words an order form writes its pointer,
+    and a negative lookbehind on contract_id blinded the framework to its own
+    number (tests/services/extraction/test_contract_parent_reference_fields.py
+    pins that). What separates them is the document's own structure, which is
+    known here and nowhere earlier.
+
+    A NULL structure changes nothing: the resolver having raised is not evidence
+    that the document is not a framework, and acting on it would delete a real
+    contract_id.
+    """
+    cleared: list[str] = []
+    if not resolved_doc_type:
+        return cleared
+    from src.services.graph_resolution.profiles import contract_hierarchy as _ch
+
+    own_id = _ch._norm_ref(columns.get("contract_id"))
+    if not own_id:
+        return cleared
+    for field, points_at in _PARENT_REFERENCE_POINTS_AT.items():
+        ref = columns.get(field)
+        if not ref or _ch._norm_ref(ref) != own_id:
+            continue
+        if resolved_doc_type == points_at:
+            # Its own number. A framework does not sit under a framework.
+            columns[field] = None
+            cleared.append(field)
+            log.info("dispatch: %s is this document's own identifier, not a "
+                     "pointer (%s) -- reference dropped", ref, resolved_doc_type)
+        else:
+            # Its parent's number, and contract_id is the upsert key.
+            columns["contract_id"] = None
+            cleared.append("contract_id")
+            log.warning(
+                "dispatch: %s belongs to this document's parent (named in %s), "
+                "not to the document (%s) -- contract_id left unset rather than "
+                "overwriting the parent's row", ref, field, resolved_doc_type)
+            return cleared
+    return cleared
+
+
 def normalize_doc_pk(doc_type: str, value):
     """Canonicalize a document primary key to its persisted form.
 
@@ -278,6 +408,7 @@ def _serialize_parsed(parsed) -> dict[str, Any]:
 
 def dispatch_document(
     *, process_monitor_id: int | None, file_path: str, doc_type: str,
+    declared_concept: str | None = None,
 ) -> dict[str, Any]:
     """Run a single document through the renovation pipeline end-to-end.
 
@@ -309,6 +440,12 @@ def dispatch_document(
     # L1
     candidates = run_pattern_extractor(parsed, doc_type)
 
+    # L2 — a contract's parties, read from its party clause. BEFORE the entity
+    # sweep, because the sweep is what got them wrong on all six of the first
+    # contracts this product ingested.
+    _party_cands, _party_barred = _contract_party_candidates(doc_type, parsed.full_text)
+    candidates.extend(_party_cands)
+
     # L2 — engineered fallbacks for NER-typed fields the L1 regex missed.
     # Only fires for fields with judge.ner_type_check != 'none'.
     l1_fields = {c.field for c in candidates}
@@ -316,7 +453,10 @@ def dispatch_document(
         ner_candidates = fill_ner_gaps(
             parsed=parsed,
             schema=registry.schema,
-            existing_fields=l1_fields,
+            # `existing_fields` is "do not fill these". A contract's party fields
+            # are in it whether or not the clause was found: see
+            # _contract_party_candidates for why a fallback here is not wanted.
+            existing_fields=l1_fields | _party_barred,
         )
         candidates.extend(ner_candidates)
     except Exception as exc:
@@ -457,6 +597,19 @@ def dispatch_document(
     if columns.get(_pk_field) not in (None, ""):
         columns[_pk_field] = normalize_doc_pk(doc_type, columns[_pk_field])
 
+    # A PO's approval is stored as a closed value (approved/pending/rejected/cancelled,
+    # NULL when the document does not say), and its revision as a whole number for the
+    # INTEGER column; the schema has no integer type, so it binds as a decimal.
+    if doc_type == "purchase_order":
+        from src.services.extraction.po_revision import normalise_approval
+        if "approval_status" in columns:
+            columns["approval_status"] = normalise_approval(columns.get("approval_status"))
+        if columns.get("po_revision") not in (None, ""):
+            try:
+                columns["po_revision"] = int(columns["po_revision"])
+            except (TypeError, ValueError):
+                columns.pop("po_revision", None)
+
     # --- Bounded gap-control recovery (one attempt) ---
     # If the structural/table extractor produced no lines or lines that don't
     # reconcile to the header subtotal, ask AgentNick to re-enumerate line
@@ -468,7 +621,9 @@ def dispatch_document(
     pre = _completeness.assess(
         doc_type, columns, line_items, has_line_schema=has_line_schema,
     )
-    if has_line_schema and full_text.strip() and pre.status in (
+    # A contract's lines are a rate card (rates, caps, included items) with no line
+    # amounts to reconcile, so recovery and the per-line money checks do not apply.
+    if has_line_schema and doc_type in _RECOVERED_LINE_AMOUNT_COL and full_text.strip() and pre.status in (
         "no_line_items", "line_sum_mismatch",
     ):
         try:
@@ -496,7 +651,14 @@ def dispatch_document(
                     "line-item recovery: replaced %d lines with %d (sum %.2f->%.2f, header=%s)",
                     len(line_items), len(mapped), old_sum or 0, new_sum or 0, header_total,
                 )
-                line_items = mapped
+                # Recovery replaces wholesale; put back any line it dropped that the
+                # document's total says belongs (completeness.restore_dropped_lines).
+                line_items, restored = _completeness.restore_dropped_lines(
+                    doc_type, mapped, line_items, header_total)
+                if restored:
+                    log.info("line-item recovery: restored %d table line(s) the recovery dropped "
+                             "(sum now %.2f, header=%s)", restored,
+                             _completeness.line_sum(doc_type, line_items) or 0, header_total)
 
     # Subtotal recovery from line items. When the required header subtotal
     # (invoice_amount / total_amount) could not be grounded from the text but
@@ -522,6 +684,38 @@ def dispatch_document(
                          _sub_col, _sub, len(line_items))
 
     discrepancies: list[Discrepancy] = []
+    # What the page says about its own type, next to what the uploader declared.
+    # Recorded on the row, never used to reroute: write_raw stores it as
+    # resolved_doc_type / resolved_role / type_agreement, but doc_type above
+    # already decided the pipeline from the declared category
+    # (routing.pipeline_for_category), and this must not change it. A failure
+    # here is a reporting gap, not an extraction failure, so it never propagates.
+    type_resolution = None
+    type_findings_built = False
+    try:
+        from src.services.extraction.type_resolver import (
+            resolve_document_type, type_resolution_discrepancies,
+        )
+        type_resolution = resolve_document_type(
+            declared_concept=declared_concept, full_text=full_text,
+        )
+        # Nothing declared means nothing to contradict (a script or direct
+        # caller; the live path always declares): the resolution is still
+        # computed and returned, but "unknown type" is not queued for a human.
+        if declared_concept:
+            discrepancies.extend(type_resolution_discrepancies(type_resolution))
+            # Only now do we KNOW what the document raises. If the builder had
+            # raised above, an empty current set must not be read as "raises
+            # nothing" and close a still-valid finding.
+            type_findings_built = True
+        log.info(
+            "type resolution trace=%s declared=%s evidence=%s status=%s agreement=%s",
+            trace_id, type_resolution.declared_concept,
+            type_resolution.evidence_concept, type_resolution.status,
+            type_resolution.agreement,
+        )
+    except Exception:
+        log.exception("type resolution failed (extraction continues)")
     # Re-bind any synthesized values that conflict with column types is
     # already handled by context_layer's _validate_and_bind. Bind errors
     # from the L1 layer are stale once synthesis ran — drop them.
@@ -542,6 +736,32 @@ def dispatch_document(
                 notes="context_layer (AgentNick) could not ground a value in the document",
             ))
 
+    # A document is not its own parent. Deliberately AFTER the loop above: this
+    # clears a value, and the finding it raises has to say that the identifier
+    # belongs to another contract, which is a different fact from "nothing was
+    # found". Measured on a real order form 2026-10-03, where the page's only
+    # identifier was its framework's and promoting the row overwrote the
+    # framework agreement's own row in proc.bp_contracts.
+    if doc_type == "contract":
+        _ref_claim = columns.get("framework_ref") or columns.get("parent_agreement_ref")
+        for _field in _drop_self_parent_reference(
+            columns, type_resolution.evidence_concept if type_resolution else None,
+        ):
+            if _field != "contract_id":
+                continue
+            discrepancies.append(Discrepancy(
+                field_name="contract_id",
+                issue_type="missing_required",
+                severity="critical",
+                blocks_promotion=True,
+                notes=(
+                    f"the only identifier on the page is {_ref_claim}, which the "
+                    f"document names as its parent; a document is not its own "
+                    f"parent, so contract_id is unset rather than overwriting "
+                    f"the parent contract's row"
+                ),
+            ))
+
     # Which currency is this money in?
     #
     # The number on a line is extracted whether or not a symbol sits beside it; the currency
@@ -551,10 +771,18 @@ def dispatch_document(
     # document waits on the Action page for a person instead of being promoted on a guess.
     _apply_currency_resolution(columns, full_text, registry, discrepancies)
 
-    # Invariants
+    # Invariants.
+    #
+    # `line_items` is passed, not []. It used to be [], although the list is in
+    # scope and fully populated by this point — built at build_line_items,
+    # replaced by the recovery pass, and trimmed by the subtotal-closure step
+    # above. With an empty list every line-level check returned not_applicable,
+    # so line_arithmetic (quantity x unit_price = line_amount), subtotal_closure
+    # and line_sum_closure never ran on any document. line_arithmetic is exactly
+    # the check that would have caught a unit price booked as a line total.
     try:
         invariant_results = run_invariants(
-            header=columns, line_items=[], schema=registry.schema,
+            header=columns, line_items=line_items, schema=registry.schema,
         )
     except Exception as exc:
         log.warning("invariants_runner failed: %s", exc)
@@ -581,7 +809,8 @@ def dispatch_document(
     # Line-item warnings: surface silent failures into the discrepancy
     # queue so HITL can see them. Non-blocking — these don't stop
     # promotion (we still want the header data in _stg).
-    if registry.schema.line_items and registry.schema.line_items.fields:
+    if (registry.schema.line_items and registry.schema.line_items.fields
+            and doc_type in _RECOVERED_LINE_AMOUNT_COL):
         if not line_items:
             discrepancies.append(Discrepancy(
                 field_name="line_items",
@@ -599,23 +828,40 @@ def dispatch_document(
                 "quantity", "unit_price", "line_amount", "line_total",
                 "total_amount", "total_amount_incl_tax",
             }
-            from src.services.extraction.three_way_match import is_non_charge_line
-            for li_idx, li in enumerate(line_items):
-                if not any(li.get(k) not in (None, "", 0) for k in numeric_keys):
-                    # Terms/footer furniture legitimately has no numbers —
-                    # warning on it buried the real findings 201-deep.
-                    if is_non_charge_line(li.get("item_description")):
-                        continue
-                    discrepancies.append(Discrepancy(
-                        field_name=f"line_items[{li_idx}]",
-                        issue_type="line_missing_numbers",
-                        severity="warning",
-                        blocks_promotion=False,
-                        notes=(
-                            f"line {li_idx + 1} has no quantity / unit_price / "
-                            f"line_amount — only the description was captured"
-                        ),
-                    ))
+            from src.services.extraction.two_way_match import (
+                is_non_charge_line, missing_number_lines,
+            )
+            # Terms/footer rows after the last priced line legitimately have no
+            # numbers — one warning per heading per version buried the real
+            # findings (87 on one three-supplier deal).
+            gaps, none_priced = missing_number_lines(line_items, numeric_keys)
+            if none_priced:
+                charges = [li for li in line_items
+                           if not is_non_charge_line(li.get("item_description"))]
+                discrepancies.append(Discrepancy(
+                    field_name="line_items",
+                    issue_type="line_missing_numbers" if charges else "missing_line_items",
+                    severity="warning",
+                    blocks_promotion=False,
+                    notes=(
+                        f"none of the {len(charges)} lines has a quantity / unit_price / "
+                        f"line_amount — only the descriptions were captured"
+                        if charges else
+                        "only terms / footer rows were captured as lines — no charge "
+                        "line was extracted from this document"
+                    ),
+                ))
+            for li_idx in gaps:
+                discrepancies.append(Discrepancy(
+                    field_name=f"line_items[{li_idx}]",
+                    issue_type="line_missing_numbers",
+                    severity="warning",
+                    blocks_promotion=False,
+                    notes=(
+                        f"line {li_idx + 1} has no quantity / unit_price / "
+                        f"line_amount — only the description was captured"
+                    ),
+                ))
 
             # A line that HAS quantity/unit_price but NO amount is the dangerous
             # case: the check above passes (some numerics are present) and the
@@ -696,7 +942,7 @@ def dispatch_document(
                 ),
             ))
 
-    # Three-way match: what does this document say that its purchase order does not?
+    # Two-way match: what does this document say that its purchase order does not?
     #
     # Everything above is the document arguing with ITSELF (its lines don't sum to its
     # header, a required field is missing). None of it is what a buyer actually needs,
@@ -704,18 +950,47 @@ def dispatch_document(
     # above the one agreed, a PO number that does not exist. That comparison was being
     # computed in linking_engine, reduced to a confidence score, and discarded.
     try:
-        from src.services.extraction.three_way_match import check_against_po
+        from src.services.extraction.two_way_match import check_against_po
 
         po_findings = check_against_po(doc_type, columns, line_items)
         if po_findings:
             log.info(
-                "three-way match: %d finding(s) against the purchase order (%s)",
+                "two-way match: %d finding(s) against the purchase order (%s)",
                 len(po_findings),
                 ", ".join(sorted({f.issue_type for f in po_findings})),
             )
         discrepancies.extend(po_findings)
     except Exception:  # noqa: BLE001 — a match failure must not lose the extraction
-        log.exception("three-way match failed; extraction stands, no PO findings raised")
+        log.exception("two-way match failed; extraction stands, no PO findings raised")
+
+    # The THIRD document: what arrived. Everything above compares the bill with
+    # the order, by value. This compares the bill with the DELIVERY, by
+    # quantity -- the only comparison that can show that a supplier was paid for
+    # goods nobody received. It runs for an invoice and for a goods receipt,
+    # because a delivery note arriving after the bill is the moment an
+    # over-billing becomes visible, or stops being one.
+    #
+    # Raises findings only, blocks nothing, and says nothing at all when no
+    # receipt has reached the order (design §12 and Review Focus #2).
+    try:
+        from src.services.extraction.three_way_match import check_against_receipts
+
+        # A goods receipt is matched LATER, in the promotion arm below, because
+        # the match writes its denominator onto the receipt's own _stg/_trgt
+        # rows and neither exists yet at this point in the extraction. An
+        # invoice is matched here: its PO, the receipts and the other invoices
+        # are all already persisted, and its own lines are substituted in.
+        receipt_findings = ([] if doc_type == "goods_receipt"
+                            else check_against_receipts(doc_type, columns, line_items))
+        if receipt_findings:
+            log.info(
+                "three-way match: %d finding(s) against what was received (%s)",
+                len(receipt_findings),
+                ", ".join(sorted({f.issue_type for f in receipt_findings})),
+            )
+        discrepancies.extend(receipt_findings)
+    except Exception:  # noqa: BLE001 — a match failure must not lose the extraction
+        log.exception("three-way match failed; extraction stands, no receipt findings raised")
 
     blocking = any(d.blocks_promotion for d in discrepancies)
     promotion_status = "discrepancy" if blocking else "pending"
@@ -734,11 +1009,61 @@ def dispatch_document(
     # on every path would fall back to "context_layer" regardless of what actually
     # produced it.
     _parser_snapshot = _serialize_parsed(parsed)
+    # Commercial terms (payment terms, validity, surcharges...) as the document states them.
+    # Not line items: read as lines they became amountless "lines" (engineered/terms_extractor).
+    try:
+        from src.services.extraction.engineered.terms_extractor import terms_from_parsed
+        _terms = terms_from_parsed(parsed)
+        if _terms:
+            _parser_snapshot["commercial_terms"] = _terms
+    except Exception:  # noqa: BLE001 -- terms are additive; never block extraction on them
+        log.warning("commercial terms capture failed", exc_info=True)
+    # How the price changes over the term (price_schedule.py), for every quote, PO and invoice:
+    # each line's schedule (Year 1 / 2 / 3 ...), the term and uplift the document states, and the
+    # check of one against the other. line_total stays Year 1; nothing printed is changed.
+    _schedule_lines: list = []
+    if doc_type in ("quote", "purchase_order", "invoice"):
+        try:
+            from src.services.extraction import price_schedule as _ps
+            _sched = _ps.schedules(parsed.full_text)
+            _pterms = _ps.pricing_terms(parsed.full_text)
+            _schedule_lines = _sched["lines"]
+            if _schedule_lines or _pterms.get("uplift_pct") is not None or _pterms.get("indexation"):
+                _parser_snapshot["pricing_terms"] = {
+                    **_pterms, "stated_tcv": _sched["stated_tcv"],
+                    "term_total": round(sum(l["term_total"] for l in _schedule_lines), 2) if _schedule_lines else None,
+                    "periods": max((len(l["periods"]) for l in _schedule_lines), default=0),
+                }
+            if _schedule_lines:
+                from src.services.governed_limits import limit as _limit
+                _tol = _limit("reconciliation_tolerances", "uplift_tolerance_pp")
+                for _f in _ps.escalation_findings(_schedule_lines, _pterms, _tol):
+                    discrepancies.append(Discrepancy(
+                        field_name="price_schedule", issue_type=_f["issue_type"], severity="warning",
+                        blocks_promotion=False,
+                        raw_value=f"{max(x['actual_pct'] for x in _f['lines']):.2f}%",
+                        expected_value=(f"{_f['stated_pct']:g}%" if _f["stated_pct"] is not None else None),
+                        computed_value=f"{_f['extra']:.2f}",
+                        notes=_ps.finding_notes(_f),
+                    ))
+        except Exception:  # noqa: BLE001 -- additive; a schedule never blocks extraction
+            log.warning("price schedule analysis failed", exc_info=True)
     try:
         from src.services.extraction import provenance as _prov
         _parser_snapshot["_field_provenance"] = _prov.snapshot(columns, candidates)
     except Exception:
         log.exception("dispatch: provenance snapshot failed (non-fatal)")
+
+    # What the document said it was, carried to the row so something other than a
+    # log line can read it. type_resolution is None when the resolver raised --
+    # extraction continues in that case, and the columns stay NULL rather than
+    # recording a structure nobody derived.
+    _resolved = type_resolution.evidence_concept if type_resolution else None
+    _role = None
+    if _resolved:
+        from src.services.concepts.vocabulary import ensure_vocabulary
+        _dt = ensure_vocabulary().document_types.get(_resolved)
+        _role = _dt.role if _dt else None
 
     raw_id = persistence.write_raw(
         doc_type=doc_type,
@@ -749,6 +1074,9 @@ def dispatch_document(
         columns=columns,
         parser_snapshot=_parser_snapshot,
         promotion_status=promotion_status,
+        resolved_doc_type=_resolved,
+        resolved_role=_role,
+        type_agreement=type_resolution.agreement if type_resolution else None,
     )
     record_action(
         phase=PHASE_EXTRACTION,
@@ -764,6 +1092,17 @@ def dispatch_document(
 
     # Write line items (if any)
     if line_items:
+        if doc_type == "contract":
+            from src.services.extraction.contract_terms import classify_contract_lines
+            line_items = classify_contract_lines(line_items)
+        elif doc_type in ("quote", "purchase_order", "invoice"):
+            # The volume a line is for ("2,400 users"), read from its description into
+            # volume / volume_unit; quantity and unit stay as printed (line_volume.py).
+            from src.services.extraction.line_volume import add_line_volumes
+            line_items = add_line_volumes(line_items)
+            if _schedule_lines:
+                from src.services.extraction.price_schedule import attach_schedules
+                line_items = attach_schedules(line_items, _schedule_lines)
         try:
             persistence.write_line_items_raw(
                 doc_type=doc_type, raw_id=raw_id, line_items=line_items,
@@ -771,13 +1110,41 @@ def dispatch_document(
         except Exception as exc:
             log.warning("line_items_raw write failed: %s", exc)
 
-    if discrepancies:
+    # Type findings are filed under persistence.type_finding_doc_key (a pk-less
+    # document must not share one open row with every other pk-less document)
+    # and are cleared when a re-read no longer raises them. Neither may fail the
+    # extraction.
+    _type_items = [d for d in discrepancies
+                   if d.issue_type in persistence.TYPE_FINDING_ISSUE_TYPES]
+    _other_items = [d for d in discrepancies
+                    if d.issue_type not in persistence.TYPE_FINDING_ISSUE_TYPES]
+    if _other_items:
         persistence.write_discrepancies(
             doc_type=doc_type, raw_id=raw_id,
             source_file=file_path,
             doc_pk_candidate=columns.get(persistence._DOC_PK_FIELD[doc_type]),
-            discrepancies=discrepancies,
+            discrepancies=_other_items,
         )
+    if type_findings_built:
+        try:
+            _type_key = persistence.type_finding_doc_key(
+                columns.get(persistence._DOC_PK_FIELD[doc_type]),
+                process_monitor_id, file_path)
+            if _type_items:
+                persistence.write_discrepancies(
+                    doc_type=doc_type, raw_id=raw_id, source_file=file_path,
+                    doc_pk_candidate=_type_key, discrepancies=_type_items,
+                )
+            persistence.resolve_stale_type_findings(
+                doc_type=doc_type, doc_pk_candidate=_type_key,
+                current_issue_types={d.issue_type for d in _type_items},
+                source_file=file_path,
+                other_doc_keys=persistence.type_finding_doc_keys(
+                    columns.get(persistence._DOC_PK_FIELD[doc_type]),
+                    process_monitor_id, file_path),
+            )
+        except Exception:
+            log.exception("type finding write/clear failed (extraction continues)")
 
     # Provenance (only when we have a doc_pk — required by the table's NOT NULL)
     # Header AND line-item evidence. Line values were previously written to the
@@ -807,6 +1174,27 @@ def dispatch_document(
         prom = promotion.promote(raw_id, doc_type)
         if prom.get("ok"):
             final_status = "promoted"
+            # A goods receipt is grouped by its PURCHASE ORDER's deal, not on
+            # its own evidence, so it needs this one step the other types do
+            # not: the PO-gated linking_engine.promote_ready would hold it
+            # forever, and the deal scheduler's _look_forward only stamps
+            # documents whose uploader tagged a deal. Never fails the
+            # extraction -- an unlinked receipt keeps its _stg row and says why.
+            if doc_type == "goods_receipt":
+                try:
+                    from src.services.extraction.goods_receipt_link import (
+                        link_receipt_to_po, run_match_for_receipt,
+                    )
+                    link_receipt_to_po(str(doc_pk))
+                    # Now, and not earlier: the match records how many lines it
+                    # could compare onto the rows promote() and the linking
+                    # above have just written, and it reasons over a set that
+                    # now includes this receipt. Its findings belong to the
+                    # INVOICES that over-billed, so it files them itself.
+                    run_match_for_receipt(str(doc_pk))
+                except Exception:
+                    log.exception(
+                        "goods receipt PO linking failed (extraction continues)")
         else:
             log.warning("inline promote failed: %s", prom.get("reason"))
             final_status = "pending"  # _raw kept; manual retry possible
@@ -865,6 +1253,11 @@ def dispatch_document(
         "trace_id": str(trace_id),
         "pipeline_version": pipeline_version,
         "raw_persisted": True,
+        "declared_concept": declared_concept,
+        "evidence_concept": (
+            type_resolution.evidence_concept if type_resolution else None
+        ),
+        "type_agreement": type_resolution.agreement if type_resolution else None,
         # New keys for the training-data collector. Defaults are safe
         # (empty / zero) so non-collector callers are unaffected.
         "_source_text": source_text,

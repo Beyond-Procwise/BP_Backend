@@ -685,6 +685,11 @@ line_items:
       canonical_labels:
         - "Description"
         - "Item Description"
+        - "Role"
+        - "Role / Grade"
+        - "Resource"
+        - "Provision"
+        - "Deliverable"
         - "Item"
         - "Product"
         - "Service Description"
@@ -703,6 +708,8 @@ line_items:
       canonical_labels:
         - "Qty"
         - "Quantity"
+        - "Days"
+        - "Hours"
         - "Units"
         - "No. of Units"
       extractors:
@@ -719,6 +726,7 @@ line_items:
       db_column: unit_price
       canonical_labels:
         - "Unit Price"
+        - "Fee"
         - "Rate"
         - "Price Each"
         - "Unit Cost"
@@ -738,6 +746,7 @@ line_items:
       canonical_labels:
         - "Amount"
         - "Line Amount"
+        - "Net"
         - "Line Total"
         - "Extended Amount"
       extractors:

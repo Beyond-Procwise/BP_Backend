@@ -1,8 +1,8 @@
-def test_feature_flag_off_preserves_legacy(monkeypatch):
-    monkeypatch.setenv("USE_STRUCTURAL_EXTRACTOR", "false")
-    # Simply assert that the module can still be imported without crashing
-    from src.services.agent_nick_orchestrator import AgentNickOrchestrator  # noqa: F401
-    assert AgentNickOrchestrator is not None
+# test_feature_flag_off_preserves_legacy asserted that
+# src.services.agent_nick_orchestrator imports cleanly. That module was removed
+# in 114e5ca (2026-05-09) with the rest of the legacy extraction stack, so the
+# test could only ever fail, and had been failing since. Removed rather than
+# repointed: there is no "legacy" side left for the flag to preserve.
 
 
 def test_feature_flag_on_module_imports(monkeypatch):

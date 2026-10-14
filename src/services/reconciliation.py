@@ -16,18 +16,35 @@ transparently rather than silently omitted).
 from __future__ import annotations
 
 import logging
+from src.services.governed_limits import limit as _governed_limit
 import os
 from typing import Any, Callable, Optional
 
 from src.services.agent_actions import bulk_record, PHASE_CONSOLIDATION
 from src.services.deal_summary import gather_deal_context
+from src.services.version_collapse import latest_per_family
 
 log = logging.getLogger(__name__)
 
-# Tolerances (env-overridable).
-_AMOUNT_PCT = float(os.getenv("RECON_AMOUNT_TOLERANCE_PCT", "0.01"))   # 1% of the largest
-_AMOUNT_ABS = float(os.getenv("RECON_AMOUNT_TOLERANCE_ABS", "1.00"))   # or $1.00 floor
-_TAX_PCT = float(os.getenv("RECON_TAX_TOLERANCE_PCT", "0.1"))          # 0.1 percentage points
+# Tolerances: ReconciliationTolerancePolicy (P9). These are the definition of
+# "the invoice agrees with the order" -- widen them and discrepancies stop being
+# reported -- so they are policy, and a missing one refuses rather than assuming.
+def _AMOUNT_PCT() -> float:
+    """1% of the largest."""
+    return _governed_limit("reconciliation_tolerances", "amount_tolerance_pct",
+                           env="RECON_AMOUNT_TOLERANCE_PCT")
+
+
+def _AMOUNT_ABS() -> float:
+    """or the absolute floor."""
+    return _governed_limit("reconciliation_tolerances", "amount_tolerance_abs",
+                           env="RECON_AMOUNT_TOLERANCE_ABS")
+
+
+def _TAX_PCT() -> float:
+    """percentage points."""
+    return _governed_limit("reconciliation_tolerances", "tax_tolerance_pct",
+                           env="RECON_TAX_TOLERANCE_PCT")
 
 # (doc_kind, ctx documents key, primary-key column)
 _KINDS = [
@@ -53,11 +70,29 @@ def _to_float(value: Any) -> Optional[float]:
         return None
 
 
+def _chain_quotes(ctx: dict) -> list[dict]:
+    """The quotes that belong in the purchase chain being reconciled.
+
+    A deal's quotes are competing bids, each revised in rounds. Only the WINNING bid's current
+    version is part of the purchase (the PO / invoice supplier's), or the only bid when there
+    is one. Rivals and superseded versions differ from the PO by design, so reconciling them
+    raised a mismatch on every competitive deal."""
+    docs = ctx["documents"]
+    current = latest_per_family(docs.get("quotes", []))
+    awarded = {r.get("supplier_id") for k in ("purchase_orders", "invoices")
+               for r in docs.get(k, []) if r.get("supplier_id")}
+    if awarded:
+        return [q for q in current if q.get("supplier_id") in awarded]
+    return current if len(current) == 1 else []
+
+
 def _flatten_docs(ctx: dict) -> list[dict]:
     """One row per document with the fields reconciliation compares."""
     docs: list[dict] = []
+    chain_quotes = _chain_quotes(ctx)
     for kind, ctx_key, pk_col in _KINDS:
-        for r in ctx["documents"].get(ctx_key, []):
+        rows = chain_quotes if ctx_key == "quotes" else ctx["documents"].get(ctx_key, [])
+        for r in rows:
             docs.append({
                 "doc_kind": kind,
                 "doc_pk": r.get(pk_col),
@@ -117,12 +152,12 @@ def reconcile_deal(deal_id: str, conn: Any = None) -> Optional[dict]:
     checks = {
         "amount_usd": _check_numeric(
             docs, "amount_usd",
-            lambda nums: max(_AMOUNT_PCT * max(abs(n) for n in nums), _AMOUNT_ABS),
+            lambda nums: max(_AMOUNT_PCT() * max(abs(n) for n in nums), _AMOUNT_ABS()),
             "amount_usd",
         ),
         "currency": _check_distinct(docs, "currency", "currency"),
         "supplier": _check_distinct(docs, "supplier_id", "supplier"),
-        "tax": _check_numeric(docs, "tax_percent", lambda nums: _TAX_PCT, "tax"),
+        "tax": _check_numeric(docs, "tax_percent", lambda nums: _TAX_PCT(), "tax"),
     }
 
     action_rows = []

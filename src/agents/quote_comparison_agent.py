@@ -12,6 +12,7 @@ import pandas as pd
 
 from agents.base_agent import BaseAgent, AgentContext, AgentOutput, AgentStatus
 from utils.db import read_sql_compat
+from services.version_collapse import base_reference, latest_per_family
 from utils.gpu import configure_gpu
 from utils.instructions import parse_instruction_sources
 
@@ -153,7 +154,18 @@ class QuoteComparisonAgent(BaseAgent):
 
         if supplier_ids:
             quotes = quotes[quotes["supplier_id"].astype(str).isin(supplier_ids)]
-            quote_lines = quote_lines[quote_lines["quote_id"].isin(quotes["quote_id"])]
+
+        # One row per bid: each supplier quote's latest version. Earlier versions are history;
+        # comparing them as well summed V1+V2+V3 into one supplier's "total cost".
+        quotes = pd.DataFrame(latest_per_family(
+            quotes.sort_values("quote_id").to_dict("records")), columns=quotes.columns)
+        # A bid whose supplier was not resolved is still a bid: key it on its own quote
+        # reference instead of folding every such bid into one "None" supplier.
+        quotes["supplier_id"] = [
+            str(s) if s not in (None, "") and not (isinstance(s, float) and math.isnan(s))
+            else f"quote {base_reference(q)}"
+            for s, q in zip(quotes["supplier_id"], quotes["quote_id"])]
+        quote_lines = quote_lines[quote_lines["quote_id"].isin(quotes["quote_id"])]
 
         if quotes.empty:
             results, recommended = self._finalise_results([weight_entry], metric_weights)
@@ -192,21 +204,31 @@ class QuoteComparisonAgent(BaseAgent):
         if "quote_date" in merged.columns and "validity_date" in merged.columns:
             merged["tenure_days"] = (merged["validity_date"] - merged["quote_date"]).dt.days
 
+        # Header figures are per QUOTE: merged onto every line they repeat, so summing them over
+        # the merged rows multiplied a quote's total by its line count. Lines sum per line,
+        # headers per quote.
+        header_cols = [c for c in ("total_amount", "total_amount_incl_tax") if c in quotes.columns]
+        header_sums = (
+            quotes.assign(**{c: pd.to_numeric(quotes[c], errors="coerce") for c in header_cols})
+            .groupby("supplier_id")[header_cols].sum().reset_index()
+            if header_cols else None
+        )
+        merged = merged.sort_values(["supplier_id", "quote_id"])
         aggregations = {
             "line_total": "sum",
-            "total_amount": "sum",
-            "total_amount_incl_tax": "sum",
             "quantity": "sum",
             "tenure_days": "mean",
             "quote_id": "nunique",
-            "quote_file_s3_path": "first",
+            "quote_file_s3_path": "last",
         }
         if "currency" in merged.columns:
-            aggregations["currency"] = "first"
+            aggregations["currency"] = "last"
         available_aggs = {
             col: func for col, func in aggregations.items() if col in merged.columns
         }
         summary = merged.groupby("supplier_id").agg(available_aggs).reset_index()
+        if header_sums is not None:
+            summary = summary.merge(header_sums, on="supplier_id", how="left")
 
         if suppliers is not None and not suppliers.empty:
             suppliers["supplier_id"] = suppliers["supplier_id"].astype(str)
@@ -215,7 +237,9 @@ class QuoteComparisonAgent(BaseAgent):
         results = [weight_entry]
         for _, row in summary.iterrows():
             supplier_id = row.get("supplier_id")
-            supplier_name = row.get("supplier_name") or supplier_id
+            # A supplier missing from the supplier master merges in as NaN (truthy, and not a
+            # string): use the id, which for an unresolved supplier is its quote reference.
+            supplier_name = row.get("supplier_name") if pd.notna(row.get("supplier_name")) else supplier_id
             path_value = row.get("quote_file_s3_path")
             entry = {
                 "name": supplier_name,
@@ -317,6 +341,11 @@ class QuoteComparisonAgent(BaseAgent):
         weight_row = None
         supplier_rows: List[Dict] = []
         has_supplier_entries = False
+
+        # Passed quotes may carry every version of a bid; only the latest competes.
+        versioned = [e for e in quotes if isinstance(e, dict) and e.get("quote_id")]
+        keep = {id(e) for e in latest_per_family(versioned)}
+        quotes = [e for e in quotes if not (isinstance(e, dict) and e.get("quote_id")) or id(e) in keep]
 
         for entry in quotes:
             if not isinstance(entry, dict):

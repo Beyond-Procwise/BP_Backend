@@ -111,8 +111,8 @@ def _extract_ollama_message(response: Any) -> str:
     ``ollama.chat()`` result (see ``_field``). Verified live 2026-07-28 --
     AgentNick:unified returned exactly the JSON asked for and the extractor threw it
     away, so every classification came back "did not return usable JSON" and every
-    reply escalated. The same latent bug is still in email_drafting_agent.py:2827;
-    fixing it there is not in this task's scope.
+    reply escalated. The drafting agent had the same bug until 2026-10-09 and now
+    calls this function.
     """
     content = _field(_field(response, "message"), "content")
     if isinstance(content, str) and content.strip():

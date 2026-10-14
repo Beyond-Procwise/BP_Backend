@@ -60,3 +60,43 @@ def test_a_deal_with_no_analyses_returns_an_empty_list_not_an_error(monkeypatch)
 def test_get_by_session_404s_when_there_is_no_such_analysis(monkeypatch):
     monkeypatch.setattr(mod, "_query", lambda sql, params: [])
     assert _client().get("/analysis/by-session/nope").status_code == 404
+
+
+def _one_analysis(sql, params):
+    if "FROM proc.bp_analysis a" in sql:
+        return [{"analysis_id": "aid-1", "session_id": "ses-1",
+                 "status": "running"}]
+    return []
+
+
+def test_an_analysis_says_which_files_were_already_uploaded_and_where(monkeypatch):
+    """The report tells the user a re-uploaded file was already held, on which
+    deal, and since when -- it reads this even while still running."""
+    monkeypatch.setattr(mod, "_query", _one_analysis)
+    seen = {}
+
+    def fake(session_id, **kw):
+        seen["session_id"] = session_id
+        return [{"file_name": "q.xlsx", "deal_id": "D-1", "deal_name": "Test Deal",
+                 "first_uploaded_at": "2026-07-29T10:10:38"}]
+    monkeypatch.setattr(mod.analysis_store, "already_uploaded_for_session", fake)
+
+    body = _client().get("/analysis/aid-1").json()
+
+    assert seen["session_id"] == "ses-1"
+    assert body["already_uploaded"] == [
+        {"file_name": "q.xlsx", "deal_id": "D-1", "deal_name": "Test Deal",
+         "first_uploaded_at": "2026-07-29T10:10:38"}]
+
+
+def test_a_failed_already_uploaded_lookup_is_unknown_not_none_found(monkeypatch):
+    """[] would tell the user nothing was a repeat; null says we could not check."""
+    monkeypatch.setattr(mod, "_query", _one_analysis)
+
+    def boom(session_id, **kw):
+        raise RuntimeError("db down")
+    monkeypatch.setattr(mod.analysis_store, "already_uploaded_for_session", boom)
+
+    r = _client().get("/analysis/aid-1")
+    assert r.status_code == 200
+    assert r.json()["already_uploaded"] is None

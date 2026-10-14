@@ -11,8 +11,14 @@ from src.services.db import get_conn
 
 @pytest.fixture
 def client():
+    from api.auth import require_user
+
     app = FastAPI()
     app.include_router(extraction_feedback.router)
+    # The review endpoints resolve the caller (P8 phase 2). These tests are
+    # about the review flow, not authentication, and require_user's global
+    # mode is test-order-sensitive, so the principal is pinned: nobody.
+    app.dependency_overrides[require_user] = lambda: None
     return TestClient(app)
 
 

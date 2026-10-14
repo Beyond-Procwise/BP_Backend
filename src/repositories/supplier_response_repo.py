@@ -83,6 +83,7 @@ class SupplierResponseRow:
     received_time: datetime
     response_time: Optional[Decimal] = None
     price: Optional[Decimal] = None
+    currency: Optional[str] = None
     lead_time: Optional[int] = None
     supplier_email: Optional[str] = None
     rfq_id: Optional[str] = None
@@ -320,7 +321,139 @@ def init_schema() -> None:
         cur.close()
 
 
+def _screen_inbound(row: SupplierResponseRow) -> None:
+    """Flag a reply that asks for new or changed payment details, for a person to look at before anything is drafted against it.
+
+    Best-effort and first: it runs before the insert so a reply that fails to store is still screened, and it can never raise or
+    change the row, so a fault in the screen costs a missed flag (logged) and never a lost reply.
+    """
+
+    try:
+        try:
+            from services.draft_assurance import inbound
+        except ImportError:
+            from src.services.draft_assurance import inbound
+        inbound.screen_and_record(row)
+    except Exception:  # noqa: BLE001
+        logger.debug("inbound payment-change screen did not run", exc_info=True)
+    try:                                           # independent of the screen above: a fault in either must not stop the other
+        try:
+            from services.draft_assurance import sender_auth
+        except ImportError:
+            from src.services.draft_assurance import sender_auth
+        sender_auth.check_and_record(row)
+    except Exception:  # noqa: BLE001
+        logger.debug("inbound sender check did not run", exc_info=True)
+    try:                                           # and independent of both: prompt-injection text in the reply
+        try:
+            from services.draft_assurance import inbound as _inbound
+        except ImportError:
+            from src.services.draft_assurance import inbound as _inbound
+        _inbound.screen_injection_and_record(row)
+    except Exception:  # noqa: BLE001
+        logger.debug("inbound injection screen did not run", exc_info=True)
+
+
+def record_extraction(*, workflow_id: Optional[str], unique_id: Optional[str], response_message_id: Optional[str], method: Optional[str],
+                      model: Optional[str], prompt_version: Optional[str], confidence: Optional[float] = None) -> bool:
+    """Record HOW the price / lead time on a reply row were read, so a value taken from an email is never mistaken for a confirmed one.
+
+    Best-effort and tolerant: it never raises, and a database that does not have the provenance columns yet (the migration is a separate
+    change) simply returns False. It stamps only a row that actually holds an extracted value, finds it by the reply's message id (or,
+    with none, its dispatch id), and NEVER overwrites a person's word: a row already ``confirmed`` or ``rejected`` is left alone.
+    """
+
+    try:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE proc.supplier_response SET extraction_status = 'extracted_unverified', extraction_method = %s, extraction_model = %s, "
+                "extraction_prompt_version = %s, extraction_confidence = %s, extracted_at = now() "
+                "WHERE workflow_id = %s AND (price IS NOT NULL OR lead_time IS NOT NULL) "
+                "AND ((%s IS NOT NULL AND response_message_id = %s) OR (%s IS NULL AND unique_id = %s)) "
+                "AND COALESCE(extraction_status, 'extracted_unverified') = 'extracted_unverified' RETURNING id",
+                (method, model, prompt_version, confidence, workflow_id,
+                 response_message_id, response_message_id, response_message_id, unique_id),
+            )
+            return bool(cur.fetchall())
+    except Exception:  # noqa: BLE001 - provenance is bookkeeping; the reply is already stored
+        logger.debug("extraction provenance not recorded", exc_info=True)
+        return False
+
+
+def decide_extraction(response_id: Any, by: Optional[str], action: str, *, seen_price: Any = None, seen_lead_time: Any = None) -> Dict[str, Any]:
+    """A person confirms or rejects the price / lead time read from a supplier's email, once, by name.
+
+    Confirming names the figures the person SAW and is refused if the row now holds different ones, so a confirmation can never vouch for
+    a value the person did not look at. A row already confirmed or rejected is not decided again. Never raises: a database without the
+    provenance columns answers "not available".
+    """
+
+    if action not in ("confirm", "reject") or not isinstance(by, str) or not by.strip():
+        return {"ok": False, "error": "action must be confirm or reject, by a named person"}
+    try:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT extraction_status, price, lead_time FROM proc.supplier_response WHERE id = %s", (response_id,))
+            found = cur.fetchone()
+            if found is None:
+                return {"ok": False, "error": "no such offer"}
+            status, price, lead_time = found
+            if status in ("confirmed", "rejected"):
+                return {"ok": False, "error": "this offer has already been decided"}
+            if action == "confirm":
+                if price is None and lead_time is None:
+                    return {"ok": False, "error": "there is nothing extracted on this reply to confirm"}
+                if not _same_figure(price, seen_price) or not _same_figure(lead_time, seen_lead_time):
+                    return {"ok": False, "error": "the figures changed since you looked; review them again"}
+            cur.execute(
+                "UPDATE proc.supplier_response SET extraction_status = %s, confirmed_by = %s, confirmed_at = now() "
+                "WHERE id = %s AND COALESCE(extraction_status, 'extracted_unverified') = 'extracted_unverified' RETURNING id",
+                ("confirmed" if action == "confirm" else "rejected", by.strip(), response_id))
+            if not cur.fetchall():
+                return {"ok": False, "error": "this offer has already been decided"}
+            return {"ok": True}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("offer decision not recorded: %s", type(exc).__name__)
+        return {"ok": False, "error": "offer confirmation is not available"}
+
+
+def _same_figure(stored: Any, seen: Any) -> bool:
+    if stored is None or seen is None:
+        return stored is None and seen is None
+    try:
+        return Decimal(str(stored)) == Decimal(str(seen))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def message_already_matched(message_id: Optional[str], workflow_id: Optional[str], unique_id: Optional[str]) -> bool:
+    """Whether this inbound message is already stored as the answer to some email.
+
+    ``workflow_id`` and ``unique_id`` are accepted for the caller's logging and future narrowing; any stored match
+    counts, whichever workflow it is in. Unreadable is treated as "not matched" so a database fault does not drop
+    a real reply -- the per-workflow duplicate clean-up still applies.
+    """
+
+    text = str(message_id or "").strip().strip("<>").strip()
+    if not text:
+        return False
+    try:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT 1 FROM proc.supplier_response "
+                "WHERE btrim(response_message_id, '<> ') = %s LIMIT 1",
+                (text,),
+            )
+            return cur.fetchone() is not None
+    except Exception:  # noqa: BLE001
+        logger.warning("could not check whether message %s was already matched", text, exc_info=True)
+        return False
+
+
 def insert_response(row: SupplierResponseRow) -> None:
+    _screen_inbound(row)
     base_text = row.response_text or row.response_body or ""
     response_text = base_text or ""
     response_body = row.response_body if row.response_body not in (None, "") else None
@@ -738,7 +871,7 @@ def fetch_all(*, workflow_id: str) -> List[Dict[str, Any]]:
         q = (
             "SELECT workflow_id, supplier_id, supplier_email, rfq_id, unique_id, response_text, response_body, body_html, "
             "response_message_id, response_subject, response_from, response_date, original_message_id, "
-            "original_subject, match_confidence, match_score, price, lead_time, received_time, processed, "
+            "original_subject, match_confidence, match_score, price, currency, lead_time, received_time, processed, "
             "dispatch_id, matched_on, raw_headers "
             "FROM proc.supplier_response WHERE workflow_id=%s"
         )

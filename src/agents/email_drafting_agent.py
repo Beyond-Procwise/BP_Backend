@@ -31,6 +31,11 @@ from utils.email_tracking import generate_unique_email_id
 from utils.gpu import configure_gpu
 from utils.instructions import parse_instruction_sources
 
+from src.services.ollama_client import (
+    KEEP_ALIVE as _OLLAMA_KEEP_ALIVE,
+    load_options as _ollama_load_options,
+)
+
 logger = logging.getLogger(__name__)
 
 configure_gpu()
@@ -571,7 +576,9 @@ def _current_rfq_date() -> str:
     return datetime.utcnow().strftime("%Y%m%d")
 
 
-def _build_rfq_table_html(descriptions: Iterable[str]) -> str:
+def _build_rfq_table_html(
+    descriptions: Iterable[str], quantities: Optional[Dict[str, str]] = None
+) -> str:
     header_cells = "".join(
         f'<th style="{_RFQ_HEADER_CELL_STYLE}">{escape(col)}</th>'
         for col in _RFQ_TABLE_COLUMNS
@@ -583,8 +590,10 @@ def _build_rfq_table_html(descriptions: Iterable[str]) -> str:
     for description in rows:
         first_cell = escape(description.strip()) if description else "&nbsp;"
         cells = [f'<td style="{_RFQ_BODY_CELL_STYLE}">{first_cell}</td>']
-        for _ in range(len(_RFQ_TABLE_COLUMNS) - 1):
-            cells.append(f'<td style="{_RFQ_BODY_CELL_STYLE}">&nbsp;</td>')
+        qty = (quantities or {}).get(description)
+        for col in _RFQ_TABLE_COLUMNS[1:]:
+            shown = escape(qty) if (col == "Qty" and qty) else "&nbsp;"
+            cells.append(f'<td style="{_RFQ_BODY_CELL_STYLE}">{shown}</td>')
         body_rows.append(f"<tr>{''.join(cells)}</tr>")
 
     blank_cells = [
@@ -603,7 +612,11 @@ def _build_rfq_table_html(descriptions: Iterable[str]) -> str:
 RFQ_TABLE_HEADER = _build_rfq_table_html([])
 
 
-DEFAULT_NEGOTIATION_MODEL = "mistral"
+# AgentNick is the only model (hard constraint). This was "mistral", which worked only because mistral is not
+# installed and call_ollama fell back to AgentNick; installing it would have silently switched every counter email.
+DEFAULT_NEGOTIATION_MODEL = "BeyondProcwise/AgentNick:unified"
+
+from src.services.draft_assurance.frame import BODY_ONLY as _BODY_ONLY, strip_frame as _strip_frame   # greeting and sign-off are code, not the model's
 
 
 class EmailDraftingAgent(BaseAgent):
@@ -908,12 +921,19 @@ class EmailDraftingAgent(BaseAgent):
             sender_email, data.get("sender_title")
         )
 
+        # Who this supplier actually is, per proc.bp_supplier. Resolved once and
+        # reused for the salutation, the rendered address and the recipient, so
+        # all three agree and none of them comes from the carried payload.
+        master_contact = self._master_contact(supplier_id)
+
         fmt_args = {
-            "supplier_contact_name": supplier.get("contact_name")
+            "supplier_contact_name": master_contact.name
             or supplier_name
             or "Supplier",
             "supplier_company": supplier_name or supplier_id or "",
-            "supplier_contact_email": supplier.get("contact_email", ""),
+            "supplier_contact_email": (
+                master_contact.emails[0] if master_contact.emails else ""
+            ),
             "deadline": data.get("deadline")
             or data.get("submission_deadline", ""),
             "category_manager_name": data.get("category_manager_name", ""),
@@ -990,6 +1010,13 @@ class EmailDraftingAgent(BaseAgent):
             content = f"{content}{negotiation_section_html}"
         body = self._clean_body_text(content)
 
+        # Assurance (shadow): checked on the message itself, before the hidden marker and thread history
+        # are added -- their ids and dates are not the buyer's claims. Never changes the body.
+        rfq_checked_text = self._html_to_plain_text(body)
+        rfq_assurance = self._rfq_assurance_begin(
+            data, supplier_id=supplier_id, profile=profile, workflow_id=workflow_id,
+        )
+
         body, marker_token = attach_hidden_marker(
             body,
             supplier_id=supplier_id,
@@ -1011,7 +1038,7 @@ class EmailDraftingAgent(BaseAgent):
 
         draft_action_id = resolve_action_id(supplier) or default_action_id
 
-        receiver = self._resolve_receiver(supplier, profile)
+        receiver = self._resolve_receiver(supplier, profile, master_contact)
         recipients: List[str] = []
         if receiver:
             recipients = self._normalise_recipients([receiver])
@@ -1097,7 +1124,11 @@ class EmailDraftingAgent(BaseAgent):
         if negotiation_message_plain:
             metadata.setdefault("negotiation_message", negotiation_message_plain)
 
+        metadata["intent"] = "RFQ_BATCH"
         draft["metadata"] = metadata
+        draft["assurance"] = self._rfq_assurance_finish(
+            rfq_assurance, rfq_checked_text, recipients, supplier_id,
+        )
 
         supplier_state = updated_state.get("suppliers", {}).get(supplier_key, {})
         supplier_state = dict(supplier_state) if isinstance(supplier_state, dict) else {}
@@ -1539,6 +1570,35 @@ class EmailDraftingAgent(BaseAgent):
             self.resolve_prompt("negotiation_playbook_system") or NEGOTIATION_PLAYBOOK_SYSTEM
         )
 
+    @staticmethod
+    def _counter_position(data: Dict[str, Any]) -> str:
+        """Who offered what, in words. Left to the JSON keys alone, the model thanked the supplier for "your revised
+        offer" of OUR counter price and made up a reply date (live, 2026-10-10)."""
+
+        currency = str(data.get("currency") or "").strip()
+        money = lambda v: f"{v} {currency}".strip()  # noqa: E731
+        lines = ["The position, in words:"]
+        if data.get("current_offer") is not None:
+            lines.append(f"- The supplier's current offer is {money(data['current_offer'])}.")
+        if data.get("counter_price") is not None:
+            lines.append(f"- We, the buyer, propose {money(data['counter_price'])} instead. The supplier has not agreed "
+                         "to this price: ask for it, never thank them for it or describe it as theirs.")
+        deadline = data.get("response_deadline") or data.get("deadline")
+        if deadline:
+            lines.append(f"- Ask the supplier to reply by {deadline}. Use exactly this date.")
+        else:
+            lines.append("- Do not give a reply date: none has been set.")
+        lines.append("- Do not state any price, date, quantity, lead time or term that is not given above or in the "
+                     "context: no tax, delivery or payment terms of your own.")
+        from src.services.negotiation.reply_offer import own_words
+
+        said = own_words(data.get("supplier_message") if isinstance(data.get("supplier_message"), str) else None)
+        if said:
+            lines.append("- The supplier wrote, in their latest reply:\n\"\"\"\n" + said[:1500] + "\n\"\"\"\n"
+                         "  Open by answering what they raised, plainly and courteously, before restating the position. "
+                         "Do not agree to anything on our behalf that is not in the position above.")
+        return "\n".join(lines)
+
     def from_decision(self, decision: Dict[str, Any]) -> Dict[str, Any]:
         decision_data = dict(decision or {})
         self._reset_style(None, decision_data)
@@ -1552,11 +1612,8 @@ class EmailDraftingAgent(BaseAgent):
         receiver = to_list[0] if to_list else None
         sender = decision_data.get("sender") or self.agent_nick.settings.ses_default_sender
 
-        existing_unique = self._normalise_tracking_value(decision_data.get("unique_id"))
         workflow_hint = decision_data.get("workflow_id") or decision_data.get("workflow_ref")
-        unique_id = existing_unique or self._generate_unique_identifier(
-            workflow_hint, supplier_id
-        )
+        unique_id = self._unique_id_for_new_draft(decision_data.get("unique_id"), workflow_hint, supplier_id)
 
         asks_raw = decision_data.get("asks") or decision_data.get("counter_points") or []
         if isinstance(asks_raw, str):
@@ -1578,6 +1635,19 @@ class EmailDraftingAgent(BaseAgent):
         negotiation_message = decision_data.get("negotiation_message") or decision_data.get(
             "message"
         )
+
+        # Postgres facts are read before the model is asked to write (see
+        # _handle_negotiation_counter); the decision dict is corrected in place.
+        assurance_run = self._assurance_prepare(
+            decision_data, workflow_id=workflow_hint, user_id=decision_data.get("requested_by"),
+            instruction=decision_data.get("user_instruction"),
+        )
+
+        blocked = assurance_run.blocked_reason() if assurance_run is not None else None
+        if blocked:
+            logger.warning("decision email not drafted for workflow %s: %s", workflow_hint, blocked)
+            return {"blocked": True, "blocked_reason": blocked, "unique_id": unique_id,
+                    "flag_ids": (assurance_run.inbound_block or {}).get("flag_ids", [])}
 
         payload = {
             "unique_id": unique_id,
@@ -1607,10 +1677,12 @@ class EmailDraftingAgent(BaseAgent):
         if not use_negotiation_content:
             user_prompt = (
                 f"Context (JSON):\n{json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
+                + self._counter_position(decision_data) + "\n\n"
                 "Write a professional negotiation counter email with an explicit Subject line. "
                 "Summarise the commercial position, list the key asks as bullet points, and close "
-                "with a clear call to action."
+                "with a clear call to action. " + _BODY_ONLY
             )
+            user_prompt = self._with_guidance(user_prompt, assurance_run)
 
             model_name = getattr(
                 self.agent_nick.settings,
@@ -1630,6 +1702,7 @@ class EmailDraftingAgent(BaseAgent):
                 response_text = ""
 
             subject_line, body_text = self._split_subject_and_body(response_text)
+            body_text = _strip_frame(body_text)   # the model's own greeting/signature, removed while its lines are still lines
             fallback_text = self._build_negotiation_fallback(
                 unique_id,
                 decision_data.get("counter_price"),
@@ -1644,6 +1717,20 @@ class EmailDraftingAgent(BaseAgent):
             )
             if not body_text:
                 body_text = fallback_text
+
+        # Checked on the composed text, before the recap and thread history that quote the
+        # supplier's own words are added.
+        if not use_negotiation_content:
+            # Framed only when this agent wrote it (model or template); a message the caller supplied goes as given.
+            body_text = self._framed(body_text or fallback_text or "", supplier_id)
+        composed, assurance_repaired = self._assure_composed(
+            assurance_run, body_text or fallback_text or ""
+        )
+        if assurance_repaired:
+            body_text = composed
+        assurance = self._assurance_finalize(
+            assurance_run, composed, recipients, supplier_id, repaired=assurance_repaired,
+        )
 
         html_body = self._render_html_from_text(body_text or fallback_text or "")
         sanitised_html = self._sanitise_generated_body(html_body)
@@ -1742,6 +1829,7 @@ class EmailDraftingAgent(BaseAgent):
             "lead_time_request": lead_time_request,
             "strategy": decision_data.get("strategy"),
             "intent": "NEGOTIATION_COUNTER",
+            "assurance_status": assurance.get("status"),
         }
         if marker_token:
             metadata["dispatch_token"] = marker_token
@@ -1781,6 +1869,7 @@ class EmailDraftingAgent(BaseAgent):
             "metadata": metadata,
             "headers": headers,
             "unique_id": unique_id,
+            "assurance": assurance,
         }
         if resolved_thread_headers:
             draft["thread_headers"] = resolved_thread_headers
@@ -1824,17 +1913,28 @@ class EmailDraftingAgent(BaseAgent):
                 supplier_id = supplier_payload.get("id")
         supplier_id = self._coerce_text(supplier_id)
         workflow_hint = context.get("workflow_id") if isinstance(context, dict) else None
-        existing_unique = self._normalise_tracking_value(context.get("unique_id"))
-        unique_id = existing_unique or self._generate_unique_identifier(
-            workflow_hint, supplier_id
+        unique_id = self._unique_id_for_new_draft(context.get("unique_id"), workflow_hint, supplier_id)
+
+        # The person's own words may name what to look up; any figure they contain is
+        # carried and reported unverified, never treated as a fact.
+        prompt_data = dict(context)
+        prompt_data["prompt"] = prompt_text
+        assurance_run = self._assurance_prepare(
+            prompt_data, workflow_id=workflow_hint, user_id=context.get("requested_by"),
+            request=prompt_text, classify=True,
         )
 
         payload = {"unique_id": unique_id, "prompt": prompt_text}
+        planned = (assurance_run.planned or {}) if assurance_run is not None else {}
+        if planned.get("status") == "captured" and (planned.get("brief") or {}).get("status") == "ready":
+            payload["brief"] = planned["brief"]      # plan, then draft: the model writes from the brief
         user_prompt = (
             f"Context (JSON):\n{json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
             "Compose a professional procurement email with a clear Subject line and structured body. "
-            "Keep the tone courteous and do not expose internal scoring or analysis logic."
+            "Keep the tone courteous and do not expose internal scoring or analysis logic. "
+            + _BODY_ONLY
         )
+        user_prompt = self._with_guidance(user_prompt, assurance_run)
 
         model_name = getattr(self.agent_nick.settings, "email_compose_model", self.compose_model)
         try:
@@ -1844,6 +1944,7 @@ class EmailDraftingAgent(BaseAgent):
             response_text = ""
 
         subject_line, body_text = self._split_subject_and_body(response_text)
+        body_text = _strip_frame(body_text)   # the model's own greeting/signature, removed while its lines are still lines
         if not body_text:
             body_text = prompt_text
 
@@ -1868,7 +1969,7 @@ class EmailDraftingAgent(BaseAgent):
             polish_prompt = (
                 f"Context (JSON):\n{json.dumps(polish_payload, ensure_ascii=False, default=str)}\n\n"
                 "Polish this procurement email for clarity and executive tone. Return the refined email "
-                "starting with a Subject line."
+                "starting with a Subject line. " + _BODY_ONLY
             )
             try:
                 polished_text = _chat(
@@ -1878,6 +1979,7 @@ class EmailDraftingAgent(BaseAgent):
                 logger.exception("Failed to polish composed email")
                 polished_text = ""
             polish_subject, polish_body = self._split_subject_and_body(polished_text)
+            polish_body = _strip_frame(polish_body)   # the model's own greeting/signature, removed while its lines are still lines
             if polish_subject:
                 subject = self._clean_subject_text(polish_subject, subject)
             if polish_body:
@@ -1891,6 +1993,24 @@ class EmailDraftingAgent(BaseAgent):
             sanitised_html = self._clean_body_text(sanitised_html)
         if plain_text:
             plain_text = self._clean_body_text(plain_text)
+
+        if plain_text:
+            plain_text = self._framed(plain_text, supplier_id)
+            sanitised_html = self._clean_body_text(
+                self._sanitise_generated_body(self._render_html_from_text(plain_text))
+                or self._render_html_from_text(plain_text)
+            )
+        # Checked after the polish pass, which is a second model touching the text.
+        composed, assurance_repaired = self._assure_composed(assurance_run, plain_text or "")
+        if assurance_repaired:
+            plain_text = composed
+            sanitised_html = self._clean_body_text(
+                self._sanitise_generated_body(self._render_html_from_text(composed))
+                or self._render_html_from_text(composed)
+            )
+        assurance = self._assurance_finalize(
+            assurance_run, composed, recipients, supplier_id, repaired=assurance_repaired,
+        )
 
         unique_id = self._resolve_unique_id(
             workflow_id=workflow_hint,
@@ -1939,6 +2059,7 @@ class EmailDraftingAgent(BaseAgent):
             metadata["supplier_id"] = supplier_id
         metadata["round"] = round_number
         metadata["round_number"] = round_number
+        metadata["assurance_status"] = assurance.get("status")
 
         self._record_thread_message(
             workflow_id=workflow_hint,
@@ -1976,6 +2097,7 @@ class EmailDraftingAgent(BaseAgent):
             "headers": headers,
             "unique_id": unique_id,
             "workflow_id": workflow_hint,
+            "assurance": assurance,
         }
         if supplier_id:
             draft["supplier_id"] = supplier_id
@@ -2129,6 +2251,7 @@ class EmailDraftingAgent(BaseAgent):
             return subject, body
 
         clean_subject, clean_body = self._split_subject_and_body(polished)
+        clean_body = _strip_frame(clean_body)   # the model's own greeting/signature, removed while its lines are still lines
         if clean_subject:
             subject = self._clean_subject_text(clean_subject, subject or DEFAULT_NEGOTIATION_SUBJECT)
         if clean_body:
@@ -2166,6 +2289,7 @@ class EmailDraftingAgent(BaseAgent):
         self,
         context: AgentContext,
         data: Dict[str, Any],
+        assurance_run=None,
     ) -> str:
         round_value = data.get("round") or 1
         try:
@@ -2308,7 +2432,8 @@ class EmailDraftingAgent(BaseAgent):
             levers_list=levers_formatted,
             strategic_elements=strategic_formatted,
             cta_guidance=cta_guidance,
-        )
+        ) + "\n\n" + _BODY_ONLY
+        user_prompt = self._with_guidance(user_prompt, assurance_run)
 
         model_name = getattr(
             self.agent_nick.settings,
@@ -2323,11 +2448,16 @@ class EmailDraftingAgent(BaseAgent):
                     {"role": "system", "content": self._sys_negotiation_playbook()},
                     {"role": "user", "content": user_prompt},
                 ],
+                # The load-affecting options come from ollama_client, not from here. A
+                # num_ctx of its own asked Ollama for a runner no other caller was using
+                # and reloaded the whole 18GB model; the sampling values below are this
+                # path's own and are unchanged.
                 options={
+                    **_ollama_load_options(),
                     "temperature": 0.7,
                     "top_p": 0.9,
-                    "num_ctx": 8192,
                 },
+                keep_alive=_OLLAMA_KEEP_ALIVE,
             )
             email_text = self._extract_ollama_message(response)
         except Exception:
@@ -2353,6 +2483,276 @@ class EmailDraftingAgent(BaseAgent):
 
         return email_text
 
+    def _assurance_env(self, *, user_id: Optional[str]):
+        """What an assurance run needs from this agent: a database, the policy engine, a model, prompts."""
+
+        from src.services.draft_assurance.run import Env
+
+        def ask(system: str, user: str) -> str:
+            from src.services.email_intent import _extract_ollama_message, _resolve_model
+
+            response = self.call_ollama(
+                model=_resolve_model(self),
+                messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+                format="json", think=False, options={"temperature": 0},
+            )
+            return _extract_ollama_message(response)
+
+        from src.services.draft_assurance import connections
+
+        settings = getattr(self.agent_nick, "settings", None)
+        access: Dict[str, Any] = {}      # filled in as the reader is opened: which control actually applied
+        return Env(
+            conn_factory=lambda: connections.reader(self.agent_nick, access),
+            store_factory=lambda: connections.writer(self.agent_nick),   # reads approved style rules + exemplars
+            access=access,
+            policy_engine=getattr(self.agent_nick, "policy_engine", None),
+            ask=ask,
+            prompt=lambda name: self.resolve_prompt(name),
+            master_emails=lambda sid: list(self._master_contact(sid).emails),
+            agent_name=self.__class__.__name__,
+            agent_ids={getattr(settings, "script_user", None), "AgentNick", self.__class__.__name__},
+            user_id=user_id,
+            exemplars=self._exemplar_info,
+        )
+
+    def _exemplar_info(self) -> Optional[Dict[str, Any]]:
+        """Which exemplars shaped this draft. ``None`` = retrieval never ran; ``ids: []`` = it ran and found none."""
+
+        if not getattr(self, "_style_resolved", False):
+            return None
+        style = getattr(self, "_style_for_current_draft", None)
+        if style is None:
+            return {"ids": [], "scope": "none"}
+        level = getattr(style, "fallback_level", None)
+        scope = "user" if level in (0, 1) else "organisation" if level == 2 else "none"
+        return {"ids": [int(i) if str(i).isdigit() else i for i in (getattr(style, "exemplar_ids", None) or [])],
+                "scope": scope}
+
+    def _assurance_prepare(
+        self, combined_data: Dict[str, Any], *, workflow_id: Optional[str], slug: Optional[str] = None,
+        user_id: Optional[str] = None, instruction: Optional[str] = None, request: Optional[str] = None,
+        classify: bool = False,
+    ):
+        """Begin an assurance run: facts read, tone derived, family resolved. Never raises.
+
+        An unreadable family or database leaves the draft going out as before, marked ``unassured``
+        so a reviewer can see nothing was checked. Silence would read as "checked and clean".
+        """
+
+        from src.services import draft_assurance as da
+        from src.services.draft_assurance import run as da_run
+
+        return da_run.begin(
+            self._assurance_env(user_id=user_id), combined_data,
+            slug=slug or da.SLUG, workflow_id=workflow_id, instruction=instruction,
+            request=request, classify=classify,
+        )
+
+    @staticmethod
+    def _with_guidance(user_prompt: str, run) -> str:
+        """Append the run's steering block (tone, the author's approved style rules, approved exemplars) as data.
+
+        Unchanged when nothing steers: no run, steering off, or nothing applicable.
+        """
+
+        block = run.guidance() if run is not None else ""
+        return f"{user_prompt}\n\n{block}" if block else user_prompt
+
+    def _assurance_finalize(self, run, composed_body, recipients, supplier_id, *, repaired: bool) -> Dict[str, Any]:
+        return run.finalize(composed_body, recipients, supplier_id, repaired=repaired)
+
+    RFQ_FAMILY_SLUG = "email_family_rfq_batch"
+
+    def _rfq_assurance_begin(self, data: Dict[str, Any], *, supplier_id: Any, profile: Any, workflow_id: Optional[str]):
+        """Begin the RFQ family's run for one supplier. Returns ``(run, None)`` or ``(None, reason)``; never raises.
+
+        The buyer's own deadline and the upstream supplier profile are CARRIED (reported unverified, not
+        failed); the supplier contact is read from Postgres. The batch must go out whatever happens here.
+        """
+
+        try:
+            payload = dict(data)
+            payload["supplier_id"] = supplier_id
+            payload["supplier_profile"] = profile
+            run = self._assurance_prepare(
+                payload, workflow_id=workflow_id, slug=self.RFQ_FAMILY_SLUG,
+                user_id=data.get("requested_by"),
+            )
+            return run, None
+        except Exception as exc:  # noqa: BLE001 - one supplier's fault must not lose the batch
+            logger.exception("RFQ assurance could not begin for supplier %s", supplier_id)
+            return None, f"{type(exc).__name__}: {exc}"
+
+    @staticmethod
+    def _unassured_record(family_id: str, reason: str) -> Dict[str, Any]:
+        """What a draft carries when assurance could not run: visible, so silence never reads as 'checked'."""
+
+        return {"family_id": family_id, "status": "unassured", "reason": reason, "violations": [], "ready": False}
+
+    HUMAN_FAMILY_SLUG = "email_family_human_written"
+
+    def assure_human_written(
+        self, *, text: str, recipients, supplier_id: Optional[str], workflow_id: Optional[str],
+        requested_by: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Assure an email a PERSON typed (reply panel, report panel, manual passthrough). Shadow; never raises.
+
+        The person is the author: their figures are carried and listed as unverified unless they equal what
+        Postgres holds. Nothing is repaired or judged, and ``text`` is never altered.
+        """
+
+        try:
+            plain = self._html_to_plain_text(text or "")
+            payload = {"supplier_id": supplier_id, "workflow_id": workflow_id, "body": plain}
+            run = self._assurance_prepare(
+                payload, workflow_id=workflow_id, slug=self.HUMAN_FAMILY_SLUG, user_id=requested_by,
+            )
+            return self._assurance_finalize(run, plain, recipients or [], supplier_id, repaired=False)
+        except Exception as exc:  # noqa: BLE001 - assurance must never stop a person's email being prepared
+            logger.exception("assurance of a human-written email failed")
+            return self._unassured_record("human_written", f"{type(exc).__name__}: {exc}")
+
+    FINAL_OFFER_FAMILY_SLUG = "email_family_final_offer_reply"
+
+    def assure_final_offer_reply(
+        self, data: Dict[str, Any], *, text: str, recipients, supplier_id: Optional[str], workflow_id: Optional[str],
+        requested_by: Optional[str] = None,
+    ) -> Tuple[Optional[str], Dict[str, Any]]:
+        """Assure the fixed-wording reply to a supplier's final offer. Returns ``(blocked_reason, record)``; never raises.
+
+        ``requested_by`` is the person whose decision this email states, when a person decided; the agent's own
+        holding reply or acceptance has none, and is accounted to the agent.
+
+        A reason means nothing may be drafted on this thread (an unreviewed flagged reply, or the check could not
+        run) and the record is empty. Otherwise the record is the family's shadow assurance of ``text``, which is
+        never altered -- or an ``unassured`` record when the family could not be read, so silence never reads as checked.
+        """
+
+        try:
+            payload = dict(data or {})
+            payload["supplier_id"] = supplier_id
+            payload["workflow_id"] = workflow_id
+            run = self._assurance_prepare(
+                payload, workflow_id=workflow_id, slug=self.FINAL_OFFER_FAMILY_SLUG, user_id=requested_by,
+            )
+            blocked = run.blocked_reason() if run is not None else None
+            if blocked:
+                return blocked, {}
+            plain = self._html_to_plain_text(text or "")
+            return None, self._assurance_finalize(run, plain, recipients or [], supplier_id, repaired=False)
+        except Exception as exc:  # noqa: BLE001 - assurance failing must be visible on the draft, not lose the reply
+            logger.exception("assurance of a final-offer reply failed")
+            return None, self._unassured_record("final_offer_reply", f"{type(exc).__name__}: {exc}")
+
+    def _rfq_assurance_finish(self, began, checked_text: str, recipients, supplier_id: Any) -> Dict[str, Any]:
+        """The assurance record for one RFQ draft. Shadow: records, never repairs, never edits the body."""
+
+        run, error = began
+        if run is None:
+            return self._unassured_record("rfq_batch", error or "not run")
+        try:
+            return self._assurance_finalize(run, checked_text, recipients, supplier_id, repaired=False)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("RFQ assurance could not finish for supplier %s", supplier_id)
+            return self._unassured_record("rfq_batch", f"{type(exc).__name__}: {exc}")
+
+    def _framed(self, text: str, supplier_id: Optional[Any]) -> str:
+        """Greeting and sign-off are code, never the model's (draft_assurance/frame.py). Empty text stays empty."""
+
+        from src.services.draft_assurance import frame as frame_mod
+
+        if not (text or "").strip():
+            return text or ""
+        return frame_mod.frame(text, contact_name=self._master_contact(supplier_id).name if supplier_id else None)
+
+    def _assure_composed(self, run, body: str):
+        """One repair pass over ``body`` if it fails a check. Returns ``(body, repaired)``."""
+
+        if run is None or run.inputs is None or not body:
+            return body, False
+        if run.payment_hold(body):
+            # Ruling 2026-10-09: an email about new or changed bank/payment details goes to a person exactly as written.
+            # A model must never rewrite it into a version that passes the checks.
+            run.repair_skipped = "the email mentions bank or payment details; it is left for a person, never repaired"
+            return body, False
+        failed = [v for v in run.check(body) if v["severity"] == "fail"]
+        if not failed:
+            return body, False
+        held = (run.inputs.reasoned.get("response_deadline") or {}).get("value") if run.inputs.reasoned else None
+        repaired = self._repair_assured_body(body, failed, deadline=str(held) if held else None)
+        if not repaired or repaired == body:
+            return body, False
+        # The repair rewrites the body only: the greeting and sign-off the code put there are put back exactly, before
+        # the repaired text is checked (live 2026-10-09 a repair dropped the sign-off).
+        from src.services.draft_assurance import frame as frame_mod
+
+        if "<" in body:
+            kept = frame_mod.reframe_like(self._html_to_plain_text(body), self._html_to_plain_text(repaired))
+            repaired = self._clean_body_text(self._sanitise_generated_body(self._render_html_from_text(kept)))
+        else:
+            repaired = frame_mod.reframe_like(body, repaired)
+        if not repaired or repaired == body:
+            return body, False
+        # A repair is accepted only if it does what it was asked: fewer failures, and still the
+        # same email. A model that refuses, or rewrites everything, has not repaired anything --
+        # "no failures" is exactly what an empty apology scores.
+        from src.services.draft_assurance.capture import word_distance
+
+        left = [v for v in run.check(repaired) if v["severity"] == "fail"]
+        before = {(v["kind"], v["detail"]) for v in failed}
+        added = [v for v in left if (v["kind"], v["detail"]) not in before]
+        if added:
+            # Fewer failures is not enough: a repair that swaps one problem for a new one (a [name] for a [deadline])
+            # has not repaired anything. Seen live 2026-10-09.
+            run.repair_rejected = ("the repaired text adds a new problem: "
+                                   + ", ".join(f"{v['kind']} {v['detail']}" for v in added))
+            return body, False
+        if len(left) >= len(failed):
+            run.repair_rejected = "the repaired text did not reduce the failures"
+            return body, False
+        if word_distance(body, repaired) > 0.6:
+            run.repair_rejected = "the repaired text is a different email, not a repair"
+            return body, False
+        return repaired, True
+
+    def _repair_assured_body(self, body: str, failed: List[Dict[str, str]], *, deadline: Optional[str] = None) -> Optional[str]:
+        """Ask the model once to remove what the checks rejected. None if it cannot, or if nothing is repairable."""
+
+        from src.services.draft_assurance import repair as repair_mod
+
+        steps = repair_mod.instructions(failed, deadline=deadline)
+        if not steps:
+            return None                         # e.g. only a missing deadline we do not hold: a person adds it, not a model
+        issues = "\n".join(f"- {line}" for line in steps)
+        model_name = getattr(
+            self.agent_nick.settings, "negotiation_email_model", DEFAULT_NEGOTIATION_MODEL
+        )
+        try:
+            response = self.call_ollama(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": (
+                        "You correct a draft email. Remove or reword only what the listed "
+                        "problems name. Never add, change, round or infer a figure, date or "
+                        "reference; if a sentence needs one you were not given, delete the "
+                        "sentence. Return only the corrected email body.")},
+                    {"role": "user", "content": f"Problems:\n{issues}\n\nEmail:\n{body}"},
+                ],
+                options={**_ollama_load_options(), "temperature": 0.2, "top_p": 0.9},
+                keep_alive=_OLLAMA_KEEP_ALIVE,
+            )
+            text = self._extract_ollama_message(response)
+        except Exception:  # noqa: BLE001
+            logger.exception("assurance repair pass failed")
+            return None
+        text = self._clean_body_text(self._sanitise_generated_body(text or ""))
+        if text and "<" not in body:
+            # Same format out as in: the free-text path renders plain text to HTML itself, and wrapping it here first
+            # escaped the tags a second time (a repaired draft showed literal "&lt;p&gt;", found live 2026-10-09).
+            text = self._html_to_plain_text(text).strip()
+        return text if text and len(text.strip()) >= 40 else None
+
     def _handle_negotiation_counter(self, context: AgentContext, data: Dict[str, Any]) -> AgentOutput:
         supplier_id = data.get("supplier_id")
         supplier_name = data.get("supplier_name") or supplier_id or "Supplier"
@@ -2364,13 +2764,44 @@ class EmailDraftingAgent(BaseAgent):
             combined_data.update(decision)
         combined_data.update(data)
 
-        email_text = self._draft_intelligent_negotiation_email(context, combined_data)
+        # Facts are read from Postgres BEFORE the model is asked to write, and where the
+        # payload disagrees Postgres wins, so the prompt never carries the wrong figure.
+        assurance_run = self._assurance_prepare(
+            combined_data, workflow_id=workflow_hint, user_id=getattr(context, "user_id", None),
+            instruction=combined_data.get("user_instruction"),
+        )
+
+        # An agent never drafts on a thread holding an unreviewed suspected payment-detail request (or one it could not check).
+        blocked = assurance_run.blocked_reason() if assurance_run is not None else None
+        if blocked:
+            logger.warning("negotiation counter not drafted for workflow %s: %s", workflow_hint, blocked)
+            return self._with_plan(context, AgentOutput(
+                status=AgentStatus.FAILED, error=blocked,
+                data={"blocked": True, "blocked_reason": blocked, "flag_ids": (assurance_run.inbound_block or {}).get("flag_ids", [])}))
+
+        # The steering run is passed only when something steers, so an unsteered call is exactly the old call.
+        steer = {"assurance_run": assurance_run} if assurance_run is not None and assurance_run.guidance() else {}
+        email_text = self._draft_intelligent_negotiation_email(context, combined_data, **steer)
         subject_line, body_text = self._split_subject_and_body(email_text)
+        body_text = _strip_frame(body_text)   # the model's own greeting/signature, removed while its lines are still lines
         body_content = self._sanitise_generated_body(body_text)
         body_clean = self._clean_body_text(body_content)
         body = body_clean
 
         subject_line, body = self._maybe_polish_negotiation_email(subject_line, body)
+        if body and body.strip():
+            # The model's own greeting and signature are removed and the fixed sign-off added; the greeting is added below,
+            # above the recap, naming the contact on record (draft_assurance/frame.py).
+            from src.services.draft_assurance import frame as frame_mod
+
+            body = self._clean_body_text(self._sanitise_generated_body(
+                self._render_html_from_text(frame_mod.close(self._html_to_plain_text(body)))))
+
+        # One repair pass, then whatever is left is shown, flagged. Checked on the
+        # composed text only: the recap and thread history added below quote the
+        # supplier's own words, which are not this email's claims.
+        body, assurance_repaired = self._assure_composed(assurance_run, body)
+        composed_body = body
 
         supplier_summary = combined_data.get("supplier_message_summary")
         if not supplier_summary:
@@ -2408,7 +2839,8 @@ class EmailDraftingAgent(BaseAgent):
             subject = DEFAULT_NEGOTIATION_SUBJECT
 
         contact_name = (
-            combined_data.get("contact_name")
+            self._master_contact(supplier_id).name
+            or combined_data.get("contact_name")
             or combined_data.get("supplier_contact")
             or combined_data.get("metadata", {}).get("supplier_contact")
             or supplier_name
@@ -2445,6 +2877,10 @@ class EmailDraftingAgent(BaseAgent):
         recipients = self._merge_recipients(to_recipients, cc_recipients)
         receiver = to_recipients[0] if to_recipients else (recipients[0] if recipients else None)
         contact_level = 1 if receiver else 0
+
+        assurance = self._assurance_finalize(
+            assurance_run, composed_body, recipients, supplier_id, repaired=assurance_repaired,
+        )
 
         session_reference = (
             combined_data.get("session_reference")
@@ -2488,6 +2924,7 @@ class EmailDraftingAgent(BaseAgent):
             "validation_issues": combined_data.get("validation_issues"),
             "flags": combined_data.get("flags"),
             "rationale": combined_data.get("rationale"),
+            "assurance_status": assurance.get("status"),
         }
         metadata = {k: v for k, v in metadata.items() if v is not None}
 
@@ -2575,6 +3012,7 @@ class EmailDraftingAgent(BaseAgent):
             "rfq_id": rfq_id,
             "thread_index": round_int,
             "closing_round": closing_round,
+            "assurance": assurance,
         }
 
         if resolved_thread_headers:
@@ -2824,18 +3262,15 @@ class EmailDraftingAgent(BaseAgent):
 
 
     @staticmethod
-    def _extract_ollama_message(response: Dict[str, Any]) -> str:
-        if not isinstance(response, dict):
-            return ""
-        message = response.get("message")
-        if isinstance(message, dict):
-            content = message.get("content")
-            if isinstance(content, str):
-                return content.strip()
-        content = response.get("response")
-        if isinstance(content, str):
-            return content.strip()
-        return ""
+    def _extract_ollama_message(response: Any) -> str:
+        """The model's text from whatever ``call_ollama`` returned. One reader, shared with email_intent.
+
+        This used to require a dict. The ollama client returns a ChatResponse object, so every real reply read as ""
+        and every model-written email (``_chat``, the counter compose, the repair pass) fell back to its template.
+        """
+        from src.services.email_intent import _extract_ollama_message as read
+
+        return read(response)
 
     def _instruction_sources_from_policy(self, policy: Dict[str, Any]) -> List[Any]:
         sources: List[Any] = []
@@ -3818,6 +4253,10 @@ class EmailDraftingAgent(BaseAgent):
                 data["decision"] = decision_payload
         if isinstance(decision_payload, dict) and decision_payload:
             draft = self.from_decision(decision_payload)
+            if draft.get("blocked"):
+                return self._with_plan(context, AgentOutput(
+                    status=AgentStatus.FAILED, error=draft.get("blocked_reason"),
+                    data={"blocked": True, "blocked_reason": draft.get("blocked_reason"), "flag_ids": draft.get("flag_ids", [])}))
             draft = self._apply_workflow_context(
                 draft, context, source_payload=decision_payload
             )
@@ -4149,6 +4588,13 @@ class EmailDraftingAgent(BaseAgent):
             manual_draft = self._apply_workflow_context(
                 manual_draft, context, source_payload=data
             )
+            # Shadow assurance of a person's own text: recorded, never altered. There is no supplier on
+            # this path, so every recipient is (correctly) reported as not on the supplier master.
+            manual_draft.setdefault("metadata", {})["intent"] = "MANUAL_PASSTHROUGH"
+            manual_draft["assurance"] = self.assure_human_written(
+                text=manual_body_clean, recipients=manual_recipients, supplier_id=None,
+                workflow_id=workflow_id, requested_by=data.get("requested_by"),
+            )
             drafts.append(manual_draft)
             self._store_draft(manual_draft)
             if manual_unique_id:
@@ -4234,7 +4680,10 @@ class EmailDraftingAgent(BaseAgent):
         }
         base_args.update(html_augmented)
 
-        rfq_table = self._render_rfq_table(profile) if include_rfq_table else ""
+        requirement = self._buyer_requirement(context)
+        rfq_table = (
+            self._render_rfq_table(profile, requirement) if include_rfq_table else ""
+        )
         scope_summary = self._compose_scope_summary(supplier, profile, context)
 
         deadline_value = base_args.get("deadline")
@@ -4252,12 +4701,51 @@ class EmailDraftingAgent(BaseAgent):
             "deadline_html": base_args.get("deadline_html"),
         }
 
+    @staticmethod
+    def _buyer_requirement(context: Dict) -> Optional[Dict]:
+        """The requirement the buyer stated, if the workflow carried one.
+
+        Only a dict with a title counts: an RFQ must say WHAT is wanted, and a
+        requirement without that cannot stand in for the supplier-history scope.
+        """
+        req = context.get("requirement") if isinstance(context, dict) else None
+        if isinstance(req, dict) and str(req.get("title") or "").strip():
+            return req
+        return None
+
+    @staticmethod
+    def _requirement_quantity(requirement: Dict) -> Optional[str]:
+        try:
+            qty = float(requirement.get("quantity"))
+        except (TypeError, ValueError):
+            return None
+        return str(int(qty)) if qty == int(qty) else str(qty)
+
+    def _requirement_sentence(self, requirement: Dict) -> str:
+        """What we are buying, from stated fields only. The target budget is
+        deliberately left out: an RFQ that names the buyer's budget hands the
+        bidders the number to bid up to."""
+        title = str(requirement["title"]).strip()
+        qty = self._requirement_quantity(requirement)
+        sentence = f"We need {qty} x {title}" if qty else f"We need {title}"
+        location = str(requirement.get("delivery_location") or "").strip()
+        if location:
+            sentence += f", delivered to {location}"
+        needed_by = str(requirement.get("needed_by_date") or "").strip()
+        if needed_by:
+            sentence += f", by {needed_by}"
+        return sentence
+
     def _compose_scope_summary(
         self, supplier: Dict, profile: Dict, context: Dict
     ) -> str:
         sentences: List[str] = []
         relationship = self._relationship_sentence(supplier)
-        scope_sentences = self._scope_sentences(supplier, profile, context)
+        requirement = self._buyer_requirement(context)
+        if requirement:
+            scope_sentences = [self._requirement_sentence(requirement)]
+        else:
+            scope_sentences = self._scope_sentences(supplier, profile, context)
 
         for candidate in [relationship, *scope_sentences]:
             formatted = self._ensure_sentence(candidate)
@@ -4376,7 +4864,13 @@ class EmailDraftingAgent(BaseAgent):
         except Exception:
             return None
 
-    def _render_rfq_table(self, profile: Dict) -> str:
+    def _render_rfq_table(
+        self, profile: Dict, requirement: Optional[Dict] = None
+    ) -> str:
+        if requirement:
+            title = str(requirement["title"]).strip()
+            qty = self._requirement_quantity(requirement)
+            return _build_rfq_table_html([title], {title: qty} if qty else None)
         items = profile.get("items") or []
         if not items:
             return RFQ_TABLE_HEADER
@@ -4476,6 +4970,33 @@ class EmailDraftingAgent(BaseAgent):
 
         supplier_hint = self._normalise_tracking_value(supplier_id)
         return generate_unique_email_id(workflow_hint, supplier_hint)
+
+    def _unique_id_for_new_draft(self, existing: Optional[Any], workflow_id: Optional[Any],
+                                 supplier_id: Optional[Any]) -> str:
+        """The id a new draft is stored and tracked under: the one it was handed, unless an email already sent carries it.
+
+        The negotiation agent hands over the conversation's reference -- the id of the email the supplier
+        replied to. Reused, the save overwrote that sent email with the next counter and the old reply counted
+        as an answer to it (live, 2026-10-14). If the table cannot be read, the draft gets its own id: a spare
+        row is harmless, an overwritten sent email is not.
+        """
+
+        existing_value = self._normalise_tracking_value(existing)
+        if existing_value:
+            try:
+                with self.agent_nick.get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT 1 FROM proc.draft_rfq_emails WHERE unique_id = %s AND sent IS TRUE LIMIT 1",
+                                    (existing_value,))
+                        already_sent = cur.fetchone() is not None
+            except Exception:  # noqa: BLE001
+                logger.warning("could not check whether %s was already sent; drafting under a new id", existing_value,
+                               exc_info=True)
+                already_sent = True
+            if not already_sent:
+                return existing_value
+            logger.info("%s has already been sent; the new draft gets its own id", existing_value)
+        return self._generate_unique_identifier(self._normalise_tracking_value(workflow_id), supplier_id)
 
     def _resolve_unique_id(
         self,
@@ -4802,16 +5323,21 @@ class EmailDraftingAgent(BaseAgent):
                 payload = json.dumps(persisted_draft, default=str)
 
                 with conn.cursor() as cur:
+                    # An email that has gone out stays as it went out (live, 2026-10-14: a counter was saved over one).
+                    cur.execute("SELECT 1 FROM proc.draft_rfq_emails WHERE unique_id = %s AND workflow_id = %s "
+                                "AND sent IS TRUE LIMIT 1", (unique_id, workflow_id))
+                    if cur.fetchone() is not None:
+                        raise RuntimeError(f"draft {unique_id} not stored: an email with that id has already been sent")
                     cur.execute(
                         """
                         INSERT INTO proc.draft_rfq_emails
                         (rfq_id, unique_id, supplier_id, supplier_name, subject, body, created_on, sent,
                          recipient_email, contact_level, thread_index, sender, payload,
-                         workflow_id, run_id, mailbox,
+                         workflow_id, run_id, mailbox, requested_by,
                          style_user_ref, style_intent, style_mode, style_profile_id,
                          style_profile_version, style_fallback_level, style_exemplar_ids,
                          style_exemplar_set_hash)
-                        VALUES (%s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        VALUES (%s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                                 %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (workflow_id, unique_id) DO UPDATE SET
                             rfq_id = EXCLUDED.rfq_id,
@@ -4829,6 +5355,14 @@ class EmailDraftingAgent(BaseAgent):
                             workflow_id = EXCLUDED.workflow_id,
                             run_id = EXCLUDED.run_id,
                             mailbox = EXCLUDED.mailbox,
+                            -- COALESCE, not EXCLUDED: a re-store must never
+                            -- blank out who asked. _store_draft is an upsert and
+                            -- the agent paths pass nothing here, so plain
+                            -- EXCLUDED would let any later write erase the
+                            -- requester and quietly retire the self-approval bar
+                            -- for that row.
+                            requested_by = COALESCE(EXCLUDED.requested_by,
+                                                    proc.draft_rfq_emails.requested_by),
                             style_user_ref = EXCLUDED.style_user_ref,
                             style_intent = EXCLUDED.style_intent,
                             style_mode = EXCLUDED.style_mode,
@@ -4837,6 +5371,7 @@ class EmailDraftingAgent(BaseAgent):
                             style_fallback_level = EXCLUDED.style_fallback_level,
                             style_exemplar_ids = EXCLUDED.style_exemplar_ids,
                             style_exemplar_set_hash = EXCLUDED.style_exemplar_set_hash
+                        WHERE proc.draft_rfq_emails.sent IS NOT TRUE
                         RETURNING id
                         """,
                         (
@@ -4855,6 +5390,9 @@ class EmailDraftingAgent(BaseAgent):
                             workflow_id,
                             run_id,
                             mailbox_hint,
+                            # Only a person sets this; agent paths leave it None.
+                            (str(draft.get("requested_by")).strip()
+                             if draft.get("requested_by") else None),
                             style_columns["style_user_ref"],
                             style_columns["style_intent"],
                             style_columns["style_mode"],
@@ -4871,8 +5409,24 @@ class EmailDraftingAgent(BaseAgent):
                 if record_id is not None:
                     draft["id"] = record_id
                     draft["draft_record_id"] = record_id
+                self._capture_draft(draft)
         except Exception:  # pragma: no cover - best effort
             logger.exception("failed to store RFQ draft")
+
+    def _capture_draft(self, draft: Dict[str, Any]) -> None:
+        """Record what this draft rested on, in email_agent. Never raises."""
+
+        if not isinstance(draft.get("assurance"), dict):
+            return
+        try:
+            from src.services.draft_assurance import capture
+
+            from src.services.draft_assurance import connections
+
+            with connections.writer(self.agent_nick) as cap_conn:
+                capture.record_draft(cap_conn, draft)
+        except Exception:  # noqa: BLE001
+            logger.exception("draft capture failed")
 
     def _record_learning_events(
         self,
@@ -5058,27 +5612,63 @@ class EmailDraftingAgent(BaseAgent):
             current = 0
         return current + 1
 
-    def _resolve_receiver(self, supplier: Dict[str, Any], profile: Dict[str, Any]) -> Optional[str]:
-        """Determine the best receiver email for a supplier."""
+    def _master_contact(self, supplier_id: Optional[Any]):
+        """What proc.bp_supplier holds for this supplier. Never raises.
 
-        candidates: List[str] = []
+        A lookup that cannot be performed resolves to nothing, which leaves the
+        draft unaddressed and held. That is the safe outcome: the alternative
+        is falling back to an address that arrived with the workflow payload,
+        which is the whole defect this closes.
+        """
 
-        def _append_candidate(value: Optional[str]) -> None:
-            if not value:
-                return
-            candidate = str(value).strip()
-            if candidate and candidate.lower() not in {c.lower() for c in candidates}:
-                candidates.append(candidate)
+        from src.services import supplier_contact
 
-        _append_candidate(supplier.get("contact_email"))
-        _append_candidate(supplier.get("contact_email_1"))
-        _append_candidate(supplier.get("contact_email_2"))
+        if not supplier_id:
+            return supplier_contact.SupplierContact()
+        get_conn = getattr(self.agent_nick, "get_db_connection", None)
+        if get_conn is None:
+            return supplier_contact.SupplierContact()
+        try:
+            with get_conn() as conn:
+                return supplier_contact.resolve_contact(conn, str(supplier_id))
+        except Exception:  # noqa: BLE001 - an unaddressable draft, not a crash
+            logger.exception(
+                "could not resolve contact details for supplier %s", supplier_id
+            )
+            return supplier_contact.SupplierContact()
 
-        contacts = profile.get("contacts") if isinstance(profile, dict) else None
-        if isinstance(contacts, Sequence):
-            for contact in contacts:
-                if isinstance(contact, dict):
-                    _append_candidate(contact.get("email"))
-                    _append_candidate(contact.get("contact_email"))
+    def _resolve_receiver(
+        self,
+        supplier: Dict[str, Any],
+        profile: Dict[str, Any],
+        contact: Optional[Any] = None,
+    ) -> Optional[str]:
+        """The RFQ address for a supplier, taken from the supplier master.
 
-        return candidates[0] if candidates else None
+        This used to prefer ``supplier["contact_email"]`` -- a value
+        ``SupplierRankingAgent`` republished off the supplier data frame -- then
+        ``contact_email_1``/``_2`` off the same carried dict, then an address on
+        the supplier profile. Three routes to an outbound address, none of which
+        read ``proc.bp_supplier``, on a payload that has travelled through the
+        shared workflow context.
+
+        Policy #674 already says the master is the only acceptable source and
+        the send path enforces it at dispatch. Resolving here from the same
+        lookup means a draft is addressed correctly in the first place rather
+        than being addressed from a payload and refused later.
+
+        ``profile`` is retained in the signature because callers pass it, but is
+        deliberately no longer consulted for an address: a fallback is how the
+        old path would survive.
+
+        ``contact`` lets a caller that has already resolved the master pass it
+        in. ``_render_supplier_draft`` needs the same record for the salutation,
+        and resolving twice is a second database round-trip per supplier --
+        which is per-supplier, and so becomes N+1 across a batch.
+        """
+
+        if contact is None:
+            contact = self._master_contact(
+                supplier.get("supplier_id") if isinstance(supplier, dict) else None
+            )
+        return contact.emails[0] if contact.emails else None

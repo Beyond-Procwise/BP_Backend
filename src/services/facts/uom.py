@@ -33,6 +33,11 @@ UOM_UNMAPPED = "UOM_UNMAPPED"
 # result that depends on it so a downstream comparison can see the assumption.
 CALENDAR_CONVENTION = "CALENDAR_CONVENTION_30D_365D"
 
+#: The basis was recovered from the item description, not read from the unit
+#: column. It must stay distinguishable from a unit the document stated
+#: outright: one is what the page said, the other is what we worked out.
+BASIS_FROM_DESCRIPTION = "BASIS_FROM_DESCRIPTION"
+
 _WHITESPACE = re.compile(r"\s+")
 
 
@@ -378,6 +383,89 @@ def ensure_vocabulary(
         _invalidated = False
     logger.info("loaded %d active units from proc.bp_uom_canonical", len(rows))
     return vocabulary
+
+
+# Only a parenthetical whose ENTIRE content is a period adverb counts. Bounded
+# to 20 characters so prose can never qualify.
+_PARENTHETICAL = re.compile(r"\(([^()]{1,20})\)")
+
+# The adverbial forms only. Note what is deliberately absent: bare nouns like
+# "month". "Enterprise Licence - 12 months" is a TERM LENGTH and
+# "(4 visits per month)" is a visit frequency; neither says the price is per
+# month, and both appear in this corpus.
+_PERIOD_ADVERBS: Dict[str, str] = {
+    "hourly": "hour",
+    "daily": "day",
+    "weekly": "week",
+    "monthly": "month",
+    "quarterly": "quarter",
+    "yearly": "year",
+    "annual": "year",
+    "annually": "year",
+    "per hour": "hour",
+    "per day": "day",
+    "per week": "week",
+    "per month": "month",
+    "per quarter": "quarter",
+    "per year": "year",
+    "per annum": "year",
+}
+
+
+def basis_from_description(
+    description: Optional[str], *, vocabulary: Optional[Vocabulary] = None
+) -> Optional[UomResult]:
+    """Recover a billing period stated in the item description, or None.
+
+    Some documents put the deliverable in the unit column and the period in the
+    description: 'HR Advisory & Employment Law Retainer (Quarterly)' is billed
+    per quarter. Recovering that turns an incomparable lump sum into a real
+    rate.
+
+    Deliberately narrow, because this is inference over free text and a wrong
+    basis is worse than none — it makes two incomparable numbers look
+    comparable, which is the failure the whole model exists to prevent. Only a
+    parenthetical whose entire content is a period adverb qualifies. Every
+    other shape in this corpus is a trap:
+
+        'Enterprise Licence - 12 months'  a term length, billed per licence
+        'Advanced Package (3 months)'     a duration
+        '(Months 1-10)'                   a range
+        '(4 visits per month)'            a frequency of visits, not of billing
+        'Monthly Design Package'          an adjective in the product's name
+
+    Two different periods in one description is a refusal, not a coin toss.
+
+    The result always carries BASIS_FROM_DESCRIPTION so a derived basis stays
+    distinguishable from one the document stated outright.
+    """
+    if not isinstance(description, str) or not description.strip():
+        return None
+
+    found: set[str] = set()
+    for inner in _PARENTHETICAL.findall(description):
+        key = _WHITESPACE.sub(" ", inner).strip().lower()
+        unit = _PERIOD_ADVERBS.get(key)
+        if unit is not None:
+            found.add(unit)
+
+    if len(found) != 1:
+        # Nothing found, or the description states more than one period and is
+        # therefore not telling us one thing.
+        return None
+
+    result = normalise_uom(found.pop(), vocabulary=vocabulary)
+    if result.canonical is None:
+        # The period is not an active unit in the current vocabulary. Refuse
+        # rather than resurrect a unit somebody deactivated on purpose.
+        return None
+
+    return UomResult(
+        result.canonical,
+        result.dimension,
+        result.factor,
+        result.reason_codes + (BASIS_FROM_DESCRIPTION,),
+    )
 
 
 def normalise_uom(raw: Optional[str], *, vocabulary: Optional[Vocabulary] = None) -> UomResult:

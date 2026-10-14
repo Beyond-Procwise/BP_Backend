@@ -1,0 +1,71 @@
+{
+ "id": "001-happy-path",
+ "family": "negotiation_counter",
+ "description": "Facts match Postgres, nothing invented: verified and ready.",
+ "run": {
+  "path": "counter",
+  "payload": {
+   "supplier_id": "S-1",
+   "workflow_id": "wf-1",
+   "supplier_name": "Acme Ltd",
+   "recipients": [
+    "alex@acme.test"
+   ],
+   "current_offer": 47.5,
+   "currency": "GBP",
+   "counter_price": 44.8,
+   "response_deadline": "30 October 2026",
+   "asks": [
+    "Confirm revised pricing"
+   ],
+   "rationale": "Anchor below their offer",
+   "reasoned_basis": {
+    "response_deadline": [
+     "email_thread_summary"
+    ]
+   }
+  }
+ },
+ "model": {
+  "compose": "Subject: Re: Pricing for your quotation\nDear Alex Morgan,\n\nThank you for your latest offer of 47.50 GBP. We would like to propose 44.80 GBP for this order. Could you please confirm whether you can agree this price by 30 October 2026?\n\nKind regards,\nProcurement Team",
+  "judge": {
+   "scores": {
+    "ask_is_specific": 5,
+    "position_follows_from_offer": 4,
+    "deadline_stated": 5,
+    "tone_matches_escalation_level": 4,
+    "concise": 4
+   },
+   "rationale": "clear"
+  }
+ },
+ "expect": {
+  "rec.status": "verified",
+  "rec.family_source": "declared",
+  "rec.family_id": "negotiation_counter",
+  "rec.facts.supplier_current_offer.row_id": "2",
+  "rec.facts.currency.value": "GBP",
+  "rec.conflicts": {
+   "len": 0
+  },
+  "rec.violations": {
+   "len": 0
+  },
+  "rec.unverified_figures": {
+   "len": 0
+  },
+  "rec.judge.status": "scored",
+  "rec.authority.verdict": "within",
+  "rec.ready": true,
+  "rec.accountability.kind": "agent",
+  "rec.exemplars.ids": {
+   "len": 0
+  },
+  "rec.exemplars.scope": "none",
+  "row.ready": true,
+  "row.family_source": "declared",
+  "row.exemplar_ids": {
+   "len": 0
+  }
+ }
+}

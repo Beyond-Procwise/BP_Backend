@@ -34,6 +34,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Optional
 
 from src.services import linking_engine as _le
+from src.services.formulas import ensure_registered, evaluate_many
 # One FX implementation, shared with the reader: the same rates, the same GBP, the same
 # refusal to convert what it cannot.
 from src.services.value_summary_service import _get_rates, _to_gbp
@@ -236,30 +237,72 @@ def find_duplicates(invoices: list[dict], min_score: float = RAISE_BAND) -> list
             continue
         buckets.setdefault((supplier, pence), []).append(inv)
 
-    out: list[dict] = []
+    # Every candidate pair across every bucket, scored in ONE batch. The pairing
+    # is unchanged; what changes is that the sweep writes a single audit record
+    # rather than one per pair.
+    pairs: list[tuple[dict, dict]] = []
     for rows in buckets.values():
         if len(rows) < 2:
             continue
         rows = sorted(rows, key=lambda r: (_as_date(r["invoice_date"]), str(r["invoice_id"])))
         for i, later in enumerate(rows):
-            best = None
             for earlier in rows[:i]:
                 if str(earlier["invoice_id"]) == str(later["invoice_id"]):
                     continue
-                link = score_pair(earlier, later)
-                if link["F"] < min_score:
-                    continue
-                if best is None or link["F"] > best[0]["F"]:
-                    best = (link, earlier)
-            if best is None:
-                continue
-            link, earlier = best
-            # One finding per document, against the invoice it most strongly duplicates —
-            # three identical invoices raise two findings, not three overlapping pairs.
-            out.append({"later": later, "earlier": earlier,
-                        "amount": round(float(later["total_amount"]), 2),
-                        "score": link["F"], "band": link["decision"], "link": link})
-    return out
+                pairs.append((earlier, later))
+
+    if not pairs:
+        return []
+
+    ensure_registered()
+    batch = evaluate_many(
+        "duplicate_invoice.pair_score",
+        [{"earlier": e, "later": l} for e, l in pairs],
+    )
+
+    best_by_later: dict[str, tuple[dict, dict, dict]] = {}
+    for (earlier, later), result in zip(pairs, batch):
+        if result.unassessed:
+            # Unscoreable is not "cleared". Say so rather than letting a refused
+            # contract read as a clean bill of health for the later invoice.
+            logger.warning(
+                "duplicate scoring unassessed for %s vs %s: %s",
+                later.get("invoice_id"), earlier.get("invoice_id"), result.why(),
+            )
+            continue
+        link = result.value
+        if link["F"] < min_score:
+            continue
+        key = str(later["invoice_id"])
+        current = best_by_later.get(key)
+        if current is None or link["F"] > current[0]["F"]:
+            best_by_later[key] = (link, earlier, later)
+
+    # One finding per document, against the invoice it most strongly duplicates —
+    # three identical invoices raise two findings, not three overlapping pairs.
+    #
+    # Taking each document's own strongest match is a per-source argmax, and
+    # unlike the award and anchor decisions it does NOT need the resolution
+    # layer. Those two are coupled: an order can be won once, so what one bid
+    # takes another cannot have, and the best assignment is not the one every
+    # bid would pick for itself. Here nothing is scarce. One original can be
+    # duplicated any number of times, no two findings compete for anything, and
+    # the globally best set of pairings is exactly each document's own favourite.
+    # Routing this through the resolver would add a solve and change nothing.
+    #
+    # What it does share with them is the need for a stated tie-break. `>` keeps
+    # the first match seen at a given score, and `pairs` is built from `rows`
+    # sorted by (invoice_date, invoice_id) with each document compared only
+    # against those before it. So on an exact tie the original is the EARLIEST
+    # invoice by date, then by id — which is the right answer as well as a
+    # deterministic one: the first issue of a document is the one the later
+    # copies duplicate.
+    return [
+        {"later": later, "earlier": earlier,
+         "amount": round(float(later["total_amount"]), 2),
+         "score": link["F"], "band": link["decision"], "link": link}
+        for link, earlier, later in best_by_later.values()
+    ]
 
 
 # ---------------------------------------------------------------------------
