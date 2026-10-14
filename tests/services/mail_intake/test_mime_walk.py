@@ -38,9 +38,37 @@ def test_nested_quote_two_levels_down_is_recovered_with_its_depth():
     assert pdfs[0].nesting_depth == 2
 
 
-def test_recursion_stops_at_max_depth():
-    bundle = parse(_load("forwarded_two_levels.eml"), max_depth=1)
-    assert not [p for p in bundle.parts if p.declared_mime == "application/pdf"]
+def _forwarded(inner: bytes, times: int) -> bytes:
+    """Wrap a message in `times` forwarding layers, as a mail client does."""
+    for n in range(times):
+        inner = (
+            f"From: buyer{n}@procure.test\r\n"
+            f"Subject: Fwd: quote (layer {n + 1})\r\n"
+            'Content-Type: multipart/mixed; boundary="F{n}"\r\n\r\n'
+            f"--F{n}\r\nContent-Type: text/plain\r\n\r\nSee below.\r\n"
+            f"--F{n}\r\nContent-Type: message/rfc822\r\n\r\n"
+        ).replace("{n}", str(n)).encode() + inner + f"\r\n--F{n}--\r\n".encode()
+    return inner
+
+
+def test_a_quote_forwarded_four_times_is_recovered():
+    """Forwarding a quote round a procurement team four times is ordinary; the
+    old default depth of 3 dropped the PDF and reported nothing."""
+    bundle = parse(_forwarded(_load("simple_pdf.eml"), 4))
+    pdfs = [p for p in bundle.parts if p.declared_mime == "application/pdf"]
+    assert [p.filename for p in pdfs] == ["quote-QT-4471.pdf"]
+    assert pdfs[0].nesting_depth == 4
+
+
+def test_a_tree_deeper_than_max_depth_is_rejected_not_truncated():
+    """Below the limit there is a PDF. Returning the bundle without it would be
+    the partial ingestion the module forbids, with nothing to investigate."""
+    # Precondition: the fixture really has the PDF two levels down.
+    full = parse(_load("forwarded_two_levels.eml"))
+    assert [p.nesting_depth for p in full.parts if p.declared_mime == "application/pdf"] == [2]
+
+    with pytest.raises(MalformedMime, match="max_depth"):
+        parse(_load("forwarded_two_levels.eml"), max_depth=1)
 
 
 def test_cid_referenced_inline_image_is_dropped():

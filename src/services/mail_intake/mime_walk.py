@@ -4,9 +4,12 @@ Two decisions here decide whether a real quote is ever seen.
 
 **Nesting.** A supplier quote is frequently one or two levels down a forwarded
 chain, wrapped in message/rfc822 parts. Walking only the top level finds the
-covering note and nothing else. Recursion is bounded (default 3) because depth
-is attacker-controlled and unbounded recursion on hostile input is a denial of
-service.
+covering note and nothing else. Depth is attacker-controlled, so it is bounded
+twice: _reject_hostile_shape refuses more than MAX_NESTED_MESSAGES nested
+messages before parsing, and the walk refuses to go past max_depth. A tree that
+reaches past max_depth is REJECTED (MalformedMime, so the pipeline quarantines
+it), never truncated: dropping the parts below the limit loses the quote and
+leaves nothing to investigate.
 
 **Inline versus CID.** Signature logos and tracking pixels arrive as inline
 parts referenced from the HTML body by Content-ID. Those are not documents.
@@ -26,12 +29,15 @@ from email.message import EmailMessage
 from email.parser import BytesParser
 from typing import Dict, List, Optional, Tuple
 
-MAX_DEPTH_DEFAULT = 3
-
 # Ceilings enforced BEFORE the stdlib parser is handed the bytes. See
 # _reject_hostile_shape for why "before" is the whole point.
 MAX_RAW_BYTES = 25 * 1024 * 1024
 MAX_NESTED_MESSAGES = 20
+
+# Equal to MAX_NESTED_MESSAGES: depth cannot exceed the nested-message count,
+# which is already capped before parsing, so a lower default bought no safety.
+# It was 3, which silently lost a quote forwarded four times.
+MAX_DEPTH_DEFAULT = MAX_NESTED_MESSAGES
 
 _CID_REF = re.compile(r"""["'(]\s*cid:([^"')\s>]+)""", re.IGNORECASE)
 
@@ -99,7 +105,10 @@ def _walk(message: EmailMessage, depth: int, max_depth: int,
 
         if content_type == "message/rfc822":
             if depth + 1 > max_depth:
-                continue
+                raise MalformedMime(
+                    f"forwarded message nested deeper than max_depth={max_depth}; "
+                    "rejected rather than ingested without its contents"
+                )
             nested = part.get_payload(0)
             _walk(nested, depth + 1, max_depth, parts, bodies)
             continue
