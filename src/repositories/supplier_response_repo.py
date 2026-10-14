@@ -427,6 +427,31 @@ def _same_figure(stored: Any, seen: Any) -> bool:
         return False
 
 
+def message_already_matched(message_id: Optional[str], workflow_id: Optional[str], unique_id: Optional[str]) -> bool:
+    """Whether this inbound message is already stored as the answer to some email.
+
+    ``workflow_id`` and ``unique_id`` are accepted for the caller's logging and future narrowing; any stored match
+    counts, whichever workflow it is in. Unreadable is treated as "not matched" so a database fault does not drop
+    a real reply -- the per-workflow duplicate clean-up still applies.
+    """
+
+    text = str(message_id or "").strip().strip("<>").strip()
+    if not text:
+        return False
+    try:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT 1 FROM proc.supplier_response "
+                "WHERE btrim(response_message_id, '<> ') = %s LIMIT 1",
+                (text,),
+            )
+            return cur.fetchone() is not None
+    except Exception:  # noqa: BLE001
+        logger.warning("could not check whether message %s was already matched", text, exc_info=True)
+        return False
+
+
 def insert_response(row: SupplierResponseRow) -> None:
     _screen_inbound(row)
     base_text = row.response_text or row.response_body or ""

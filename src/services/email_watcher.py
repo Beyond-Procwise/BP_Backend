@@ -1036,6 +1036,14 @@ class EmailWatcher:
     def _match_responses(self, tracker: WorkflowTracker, responses: Sequence[EmailResponse]) -> List[SupplierResponseRow]:
         matched_rows: List[SupplierResponseRow] = []
         for email_response in responses:
+            # The mailbox is searched by date, so earlier replies come round again. One stored as the answer to
+            # an email already is not a new reply (live, 2026-10-14: a 06:44 reply was matched to a 07:26 email).
+            if email_response.message_id and supplier_response_repo.message_already_matched(
+                    email_response.message_id, tracker.workflow_id, None):
+                continue
+            # And a reply cannot answer an email sent after it arrived.
+            email_records = {uid: d for uid, d in tracker.email_records.items()
+                             if _sent_before(d, email_response)}
             matched_id: Optional[str] = None
             best_dispatch: Optional[EmailDispatchRecord] = None
             best_score = 0.0
@@ -1043,9 +1051,9 @@ class EmailWatcher:
 
             if email_response.unique_id:
                 uid = email_response.unique_id.strip()
-                if uid in tracker.email_records:
+                if uid in email_records:
                     matched_id = uid
-                    best_dispatch = tracker.email_records[uid]
+                    best_dispatch = email_records[uid]
                     best_score = 1.0
                     best_reason = "unique-id"
 
@@ -1053,7 +1061,7 @@ class EmailWatcher:
                 normalised_rfq = _normalise_identifier(email_response.rfq_id)
                 if normalised_rfq and normalised_rfq in tracker.rfq_index:
                     for uid in tracker.rfq_index[normalised_rfq]:
-                        dispatch = tracker.email_records.get(uid)
+                        dispatch = email_records.get(uid)
                         if not dispatch:
                             continue
                         score, reason = score_dispatch_match(
@@ -1072,7 +1080,7 @@ class EmailWatcher:
                             best_reason = reason
 
             if not matched_id:
-                for uid, dispatch in tracker.email_records.items():
+                for uid, dispatch in email_records.items():
                     if uid in tracker.matched_responses:
                         continue
                     score, reason = score_dispatch_match(dispatch, email_response, match_threshold=self.config.match_threshold)
@@ -1152,7 +1160,7 @@ class EmailWatcher:
             else:
                 pending_candidates = [
                     (uid, dispatch)
-                    for uid, dispatch in tracker.email_records.items()
+                    for uid, dispatch in email_records.items()
                     if uid not in tracker.matched_responses
                 ]
                 resolved = False
@@ -2923,6 +2931,23 @@ class EmailWatcherService:
                 break
 
         logger.debug("EmailWatcherService loop terminated")
+
+# Clock skew between our send and the supplier's mail server: a reply stamped this much before dispatch still counts.
+_REPLY_CLOCK_SKEW = timedelta(minutes=2)
+
+
+def _sent_before(dispatch: "EmailDispatchRecord", email_response: "EmailResponse") -> bool:
+    """Whether ``dispatch`` went out before ``email_response`` arrived; unknown times do not exclude it."""
+
+    sent, received = dispatch.dispatched_at, email_response.received_at
+    if sent is None or received is None:
+        return True
+    if sent.tzinfo is None:
+        sent = sent.replace(tzinfo=timezone.utc)
+    if received.tzinfo is None:
+        received = received.replace(tzinfo=timezone.utc)
+    return received >= sent - _REPLY_CLOCK_SKEW
+
 
 def _store_matched_response(row: SupplierResponseRow) -> None:
     """Store a matched reply together with the price its own words state.
