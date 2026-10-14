@@ -142,6 +142,19 @@ def test_find_existing_artifact_scopes_to_the_owner():
     assert "user-7" in params
 
 
+def test_a_quarantined_copy_is_never_the_original_a_clean_arrival_duplicates():
+    """Dedup runs after the safety gate, so the arrival being checked is clean.
+    Matching it to a QUARANTINED artifact marked it a duplicate of something
+    that was never read: a clean re-send of a once-quarantined file (a false
+    positive since fixed, or one a person released) was lost with no trace.
+    The predicate must be in the SQL, as with owner scoping above."""
+    cur = FakeCursor([])
+    repo.find_existing_artifact(cur, "user-7", "abc", None)
+    sql, params = cur.calls[0]
+    assert "AND state <> %s" in sql
+    assert "quarantined" in params
+
+
 def test_mark_duplicate_validates_the_state_it_is_given():
     """The transition check must consult the artifact's actual state.
 

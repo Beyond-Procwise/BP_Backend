@@ -321,11 +321,15 @@ def find_existing_artifact(cur, owner_ref: str, digest: str,
         """
         SELECT artifact_id FROM proc.bp_ingest_artifact
          WHERE owner_ref = %s AND sha256 = %s AND duplicate_of_artifact_id IS NULL
+           AND state <> %s
            AND (%s::uuid IS NULL OR artifact_id <> %s::uuid)
          ORDER BY created_at
          LIMIT 1
         """,
-        (owner_ref, digest, exclude_artifact_id, exclude_artifact_id),
+        # Never a quarantined copy: the arrival being checked has passed the
+        # gate, and "duplicate of something never read" loses it silently.
+        (owner_ref, digest, ArtifactState.QUARANTINED.value,
+         exclude_artifact_id, exclude_artifact_id),
     )
     row = cur.fetchone()
     if not row:
