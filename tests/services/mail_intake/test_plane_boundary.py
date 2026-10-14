@@ -31,6 +31,10 @@ FORBIDDEN_PREFIXES = (
     "httpx",
     "urllib.request",
     "boto3",
+    # The shared AWS egress helper: parser.py moved from importing boto3 to
+    # calling this, which is the same crossing under a different name.
+    "services.egress",
+    "src.services.egress",
 )
 
 # Absolute, derived from this file. A relative path made rglob yield nothing
@@ -58,6 +62,11 @@ def _imports(path: pathlib.Path):
         elif isinstance(node, ast.ImportFrom):
             if node.module and node.level == 0:
                 yield node.module
+                # `from src.services import egress` names the module in the
+                # alias, not in node.module; without this the guard saw only
+                # "src.services" and missed the crossing entirely.
+                for alias in node.names:
+                    yield f"{node.module}.{alias.name}"
 
 
 def test_extraction_gains_no_new_route_out_of_its_plane():

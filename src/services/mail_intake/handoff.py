@@ -30,7 +30,8 @@ log = logging.getLogger(__name__)
 # NEW while not pretending these are absent. Adding to this set is a decision
 # a human makes deliberately, not a way to quiet a failing build.
 KNOWN_CROSSINGS: Dict[str, set] = {
-    "src/services/extraction/parser.py": {"boto3"},
+    # Was {"boto3"}; parser.py now reaches S3 through src.services.egress.
+    "src/services/extraction/parser.py": {"src.services.egress"},
 }
 
 # Extension chosen by DETECTED type, never by the sender's filename. Keys are
