@@ -60,3 +60,51 @@ def test_a_floor_of_zero_is_a_stated_zero_not_unset(monkeypatch):
     checks = pc.for_quote(None)
     assert checks["marginFloorPct"] == 0.0 and checks["discountCorridor"] == {"maxPct": 0.0}
     assert checks["sources"]["marginFloorPct"] == "policy"
+
+
+# --- the Quote builder's settings (ruled 2026-10-14) -------------------------------
+
+_ALL_UNSET = {"margin_floor_pct": None, "discount_corridor_max_pct": None,
+              "tax_rate_pct": None, "validity_days": None, "payment_terms_default": None}
+
+
+def test_settings_nobody_has_set_are_null_and_say_so(monkeypatch):
+    _stated(monkeypatch, _ALL_UNSET)
+    assert pc.settings() == {
+        key: {"value": None, "source": "not_set", "locked": True}
+        for key in ("quote.tax.rate_pct", "quote.validity.days",
+                    "quote.terms.payment_default", "quote.margin.floor_pct")}
+
+
+def test_stated_settings_come_back_with_their_source(monkeypatch):
+    _stated(monkeypatch, {**_ALL_UNSET, "margin_floor_pct": 25, "tax_rate_pct": 20,
+                          "validity_days": 30, "payment_terms_default": " 30 days net "})
+    s = pc.settings()
+    assert s["quote.tax.rate_pct"] == {"value": 20.0, "source": "policy", "locked": True}
+    assert s["quote.validity.days"]["value"] == 30
+    assert s["quote.terms.payment_default"]["value"] == "30 days net"
+    assert s["quote.margin.floor_pct"]["value"] == 25.0
+
+
+@pytest.mark.parametrize("rule, bad", [("tax_rate_pct", 150), ("tax_rate_pct", "20"),
+                                       ("validity_days", 0), ("validity_days", 2.5),
+                                       ("payment_terms_default", "  "),
+                                       ("payment_terms_default", 30)])
+def test_a_setting_that_is_not_a_usable_value_is_not_set_rather_than_guessed(monkeypatch, rule, bad):
+    _stated(monkeypatch, {**_ALL_UNSET, rule: bad})
+    key = {"tax_rate_pct": "quote.tax.rate_pct", "validity_days": "quote.validity.days",
+           "payment_terms_default": "quote.terms.payment_default"}[rule]
+    assert pc.settings()[key] == {"value": None, "source": "not_set", "locked": True}
+
+
+def test_settings_that_cannot_be_read_say_unavailable(monkeypatch):
+    _stated(monkeypatch, None)
+    assert {v["source"] for v in pc.settings().values()} == {"unavailable"}
+
+
+def test_a_quote_is_blocked_while_its_floor_or_its_tax_rate_is_unset(monkeypatch):
+    _stated(monkeypatch, _ALL_UNSET)
+    assert [b["code"] for b in pc.unset_blocks(None)] == ["MARGIN_POLICY_UNSET",
+                                                         "TAX_POLICY_UNSET"]
+    _stated(monkeypatch, {**_ALL_UNSET, "margin_floor_pct": 0})
+    assert [b["code"] for b in pc.unset_blocks(0)] == []     # a stated zero is a rate

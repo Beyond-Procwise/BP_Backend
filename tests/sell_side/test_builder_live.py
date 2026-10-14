@@ -341,3 +341,141 @@ def test_the_customers_page_is_produced_for_a_builder_quote_and_carries_no_cost(
     assert "£93,730" in html
     for internal in ("54,500", "54500", "28,780", "28780", "£12,000", "£125"):
         assert internal not in html, f"{internal} is on the customer's page"
+
+
+# --- the cost record apart, the customer's email, the settings (ruled 2026-10-14) ---
+
+def _customer(name=None, **more):
+    return {"name": name or f"{SENTINEL} Customer {uuid.uuid4().hex[:6]}", **more}
+
+
+def test_a_save_that_leaves_the_cost_record_off_keeps_it(live_db):
+    conn, _ = live_db
+    q = _new(conn)
+    # the screen's customer quote: no tag, cost or markup on any line it read
+    lines = [{k: v for k, v in l.items() if k not in ("tag", "cost", "markupPct", "costSource")}
+             for l in q["lines"]]
+    saved = builder.save(conn, int(q["id"]), draft=_draft(lines=lines), actor=DRAFTER)
+    assert [(l["tag"], l["cost"], l["markupPct"]) for l in saved["lines"]] == [
+        ("product", D("125.0000"), D("60.0000")), ("service", D("12000.0000"), D("50.0000")),
+        ("one-off", None, None)]
+    assert saved["totals"]["margin"] == q["totals"]["margin"]
+
+
+def test_the_cost_record_is_written_on_its_own_and_the_price_does_not_move(live_db):
+    conn, _ = live_db
+    q = _new(conn)
+    first, third = q["lines"][0]["id"], q["lines"][2]["id"]
+    saved = builder.save_internal(conn, int(q["id"]), actor=DRAFTER, lines={
+        first: {"cost": 150}, third: {"cost": 600, "markupPct": 58, "tag": "service"}})
+    assert [(l["cost"], l["unitPrice"], l["tag"]) for l in saved["lines"]] == [
+        (D("150.0000"), D("200.0000"), "product"), (D("12000.0000"), D("18000.0000"), "service"),
+        (D("600.0000"), D("950.0000"), "service")]
+    assert saved["totals"]["uncostedLines"] == 0
+    with pytest.raises(ValueError, match="not lines of quote"):
+        builder.save_internal(conn, int(q["id"]), actor=DRAFTER, lines={"999999999": {"cost": 1}})
+    with pytest.raises(ValueError, match="only tag, cost, markupPct"):
+        builder.save_internal(conn, int(q["id"]), actor=DRAFTER,
+                              lines={saved["lines"][0]["id"]: {"unitPrice": 1}})
+
+
+def test_the_customer_fields_carry_nothing_that_is_ours(live_db):
+    conn, _ = live_db
+    q = _new(conn)
+    flat = repr(builder.customer_fields(q))
+    for ours in ("'cost'", "markupPct", "costSource", "'tag'", "'margin'", "marginFraction",
+                 "125.0000", "12000.0000", "54500.00", "28780.00"):
+        assert ours not in flat, f"{ours} is on the customer's quote"
+    internal = builder.internal_fields(q, {"marginFloorPct": 20})
+    assert set(internal["lines"]) == {l["id"] for l in q["lines"]}
+    assert internal["totals"]["margin"] == D("28780.00")
+
+
+def test_a_typed_email_is_saved_to_the_customer_and_used_for_the_send(live_db):
+    conn, _ = live_db
+    who = _customer(contact="A. Reyes", email="a.reyes@kestrel.livetest.example")
+    q = _approved(conn, customer=who)
+    assert q["customer"]["email"] == "a.reyes@kestrel.livetest.example"
+    account = accounts.get_account(conn, q["customer"]["accountId"])
+    assert account["account_name"] == who["name"]
+    assert [(c["contact_name"], c["contact_email"]) for c in account["contacts"]] == [
+        ("A. Reyes", "a.reyes@kestrel.livetest.example")]
+    prepared = quote_send.prepare(conn, int(q["id"]), sender="quotes@livetest.example",
+                                  principal=SimpleNamespace(subject=REVIEWER))
+    conn.rollback()
+    assert prepared.to == "a.reyes@kestrel.livetest.example"
+    assert all(c["passed"] for c in prepared.checks if c["id"] in (
+        "has_recipient", "linked_to_deal", "margin_policy_set", "tax_rate_set"))
+
+
+def test_the_same_customer_gathers_on_one_record_as_details_come_in(live_db):
+    conn, _ = live_db
+    name = _customer()["name"]
+    first = _new(conn, customer=_customer(name, email="ops@gull.livetest.example"))
+    # the next quote finds them by the address, and their name is now known
+    second = _new(conn, customer=_customer(name.upper() + " ", contact="R. Gull",
+                                           email="OPS@gull.livetest.example"))
+    assert second["customer"]["accountId"] == first["customer"]["accountId"]
+    contacts = accounts.get_account(conn, first["customer"]["accountId"])["contacts"]
+    assert [(c["contact_name"], c["contact_email"]) for c in contacts] == [
+        ("R. Gull", "ops@gull.livetest.example")]
+
+
+def test_a_builder_quote_with_an_account_but_no_deal_is_still_not_sent(live_db):
+    conn, _ = live_db
+    q = builder.create(conn, deal_id=None, created_by=DRAFTER,
+                       draft=_draft(customer=_customer(email="x@nodeal.livetest.example")))
+    assert q["customer"]["accountId"] is not None
+    assert int(q["id"]) in {int(u["id"]) for u in builder.list_unlinked(conn, DRAFTER)}
+    builder.submit(conn, int(q["id"]), actor=DRAFTER)
+    quotes.approve(conn, int(q["id"]), approver=REVIEWER)
+    prepared = quote_send.prepare(conn, int(q["id"]), sender="quotes@livetest.example",
+                                  principal=SimpleNamespace(subject=REVIEWER))
+    conn.rollback()
+    assert "linked_to_deal" in {c["id"] for c in prepared.checks if not c["passed"]}
+
+
+def test_a_new_quote_takes_the_policy_tax_rate_and_keeps_the_one_it_was_given(live_db):
+    conn, _ = live_db
+    q = _new(conn)
+    assert q["taxRatePct"] == D("20.0000")                      # the stated default
+    kept = builder.save(conn, int(q["id"]), draft=_draft(), actor=DRAFTER)
+    assert kept["taxRatePct"] == D("20.0000")                   # left out: kept
+    changed = builder.save(conn, int(q["id"]), draft=_draft(taxRatePct=5), actor=DRAFTER)
+    assert changed["taxRatePct"] == D("5.0000")
+    with pytest.raises(ValueError, match="taxRatePct"):
+        builder.save(conn, int(q["id"]), draft=_draft(taxRatePct=120), actor=DRAFTER)
+
+
+def test_while_pricing_policy_is_unset_a_quote_neither_goes_for_review_nor_issues(
+        live_db, pricing_unset):
+    conn, _ = live_db
+    q = _new(conn)
+    assert q["taxRatePct"] is None
+    with pytest.raises(builder.PolicyUnset) as refused:
+        builder.submit(conn, int(q["id"]), actor=DRAFTER)
+    assert refused.value.codes == ["MARGIN_POLICY_UNSET", "TAX_POLICY_UNSET"]
+    assert builder.get(conn, int(q["id"]))["status"] == "draft"
+
+
+def test_a_quote_approved_before_the_policy_went_unset_is_not_issued(live_db, monkeypatch):
+    from tests.sell_side.conftest import STATED_PRICING, state_pricing
+
+    conn, _ = live_db
+    q = _approved(conn)
+    state_pricing(monkeypatch, {**STATED_PRICING, "margin_floor_pct": None})
+    with pytest.raises(StateConflict, match="MARGIN_POLICY_UNSET"):
+        quotes.issue(conn, int(q["id"]), actor=REVIEWER)
+    assert builder.get(conn, int(q["id"]))["number"] is None
+
+
+def test_a_quote_says_it_was_sent_only_once_the_send_is_recorded(live_db):
+    conn, _ = live_db
+    q = _approved(conn)
+    assert q["sent"] is None
+    quotes.record_event(conn, quote_send.SENT_EVENT,
+                        {"sales_quote_id": int(q["id"]), "quote_ref": q["ref"]},
+                        actor=REVIEWER, email_id="<m-1@livetest>")
+    conn.commit()
+    sent = builder.get(conn, int(q["id"]))["sent"]
+    assert sent["emailId"] == "<m-1@livetest>" and sent["at"] is not None

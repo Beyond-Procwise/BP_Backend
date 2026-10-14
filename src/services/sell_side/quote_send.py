@@ -32,7 +32,7 @@ from src.services import agent_actions, email_dispatch_guard
 from src.services.draft_assurance import payment_details
 from src.services.rga import quote_pipeline
 from src.services.rga.render import RenderedArtefact
-from src.services.sell_side import quote_render, quotes
+from src.services.sell_side import pricing_checks, quote_render, quotes
 from src.services.sell_side._db import StateConflict, dict_cursor
 
 SENT_EVENT = "sales_quote.sent"
@@ -191,7 +191,23 @@ def prepare(conn: Any, sales_quote_id: int, *, principal: Any, sender: Optional[
     # A quote drafted in the Quote builder may be started before its deal exists; it is
     # linked before it goes to a customer (ruled 2026-10-12). An account quote is the
     # reseller's and was never on a deal.
-    on_record = bool(quote.get("account_id") or quote.get("deal_id"))
+    # A builder quote now carries its customer's account once an email is typed, so the
+    # account alone no longer means "a reseller quote": only a catalog quote is sent on
+    # its account without a deal.
+    cur.execute("SELECT EXISTS (SELECT 1 FROM proc.bp_sales_quote_line WHERE "
+                "sales_quote_id = %s AND catalog_item_id IS NOT NULL) AS catalog",
+                (sales_quote_id,))
+    catalog = bool(cur.fetchone()["catalog"])
+    on_record = bool(quote.get("deal_id") or (catalog and quote.get("account_id")))
+    if not catalog:
+        cur.execute("SELECT tax_rate_pct FROM proc.bp_sales_quote WHERE sales_quote_id = %s",
+                    (sales_quote_id,))
+        unset = {b["code"]: b["message"]
+                 for b in pricing_checks.unset_blocks(cur.fetchone()["tax_rate_pct"])}
+        check("margin_policy_set", "MARGIN_POLICY_UNSET" not in unset,
+              unset.get("MARGIN_POLICY_UNSET", "A margin floor is set in pricing policy."))
+        check("tax_rate_set", "TAX_POLICY_UNSET" not in unset,
+              unset.get("TAX_POLICY_UNSET", "The quote has its tax rate."))
     check("linked_to_deal", on_record,
           "The quote is on a deal." if on_record else
           "The quote is not linked to a deal yet; link it before it is sent.")

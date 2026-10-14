@@ -17,7 +17,7 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional, Sequence
 
 from src.services import agent_actions
-from src.services.sell_side import numbering
+from src.services.sell_side import numbering, pricing_checks
 from src.services.sell_side._db import NotFound, StateConflict, dict_cursor
 from src.services.sell_side.costing import cost_at
 from src.services.sell_side.ladder import QUOTE_RUNG
@@ -381,6 +381,19 @@ def issue(conn: Any, sales_quote_id: int, *, actor: Optional[str],
         if row["quote_number"]:
             raise StateConflict(f"quote {sales_quote_id} already has the number "
                                 f"{row['quote_number']}")
+        # A builder quote is not issued while pricing policy has no margin floor or the
+        # quote has no tax rate (ruled 2026-10-14). A catalog quote is priced by the
+        # reseller's own rules and is not held to these.
+        cur.execute("SELECT q.tax_rate_pct, EXISTS (SELECT 1 FROM proc.bp_sales_quote_line l "
+                    "WHERE l.sales_quote_id = q.sales_quote_id AND l.catalog_item_id IS NOT NULL) "
+                    "AS catalog FROM proc.bp_sales_quote q WHERE q.sales_quote_id = %s",
+                    (sales_quote_id,))
+        held = cur.fetchone()
+        blocks = [] if held["catalog"] else pricing_checks.unset_blocks(held["tax_rate_pct"])
+        if blocks:
+            raise StateConflict(f"quote {sales_quote_id} cannot be issued: "
+                                + " ".join(b["message"] for b in blocks)
+                                + f" ({', '.join(b['code'] for b in blocks)})")
         number = numbering.formatted(NUMBER_PREFIX, *numbering.allocate(cur, NUMBER_SERIES))
         cur.execute("UPDATE proc.bp_sales_quote SET quote_number = %s "
                     "WHERE sales_quote_id = %s", (number, sales_quote_id))

@@ -19,7 +19,7 @@ from tests.guardrails.test_guardrail_gate import engine_with
 from tests.guardrails.test_rbac import FakePrincipal
 
 READS = ["/spendiq/quotes/9", "/spendiq/deals/D1/quotes", "/spendiq/quotes/unlinked",
-         "/spendiq/quotes/review-queue"]
+         "/spendiq/quotes/review-queue", "/spendiq/quotes/9/internal"]
 _QUOTE = {"id": "9", "category": None, "lines": [{"id": "1", "cost": D("125.0000")}]}
 _BODY = {"currency": "GBP", "validUntil": "2099-01-01", "lines": []}
 
@@ -65,7 +65,8 @@ def test_cost_does_not_reach_a_caller_without_the_permit(serve, path, who):
 @pytest.mark.parametrize("path", READS)
 def test_a_buyer_with_the_permit_reads_the_quote(serve, path):
     r = serve(buyer(), MARGIN_PERMIT).get(path)
-    assert r.status_code == 200 and "125.0000" in r.text
+    # the cost is on the internal read only; the quote reads are the customer's
+    assert r.status_code == 200 and (("125.0000" in r.text) == path.endswith("/internal"))
 
 
 @pytest.mark.parametrize("path", READS)

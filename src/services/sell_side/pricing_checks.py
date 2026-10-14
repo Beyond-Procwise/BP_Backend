@@ -11,7 +11,7 @@ the entered figure, not in place of it.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from src.services import governed_limits
 
@@ -60,3 +60,57 @@ def for_quote(category: Optional[str]) -> Dict[str, Any]:
                     "discountCorridor": _source(max_pct, corridor_source),
                     "marginFloorPct": _source(floor, floor_source)},
     }
+
+
+# --- the Quote builder's settings (ruled 2026-10-14) -----------------------------------
+# Company defaults, in the same governed row as the floor. Each is read fresh, so an
+# edit in the policy admin applies on the next read. `locked`: they are governed, so the
+# Quote builder shows them and does not edit them.
+
+def _days(value: Any) -> Optional[int]:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 0 < value <= 3650 else None
+
+
+def _words(value: Any) -> Optional[str]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip()[:300]
+
+
+_SETTINGS = (("quote.tax.rate_pct", "tax_rate_pct", _percent),
+             ("quote.validity.days", "validity_days", _days),
+             ("quote.terms.payment_default", "payment_terms_default", _words),
+             ("quote.margin.floor_pct", "margin_floor_pct", _percent))
+
+
+def settings() -> Dict[str, Dict[str, Any]]:
+    """{key: {value, source, locked}}. A null value is UNSET: the screen and the server
+    both refuse what needs it, and neither reads it as zero."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for key, rule, usable in _SETTINGS:
+        stated, stated_as = _stated(rule)
+        value = usable(stated)
+        out[key] = {"value": value, "source": _source(value, stated_as), "locked": True}
+    return out
+
+
+def default_tax_rate() -> Optional[float]:
+    """The rate a new quote is priced at, or None while nobody has set one."""
+    stated, _ = _stated("tax_rate_pct")
+    return _percent(stated)
+
+
+def unset_blocks(quote_tax_rate_pct: Any) -> List[Dict[str, str]]:
+    """What stops a builder quote going for review or being sent: a margin floor nobody
+    has set, and a quote with no tax rate. Empty when neither applies."""
+    floor, _ = _stated("margin_floor_pct")
+    blocks = []
+    if _percent(floor) is None:
+        blocks.append({"code": "MARGIN_POLICY_UNSET",
+                       "message": "No margin floor is set in pricing policy."})
+    if quote_tax_rate_pct is None:
+        blocks.append({"code": "TAX_POLICY_UNSET",
+                       "message": "The quote has no tax rate; none is set in pricing policy."})
+    return blocks

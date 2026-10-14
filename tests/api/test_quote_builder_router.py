@@ -76,10 +76,60 @@ def test_every_route_asks_its_permission_and_the_margin_permit(client, method, p
     assert client.asked == asks
 
 
-def test_every_quote_leaves_with_the_limits_it_is_tested_against(client):
-    assert client.get("/spendiq/quotes/12").json()["checks"] == {
-        "marginFloorPct": None, "for": "Platform / Enterprise"}
-    assert client.get("/spendiq/deals/D1/quotes").json()[0]["checks"]["for"] == "Platform / Enterprise"
+COSTED = {"id": "12", "category": "Platform / Enterprise", "revision": "r1",
+          "lines": [{"id": "7", "tag": "product", "description": "Seats", "unitPrice": "200",
+                     "cost": "125", "markupPct": "60", "costSource": "entered"}],
+          "totals": {"exTax": "200", "cost": "125", "margin": "75", "marginFraction": "0.375",
+                     "costedLines": 1, "uncostedLines": 0}}
+
+
+def test_a_quote_read_carries_nothing_that_is_ours(client, monkeypatch):
+    monkeypatch.setattr(qb.builder, "get", lambda *a, **k: COSTED)
+    monkeypatch.setattr(qb.builder, "list_for_deal", lambda *a, **k: [COSTED])
+    for body in (client.get("/spendiq/quotes/12").json(),
+                 client.get("/spendiq/deals/D1/quotes").json()[0]):
+        assert "checks" not in body
+        assert body["lines"] == [{"id": "7", "description": "Seats", "unitPrice": "200"}]
+        assert body["totals"] == {"exTax": "200"}
+
+
+def test_the_cost_record_is_its_own_read_keyed_by_line_id_with_the_limits(client, monkeypatch):
+    monkeypatch.setattr(qb.builder, "get", lambda *a, **k: COSTED)
+    r = client.get("/spendiq/quotes/12/internal")
+    assert r.status_code == 200 and client.asked == ["margin.read"]
+    assert r.json() == {
+        "quoteId": "12", "revision": "r1",
+        "lines": {"7": {"tag": "product", "cost": "125", "markupPct": "60",
+                        "costSource": "entered"}},
+        "totals": {"cost": "125", "margin": "75", "marginFraction": "0.375",
+                   "costedLines": 1, "uncostedLines": 0},
+        "checks": {"marginFloorPct": None, "for": "Platform / Enterprise"}}
+
+
+def test_the_cost_record_is_written_behind_the_price_permit(client, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(qb.builder, "save_internal",
+                        lambda c, qid, **kw: seen.update(kw, qid=qid) or COSTED)
+    r = client.put("/spendiq/quotes/12/internal",
+                   json={"lines": {"7": {"cost": 130}}, "revision": "r1"})
+    assert r.status_code == 200, r.text
+    assert client.asked == ["sales_quote.price", "margin.read"]
+    assert seen == {"qid": 12, "lines": {"7": {"cost": 130}}, "actor": CALLER, "revision": "r1"}
+    assert set(r.json()) == {"quote", "internal"} and "cost" not in r.json()["quote"]["lines"][0]
+
+
+def test_the_settings_are_read_by_anyone_signed_in(client, monkeypatch):
+    monkeypatch.setattr(qb.pricing_checks, "settings", lambda: {"quote.tax.rate_pct": {
+        "value": None, "source": "not_set", "locked": True}})
+    assert client.get("/settings/quote").json()["quote.tax.rate_pct"]["value"] is None
+
+
+def test_a_review_refused_by_unset_policy_names_its_codes(client, monkeypatch):
+    def _refuse(*a, **k):
+        raise qb.builder.PolicyUnset(12, [{"code": "TAX_POLICY_UNSET", "message": "No tax."}])
+    monkeypatch.setattr(qb.builder, "submit", _refuse)
+    r = client.post("/spendiq/quotes/12/review")
+    assert r.status_code == 409 and r.json()["detail"]["codes"] == ["TAX_POLICY_UNSET"]
 
 
 def test_who_drafted_is_the_token_and_what_the_drafter_may_not_write_is_dropped(client):
