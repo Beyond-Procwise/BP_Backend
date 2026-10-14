@@ -4,9 +4,12 @@ The paths are the ones the screen was built against; the record behind them is t
 sell-side quote, so review, approval, numbering, the customer page and sending are the
 /sales ones and are not repeated here.
 
-Every read on this router returns the seller's cost and markup with the quote, so every
-read asks margin.read and needs a STATED permit, exactly as GET /sales/quotes/{id}/internal
-does. Who acted is the token's subject; no body has a field for it.
+A quote read returns the customer's quote only. Its cost record -- per line the tag,
+cost and markup, with the margin totals and the limits it is tested against -- is read
+and written on its own route, /spendiq/quotes/{id}/internal (ruled 2026-10-14). Every
+route still asks margin.read with a STATED permit, as GET /sales/quotes/{id}/internal
+does: a drafter works the cost record. Who acted is the token's subject; no body has a
+field for it.
 """
 from __future__ import annotations
 
@@ -55,6 +58,15 @@ class QuoteDraft(BaseModel):
     revision: Optional[str] = None
 
 
+class InternalBody(BaseModel):
+    """{lines: {<line id>: {tag?, cost?, markupPct?}}, revision?}. A key left out of a
+    line keeps its value; null clears a cost or markup."""
+    model_config = ConfigDict(extra="forbid")
+
+    lines: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    revision: Optional[str] = None
+
+
 class ApproveBody(BaseModel):
     conditions: List[str] = Field(default_factory=list)
 
@@ -64,7 +76,12 @@ class RejectBody(BaseModel):
 
 
 def _with_checks(quote: Dict[str, Any]) -> Dict[str, Any]:
-    return {**quote, "checks": pricing_checks.for_quote(quote.get("category"))}
+    """The quote as the customer's: nothing on it that is ours (builder.customer_fields)."""
+    return builder.customer_fields(quote)
+
+
+def _internal(quote: Dict[str, Any]) -> Dict[str, Any]:
+    return builder.internal_fields(quote, pricing_checks.for_quote(quote.get("category")))
 
 
 def _draft(body: QuoteDraft) -> Dict[str, Any]:
@@ -176,6 +193,37 @@ def get_quote(quote_id: int, principal=Depends(require_user)):
         return money_json(_with_checks(builder.get(c, quote_id)))
 
 
+@router.get("/spendiq/quotes/{quote_id}/internal")
+def get_quote_internal(quote_id: int, principal=Depends(require_user)):
+    """INTERNAL: the quote's cost record, keyed by the line ids the quote read returns:
+    {quoteId, revision, lines: {<id>: {tag, cost, markupPct, costSource}}, totals: {cost,
+    margin, marginFraction, costedLines, uncostedLines}, checks}. Never a customer's."""
+    _require_margin_permit(principal, {"sales_quote_id": quote_id})
+    with http_errors(), get_conn() as c:
+        return money_json(_internal(builder.get(c, quote_id)))
+
+
+@router.put("/spendiq/quotes/{quote_id}/internal")
+def save_quote_internal(quote_id: int, body: InternalBody, principal=Depends(require_user)):
+    """Write a draft's cost record. The customer's price does not move here. A save gives
+    the quote's lines new ids, so the answer carries both records: `quote` (the customer's)
+    and `internal`, each with the new ids."""
+    gate("sales_quote.price", principal, agent=_AGENT, context={"sales_quote_id": quote_id})
+    _require_margin_permit(principal, {"sales_quote_id": quote_id})
+    with http_errors(), get_conn() as c:
+        saved = builder.save_internal(c, quote_id, lines=body.lines,
+                                      actor=_subject(principal), revision=body.revision)
+        return money_json({"quote": _with_checks(saved), "internal": _internal(saved)})
+
+
+@router.get("/settings/quote")
+def quote_settings(principal=Depends(require_user)):
+    """The Quote builder's settings: {key: {value, source, locked}}. A null value is unset,
+    and a builder quote cannot go for review or be sent while the margin floor or its tax
+    rate is unset. They are governed (bp_policy `sales_quote_pricing`), so `locked`."""
+    return pricing_checks.settings()
+
+
 # --- drafting ---------------------------------------------------------------
 
 @router.post("/spendiq/deals/{deal_id}/quotes")
@@ -227,7 +275,12 @@ def send_for_review(quote_id: int, principal=Depends(require_user)):
     gate("sales.write", principal, agent=_AGENT, context={"sales_quote_id": quote_id})
     _require_margin_permit(principal, {"sales_quote_id": quote_id})
     with http_errors(), get_conn() as c:
-        return money_json(_with_checks(builder.submit(c, quote_id, actor=_subject(principal))))
+        try:
+            return money_json(_with_checks(builder.submit(c, quote_id,
+                                                          actor=_subject(principal))))
+        except builder.PolicyUnset as exc:   # before http_errors flattens it to text
+            raise HTTPException(status_code=409, detail={
+                "message": str(exc), "codes": exc.codes}) from None
 
 
 @router.post("/spendiq/quotes/{quote_id}/withdraw")
@@ -297,6 +350,13 @@ def agent_turn(quote_id: int, body: AgentTurn, principal=Depends(require_user)):
     quote = {**saved, **{k: held[k] for k in ("lines", "validUntil", "customer", "terms",
                                                "sections", "scopeHtml", "assumptionsHtml")
                          if k in held}}
+    # The screen holds the cost record apart, so its lines may come without it: each line
+    # it read gets its saved tag, cost and markup unless the screen sent its own.
+    own = {l["id"]: l for l in saved.get("lines") or []}
+    quote["lines"] = [
+        {**{k: own[l["id"]].get(k) for k in builder.INTERNAL_LINE_KEYS if k not in l}, **l}
+        if isinstance(l, dict) and l.get("id") in own else l
+        for l in quote.get("lines") or []]
     try:
         with http_errors():
             return money_json(quote_agent.propose(

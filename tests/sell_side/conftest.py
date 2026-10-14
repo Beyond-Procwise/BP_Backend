@@ -31,6 +31,12 @@ def clean(cur):
     cur.execute("DELETE FROM proc.bp_sales_quote "
                 "WHERE created_by LIKE 'LIVETEST%%' OR deal_id LIKE 'LIVETEST-%%'")
     cur.execute("DELETE FROM proc.bp_deal WHERE deal_id LIKE 'LIVETEST-%%'")
+    # a builder quote's customer is saved as an account with a generated id: its name
+    # carries the sentinel instead
+    _named = "SELECT account_id FROM proc.bp_account WHERE account_name LIKE 'LIVETEST%%'"
+    cur.execute(f"DELETE FROM proc.bp_sales_quote WHERE account_id IN ({_named})")
+    cur.execute(f"DELETE FROM proc.bp_account_contact WHERE account_id IN ({_named})")
+    cur.execute("DELETE FROM proc.bp_account WHERE account_name LIKE 'LIVETEST%%'")
     cur.execute("DELETE FROM proc.bp_brand_logo WHERE created_by LIKE 'LIVETEST%%'")
     cur.execute(f"DELETE FROM proc.bp_sales_quote_outcome WHERE sales_quote_id IN ({_QUOTES})")
     cur.execute(f"DELETE FROM proc.bp_sales_quote_line WHERE sales_quote_id IN ({_QUOTES})")
@@ -44,6 +50,35 @@ def clean(cur):
     cur.execute("DELETE FROM proc.bp_catalog_source WHERE feed_name LIKE 'LIVETEST%%'")
     cur.execute("DELETE FROM proc.bp_catalog_mapping WHERE mapping_profile LIKE 'livetest%%'")
     cur.execute("DELETE FROM proc.bp_doc_number_counter WHERE doc_type LIKE 'LIVETEST%%'")
+
+
+# What pricing policy says in these tests: a floor and a tax rate are stated, so a quote
+# can go for review and be sent. A test of what happens while they are unset says so with
+# `pricing_unset`. Every other policy is read as it really is.
+STATED_PRICING = {"margin_floor_pct": 20, "discount_corridor_max_pct": None,
+                  "tax_rate_pct": 20, "validity_days": 30, "payment_terms_default": "Net 30"}
+
+
+def state_pricing(monkeypatch, rules):
+    from src.services import governed_limits
+
+    real = governed_limits.limit
+
+    def _limit(policy, rule, **kw):
+        if policy == "sales_quote_pricing":
+            return rules[rule]
+        return real(policy, rule, **kw)
+    monkeypatch.setattr(governed_limits, "limit", _limit)
+
+
+@pytest.fixture(autouse=True)
+def pricing_stated(monkeypatch):
+    state_pricing(monkeypatch, STATED_PRICING)
+
+
+@pytest.fixture
+def pricing_unset(monkeypatch):
+    state_pricing(monkeypatch, {k: None for k in STATED_PRICING})
 
 
 @pytest.fixture(autouse=True)

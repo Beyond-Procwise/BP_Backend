@@ -11,7 +11,8 @@ from fastapi.testclient import TestClient
 from api.routers import quote_builder as qb
 from src.services import guardrail
 from src.services.sell_side import quote_agent
-from tests.sell_side.conftest import SENTINEL, live, live_db  # noqa: F401  (fixture)
+from tests.sell_side.conftest import (SENTINEL, live, live_db,  # noqa: F401  (fixtures)
+                                      pricing_stated, pricing_unset)
 
 pytestmark = live
 TODAY = dt.date.today()
@@ -24,7 +25,7 @@ class _Who:
 
 
 @pytest.fixture
-def http(live_db, monkeypatch):
+def http(live_db, pricing_stated, monkeypatch):
     conn, _ = live_db
     monkeypatch.setattr(qb, "gate", lambda *a, **k: _OK)
     monkeypatch.setattr(qb, "_require_margin_permit", lambda *a, **k: None)
@@ -63,8 +64,36 @@ def test_the_journey_from_a_blank_quote_to_an_approved_one(http):
     q = r.json()
     assert q["id"].isdigit() and q["dealId"] is None and q["number"] is None
     assert q["lines"][0]["unitPrice"] == "200.0000", "money leaves as a string, never a float"
-    assert q["checks"]["marginFloorPct"] is None, "the screen's own 30 was not taken as policy"
-    assert q["checks"]["sources"]["marginFloorPct"] == "not_set"
+    # the customer's quote carries nothing that is ours; the cost record is its own read
+    assert "checks" not in q and not {"cost", "markupPct", "tag"} & set(q["lines"][0])
+    internal = http.get(f"/spendiq/quotes/{q['id']}/internal").json()
+    line_id = q["lines"][0]["id"]
+    assert internal["lines"][line_id]["cost"] == "125.0000"
+    assert internal["checks"]["marginFloorPct"] == 20.0, "the screen's own 30 was not taken as policy"
+    assert internal["checks"]["sources"]["marginFloorPct"] == "policy"
+
+    # the screen saves the customer's quote without the cost record, and it is kept
+    held = {**_body(revision=q["revision"]), "lines": q["lines"]}
+    r = http.put(f"/spendiq/quotes/{q['id']}", json=held)
+    assert r.status_code == 200, r.text
+    q = r.json()
+    internal = http.get(f"/spendiq/quotes/{q['id']}/internal").json()
+    assert [(l["tag"], l["cost"], l["markupPct"]) for l in internal["lines"].values()] == [
+        ("product", "125.0000", "60.0000")]
+
+    # and writes the cost record on its own route; the answer carries the new line ids
+    r = http.put(f"/spendiq/quotes/{q['id']}/internal", json={
+        "lines": {q["lines"][0]["id"]: {"cost": 130}}, "revision": q["revision"]})
+    assert r.status_code == 200, r.text
+    both = r.json()
+    assert [l["cost"] for l in both["internal"]["lines"].values()] == ["130.0000"]
+    assert set(both["internal"]["lines"]) == {l["id"] for l in both["quote"]["lines"]}
+    assert both["quote"]["lines"][0]["unitPrice"] == "200.0000", "the price did not move"
+    q = both["quote"]
+
+    # the settings, as the screen reads them
+    settings = http.get("/settings/quote").json()
+    assert settings["quote.tax.rate_pct"] == {"value": 20.0, "source": "policy", "locked": True}
 
     # linked to its deal, and then it is the deal's quote
     r = http.put(f"/spendiq/quotes/{q['id']}", json=_body(dealId=http.deal, revision=q["revision"]))
@@ -174,8 +203,10 @@ def test_a_quote_is_started_from_a_template_and_filled_from_what_the_seller_says
     assert q["templateKey"] == "software_subscription" and q["dealId"] == http.deal
     assert [l["description"] for l in q["lines"]] == [
         "Subscription licences", "Onboarding and set-up", "Training"]
-    assert all(l["unitPrice"] == "0.0000" and l["cost"] is None for l in q["lines"])
-    assert q["totals"]["exTax"] == "0.00" and q["totals"]["margin"] is None
+    assert all(l["unitPrice"] == "0.0000" for l in q["lines"])
+    internal = http.get(f"/spendiq/quotes/{q['id']}/internal").json()
+    assert all(l["cost"] is None for l in internal["lines"].values())
+    assert q["totals"]["exTax"] == "0.00" and internal["totals"]["margin"] is None
     assert [m["field"] for m in q["missing"]][:2] == ["customer.name", "customer.contact"]
     assert len(q["missing"]) == 2 + 3 + 5 + 1          # ... and the Scope section
     assert q["missing"][-1] == {"field": "sections.scope", "label": "the “Scope” section"}
