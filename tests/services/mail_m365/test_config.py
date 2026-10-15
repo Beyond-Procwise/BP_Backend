@@ -44,3 +44,16 @@ def test_old_secret_shape_still_works():
     creds = resolve_credentials(ARN, client=FakeSecrets(
         {"tenant_id": "t", "client_id": "c", "client_secret": "s"}))
     assert creds.tenant_id == "t"
+
+
+def test_app_base_url_is_read_and_used_for_the_settings_page(monkeypatch):
+    for k, v in {"M365_CLIENT_ID": "cid", "M365_CLIENT_SECRET_ARN": ARN,
+                 "PUBLIC_BASE_URL": "https://api.procwise.co.uk",
+                 "MAIL_STATE_SIGNING_KEY_ARN": ARN}.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv("APP_BASE_URL", "https://ui.procwise.co.uk/")
+    assert config.settings_page_url(config.load_settings()) == \
+        "https://ui.procwise.co.uk/?view=settings"
+    monkeypatch.delenv("APP_BASE_URL")
+    assert config.settings_page_url(config.load_settings()) == \
+        "https://api.procwise.co.uk/?view=settings"

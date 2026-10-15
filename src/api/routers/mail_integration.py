@@ -3,8 +3,9 @@
 Every route except the callback is `mailbox.bind` (configure -- Admin only), checked by the
 server; the screen never decides on its own who may connect a company mailbox. The
 callback is called by Microsoft's redirect of the admin's browser and carries no bearer
-token: it trusts only the signed, single-use state (services/mail_m365/consent.py), and it
-never puts anything Microsoft sent into the redirect except a code from a fixed set.
+token: it trusts only the signed, single-use state and a Microsoft sign-in whose id_token
+it verifies itself (services/mail_m365/consent.py), and it never puts anything Microsoft
+sent into the redirect except a code from a fixed set.
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from api.auth import require_user
 from api.endpoint_gate import require as gate
 from services.db import get_conn
 from services.mail_m365 import admin, consent, sending
-from services.mail_m365.config import load_settings, read_integration
+from services.mail_m365.config import load_settings, read_integration, settings_page_url
 from services.mail_m365.consent import load_state_key
 from services.mail_m365.graph_client import Throttled
 from services.mail_m365.setup_script import render as render_script
@@ -37,7 +38,8 @@ _STATUS = {"not_connected": 409, "duplicate": 409, "same_as_control": 422,
            "cannot_read": 422, "over_scoped": 422, "inconclusive": 503, "not_found": 404}
 # The only codes the callback may put in the redirect; anything else becomes consent_failed.
 _STATE_CODES = {"malformed", "bad_signature", "expired", "reused"}
-_CONSENT_CODES = {"not_granted", "bad_tenant", "tenant_mismatch", "access_denied"}
+_CONSENT_CODES = {"not_granted", "bad_tenant", "tenant_mismatch", "access_denied",
+                  "wrong_account", "signin_failed"}
 
 
 def _conn():
@@ -91,26 +93,50 @@ def connect(principal: Any = Depends(require_user)) -> dict:
         return {"authorization_url": consent.begin(conn, s, load_state_key(s), _actor(principal))}
 
 
+def _audit_refusal(stage: str, code: str) -> None:
+    """A refused callback is a security event: someone's browser (or a forged link) came
+    back with a state or an approval we would not accept. Only our fixed code is kept,
+    never the query text."""
+    try:
+        from services.agent_actions import record_action
+        record_action(phase="authorize", action_type="mailbox.consent_callback",
+                      agent=_AGENT, status="denied",
+                      summary=f"Microsoft 365 connection refused at the callback: {code}",
+                      details={"stage": stage, "code": code})
+    except Exception:  # noqa: BLE001 - audit must never break the redirect
+        logger.debug("consent callback audit failed", exc_info=True)
+
+
 @callback_router.get("/m365/callback", include_in_schema=False)
 def callback(state: str = "", tenant: Optional[str] = None,
-             admin_consent: Optional[str] = None, error: Optional[str] = None):
+             admin_consent: Optional[str] = None, error: Optional[str] = None,
+             code: Optional[str] = None):
+    """Both of Microsoft's returns land here: the admin-consent page (tenant,
+    admin_consent) and then the sign-in (code). The signed state says which; the tenant
+    is stored only from the sign-in's verified id_token (services/mail_m365/consent.py)."""
     s = _settings_or_503()
-    back = f"{s.public_base_url.rstrip('/')}/?view=settings"
+    back = settings_page_url(s)
     try:
         with _conn() as conn:
-            consent.complete(conn, s, load_state_key(s), state=state, tenant=tenant,
-                             admin_consent=admin_consent, error=error)
+            nxt = consent.handle_callback(conn, s, load_state_key(s), state=state,
+                                          tenant=tenant, admin_consent=admin_consent,
+                                          error=error, code=code)
     except consent.StateRejected as exc:
         logger.warning("mail consent callback refused: %s", exc.code)
-        code = exc.code if exc.code in _STATE_CODES else "consent_failed"
-        return RedirectResponse(f"{back}&mail_error={code}", status_code=302)
+        code_out = exc.code if exc.code in _STATE_CODES else "consent_failed"
+        _audit_refusal("state", code_out)
+        return RedirectResponse(f"{back}&mail_error={code_out}", status_code=302)
     except consent.ConsentNotGiven as exc:
-        code = exc.code if exc.code in _CONSENT_CODES else "consent_failed"
-        logger.warning("mail consent not given: %s", code)
-        return RedirectResponse(f"{back}&mail_error={code}", status_code=302)
+        code_out = exc.code if exc.code in _CONSENT_CODES else "consent_failed"
+        logger.warning("mail consent not given: %s %s", code_out, exc.detail)
+        _audit_refusal("consent", code_out)
+        return RedirectResponse(f"{back}&mail_error={code_out}", status_code=302)
     except Exception:  # noqa: BLE001 - the admin's browser must never land on a JSON 500
         logger.exception("mail consent callback failed")
+        _audit_refusal("unexpected", "consent_failed")
         return RedirectResponse(f"{back}&mail_error=consent_failed", status_code=302)
+    if nxt:   # consent recorded by Microsoft; now the sign-in that proves which tenant
+        return RedirectResponse(nxt, status_code=302)
     return RedirectResponse(f"{back}&mail=connected", status_code=302)
 
 

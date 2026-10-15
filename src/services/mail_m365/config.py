@@ -23,6 +23,9 @@ class M365Settings:
     public_base_url: str
     state_key_arn: str
     poll_seconds: int
+    # The screen's own address, when it is not the server's (the UI and the API run on
+    # different origins). The admin's browser lands here after Microsoft's pages.
+    app_base_url: str = ""
 
 
 def load_settings() -> Optional[M365Settings]:
@@ -36,7 +39,8 @@ def load_settings() -> Optional[M365Settings]:
     except ValueError:
         poll = 120
     return M365Settings(values["M365_CLIENT_ID"], values["M365_CLIENT_SECRET_ARN"],
-                        values["PUBLIC_BASE_URL"], values["MAIL_STATE_SIGNING_KEY_ARN"], poll)
+                        values["PUBLIC_BASE_URL"], values["MAIL_STATE_SIGNING_KEY_ARN"], poll,
+                        os.getenv("APP_BASE_URL", "").strip())
 
 
 def redirect_uri(settings: M365Settings) -> str:
@@ -45,6 +49,13 @@ def redirect_uri(settings: M365Settings) -> str:
         raise ValueError("PUBLIC_BASE_URL must be an https address — Microsoft will not "
                          "return an admin to anything else")
     return f"{base}/admin/integrations/mail/m365/callback"
+
+
+def settings_page_url(settings: M365Settings) -> str:
+    """Where the admin's browser is sent once Microsoft is done with it: the screen's
+    Settings view. APP_BASE_URL when set (the UI runs on its own origin), else the server."""
+    base = (settings.app_base_url or settings.public_base_url).rstrip("/")
+    return f"{base}/?view=settings"
 
 
 def read_integration(conn: Any) -> Dict[str, Any]:

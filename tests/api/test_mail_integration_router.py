@@ -86,7 +86,7 @@ def test_refusal_message_is_passed_through(client, monkeypatch):
 
 def test_callback_needs_no_token_and_redirects(client, monkeypatch):
     client.app.dependency_overrides.clear()
-    monkeypatch.setattr(consent, "complete", lambda *a, **k: {"status": "connected"})
+    monkeypatch.setattr(consent, "handle_callback", lambda *a, **k: None)
     res = client.get("/admin/integrations/mail/m365/callback",
                      params={"state": "s", "tenant": "t", "admin_consent": "True"},
                      follow_redirects=False)
@@ -98,7 +98,7 @@ def test_callback_with_bad_state_redirects_with_error(client, monkeypatch):
     client.app.dependency_overrides.clear()
     def bad(*a, **k):
         raise consent.StateRejected("reused")
-    monkeypatch.setattr(consent, "complete", bad)
+    monkeypatch.setattr(consent, "handle_callback", bad)
     res = client.get("/admin/integrations/mail/m365/callback",
                      params={"state": "s"}, follow_redirects=False)
     assert res.status_code == 302
@@ -108,7 +108,7 @@ def test_callback_with_bad_state_redirects_with_error(client, monkeypatch):
 def test_callback_never_echoes_unknown_error_text(client, monkeypatch):
     def bad(*a, **k):
         raise consent.ConsentNotGiven("<script>alert(1)</script>&x=y")
-    monkeypatch.setattr(consent, "complete", bad)
+    monkeypatch.setattr(consent, "handle_callback", bad)
     res = client.get("/admin/integrations/mail/m365/callback",
                      params={"state": "s", "error": "<script>"}, follow_redirects=False)
     loc = res.headers["location"]
@@ -120,10 +120,94 @@ def test_callback_never_echoes_unknown_error_text(client, monkeypatch):
 def test_callback_known_consent_codes_pass(client, monkeypatch, code):
     def bad(*a, **k):
         raise consent.ConsentNotGiven(code)
-    monkeypatch.setattr(consent, "complete", bad)
+    monkeypatch.setattr(consent, "handle_callback", bad)
     res = client.get("/admin/integrations/mail/m365/callback", params={"state": "s"},
                      follow_redirects=False)
     assert res.headers["location"].endswith(f"mail_error={code}")
+
+
+@pytest.mark.parametrize("code", ["wrong_account", "signin_failed"])
+def test_callback_sign_in_codes_pass(client, monkeypatch, code):
+    def bad(*a, **k):
+        raise consent.ConsentNotGiven(code, "raw Microsoft detail")
+    monkeypatch.setattr(consent, "handle_callback", bad)
+    res = client.get("/admin/integrations/mail/m365/callback", params={"state": "s"},
+                     follow_redirects=False)
+    assert res.headers["location"].endswith(f"mail_error={code}")
+    assert "detail" not in res.headers["location"]
+
+
+def test_callback_consent_step_sends_the_admin_to_microsoft_sign_in(client, monkeypatch):
+    signin = "https://login.microsoftonline.com/t/oauth2/v2.0/authorize?scope=openid&state=x"
+    seen = {}
+
+    def step(conn, s, key, **kw):
+        seen.update(kw)
+        return signin
+    monkeypatch.setattr(consent, "handle_callback", step)
+    res = client.get("/admin/integrations/mail/m365/callback",
+                     params={"state": "s", "tenant": "t", "admin_consent": "True"},
+                     follow_redirects=False)
+    assert res.status_code == 302 and res.headers["location"] == signin
+    assert seen["tenant"] == "t" and seen["code"] is None
+
+
+def test_callback_passes_the_sign_in_code_through(client, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(consent, "handle_callback", lambda *a, **kw: seen.update(kw))
+    res = client.get("/admin/integrations/mail/m365/callback",
+                     params={"state": "s", "code": "abc"}, follow_redirects=False)
+    assert seen["code"] == "abc"
+    assert res.headers["location"].endswith("mail=connected")
+
+
+def test_callback_redirects_to_the_screen_origin_when_app_base_url_is_set(client, monkeypatch):
+    """I2: the UI runs on its own origin; the admin lands there, not on the API."""
+    from dataclasses import replace
+    monkeypatch.setattr(r, "load_settings", lambda: replace(S, app_base_url="https://ui.procwise.co.uk/"))
+    monkeypatch.setattr(consent, "handle_callback", lambda *a, **k: None)
+    res = client.get("/admin/integrations/mail/m365/callback", params={"state": "s"},
+                     follow_redirects=False)
+    assert res.headers["location"] == "https://ui.procwise.co.uk/?view=settings&mail=connected"
+
+
+def test_callback_falls_back_to_public_base_url(client, monkeypatch):
+    monkeypatch.setattr(consent, "handle_callback", lambda *a, **k: None)
+    res = client.get("/admin/integrations/mail/m365/callback", params={"state": "s"},
+                     follow_redirects=False)
+    assert res.headers["location"] == "https://app.procwise.co.uk/?view=settings&mail=connected"
+
+
+@pytest.mark.parametrize("exc,stage,code", [
+    (consent.StateRejected("reused"), "state", "reused"),
+    (consent.ConsentNotGiven("wrong_account"), "consent", "wrong_account"),
+    (RuntimeError("db down"), "unexpected", "consent_failed"),
+])
+def test_callback_refusals_are_audited_without_query_text(client, monkeypatch, exc, stage, code):
+    import services.agent_actions as aa
+    rows = []
+    monkeypatch.setattr(aa, "record_action", lambda **kw: rows.append(kw))
+
+    def bad(*a, **k):
+        raise exc
+    monkeypatch.setattr(consent, "handle_callback", bad)
+    client.get("/admin/integrations/mail/m365/callback",
+               params={"state": "SECRETSTATE", "tenant": "QUERYTENANT", "error": "QUERYERR"},
+               follow_redirects=False)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["status"] == "denied" and row["details"] == {"stage": stage, "code": code}
+    assert not any(x in repr(row) for x in ("SECRETSTATE", "QUERYTENANT", "QUERYERR"))
+
+
+def test_callback_success_writes_no_refusal_audit(client, monkeypatch):
+    import services.agent_actions as aa
+    rows = []
+    monkeypatch.setattr(aa, "record_action", lambda **kw: rows.append(kw))
+    monkeypatch.setattr(consent, "handle_callback", lambda *a, **k: None)
+    client.get("/admin/integrations/mail/m365/callback", params={"state": "s"},
+               follow_redirects=False)
+    assert rows == []
 
 
 def test_setup_script_bad_id_is_400(client, monkeypatch):
@@ -267,7 +351,7 @@ def test_real_app_test_send_errors_are_clean(real, monkeypatch, exc, status):
 def test_real_app_callback_unexpected_error_still_redirects(real, monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("db down")
-    monkeypatch.setattr(consent, "complete", boom)
+    monkeypatch.setattr(consent, "handle_callback", boom)
     res = real.get(f"{B}/m365/callback", params={"state": "s"}, follow_redirects=False)
     assert res.status_code == 302
     assert res.headers["location"].endswith("mail_error=consent_failed")
