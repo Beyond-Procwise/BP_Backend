@@ -612,6 +612,14 @@ class ImapEmailFetcher:
 # ---------------------------------------------------------------------------
 
 
+def _m365_has_bindings() -> bool:
+    try:
+        from services.mail_m365.receiving import has_bindings
+        return has_bindings()
+    except Exception:
+        return False
+
+
 @dataclass(slots=True)
 class EmailWatcherConfig:
     imap_host: Optional[str] = None
@@ -1039,7 +1047,7 @@ class EmailWatcher:
             responses.extend(graph_replies)
         except Exception:
             logger.warning("Microsoft 365 reply fetch failed; IMAP results kept", exc_info=True)
-        if fetcher is None and not graph_replies:
+        if fetcher is None and not graph_replies and not _m365_has_bindings():
             logger.warning("Email fetcher not configured; returning no responses")
         return responses
 

@@ -107,3 +107,24 @@ def _governed_limits_available(monkeypatch):
     monkeypatch.setattr(governed_limits, "_fresh_engine", lambda: _SeededPolicyEngine())
     yield
     governed_limits.reset_cache()
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_real_graph_reads(request, monkeypatch):
+    """No test may reach Microsoft Graph or the shared-mailbox bindings through the watcher.
+
+    EmailWatcher._fetch_emails appends Graph replies; without this, every watcher test
+    would read proc.bp_mailbox_binding on whatever database .env points at. The tests of
+    receiving itself, and any test that stubs it explicitly, are unaffected.
+    """
+    if request.module.__name__.endswith("test_receiving"):
+        return
+    try:
+        from services.mail_m365 import receiving
+    except Exception:  # pragma: no cover - module not importable in this environment
+        return
+    monkeypatch.setattr(receiving, "fetch_replies", lambda since, **kw: [])
+    monkeypatch.setattr(receiving, "has_bindings", lambda: False)

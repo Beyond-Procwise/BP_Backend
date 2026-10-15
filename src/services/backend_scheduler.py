@@ -1434,7 +1434,6 @@ class BackendScheduler:
         import os
 
         from config.settings import Settings
-        from src.services import mail_handover
         from src.services.mail_intake import poll
         from src.services.mail_intake.pipeline import IngestPipeline
         from src.services.mail_intake.sources.relay import RelayMailSource
@@ -1451,13 +1450,30 @@ class BackendScheduler:
             store, bucket,
             trusted_asserter=os.environ.get("MAIL_INTAKE_TRUSTED_ASSERTER", "amazonses.com"),
         )
-        for step in ("poll", "hand_over", "settle"):
+        try:
+            with transactional_conn() as conn:
+                result = poll.poll_all(
+                    conn, lambda b: RelayMailSource(relay_bucket, relay_prefix), pipeline)
+            if any(v for k, v in result.items() if k != "bindings"):
+                logger.info("mail intake poll: %s", result)
+        except Exception:
+            logger.exception("mail intake poll failed")
+        self._run_mail_handover_steps(store)
+
+    @staticmethod
+    def _run_mail_handover_steps(store: Any) -> None:
+        """READY attachments -> the upload queue, then close finished hand-overs.
+
+        Shared by the relay job and the Microsoft 365 job, so cleared attachments reach
+        extraction whichever source brought them and whichever job is switched on.
+        """
+        from src.services import mail_handover
+        from src.services.sell_side._db import transactional_conn
+
+        for step in ("hand_over", "settle"):
             try:
                 with transactional_conn() as conn:
-                    if step == "poll":
-                        result = poll.poll_all(
-                            conn, lambda b: RelayMailSource(relay_bucket, relay_prefix), pipeline)
-                    elif step == "hand_over":
+                    if step == "hand_over":
                         result = mail_handover.hand_over(conn, store)
                     else:
                         result = mail_handover.settle(conn)
@@ -1507,8 +1523,9 @@ class BackendScheduler:
             bucket = Settings().s3_bucket_name
             # Graph hands over the message as the mailbox holds it; no relay in between
             # vouches for it, so there is no trusted Authentication-Results asserter.
+            store = ObjectStore(bucket)
             pipeline = IngestPipeline(
-                ObjectStore(bucket), bucket,
+                store, bucket,
                 trusted_asserter=os.environ.get("M365_TRUSTED_ASSERTER") or None)
             with transactional_conn() as conn:
                 result = poll_m365(conn, pipeline)
@@ -1516,6 +1533,9 @@ class BackendScheduler:
                 logger.info("m365 poll: %s", result)
         except Exception:
             logger.exception("m365 poll failed")
+            return
+        # Hand-over must not depend on the relay job being switched on.
+        self._run_mail_handover_steps(store)
 
     def _run_mail_intake_sweep(self) -> None:
         try:

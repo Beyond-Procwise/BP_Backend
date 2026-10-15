@@ -162,3 +162,182 @@ def test_active_bindings_defaults_to_intake_and_accepts_roles():
     active_bindings(Cur())
     active_bindings(Cur(), provider="graph", roles=("send_receive",))
     assert seen == [(["intake"], "relay"), (["send_receive"], "graph")]
+
+
+# --- fix round 1 -------------------------------------------------------------------------
+
+import asyncio  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _fresh_caches():
+    receiving._reset_caches()
+    yield
+    receiving._reset_caches()
+
+
+def test_second_pass_downloads_nothing_but_still_returns_the_reply():
+    client = Client()
+
+    class Repo:
+        def list_org(self): return [_binding(1, "procurement@cust.com")]
+    first = receiving.fetch_replies(SINCE, repo=Repo(), client_for=lambda: client)
+    second = receiving.fetch_replies(SINCE, repo=Repo(), client_for=lambda: client)
+    assert client.fetched == ["m1"], "full MIME is downloaded once per message"
+    assert len(first) == len(second) == 1 and "455" in second[0].body
+    # each pass (each workflow) gets its own object, so one cannot alter another's
+    assert first[0] is not second[0]
+
+
+def test_only_graph_send_receive_bindings_are_read():
+    from services.style.mailbox import MailboxBinding
+    other = MailboxBinding(3, "org", "relay", "x@cust.com", "send_receive", "arn:aws:secretsmanager:x",
+                           None, SINCE, "ev", None, "OK", True)
+
+    class Repo:
+        def list_org(self): return [other]
+    client = Client()
+    assert receiving.fetch_replies(SINCE, repo=Repo(), client_for=lambda: client) == []
+    assert client.fetched == []
+
+
+def test_client_is_built_once_within_the_ttl(monkeypatch):
+    import services.mail_m365.admin as admin
+    import services.mail_m365.config as config
+    import services.db as db
+    built = []
+    settings = config.M365Settings("cid", "arn:aws:secretsmanager:s", "https://x", "arn:k", 120)
+    monkeypatch.setattr(config, "load_settings", lambda: settings)
+    monkeypatch.setattr(config, "read_integration",
+                        lambda c: {"status": "connected", "tenant_id": "t1"})
+
+    class Ctx:
+        def __enter__(self): return object()
+        def __exit__(self, *a): return False
+    monkeypatch.setattr(db, "get_conn", lambda: Ctx())
+    monkeypatch.setattr(admin, "_default_factory",
+                        lambda s: (lambda tenant: built.append(tenant) or Client()))
+    a = receiving._default_client_for()
+    b = receiving._default_client_for()
+    assert built == ["t1"] and a() is b()
+
+
+def test_client_is_rebuilt_after_the_ttl(monkeypatch):
+    import services.mail_m365.admin as admin
+    import services.mail_m365.config as config
+    import services.db as db
+    built = []
+    settings = config.M365Settings("cid", "arn:aws:secretsmanager:s", "https://x", "arn:k", 120)
+    monkeypatch.setattr(config, "load_settings", lambda: settings)
+    monkeypatch.setattr(config, "read_integration",
+                        lambda c: {"status": "connected", "tenant_id": "t1"})
+
+    class Ctx:
+        def __enter__(self): return object()
+        def __exit__(self, *a): return False
+    monkeypatch.setattr(db, "get_conn", lambda: Ctx())
+    monkeypatch.setattr(admin, "_default_factory",
+                        lambda s: (lambda tenant: built.append(tenant) or Client()))
+    receiving._default_client_for()
+    receiving._client_cache["c"]["at"] -= receiving.CLIENT_TTL_SECONDS + 1
+    receiving._default_client_for()
+    assert built == ["t1", "t1"]
+
+
+def _bare_watcher(fetcher=None):
+    from services.email_watcher import EmailWatcher, EmailWatcherConfig
+    w = EmailWatcher.__new__(EmailWatcher)
+    w.config = EmailWatcherConfig()
+    w._fetcher = fetcher
+    return w
+
+
+def test_watcher_appends_graph_replies_and_keeps_imap(monkeypatch):
+    from services.email_watcher import parse_email_bytes
+    imap = parse_email_bytes(MIME)
+    graph = parse_email_bytes(MIME.replace(b"455", b"999"))
+    monkeypatch.setattr(receiving, "fetch_replies", lambda since, **kw: [graph])
+    got = asyncio.run(_bare_watcher(lambda since: [imap])._fetch_emails(SINCE))
+    assert got == [imap, graph]
+
+
+def test_watcher_keeps_imap_results_when_graph_raises(monkeypatch):
+    from services.email_watcher import parse_email_bytes
+    imap = parse_email_bytes(MIME)
+
+    def boom(since, **kw): raise RuntimeError("graph down")
+    monkeypatch.setattr(receiving, "fetch_replies", boom)
+    assert asyncio.run(_bare_watcher(lambda since: [imap])._fetch_emails(SINCE)) == [imap]
+
+
+def test_not_configured_warning_only_without_imap_and_without_m365(monkeypatch, caplog):
+    monkeypatch.setattr(receiving, "fetch_replies", lambda since, **kw: [])
+    monkeypatch.setattr(receiving, "has_bindings", lambda: True)
+    with caplog.at_level("WARNING"):
+        asyncio.run(_bare_watcher()._fetch_emails(SINCE))
+    assert "not configured" not in caplog.text
+    monkeypatch.setattr(receiving, "has_bindings", lambda: False)
+    with caplog.at_level("WARNING"):
+        asyncio.run(_bare_watcher()._fetch_emails(SINCE))
+    assert "not configured" in caplog.text
+
+
+def _scheduler(monkeypatch):
+    from services import backend_scheduler as bs
+    s = bs.BackendScheduler.__new__(bs.BackendScheduler)
+    s._jobs = {}
+    registered = []
+    monkeypatch.setattr(bs.BackendScheduler, "register_job",
+                        lambda self, name, fn, **kw: registered.append((name, kw)))
+    monkeypatch.setattr(bs.BackendScheduler, "_mail_intake_tables_present", staticmethod(lambda: True))
+    return s, registered
+
+
+def test_scheduler_skips_m365_job_when_switched_off(monkeypatch):
+    s, registered = _scheduler(monkeypatch)
+    monkeypatch.setenv("M365_POLL", "off")
+    s._register_m365_poll_job()
+    assert registered == []
+
+
+def test_scheduler_skips_m365_job_without_settings(monkeypatch):
+    import src.services.mail_m365.config as config
+    s, registered = _scheduler(monkeypatch)
+    monkeypatch.delenv("M365_POLL", raising=False)
+    monkeypatch.setattr(config, "load_settings", lambda: None)
+    s._register_m365_poll_job()
+    assert registered == []
+
+
+def test_scheduler_registers_m365_job_with_poll_seconds(monkeypatch):
+    import src.services.mail_m365.config as config
+    s, registered = _scheduler(monkeypatch)
+    monkeypatch.delenv("M365_POLL", raising=False)
+    monkeypatch.setattr(config, "load_settings", lambda: config.M365Settings(
+        "cid", "arn:aws:secretsmanager:s", "https://x", "arn:k", 90))
+    s._register_m365_poll_job()
+    assert registered[0][0] == "mail-m365-poll" and registered[0][1]["interval"].total_seconds() == 90
+
+
+def test_m365_job_runs_the_shared_handover_steps(monkeypatch):
+    """Attachments must reach extraction even when MAIL_INTAKE_POLL=off."""
+    import contextlib
+    from services import backend_scheduler as bs
+    import src.services.mail_m365.receiving as rcv
+    import src.services.mail_intake.store as store_mod
+    import src.services.mail_intake.pipeline as pipe_mod
+    import src.services.sell_side._db as sdb
+    import config.settings as cs
+    s, _ = _scheduler(monkeypatch)
+    calls = []
+    monkeypatch.setattr(bs.BackendScheduler, "_run_mail_handover_steps",
+                        staticmethod(lambda store: calls.append(("handover", store))))
+    monkeypatch.setattr(rcv, "poll_m365", lambda conn, pipeline: calls.append("poll") or {"bindings": 0})
+    monkeypatch.setattr(store_mod, "ObjectStore", lambda bucket: ("store", bucket))
+    monkeypatch.setattr(pipe_mod, "IngestPipeline", lambda *a, **k: object())
+    monkeypatch.setattr(sdb, "transactional_conn", contextlib.nullcontext)
+    monkeypatch.setattr(cs, "Settings", lambda: SimpleNamespace(s3_bucket_name="b"))
+    s._run_m365_poll()
+    assert calls == ["poll", ("handover", ("store", "b"))]
