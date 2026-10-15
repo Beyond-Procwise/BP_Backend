@@ -14,8 +14,9 @@ the customer's mailbox. Graph paths used: `/users/{m}/mailFolders...`, `/users/{
 |---|---|
 | `M365_CLIENT_ID` | Application (client) ID of "Procwise Mail". |
 | `M365_CLIENT_SECRET_ARN` | Secrets Manager ARN of `{"client_id": "...", "client_secret": "..."}`. |
-| `PUBLIC_BASE_URL` | The server's public **https** address. Microsoft returns the admin to `PUBLIC_BASE_URL/admin/integrations/mail/m365/callback`; a non-https value makes Connect fail. |
-| `MAIL_STATE_SIGNING_KEY_ARN` | ARN of a secret holding 48 random bytes (at least 32) that signs the single-use consent `state`. |
+| `PUBLIC_BASE_URL` | The server's public **https** address. Microsoft returns the admin to `PUBLIC_BASE_URL/admin/integrations/mail/m365/callback` (after the approval page and again after the sign-in); a non-https value makes Connect fail. |
+| `APP_BASE_URL` | Optional. The screen's own address when the UI runs on a different origin from the API (the usual case). After Microsoft, the admin's browser lands on `APP_BASE_URL/?view=settings&mail=...`. Unset = `PUBLIC_BASE_URL`. |
+| `MAIL_STATE_SIGNING_KEY_ARN` | ARN of a secret holding 48 random bytes (at least 32) that signs the single-use consent and sign-in `state` (and derives the sign-in nonce). |
 | `M365_POLL_SECONDS` | Poll interval for connected mailboxes (default 120, minimum 30). |
 | `M365_POLL` | `on` (default) or `off`; `off` stops the poll job being registered. The job is a no-op until Microsoft 365 is configured and a mailbox is connected. |
 | `M365_TRUSTED_ASSERTER` | Optional. Host whose `Authentication-Results` the poll job trusts for sender-auth verdicts. Unset (default) = verdict unknown; Graph delivers the message as the mailbox holds it and nothing vouches for it. |
@@ -29,9 +30,14 @@ the other routes answer 503 "Microsoft 365 is not configured on this server."
 1. Entra admin centre -> App registrations -> New registration.
 2. Supported account types: **Accounts in any organizational directory (multitenant)**.
 3. Redirect URI, platform **Web**: `PUBLIC_BASE_URL/admin/integrations/mail/m365/callback`.
-4. **API permissions: remove the default `User.Read` and add nothing.** Any permission granted
-   in Entra *adds* to the Exchange scoping and would widen access (the probe in step 3(e)
-   below proves this is caught).
+   The same URI serves both returns (approval page, then sign-in); no second URI is needed.
+4. **API permissions: remove the default `User.Read`; add only Microsoft Graph -> Delegated ->
+   `openid` ("Sign users in").** `openid` lets the admin sign in once so Procwise can learn,
+   from a token Microsoft signs, which organisation approved it; it reads no mail and no
+   profile. Add **no** mail permission: any permission granted in Entra *adds* to the
+   Exchange scoping and would widen access (the probe in step 3(e) below proves this is
+   caught). Leave "ID tokens" under Authentication -> Implicit grant **unticked** (the code is
+   redeemed server-side).
 5. Certificates and secrets -> New client secret, 24 months.
 6. Secrets Manager: store `{"client_id": "...", "client_secret": "..."}`; put its ARN in
    `M365_CLIENT_SECRET_ARN`. Put the application ID in `M365_CLIENT_ID`.
@@ -45,8 +51,15 @@ Only users who may `mailbox.bind` (Admin) can use these routes.
 
 1. **Connect Microsoft 365.** The admin is sent to Microsoft's admin-approval page for
    "Procwise Mail". It lists *no* mail permissions (that is expected and is what to point a
-   cautious IT team at). They approve as a Global/tenant administrator and are returned to
-   Procwise (`?view=settings&mail=connected`).
+   cautious IT team at). They approve as a Global/tenant administrator, then Microsoft asks
+   them to **sign in once** (scope `openid` only). Procwise redeems that sign-in server-side
+   with its own secret, verifies the id_token (Microsoft's signature from its published keys,
+   audience = our client id, issuer = the token's own tenant, not expired, our nonce) and
+   records the tenant **only** from the verified `tid` claim. The `tenant` Microsoft appends
+   to the approval return is ignored as evidence: it is a URL parameter anyone can edit, and
+   trusting it would let one customer's admin connect their Procwise to another customer's
+   tenant. The admin then lands on `APP_BASE_URL/?view=settings&mail=connected`. Until a
+   default mailbox is chosen, supplier email is **held** (it does not go out from Procwise).
 2. In Exchange admin, create a **mail-enabled security group** called "Procwise Mailboxes" and
    add each shared mailbox Procwise may use. Adding or removing a mailbox later = changing
    this group.
@@ -69,7 +82,7 @@ Routes (all under `/admin/integrations/mail`, all `mailbox.bind` except the call
 |---|---|
 | `GET ` | status (`canConfigure`) |
 | `POST /m365/connect` | returns `authorization_url` (login.microsoftonline.com/organizations/v2.0/adminconsent) |
-| `GET /m365/callback` | Microsoft's redirect; no bearer token, trusts only the signed single-use `state` |
+| `GET /m365/callback` | Microsoft's two redirects (approval, then sign-in `code`); no bearer token; trusts only the signed single-use `state` and the id_token it verifies itself |
 | `GET /m365/setup-script` | the PowerShell (plain text) |
 | `POST /mailboxes` | `{address, control_mailbox}`: read it, then prove the control is denied |
 | `POST /mailboxes/{id}/verify` | `{control_mailbox}`: re-run the proof |
@@ -98,9 +111,14 @@ address) are inconclusive, never a pass. Test-send maps Throttled to 503, access
 
 Callback failures redirect to `?view=settings&mail_error=<code>` with a code from a fixed
 set: `malformed`, `bad_signature`, `expired`, `reused` (state problems), `not_granted`,
-`bad_tenant`, `tenant_mismatch`, `access_denied`, or `consent_failed` for anything else.
-**`tenant_mismatch`**: a callback for a different tenant while already connected is refused;
-the admin must Disconnect first. A repeated callback with the same state is `reused`.
+`bad_tenant`, `tenant_mismatch`, `access_denied`, `wrong_account` (the admin signed in to a
+different organisation from the one named on the approval return), `signin_failed` (the
+code could not be redeemed or the id_token failed verification), or `consent_failed` for
+anything else. **`tenant_mismatch`**: a verified tenant different from the one already
+connected is refused; the admin must Disconnect first. A repeated callback with the same
+state (either step) is `reused`. Every refusal writes an audit row
+(`phase=authorize`, `action_type=mailbox.consent_callback`, `status=denied`) holding only
+the stage and that code, never the query text; the raw cause is in the server log.
 
 ### Sending behaviour (important to tell customers)
 
@@ -109,11 +127,27 @@ the admin must Disconnect first. A repeated callback with the same state is `reu
 - Once the company has test-sent from its mailbox, Procwise **never silently falls back to
   SES**. If the mailbox is disconnected, removed, revoked or unhealthy, supplier email is
   **held** (with the reason) until fixed. This was confirmed by the product owner.
-- `GET /mail/sender` returns `{mode, address, can_send, reason}`: `ses` (never test-sent),
-  `m365` (sending from `address`), or `held` (`can_send: false`, with `reason`).
+- `GET /mail/sender` returns `{mode, address, can_send, reason, max_attachment_bytes}`: `ses`
+  (never connected, or never test-sent), `m365` (sending from `address`), or `held`
+  (`can_send: false`, with `reason`). Reasons are plain sentences for buyers (for example
+  "Access to procurement@... was withdrawn in Microsoft 365, so this email is held"); the
+  health codes and Microsoft's own error text go to the server log only.
+- **Size limit.** Graph's `sendMail` takes the message base64-encoded in a request of about
+  4 MB, so Procwise holds any email whose raw MIME (attachments included) is over
+  **3,000,000 bytes** with "This email is too large to send from your Microsoft 365 mailbox
+  (limit 3 MB including attachments)"; an HTTP 413 from Graph gives the same reason.
+  `max_attachment_bytes` is 3,000,000 in `m365` mode so compose blocks earlier. Larger
+  emails via upload sessions are a follow-up.
+- A customer that never connected Microsoft 365 is sent via SES **without the binding table's
+  new columns being read**, so this feature cannot hold email on a database the migration
+  has not reached. The migrations (mail-intake x2, then `2026-10-15-m365-mailbox.sql`) are
+  still a hard deploy gate.
 - Health: `can_read` of the Inbox: 2xx -> OK; **403/404 -> REVOKED** (mailbox deactivated, drafts
   held); **401 (Microsoft rejected our token) -> DEGRADED, never REVOKED**; 429/5xx/network ->
-  DEGRADED.
+  DEGRADED. A successful Inbox poll (every `M365_POLL_SECONDS`) lifts an active DEGRADED
+  mailbox back to OK, so one blip does not hold email for an hour; REVOKED is never lifted.
+- A REVOKED mailbox stays on the admin's list labelled "Access withdrawn in Microsoft 365"
+  (with Remove only) until an admin removes it; the panel shows why email is held.
 
 ## 3. Live-tenant runbook (the release gate)
 
@@ -124,10 +158,16 @@ until every step passes.
 Prerequisites: step 1 done on a server with an https `PUBLIC_BASE_URL`; one shared mailbox
 (S); the tester's own mailbox as control (C); a supplier test account.
 
-- **(a) Connect.** `POST /m365/connect`, open the URL, approve as tenant admin. Expect
-  redirect with `mail=connected`.
+- **(a) Connect.** `POST /m365/connect`, open the URL, approve as tenant admin, then sign in
+  when asked. Expect the browser on `APP_BASE_URL` with `mail=connected`, and `tenant_id` equal
+  to the developer tenant's ID. Record whether Microsoft showed a second consent prompt for
+  "Sign you in" (it should not, with `openid` on the registration).
+- **(a2) Negative: forged tenant.** Start Connect again (Disconnect first), approve, and before
+  the browser follows the approval return, edit its `tenant=` to a **different** tenant id.
+  Expect Microsoft to refuse the sign-in for that tenant, or `mail_error=wrong_account`;
+  never `mail=connected`, and `tenant_id` never the edited value.
 - **(b) Entra check.** Enterprise applications -> Procwise Mail -> Permissions: **no mail
-  permissions** listed.
+  permissions** listed (only "Sign users in").
 - **(c) Script.** Create the group with S; run the script; wait up to 30 min.
   `Test-ServicePrincipalAuthorization` shows InScope for S only (and not for C). Note whether
   the Exchange cmdlets in the script ran as written; fix the script otherwise.
@@ -151,9 +191,11 @@ Prerequisites: step 1 done on a server with an https `PUBLIC_BASE_URL`; one shar
   Procwise sent (MIME with `In-Reply-To`/`References`) **threads** under the original
   conversation; if not, add `/messages/{id}/reply` to the Graph allow-list as a follow-up.
 - **(i) Paging.** Put more than 50 messages in the Inbox (the poll pages at 50) and run a
-  poll. Page 2 must load. The `nextLink` is accepted only if it continues the exact same
-  `/users/{S}/mailFolders/inbox/messages` path; if Graph returns a differently-encoded path
-  (for example `%40`), page 2 is refused and mail beyond 50 is not read: a blocking finding.
+  poll. All of them must load. Procwise pages with its own `$top=50&$skip=N` URLs on the same
+  `$filter`/`$orderby` and never follows Graph's `nextLink`; record whether Graph honoured
+  `$skip` with that filter (if it does not, mail beyond 50 is missed: a blocking finding).
+- **(i2) Size.** Send a draft with a 2.5 MB attachment from S: it is held with the 3 MB size
+  reason and nothing reaches Graph. Record the largest attachment that does send.
 - **(j) Revocation.** Remove Procwise Mail in Entra (or remove S from the group). Within one
   health interval (`STYLE_MAILBOX_HEALTH_INTERVAL_MINUTES`, default 60) the mailbox goes
   REVOKED (403/404). A queued draft is **held**, not sent via SES. `GET /mail/sender` shows
@@ -161,9 +203,9 @@ Prerequisites: step 1 done on a server with an https `PUBLIC_BASE_URL`; one shar
 - **(k) 401 vs revocation.** Temporarily break `M365_CLIENT_SECRET_ARN`'s secret (wrong
   value); the next health check must give DEGRADED, **not** REVOKED, and the mailbox stays
   active. Restore the secret.
-- **(l) Tenant mismatch.** While connected, complete consent from a second tenant -> redirect
-  with `mail_error=tenant_mismatch`; the first connection is untouched. Disconnect, then
-  connect the second tenant.
+- **(l) Tenant mismatch.** While connected, complete consent and sign-in from a second tenant
+  -> redirect with `mail_error=tenant_mismatch`; the first connection is untouched.
+  Disconnect, then connect the second tenant.
 - **(m) Disconnect.** `DELETE /admin/integrations/mail`: mailboxes deactivated; supplier email
   is held (not SES) because the company had test-sent.
 
