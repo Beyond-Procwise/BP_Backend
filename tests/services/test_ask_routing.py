@@ -140,10 +140,10 @@ def test_a_raising_agent_is_not_an_answer():
                                     "q", user_id="u", context=None) is None
 
 
-def test_no_context_sends_no_extra_system():
+def test_no_context_sends_only_the_read_only_note():
     agent = _Agent(ToolRunResult(answer="ok"))
     ask_routing.agent_answer(agent, "q", user_id="u", context=None)
-    assert "extra_system" not in agent.seen
+    assert agent.seen["extra_system"] == ask_routing.READ_ONLY_NOTE
 
 
 def test_a_created_agent_slug_reads_as_words():
@@ -195,3 +195,61 @@ def test_the_map_is_read_fresh_after_a_minute(monkeypatch):
     clock[0] += 31
     ask_routing.screen_agent_map(now=now)
     assert reads == [True, True]      # an admin's edit applies within a minute
+
+
+# --- read-only tools (Nick, 2026-10-15) ---------------------------------------
+
+WRITING_TOOLS = {"run_negotiation", "run_opportunity_miner", "evaluate_opportunity_lever"}
+
+
+def test_an_answering_agent_is_given_only_reading_tools():
+    agent = _Agent(ToolRunResult(answer="ok"))
+    ask_routing.agent_answer(agent, "q", user_id="u", context=None, slug="negotiation")
+    assert agent.seen["only"] == sorted(ask_routing.READ_ONLY_TOOLS)
+    assert not WRITING_TOOLS & set(agent.seen["only"])
+
+
+def test_an_agents_own_tool_list_is_narrowed_never_widened():
+    agent = _Agent(ToolRunResult(answer="ok"))
+    agent.allowed_tools = ["get_policy", "run_negotiation", "evaluate_opportunity_lever"]
+    ask_routing.agent_answer(agent, "q", user_id="u", context=None)
+    assert agent.seen["only"] == ["get_policy"]
+
+
+def test_an_agent_given_no_tools_stays_with_none():
+    agent = _Agent(ToolRunResult(answer="ok"))
+    agent.allowed_tools = []
+    ask_routing.agent_answer(agent, "q", user_id="u", context=None)
+    assert agent.seen["only"] == []
+
+
+def test_the_agent_is_told_it_can_only_look_things_up():
+    agent = _Agent(ToolRunResult(answer="ok"))
+    ask_routing.agent_answer(agent, "q", user_id="u", context="Screen: Negotiations")
+    assert "Screen: Negotiations" in agent.seen["extra_system"]
+    assert ask_routing.READ_ONLY_NOTE in agent.seen["extra_system"]
+
+
+def test_the_reading_tools_are_real_tool_names_and_no_writer_survives():
+    """Built through the real build_tools, so a renamed tool or a new writer shows here."""
+    import types
+    from src.orchestration import agentnick_control
+
+    class _Miner:
+        def _get_policy_registry(self):
+            return {}
+
+    class _Registry:
+        def tool_schemas(self):
+            return [{"function": {"name": "run_negotiation", "description": "d",
+                                  "parameters": {"type": "object", "properties": {}}}}]
+
+    nick = types.SimpleNamespace(
+        agents={agentnick_control._MINER_SLUG: _Miner(), "negotiation": object()},
+        auto_registry=_Registry())
+    every = {t.name for t in agentnick_control.build_tools(nick)}
+    assert ask_routing.READ_ONLY_TOOLS <= every
+    given = {t.name for t in agentnick_control.build_tools(
+        nick, only=sorted(ask_routing.READ_ONLY_TOOLS))}
+    assert given == set(ask_routing.READ_ONLY_TOOLS)
+    assert not given & WRITING_TOOLS
