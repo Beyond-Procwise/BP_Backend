@@ -32,8 +32,6 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(ROOT / ".env", override=False)
 
-from services.prompt_engine import registry  # noqa: E402
-
 KEY = "negotiation_playbook_system"
 AUTHOR = "claude (negotiation-levers)"
 
@@ -91,6 +89,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--apply", action="store_true", help="save the new version")
     args = parser.parse_args()
+
+    # Imported here so EDITS can be read where the registry is not installed.
+    from services.prompt_engine import registry
 
     live = registry.resolve(KEY)
     old = live["template"]
