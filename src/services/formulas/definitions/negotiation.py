@@ -388,7 +388,7 @@ def market_context_score(lever: str, market=None):
 
 @formula(
     "negotiation.play_readiness",
-    version="1.0.0",
+    version="1.1.0",
     owner=_OWNER,
     purpose="Whether a play's precondition actually holds on this deal's evidence",
     effective_from=_FROM,
@@ -403,7 +403,8 @@ def market_context_score(lever: str, market=None):
         "strong with a second quote and damaging without one -- a buyer who bluffs a "
         "competing quote they do not have loses standing. A known sole-source deal "
         "returns not_applicable rather than groundwork: there is no second supplier to "
-        "go and find, so advising a competitive event would be noise."
+        "go and find, so advising a competitive event would be noise. Since 1.1.0 a "
+        "play no evidence family can test is groundwork, not ready (fail closed)."
     ),
     golden=[
         GoldenVector(
@@ -426,8 +427,8 @@ def market_context_score(lever: str, market=None):
         ),
         GoldenVector(
             inputs={"play": {"play": "Hold a supplier day", "score": 1.0}, "signals": {}},
-            expected={"state": "ready", "family": None},
-            note="a play with no testable precondition is ready by default",
+            expected={"state": "groundwork", "family": None},
+            note="a play with no testable precondition is not ready (fail closed)",
         ),
     ],
 )

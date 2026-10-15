@@ -50,9 +50,25 @@ def test_price_play_needs_known_variance():
     assert gr.assess(_play("Request a detailed cost breakdown"), _BARE)["state"] == "groundwork"
 
 
-def test_play_with_no_testable_precondition_is_ready():
-    out = gr.assess(_play("Agree a quarterly governance cadence",
-                          lever="Operational"), _BARE)
+def test_play_with_no_testable_precondition_is_groundwork_not_ready():
+    # Fail closed: nothing on the deal supports it, so it is not "ready".
+    for signals in (_BARE, _RICH):
+        out = gr.assess(_play("Agree a quarterly governance cadence",
+                              lever="Operational"), signals)
+        assert out["state"] == "groundwork"
+        assert out["evidence"] == []
+        assert out["unlocked_by"]
+
+
+def test_bundled_warranty_is_not_a_volume_play():
+    out = gr.assess(_play("Bundle 2-year warranty at no cost", lever="Risk"), _RICH)
+    assert out["family"] != "volume"
+    assert out["state"] != "ready"
+
+
+def test_consolidating_spend_is_still_a_volume_play():
+    out = gr.assess(_play("Consolidate spend across divisions/geographies"), _RICH)
+    assert out["family"] == "volume"
     assert out["state"] == "ready"
 
 
