@@ -93,6 +93,26 @@ def test_list_inbox_refuses_a_next_link_off_graph():
         c.list_inbox("m@x", datetime(2026, 10, 15, tzinfo=timezone.utc))
 
 
+@pytest.mark.parametrize("link", [
+    "https://graph.microsoft.com/v1.0/users/other@x/mailFolders/drafts/messages?x",
+    "https://graph.microsoft.com/v1.0/users/other@x/mailFolders/inbox/messages?x",
+    "https://graph.microsoft.com/v1.0/users/m@x/mailFolders/inbox/messages/../../drafts/messages",
+])
+def test_list_inbox_refuses_a_next_link_to_another_path(link):
+    c = client({("GET", "/messages"): (200, {"value": [], "@odata.nextLink": link})})
+    with pytest.raises(ValueError):
+        c.list_inbox("m@x", datetime(2026, 10, 15, tzinfo=timezone.utc))
+
+
+def test_list_inbox_filter_is_utc_for_aware_and_naive_since():
+    from datetime import timedelta
+    c = client({("GET", "/messages"): (200, {"value": []})})
+    c.list_inbox("m@x", datetime(2026, 10, 15, 10, 0, tzinfo=timezone(timedelta(hours=1))))
+    assert "receivedDateTime ge 2026-10-15T09:00:00Z" in c.transport.calls[-1][1]
+    c.list_inbox("m@x", datetime(2026, 10, 15, 10, 0))
+    assert "receivedDateTime ge 2026-10-15T10:00:00Z" in c.transport.calls[-1][1]
+
+
 def test_list_inbox_429_raises_throttled():
     c = client({("GET", "/messages"): (429, {"retry_after": 7})})
     with pytest.raises(Throttled) as ei:

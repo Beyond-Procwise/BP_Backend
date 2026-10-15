@@ -8,7 +8,7 @@ from __future__ import annotations
 import base64
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
@@ -63,7 +63,7 @@ class M365Client:
     def _url(self, path: str, *, method: str) -> str:
         """The one place a Graph URL is built. Refuses anything off the allowlist."""
         bare = path.split("?", 1)[0]
-        if ".." in bare or not any(p.match(bare) for p in ALLOWED_PATH_PATTERNS.get(method, [])):
+        if ".." in bare or not any(p.fullmatch(bare) for p in ALLOWED_PATH_PATTERNS.get(method, [])):
             raise ValueError(f"{method} {path} is not a Graph path this feature may use")
         return f"{GRAPH_BASE}{path}"
 
@@ -104,9 +104,13 @@ class M365Client:
 
     def list_inbox(self, mailbox: str, since: datetime, *, page_size: int = 50
                    ) -> List[Dict[str, Any]]:
-        stamp = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+        # A naive datetime is taken to be UTC; an aware one is converted, so a +01:00 cursor
+        # is not written as local wall-clock time labelled Z (which would skip messages).
+        since = since.replace(tzinfo=timezone.utc) if since.tzinfo is None else since
+        stamp = since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        first_path = f"{self._mbx(mailbox)}/mailFolders/inbox/messages"
         url: Optional[str] = (
-            self._url(f"{self._mbx(mailbox)}/mailFolders/inbox/messages", method="GET")
+            self._url(first_path, method="GET")
             + f"?$top={page_size}&$select=id,receivedDateTime"
             f"&$filter=receivedDateTime ge {stamp}&$orderby=receivedDateTime asc")
         out: List[Dict[str, Any]] = []
@@ -120,8 +124,14 @@ class M365Client:
                 raise MailboxUnreachable(f"Inbox listing returned HTTP {status}")
             out.extend((payload or {}).get("value", []))
             url = (payload or {}).get("@odata.nextLink")
-            if url and not url.startswith(GRAPH_BASE + "/"):
-                raise ValueError("nextLink left Microsoft Graph")
+            if url:
+                # A nextLink is server-supplied: it may only continue the same listing.
+                if not url.startswith(GRAPH_BASE + "/"):
+                    raise ValueError("nextLink left Microsoft Graph")
+                rest = url[len(GRAPH_BASE):].split("?", 1)[0]
+                self._url(rest, method="GET")
+                if rest != first_path:
+                    raise ValueError("nextLink points somewhere other than the Inbox listing")
         return sorted(out, key=lambda m: m.get("receivedDateTime") or "")
 
     def get_mime(self, mailbox: str, message_id: str) -> bytes:
