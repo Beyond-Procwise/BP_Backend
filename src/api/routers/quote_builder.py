@@ -26,7 +26,7 @@ from src.services.sell_side._db import transactional_conn as get_conn
 
 from api.auth import require_user
 from api.endpoint_gate import require as gate
-from api.routers.sales import _require_margin_permit, _subject
+from api.routers.sales import _require_margin_permit, _subject, floor_override, margin_floor_refused
 from api.sell_side_http import http_errors, money_json
 
 router = APIRouter(tags=["Quote builder"])
@@ -316,8 +316,12 @@ def approve(quote_id: int, body: Optional[ApproveBody] = None, principal=Depends
     gate("sales_quote.approve", principal, agent=_AGENT, context={"sales_quote_id": quote_id})
     _require_margin_permit(principal, {"sales_quote_id": quote_id})
     with http_errors(), get_conn() as c:
-        quotes.approve(c, quote_id, approver=_subject(principal),
-                       conditions=(body.conditions if body else None))
+        try:
+            quotes.approve(c, quote_id, approver=_subject(principal),
+                           conditions=(body.conditions if body else None),
+                           may_override_floor=floor_override(principal, quote_id))
+        except quotes.MarginBelowFloor as exc:   # before http_errors flattens it to text
+            raise margin_floor_refused(exc) from None
         return money_json(_with_checks(builder.get(c, quote_id)))
 
 

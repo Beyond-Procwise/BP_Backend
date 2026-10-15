@@ -65,7 +65,9 @@ def test_a_floor_of_zero_is_a_stated_zero_not_unset(monkeypatch):
 # --- the Quote builder's settings (ruled 2026-10-14) -------------------------------
 
 _ALL_UNSET = {"margin_floor_pct": None, "discount_corridor_max_pct": None,
-              "tax_rate_pct": None, "validity_days": None, "payment_terms_default": None}
+              "tax_rate_pct": None, "validity_days": None, "payment_terms_default": None,
+              "margin_floor_action": None, "margin_floor_untested": None,
+              "margin_floor_applies_to_catalog": None}
 
 
 def test_settings_nobody_has_set_are_null_and_say_so(monkeypatch):
@@ -73,7 +75,20 @@ def test_settings_nobody_has_set_are_null_and_say_so(monkeypatch):
     assert pc.settings() == {
         key: {"value": None, "source": "not_set", "locked": True}
         for key in ("quote.tax.rate_pct", "quote.validity.days",
-                    "quote.terms.payment_default", "quote.margin.floor_pct")}
+                    "quote.terms.payment_default", "quote.margin.floor_pct",
+                    "quote.margin.floor_action", "quote.margin.untested",
+                    "quote.margin.applies_to_catalog")}
+
+
+def test_how_the_floor_is_enforced_is_a_setting_too(monkeypatch):
+    _stated(monkeypatch, {**_ALL_UNSET, "margin_floor_action": "override",
+                          "margin_floor_untested": "allow",
+                          "margin_floor_applies_to_catalog": True})
+    s = pc.settings()
+    assert s["quote.margin.floor_action"] == {"value": "override", "source": "policy",
+                                              "locked": True}
+    assert s["quote.margin.untested"]["value"] == "allow"
+    assert s["quote.margin.applies_to_catalog"]["value"] is True
 
 
 def test_stated_settings_come_back_with_their_source(monkeypatch):

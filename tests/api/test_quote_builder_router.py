@@ -157,7 +157,9 @@ def test_a_save_that_does_not_name_a_deal_does_not_touch_the_link(client):
 def test_the_approver_is_the_token_and_the_conditions_are_theirs(client):
     client.post("/spendiq/quotes/12/approve", json={"conditions": ["Held to year end"],
                                                     "approver": "someone.else"})
-    assert _call(client, "approve")[2] == {"approver": CALLER, "conditions": ["Held to year end"]}
+    asked = dict(_call(client, "approve")[2])
+    assert callable(asked.pop("may_override_floor"))
+    assert asked == {"approver": CALLER, "conditions": ["Held to year end"]}
     client.post("/spendiq/quotes/12/reject", json={"reason": "too deep"})
     assert _call(client, "reject")[2] == {"approver": CALLER, "reason": "too deep"}
 
@@ -181,3 +183,15 @@ def test_the_entity_profile_is_read_by_anyone_signed_in_and_written_behind_a_gat
     client.put("/entity/profile", json={"legalName": "Northwind Ltd", "bank": {"name": "B"}})
     assert client.asked == ["entity_profile.write"]
     assert stored["legalName"] == "Northwind Ltd" and stored["by"] == CALLER
+
+
+def test_a_quote_below_the_floor_is_refused_with_its_code(client, monkeypatch):
+    def _refuse(*a, **k):
+        assert callable(k["may_override_floor"]), "the route lets the approver's exception be asked"
+        raise qb.quotes.MarginBelowFloor(12, {"code": "MARGIN_BELOW_FLOOR", "floorPct": 15.0,
+                                              "marginPct": 9.5, "message": "below"})
+    monkeypatch.setattr(qb.quotes, "approve", _refuse)
+    r = client.post("/spendiq/quotes/12/approve", json={})
+    assert r.status_code == 409
+    assert r.json()["detail"]["codes"] == ["MARGIN_BELOW_FLOOR"]
+    assert r.json()["detail"]["floorPct"] == 15.0

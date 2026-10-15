@@ -56,7 +56,9 @@ def clean(cur):
 # can go for review and be sent. A test of what happens while they are unset says so with
 # `pricing_unset`. Every other policy is read as it really is.
 STATED_PRICING = {"margin_floor_pct": 20, "discount_corridor_max_pct": None,
-                  "tax_rate_pct": 20, "validity_days": 30, "payment_terms_default": "Net 30"}
+                  "tax_rate_pct": 20, "validity_days": 30, "payment_terms_default": "Net 30",
+                  "margin_floor_action": "override", "margin_floor_untested": "refuse",
+                  "margin_floor_applies_to_catalog": False}
 
 
 def state_pricing(monkeypatch, rules):

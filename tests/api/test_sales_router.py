@@ -93,10 +93,12 @@ def test_a_quote_is_created_by_the_token_holder(client, monkeypatch):
 def test_approval_asks_the_transact_gate_and_uses_the_token(client, monkeypatch):
     seen = {}
     monkeypatch.setattr(sr.quotes, "approve",
-                        lambda conn, qid, approver: seen.update(approver=approver) or _quote())
+                        lambda conn, qid, approver, may_override_floor:
+                        seen.update(approver=approver, may=may_override_floor) or _quote())
     assert client.post("/sales/quotes/9/approve").status_code == 200
     assert seen["approver"] == CALLER
-    assert client.gates == ["sales_quote.approve"]
+    # the override permit is asked only when a quote misses the floor, by the service
+    assert client.gates == ["sales_quote.approve"] and callable(seen["may"])
 
 
 def test_issuing_asks_the_communicate_gate(client, monkeypatch):

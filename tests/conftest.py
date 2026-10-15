@@ -61,7 +61,12 @@ GOVERNED_LIMIT_SEED = {
         "contract_parent_proposals_enabled": True,
         "contract_parent_proposal_sweep_hours": 24},
     "reseller_catalog": {"fuzzy_propose_min": 88, "calibration_min_closed": 30},
-    "sales_quote_pricing": {"margin_floor_pct": None, "discount_corridor_max_pct": None},
+    "sales_quote_pricing": {"margin_floor_pct": 15, "discount_corridor_max_pct": None,
+                            "tax_rate_pct": 20, "validity_days": None,
+                            "payment_terms_default": None,
+                            "margin_floor_action": "override",
+                            "margin_floor_untested": "refuse",
+                            "margin_floor_applies_to_catalog": False},
     "receipt_tolerances": {
         "over_delivery_pct": 0.00, "billed_over_received_qty": 0,
         "uom_conversion_required": True},

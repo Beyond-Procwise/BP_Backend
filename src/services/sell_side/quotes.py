@@ -14,7 +14,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from src.services import agent_actions
 from src.services.sell_side import numbering, pricing_checks
@@ -349,10 +349,30 @@ def clean_conditions(conditions: Optional[Sequence[str]]) -> List[str]:
     return out
 
 
+class MarginBelowFloor(StateConflict):
+    """A builder quote whose margin does not hold the pricing policy's floor, approved by
+    someone with no exception to give. ``codes`` and ``block`` say why."""
+
+    def __init__(self, sales_quote_id: int, block: Dict[str, Any]) -> None:
+        self.block = block
+        self.codes = [block["code"]]
+        super().__init__(f"quote {sales_quote_id} cannot be routinely approved: "
+                         f"{block['message']} Reprice it, or an approver who may override "
+                         f"the margin floor approves it ({block['code']})")
+
+
 def approve(conn: Any, sales_quote_id: int, *, approver: Optional[str],
-            conditions: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+            conditions: Optional[Sequence[str]] = None,
+            may_override_floor: Optional[Callable[[Dict[str, Any]], bool]] = None
+            ) -> Dict[str, Any]:
     """``conditions`` are the approver's, attached to the approval. Nothing else writes
-    them: the drafter cannot set the terms of their own approval."""
+    them: the drafter cannot set the terms of their own approval.
+
+    The margin floor and how it is enforced are pricing policy (pricing_checks.floor_test,
+    rules margin_floor_*). A quote that misses it is refused, approved and recorded, or --
+    when policy says "override" -- approved only if ``may_override_floor``, asked with the
+    test's result and only then, says this approver holds the override permit. Whenever
+    a quote below the floor is approved, the approval records it."""
     conditions = clean_conditions(conditions)
 
     def _check(row, cur):
@@ -369,7 +389,29 @@ def approve(conn: Any, sales_quote_id: int, *, approver: Optional[str],
                 f"quote {sales_quote_id} is priced below cost (margin "
                 f"{margin}); it needs a deal-desk exception, "
                 "not a routine approval")
-        return {"conditions": conditions}
+        cur.execute("SELECT EXISTS (SELECT 1 FROM proc.bp_sales_quote_line WHERE "
+                    "sales_quote_id = %s AND catalog_item_id IS NOT NULL) AS catalog",
+                    (sales_quote_id,))
+        catalog = bool(cur.fetchone()["catalog"])
+        # a catalog quote's margin is over all its lines (each is costed from the catalog)
+        cur.execute("SELECT i.margin_pct, i.costed_lines, "
+                    "(SELECT count(*) FROM proc.bp_sales_quote_line l "
+                    " WHERE l.sales_quote_id = %s) AS lines "
+                    "FROM proc.bp_sales_quote_internal i WHERE i.sales_quote_id = %s",
+                    (sales_quote_id, sales_quote_id))
+        held = cur.fetchone() or {}
+        costed = held.get("lines") if catalog else held.get("costed_lines")
+        block = pricing_checks.floor_test(held.get("margin_pct"), costed, catalog=catalog)
+        if block is None:
+            return {"conditions": conditions}
+        if block["action"] == "refuse" or (block["action"] == "override" and not (
+                may_override_floor and may_override_floor(block))):
+            raise MarginBelowFloor(sales_quote_id, block)
+        # the event says that and why, never the margin itself (record_event carries no
+        # cost or margin)
+        return {"conditions": conditions,
+                "margin_floor_override": {"code": block["code"], "floor_pct": block["floorPct"],
+                                          "by": block["action"]}}
     return _transition(conn, sales_quote_id, frm="in_review", to="approved", check=_check,
                        event="sales_quote.approved", actor=approver,
                        sets=", approved_by = %s, approved_at = now(), conditions = %s::jsonb",
