@@ -92,6 +92,17 @@ def extract_negotiation_signals(*,
         except Exception:
             logger.debug("LLM signal extraction skipped/failed", exc_info=True)
 
+    # The levers the supplier raised, quoted from their words. Set after the model
+    # pass so no model output can add a lever the supplier never wrote.
+    from src.services.negotiation.deal_levers import read_levers
+
+    deal_levers: List[Dict[str, Any]] = []
+    for source in [supplier_message] + list(snippets or []):
+        for lever in read_levers(source):
+            if all(lever["lever"] != seen["lever"] for seen in deal_levers):
+                deal_levers.append(lever)
+    signals["deal_levers"] = deal_levers
+
     signals["market"] = market or {}
     signals["performance"] = performance or {}
     return signals
