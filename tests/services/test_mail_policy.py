@@ -5,8 +5,8 @@ import os
 
 import pytest
 
-from src.services import mail_policy as mp
-from src.services.db import get_conn
+from services import mail_policy as mp
+from services.db import get_conn
 
 LIVE = os.environ.get("PROCWISE_TEST_LIVE_DB", "").lower() in ("1", "true", "yes", "on")
 live = pytest.mark.skipif(not LIVE, reason="needs a real PostgreSQL (PROCWISE_TEST_LIVE_DB=1)")

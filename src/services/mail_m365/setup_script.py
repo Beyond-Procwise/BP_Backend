@@ -19,7 +19,7 @@ _READ_ROLE = {"read_send": "Application Mail.Read", "read_send_change": "Applica
 
 
 def render(tenant_id: str, app_client_id: str, service_principal_object_id: Optional[str],
-           group: str = "Procwise Mailboxes", access_level: str = "read_send_change") -> str:
+           *, group: str, access_level: str) -> str:
     # Allow-list, not block-list: these land in a PowerShell script an admin runs.
     if not (GUID.fullmatch(tenant_id) and GUID.fullmatch(app_client_id)
             and (service_principal_object_id is None

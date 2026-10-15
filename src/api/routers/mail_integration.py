@@ -90,7 +90,8 @@ def get_status(principal: Any = Depends(require_user)) -> dict:
 
 def _can_configure(principal: Any) -> bool:
     """May this caller change the settings? Asked of the role table directly: the gate
-    would write a refused-attempt audit row on every read of the page."""
+    would write a refused-attempt audit row on every read of the page.
+    Display-only (role-cap check; PATCH's gate decides; per-action rules and shadow mode can differ)."""
     try:
         return rbac.may(rbac.effective_role(principal), action_class("mailbox.bind"))
     except Exception:  # noqa: BLE001 - when unsure, show no controls (the server still decides)
@@ -212,8 +213,8 @@ def setup_script(principal: Any = Depends(require_user),
     try:
         policy = mail_policy.load()
     except mail_policy.PolicyUnavailable:
-        raise HTTPException(503, "The email settings cannot be read right now, so the "
-                                 "script was not made.")
+        return _detail(503, "policy_unavailable",
+                       "The email settings cannot be read right now, so the script was not made.")
     with _conn() as conn:
         tenant = read_integration(conn).get("tenant_id") or "<your tenant id>"
     try:

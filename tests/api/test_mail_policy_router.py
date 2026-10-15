@@ -116,3 +116,41 @@ def test_setup_script_follows_the_policy(real, monkeypatch):
     assert res.status_code == 200
     assert '-Role "Application Mail.Read"' in res.text and "Mail.ReadWrite" not in res.text
     assert "Procwise Mailboxes" in res.text
+
+
+# ---- _can_configure is the real function here ----
+
+def test_can_configure_admin_true_reviewer_false_error_false(monkeypatch):
+    from services import rbac
+    roles = {"admin": "Admin", "rev": "SecurityReviewer"}
+    monkeypatch.setattr(rbac, "effective_role", lambda p: roles[p.subject])
+    monkeypatch.setattr(rbac, "may", lambda role, cls: role == "Admin" and cls == "configure")
+
+    class U:
+        def __init__(self, s): self.subject = s
+    assert r._can_configure(U("admin")) is True
+    assert r._can_configure(U("rev")) is False
+
+    def boom(p): raise RuntimeError("policy engine down")
+    monkeypatch.setattr(rbac, "effective_role", boom)
+    assert r._can_configure(U("admin")) is False
+
+
+def test_policy_unavailable_is_the_same_class_the_router_catches():
+    # one canonical import root: mail_policy's own PolicyUnavailable IS the router's
+    import importlib
+    assert r.mail_policy.PolicyUnavailable is importlib.import_module("services.mail_policy").PolicyUnavailable
+    assert r.mail_policy is mp
+
+
+def test_real_unavailable_from_mail_policy_gives_503(real, monkeypatch):
+    # raised by mail_policy's own code path (missing row), not a stub exception
+    class Cur:
+        def execute(self, *a): pass
+        def fetchone(self): return None
+    class Conn:
+        def cursor(self): return Cur()
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    monkeypatch.setattr(mp, "load", lambda conn=None: mp._build(*mp._fetch(Cur())[1:]))
+    assert real.get(f"{B}/policy").status_code == 503
