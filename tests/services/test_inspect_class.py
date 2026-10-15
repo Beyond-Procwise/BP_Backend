@@ -79,8 +79,21 @@ def test_security_reviewer_sees_no_commercial_data(action):
     assert not _decide(action, "SecurityReviewer").allowed
 
 
-@pytest.mark.xfail(strict=True, reason="rank tie with Viewer; no safe rank exists (see report, fix round 1 item 2)")
-def test_reviewer_and_viewer_groups_resolve_the_same_whichever_order():
-    a = rbac.effective_role(type("Q", (), {"subject": "x", "claims": {"cognito:groups": ["PROCWISE_VIEWER", "PROCWISE_SECURITY_REVIEWER"]}})())
-    b = rbac.effective_role(type("Q", (), {"subject": "x", "claims": {"cognito:groups": ["PROCWISE_SECURITY_REVIEWER", "PROCWISE_VIEWER"]}})())
-    assert a == b
+def _who(groups):
+    return type("Q", (), {"subject": "x", "claims": {"cognito:groups": groups}})()
+
+
+def test_dual_group_is_security_reviewer_in_either_order():
+    pair = ["PROCWISE_VIEWER", "PROCWISE_SECURITY_REVIEWER"]
+    assert rbac.effective_role(_who(pair)) == "SecurityReviewer"
+    assert rbac.effective_role(_who(pair[::-1])) == "SecurityReviewer"
+
+
+def test_existing_role_pairs_resolve_as_the_old_max_by_rank_rule():
+    import itertools
+    names = ["Admin", "Approver", "Buyer", "Viewer"]
+    for k in (1, 2, 3, 4):
+        for combo in itertools.permutations(names, k):
+            old = max(combo, key=lambda r: rbac.role_rank(r))
+            got = rbac.effective_role(_who([GROUPS[r] for r in combo]))
+            assert got == old, (combo, got, old)
