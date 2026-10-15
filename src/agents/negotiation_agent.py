@@ -4813,6 +4813,7 @@ class NegotiationAgent(BaseAgent):
 
         # Load state before subject normalization (bug fix)
         state, _ = self._load_session_state(state_identifier, supplier)
+        self._bind_session_deal(context, state)
         state["workflow_id"] = identifier.workflow_id
         state["session_reference"] = session_reference
         state["supplier_id"] = supplier
@@ -7093,6 +7094,10 @@ class NegotiationAgent(BaseAgent):
             saved_positions = self._load_saved_positions(workflow_id, supplier_id)
             if saved_positions is not None:
                 state["positions"] = saved_positions
+        if exists and not state.get("deal_id"):
+            saved_deal = self._load_saved_deal(workflow_id, supplier_id)
+            if saved_deal:
+                state["deal_id"] = saved_deal
         state.setdefault("workflow_id", workflow_id)
         self._rehydrate_email_history(
             workflow_id=workflow_id,
@@ -7115,6 +7120,80 @@ class NegotiationAgent(BaseAgent):
         try:
             return json.dumps(positions, ensure_ascii=False, default=str)
         except Exception:
+            return None
+
+    def _deal_for_record(
+        self, state: Dict[str, Any], column_metadata: Dict[str, Dict[str, Any]]
+    ) -> Optional[str]:
+        """The deal this negotiation is about, as a value for the saved row.
+
+        None when there is no deal or nowhere to put it. None is never written,
+        so a round that knows no deal cannot blank the one already saved.
+        """
+
+        if "deal_id" not in column_metadata:
+            return None
+        return self._coerce_text(state.get("deal_id"))
+
+    def _load_saved_deal(self, workflow_id: str, supplier_id: str) -> Optional[str]:
+        """The deal saved with this session, or ``None``.
+
+        Read on its own, like the positions: a database without the column yet
+        reads as no deal saved.
+        """
+
+        try:
+            with self.agent_nick.get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT deal_id FROM proc.negotiation_session_state "
+                        "WHERE workflow_id = %s AND supplier_id = %s",
+                        (workflow_id, supplier_id),
+                    )
+                    row = cur.fetchone()
+        except Exception:
+            logger.debug("no saved negotiation deal could be read", exc_info=True)
+            return None
+        return self._coerce_text(row[0]) if row else None
+
+    def _bind_session_deal(self, context: AgentContext, state: Dict[str, Any]) -> None:
+        """Tie this round to the negotiation's deal, and the deal to the session.
+
+        A supplier's emailed reply reaches the agent with no deal or quote on it,
+        so without the saved deal a reply round had no Advisor posture and no
+        plays. The deal named on this round (or the one its quote belongs to) is
+        saved with the session; a round that names none uses the saved one. A
+        negotiation does not change deal: when a round names a different one,
+        the saved deal stays and the mismatch is logged.
+        """
+
+        data = context.input_data if isinstance(context.input_data, dict) else None
+        if data is None:
+            return
+        saved = self._coerce_text(state.get("deal_id"))
+        asked = self._coerce_text(data.get("deal_id"))
+        if not asked and not saved:
+            asked = self._deal_for_quote(self._coerce_text(data.get("quote_id")))
+        if saved and asked and saved != asked:
+            logger.warning(
+                "negotiation %s is about deal %s; ignoring deal %s named on this round",
+                state.get("workflow_id"), saved, asked,
+            )
+        deal = saved or asked
+        if deal:
+            state["deal_id"] = deal
+            data["deal_id"] = deal
+
+    def _deal_for_quote(self, quote_id: Optional[str]) -> Optional[str]:
+        if not quote_id:
+            return None
+        try:
+            from src.services.negotiation_advice import advisor as _advisor
+
+            with self.agent_nick.get_db_connection() as conn:
+                return self._coerce_text(_advisor._deal_for_quote(conn, quote_id))
+        except Exception:
+            logger.debug("no deal could be read for quote %s", quote_id, exc_info=True)
             return None
 
     def _load_saved_positions(self, workflow_id: str, supplier_id: str) -> Optional[Dict[str, Any]]:
@@ -7207,6 +7286,10 @@ class NegotiationAgent(BaseAgent):
                     positions_value = self._positions_for_record(state, column_metadata)
                     if positions_value is not None:
                         record["positions"] = positions_value
+
+                    deal_value = self._deal_for_record(state, column_metadata)
+                    if deal_value:
+                        record["deal_id"] = deal_value
 
                     workflow_value = self._coerce_text(state.get("workflow_id"))
                     if workflow_value:
