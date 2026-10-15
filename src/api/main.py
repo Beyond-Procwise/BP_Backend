@@ -734,6 +734,10 @@ _AGENT_POLICY_SCREEN_EXEMPT = (
     # document name). Same rules as above; POST .../act and every error answer are still scrubbed.
     ("GET", re.compile(r"^/agent-policies/suggestions$")),
     ("GET", re.compile(r"^/agent-policies/suggestions/[0-9]{1,18}/draft$")),
+    # Microsoft 365 connect: the 2xx answer IS Microsoft's admin-approval link, which the
+    # scrubber would withhold as an internal route. Admin-gated (mailbox.bind) in the route;
+    # exactly this POST path, and its error answers are still scrubbed.
+    ("POST", re.compile(r"^/admin/integrations/mail/m365/connect$")),
 )
 
 

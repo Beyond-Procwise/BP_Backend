@@ -12,7 +12,7 @@ import logging
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import PlainTextResponse, RedirectResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from api.auth import require_user
@@ -54,8 +54,11 @@ def _settings_or_503():
     return s
 
 
-def _refused(exc: admin.MailboxRefused) -> HTTPException:
-    return HTTPException(_STATUS.get(exc.code, 422), {"code": exc.code, "message": exc.message})
+def _refused(exc: admin.MailboxRefused) -> JSONResponse:
+    """A structured body as a real JSON response: the app's global HTTPException handler
+    flattens non-string details to a Python repr, which would hide code and message."""
+    return JSONResponse(status_code=_STATUS.get(exc.code, 422),
+                        content={"detail": {"code": exc.code, "message": exc.message}})
 
 
 class AddBody(BaseModel):
@@ -103,6 +106,9 @@ def callback(state: str = "", tenant: Optional[str] = None,
         code = exc.code if exc.code in _CONSENT_CODES else "consent_failed"
         logger.warning("mail consent not given: %s", code)
         return RedirectResponse(f"{back}&mail_error={code}", status_code=302)
+    except Exception:  # noqa: BLE001 - the admin's browser must never land on a JSON 500
+        logger.exception("mail consent callback failed")
+        return RedirectResponse(f"{back}&mail_error=consent_failed", status_code=302)
     return RedirectResponse(f"{back}&mail=connected", status_code=302)
 
 
@@ -131,7 +137,7 @@ def add(body: AddBody, principal: Any = Depends(require_user)) -> dict:
             return admin.add_mailbox(conn, body.address, body.control_mailbox,
                                      actor=_actor(principal), settings=s)
     except admin.MailboxRefused as exc:
-        raise _refused(exc)
+        return _refused(exc)
 
 
 @router.post("/mailboxes/{binding_id}/verify", summary="Re-run the access proof")
@@ -143,7 +149,7 @@ def verify(binding_id: int, body: VerifyBody, principal: Any = Depends(require_u
             return admin.verify_mailbox(conn, binding_id, body.control_mailbox,
                                         actor=_actor(principal), settings=s)
     except admin.MailboxRefused as exc:
-        raise _refused(exc)
+        return _refused(exc)
 
 
 @router.post("/mailboxes/{binding_id}/test-send", summary="Send a test email to yourself")
@@ -157,7 +163,7 @@ def test_send(binding_id: int, principal: Any = Depends(require_user)) -> dict:
         with _conn() as conn:
             return admin.test_send(conn, binding_id, to, actor=_actor(principal), settings=s)
     except admin.MailboxRefused as exc:
-        raise _refused(exc)
+        return _refused(exc)
     except Throttled:
         raise HTTPException(503, "Microsoft is limiting requests right now. Try again in a minute.")
     except MailboxAccessDenied:
@@ -177,7 +183,7 @@ def set_default(binding_id: int, body: DefaultBody, principal: Any = Depends(req
         with _conn() as conn:
             return admin.make_default(conn, binding_id, actor=_actor(principal))
     except admin.MailboxRefused as exc:
-        raise _refused(exc)
+        return _refused(exc)
     except ValueError as exc:
         raise HTTPException(422, str(exc))
 
@@ -189,7 +195,7 @@ def remove(binding_id: int, principal: Any = Depends(require_user)) -> dict:
         with _conn() as conn:
             return admin.remove_mailbox(conn, binding_id, actor=_actor(principal))
     except admin.MailboxRefused as exc:
-        raise _refused(exc)
+        return _refused(exc)
 
 
 @router.delete("", summary="Disconnect Microsoft 365")

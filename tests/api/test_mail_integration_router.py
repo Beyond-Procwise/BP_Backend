@@ -37,7 +37,7 @@ def client(monkeypatch):
     return c
 
 
-def test_every_admin_route_is_gated(client, monkeypatch):
+def test_get_status_is_gated_and_reports_can_configure(client, monkeypatch):
     monkeypatch.setattr(admin, "status", lambda conn, settings: {"connected": False})
     res = client.get("/admin/integrations/mail")
     assert client.gate_calls == ["mailbox.bind"]
@@ -166,7 +166,8 @@ def test_test_send_errors_are_clean(client, monkeypatch, exc, status):
     assert isinstance(res.json()["detail"], str)
 
 
-def test_callback_is_the_only_unauthenticated_mail_route():
+def test_callback_is_the_only_unauthenticated_mail_route(monkeypatch):
+    monkeypatch.setattr(r, "load_settings", lambda: None)   # never reach AWS
     from api.main import app
     from fastapi.testclient import TestClient as TC
     from api import auth as _auth
@@ -188,6 +189,85 @@ def test_callback_is_the_only_unauthenticated_mail_route():
             assert getattr(c, method)(url).status_code in (401, 403), (method, url)
         # the callback is deliberately open: it answers without a token (redirect or 503)
         res = c.get(f"{b}/m365/callback", follow_redirects=False)
-        assert res.status_code in (302, 503)
+        assert res.status_code == 503
     finally:
         _auth._mode, _auth._verifier = prev
+
+
+# ---- through the REAL app: middleware (output safety) and exception handlers run ----
+
+@pytest.fixture
+def real(monkeypatch):
+    from api.main import app
+    app.dependency_overrides[r.require_user] = lambda: P()
+    monkeypatch.setattr(r, "gate", lambda *a, **k: None)
+    monkeypatch.setattr(r, "load_settings", lambda: S)
+    monkeypatch.setattr(r, "_conn", lambda: _NullConn())
+    monkeypatch.setattr(r, "load_state_key", lambda s: b"k" * 32)
+    yield TestClient(app, raise_server_exceptions=False)
+    app.dependency_overrides.pop(r.require_user, None)
+
+
+B = "/admin/integrations/mail"
+
+
+def test_real_app_connect_url_arrives_intact(real, monkeypatch):
+    url = ("https://login.microsoftonline.com/organizations/v2.0/adminconsent?client_id=cid"
+           "&redirect_uri=https%3A%2F%2Fapp.procwise.co.uk%2Fadmin%2Fintegrations%2Fmail%2Fm365%2Fcallback"
+           "&scope=x&state=abc.def")
+    monkeypatch.setattr(consent, "begin", lambda *a, **k: url)
+    res = real.post(f"{B}/m365/connect")
+    assert res.status_code == 200
+    assert res.json() == {"authorization_url": url}
+
+
+def test_real_app_refusal_arrives_as_fields(real, monkeypatch):
+    def refuse(*a, **k):
+        raise admin.MailboxRefused("duplicate", address="p@c.com")
+    monkeypatch.setattr(admin, "add_mailbox", refuse)
+    res = real.post(f"{B}/mailboxes", json={"address": "p@c.com", "control_mailbox": "me@c.com"})
+    assert res.status_code == 409
+    d = res.json()["detail"]
+    assert d["code"] == "duplicate" and d["message"] == "p@c.com is already connected."
+
+
+def test_real_app_setup_script_bad_id_is_400(real, monkeypatch):
+    monkeypatch.setattr(r, "read_integration",
+                        lambda conn: {"tenant_id": "11111111-1111-1111-1111-111111111111"})
+    res = real.get(f"{B}/m365/setup-script", params={"service_principal_object_id": "bad'; x"})
+    assert res.status_code == 400
+    assert "valid Object ID" in res.json()["detail"]
+
+
+def test_real_app_make_default_422_keeps_its_words(real, monkeypatch):
+    def bad(*a, **k):
+        raise ValueError("Send a test email first.")
+    monkeypatch.setattr(admin, "make_default", bad)
+    res = real.patch(f"{B}/mailboxes/1", json={"is_default": True})
+    assert res.status_code == 422
+    assert res.json()["detail"] == "Send a test email first."
+
+
+@pytest.mark.parametrize("exc,status", [
+    (MailboxAccessDenied("secret trace"), 403),
+    (MailboxUnreachable("secret trace"), 502),
+    (Throttled(30), 503),
+])
+def test_real_app_test_send_errors_are_clean(real, monkeypatch, exc, status):
+    def boom(*a, **k):
+        raise exc
+    monkeypatch.setattr(admin, "test_send", boom)
+    res = real.post(f"{B}/mailboxes/1/test-send")
+    assert res.status_code == status
+    assert "secret trace" not in res.text
+    assert "[withheld]" not in res.text
+    assert isinstance(res.json()["detail"], str) and len(res.json()["detail"]) > 20
+
+
+def test_real_app_callback_unexpected_error_still_redirects(real, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("db down")
+    monkeypatch.setattr(consent, "complete", boom)
+    res = real.get(f"{B}/m365/callback", params={"state": "s"}, follow_redirects=False)
+    assert res.status_code == 302
+    assert res.headers["location"].endswith("mail_error=consent_failed")
