@@ -22,7 +22,7 @@ import html
 import re
 from collections import Counter
 from decimal import Decimal, InvalidOperation
-from typing import Any, Dict, Iterable, Iterator, Set
+from typing import Any, Dict, Iterable, Iterator, Sequence, Set
 
 INTERNAL_FIELDS = frozenset({
     "unit_cost", "cost_tier_applied", "line_margin", "line_margin_pct",
@@ -139,7 +139,8 @@ def assert_no_internal_names(text: str) -> None:
 
 
 def assert_no_internal_values(rendered: str, quote: Dict[str, Any],
-                              internal: Dict[str, Any]) -> None:
+                              internal: Dict[str, Any], *,
+                              accounted: Sequence[str] = ()) -> None:
     """Search what the customer is about to be sent for this quote's cost and margin.
 
     A figure may appear only as often as the customer record's own structured fields
@@ -149,6 +150,10 @@ def assert_no_internal_values(rendered: str, quote: Dict[str, Any],
     rendered: an internal figure slipped under an allowed key is in the output but not in
     the record, and is caught. A coincidence in free text ("50mm", cost 50.00) is refused
     too; that is this check failing closed.
+
+    `accounted` is text the page prints that is not this quote's and that nobody drafting
+    it wrote -- the company's own registration, bank and contact details -- so each figure
+    in it accounts for itself (a sort code of 12-34-56 is not a 34% margin).
     """
     text = html.unescape(rendered)
     assert_no_internal_names(text)
@@ -158,6 +163,8 @@ def assert_no_internal_values(rendered: str, quote: Dict[str, Any],
     for line in quote.get("lines") or []:
         for k in CUSTOMER_LINE_FIELDS - FREE_TEXT_FIELDS:
             allowed += _numbers(" ".join(_flat(line.get(k))))
+    for item in accounted:
+        allowed += _numbers(item)
     seen = _numbers(text)
     for figure, name in _internal_figures(internal).items():
         if seen[figure] > allowed[figure]:

@@ -26,11 +26,13 @@ from typing import List
 
 from src.services.rga.models import canonical_hash
 from src.services.rga.quote_models import (
+    LetterheadBlock,
     LineTableBlock,
     NotesBlock,
     PaymentBlock,
     QuoteAST,
     QuotePack,
+    SectionBlock,
     SignatureBlock,
     TermsBlock,
     TotalsBlock,
@@ -44,7 +46,7 @@ RENDERER = "quote_html"
 PDF_RENDERER = "quote_pdf"
 # Bump when the drawing changes: a rebuild that produced different bytes under the same
 # version would silently break the reproducibility promise.
-RENDERER_VERSION = "1.0.0"
+RENDERER_VERSION = "1.1.0"   # 1.1.0: letterhead, seller's passages, discount, tax
 MEDIA_TYPE = "text/html; charset=utf-8"
 PDF_MEDIA_TYPE = "application/pdf"
 
@@ -53,8 +55,10 @@ NUMBER_LABEL = "Quote number"
 REFERENCE_LABEL = "Reference"
 HEADINGS = {"line_no": "#", "sku": "SKU", "mpn": "Part no.", "description": "Description",
             "quantity": "Qty", "unit_of_measure": "Unit", "unit_price": "Unit price",
-            "line_total": "Line total"}
-_RIGHT = frozenset({"quantity", "unit_price", "line_total"})
+            "discount_pct": "Discount", "line_total": "Line total"}
+_RIGHT = frozenset({"quantity", "unit_price", "discount_pct", "line_total"})
+# The page embeds its one picture, the seller's logo, as a data: URI and fetches nothing.
+QUOTE_CSP = PAGE_CSP + "; img-src data:"
 
 
 def scope_line(pack: QuotePack) -> str:
@@ -83,11 +87,14 @@ def render(ast: QuoteAST, pack: QuotePack, brief: StyleBrief) -> RenderedArtefac
     out: List[str] = [
         "<!DOCTYPE html>",
         '<html lang="en-GB"><head><meta charset="utf-8">',
-        f'<meta http-equiv="Content-Security-Policy" content="{PAGE_CSP}">',
+        f'<meta http-equiv="Content-Security-Policy" content="{QUOTE_CSP}">',
         f"<title>{_e(TITLE)} {_e(who.number or who.quote_ref)}</title>",
         "<style>", _stylesheet(palette, body_font, mono_font), "</style></head><body>",
-        '<article class="quote"><header>' + "".join(head) + "</header>",
+        '<article class="quote">',
     ]
+    # A letterhead heads the page wherever the layout lists it.
+    out.extend(_letterhead(pack) for b in ast.blocks if isinstance(b, LetterheadBlock))
+    out.append("<header>" + "".join(head) + "</header>")
     for block in ast.blocks:
         if isinstance(block, LineTableBlock):
             out.append(_lines(block, pack))
@@ -101,6 +108,10 @@ def render(ast: QuoteAST, pack: QuotePack, brief: StyleBrief) -> RenderedArtefac
             out.append(_listed("Payment", [block.term_ref], pack.term))
         elif isinstance(block, SignatureBlock):
             out.append(_signature(block, pack))
+        elif isinstance(block, SectionBlock):
+            out.append(_section(block, pack))
+    if pack.seller is not None and pack.seller.footer_note:
+        out.append(f'<footer><p data-chunk>{_e(pack.seller.footer_note)}</p></footer>')
     out.append("</article></body></html>\n")
 
     return RenderedArtefact(
@@ -179,10 +190,57 @@ def _listed(heading: str, refs: List[str], find) -> str:
     return f'<section><h2 data-chunk>{_e(heading)}</h2><ul>{items}</ul></section>'
 
 
+def _letterhead(pack: QuotePack) -> str:
+    seller = pack.seller
+    if seller is None:
+        return _unresolved("letterhead")
+    lines = [f'<p class="name" data-chunk>{_e(seller.legal_name)}</p>']
+    if seller.trading_name:
+        lines.append(f'<p data-chunk>Trading as {_e(seller.trading_name)}</p>')
+    if seller.address:
+        lines.append(f'<p class="addr" data-chunk>{_e(seller.address)}</p>')
+    reach = [v for v in (seller.phone, seller.email, seller.web) if v]
+    if reach:
+        lines.append(f'<p data-chunk>{" · ".join(_e(v) for v in reach)}</p>')
+    reg = [f"{label} {_e(v)}" for label, v in (("Company no.", seller.company_number),
+                                               ("VAT no.", seller.vat_number)) if v]
+    if reg:
+        lines.append(f'<p data-chunk>{" · ".join(reg)}</p>')
+    bank = [f"{label} {_e(v)}" for label, v in (
+        ("Bank", seller.bank_name), ("Sort code", seller.sort_code),
+        ("Account", seller.account_number), ("IBAN", seller.iban)) if v]
+    if bank:
+        lines.append(f'<p class="bank" data-chunk>{" · ".join(bank)}</p>')
+    logo = (f'<img class="logo" alt="" src="{_e(seller.logo_data_uri)}">'
+            if seller.logo_data_uri else "")
+    return f'<div class="letterhead">{logo}<div>{"".join(lines)}</div></div>'
+
+
+def _section(block: SectionBlock, pack: QuotePack) -> str:
+    section = pack.section(block.section_ref)
+    if section is None:
+        return _unresolved(block.section_ref)
+    body, bullets = [], []
+    for para in section.paragraphs:
+        # the newline after <br> keeps the two lines apart in the chunk the gate reads
+        text = "<br>\n".join(_e(part) for part in para.text.split("\n"))
+        if para.bullet:
+            bullets.append(f"<li data-chunk>{text}</li>")
+            continue
+        if bullets:
+            body.append(f"<ul>{''.join(bullets)}</ul>")
+            bullets = []
+        body.append(f"<p data-chunk>{text}</p>")
+    if bullets:
+        body.append(f"<ul>{''.join(bullets)}</ul>")
+    return (f'<section><h2 data-chunk>{_e(section.heading)}</h2>{"".join(body)}</section>')
+
+
 def _signature(block: SignatureBlock, pack: QuotePack) -> str:
-    # The supplier's own name is not in the pack: no entity profile exists to read it from
-    # (QDA G2), and it is not invented here.
-    name = pack.identity.account_name if block.party == "customer" else "the supplier"
+    # The supplier's own name is the company profile's; with none entered it is not
+    # invented here.
+    name = (pack.identity.account_name if block.party == "customer"
+            else pack.seller.legal_name if pack.seller else "the supplier")
     return ('<div class="sign">'
             f'<p data-chunk>Signed for {_e(name)}</p>'
             '<p class="rule" data-chunk>Name</p><p class="rule" data-chunk>Date</p></div>')
@@ -221,4 +279,11 @@ li {{ break-inside: avoid; margin-bottom: 1mm; }}
 .sign {{ margin-top: 14mm; break-inside: avoid; width: 80mm; }}
 .sign .rule {{ border-top: 0.75pt solid {c['ink']}; margin: 10mm 0 0; padding-top: 1mm; color: {c['mute']}; font-size: 8.5pt; }}
 .unresolved {{ color: {c['warm']}; font-weight: 700; }}
+.letterhead {{ display: flex; gap: 6mm; align-items: flex-start; margin-bottom: 6mm; font-size: 9pt; color: {c['mute']}; }}
+.letterhead p {{ margin: 0 0 0.6mm; }}
+.letterhead .name {{ font-size: 13pt; font-weight: 700; color: {c['ink']}; }}
+.letterhead .addr {{ white-space: pre-line; }}
+.logo {{ max-height: 22mm; max-width: 60mm; }}
+section p {{ margin: 0 0 2mm; }}
+footer {{ margin-top: 10mm; font-size: 8.5pt; color: {c['mute']}; }}
 """

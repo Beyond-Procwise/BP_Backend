@@ -36,6 +36,8 @@ LINE_ID = re.compile(r"^L\d+$")
 TERM_ID = re.compile(r"^T\d{4}$")
 # N<justification_id>.
 NOTE_ID = re.compile(r"^N\d+$")
+# S0001: a passage the seller wrote (scope, assumptions, a text section of the layout).
+SECTION_ID = re.compile(r"^S\d{4}$")
 
 
 def unit_money(value: Decimal, currency: Optional[str]) -> str:
@@ -92,6 +94,8 @@ class QuoteLine(BaseModel):
     unit_of_measure: Optional[str] = None
     quantity: Decimal
     unit_price: Decimal
+    # the seller's discount on this line, in percent; line_total is after it
+    discount_pct: Optional[Decimal] = None
     line_total: Decimal
     currency: str
     provenance_id: str = Field(min_length=1)
@@ -110,6 +114,8 @@ class QuoteLine(BaseModel):
             return unit_money(self.unit_price, self.currency)
         if column == "line_total":
             return format_money_exact(self.line_total, self.currency)
+        if column == "discount_pct":
+            return f"{self.discount_pct.normalize():f}%" if self.discount_pct else ""
         return getattr(self, column) or ""
 
 
@@ -142,6 +148,65 @@ class QuoteNote(BaseModel):
     _evidence = field_validator("provenance_id")(_evidenced)
 
 
+class QuoteParagraph(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    text: str = Field(min_length=1)
+    bullet: bool = False
+
+
+class QuoteSection(BaseModel):
+    """A passage the seller wrote on the quote -- its scope, its assumptions, or a text
+    section of its layout -- under the heading the layout gives it. Printed word for word
+    as plain paragraphs; never written here."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    section_id: str
+    heading: str = Field(min_length=1)
+    paragraphs: List[QuoteParagraph] = Field(min_length=1)
+    provenance_id: str = Field(min_length=1)
+
+    _id = field_validator("section_id")(lambda v: _ids([v], SECTION_ID, "S0001")[0])
+    _evidence = field_validator("provenance_id")(_evidenced)
+
+    def words(self) -> List[str]:
+        return [self.heading, *(p.text for p in self.paragraphs)]
+
+
+class QuoteSeller(BaseModel):
+    """Who is offering the quote: the selling entity's profile, one copy worn by every
+    document it sends (bp_admin_config `entity_profile`), and the logo its letterhead
+    wears. Only what the company entered; a blank field is left off, never filled."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    legal_name: str = Field(min_length=1)
+    trading_name: Optional[str] = None
+    address: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    web: Optional[str] = None
+    company_number: Optional[str] = None
+    vat_number: Optional[str] = None
+    bank_name: Optional[str] = None
+    sort_code: Optional[str] = None
+    account_number: Optional[str] = None
+    iban: Optional[str] = None
+    footer_note: Optional[str] = None
+    # the picture, as a data: URI the page embeds; its digest is what the pack hash holds
+    logo_data_uri: Optional[str] = None
+    logo_sha256: Optional[str] = None
+    provenance_id: str = Field(min_length=1)
+
+    _evidence = field_validator("provenance_id")(_evidenced)
+
+    def words(self) -> List[str]:
+        return [v for k, v in self.model_dump().items()
+                if isinstance(v, str) and k not in ("logo_data_uri", "logo_sha256",
+                                                    "provenance_id")]
+
+
 class QuoteIdentity(BaseModel):
     """Who the quote is for and what it is called.
 
@@ -171,7 +236,14 @@ class QuotePack(FactPack):
     lines: List[QuoteLine] = Field(min_length=1)
     terms: List[QuoteTerm] = Field(default_factory=list)
     notes: List[QuoteNote] = Field(default_factory=list)
+    sections: List[QuoteSection] = Field(default_factory=list)
+    seller: Optional[QuoteSeller] = None
     total_fact_id: str
+    # tax at the quote's own rate and the total with it, when the quote has a rate
+    tax_fact_ids: List[str] = Field(default_factory=list)
+    # the quote's layout, in order: a section kind ("letterhead", "lines", "totals",
+    # "terms", "signature") or the id of a passage the seller wrote (S0001)
+    layout: List[str] = Field(default_factory=list)
 
     @field_validator("lines")
     @classmethod
@@ -198,7 +270,12 @@ class QuotePack(FactPack):
             "lines": [l.model_dump(mode="json") for l in self.lines],
             "terms": [t.model_dump(mode="json") for t in self.terms],
             "notes": [n.model_dump(mode="json") for n in self.notes],
+            "sections": [x.model_dump(mode="json") for x in self.sections],
+            "seller": (self.seller.model_dump(mode="json", exclude={"logo_data_uri"})
+                       if self.seller else None),
             "total_fact_id": self.total_fact_id,
+            "tax_fact_ids": list(self.tax_fact_ids),
+            "layout": list(self.layout),
         }
 
     def line(self, line_id: str) -> Optional[QuoteLine]:
@@ -210,13 +287,16 @@ class QuotePack(FactPack):
     def note(self, note_id: str) -> Optional[QuoteNote]:
         return next((n for n in self.notes if n.note_id == note_id), None)
 
+    def section(self, section_id: str) -> Optional[QuoteSection]:
+        return next((x for x in self.sections if x.section_id == section_id), None)
+
 
 # --------------------------------------------------------------------------
 # The document tree.
 # --------------------------------------------------------------------------
 
 LineColumn = Literal["line_no", "sku", "mpn", "description", "quantity", "unit_of_measure",
-                     "unit_price", "line_total"]
+                     "unit_price", "discount_pct", "line_total"]
 _DEFAULT_COLUMNS: List[str] = ["line_no", "sku", "description", "quantity",
                                "unit_of_measure", "unit_price", "line_total"]
 # A line drawn without these is not the line the customer is being offered.
@@ -289,6 +369,24 @@ class PaymentBlock(_QuoteBlock):
         return _ids([ref], TERM_ID, "T0001")[0]
 
 
+class LetterheadBlock(_QuoteBlock):
+    """The seller's letterhead. What it says is the pack's seller, and nothing else."""
+
+    type: Literal["letterhead"] = "letterhead"
+
+
+class SectionBlock(_QuoteBlock):
+    """One passage the seller wrote, under its own heading."""
+
+    type: Literal["section"] = "section"
+    section_ref: str
+
+    @field_validator("section_ref")
+    @classmethod
+    def _section(cls, ref: str) -> str:
+        return _ids([ref], SECTION_ID, "S0001")[0]
+
+
 class SignatureBlock(_QuoteBlock):
     """A place to sign. Whose name goes beside it comes from the pack, not from here."""
 
@@ -298,7 +396,7 @@ class SignatureBlock(_QuoteBlock):
 
 QuoteBlock = Annotated[
     Union[LineTableBlock, TotalsBlock, TermsBlock, NotesBlock, PaymentBlock,
-          SignatureBlock],
+          SignatureBlock, LetterheadBlock, SectionBlock],
     Field(discriminator="type"),
 ]
 
@@ -337,4 +435,10 @@ def unresolved_refs(ast: QuoteAST, pack: QuotePack) -> List[str]:
         elif isinstance(block, PaymentBlock):
             if getattr(pack.term(block.term_ref), "kind", None) != "payment":
                 missing.add(block.term_ref)
+        elif isinstance(block, SectionBlock):
+            if pack.section(block.section_ref) is None:
+                missing.add(block.section_ref)
+        elif isinstance(block, LetterheadBlock):
+            if pack.seller is None:
+                missing.add("letterhead")
     return sorted(missing)

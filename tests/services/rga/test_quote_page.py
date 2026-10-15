@@ -31,7 +31,7 @@ from src.services.rga.render import quote_html
 from src.services.rga.style import resolve_style_brief
 from src.services.sell_side._db import StateConflict
 from src.services.sell_side.quote_render import InternalFieldLeak, NotCustomerReady
-from tests.sell_side.fixtures.synthetic_quotes import goods_quote, unknown_cost_quote
+from tests.sell_side.fixtures.synthetic_quotes import builder_quote, goods_quote, unknown_cost_quote
 
 BRIEF = resolve_style_brief(sales_quote.REPORT_TYPE_ID)
 OURS = ("1543.75", "1,543.75", "633.25", "27.35", "420", "125.6667", "0.2909", "29.09")
@@ -408,3 +408,90 @@ class TestTheWholePath:
         with pytest.raises(ValueError, match="9001"):
             build_fact_pack(sales_quote.REPORT_TYPE_ID, scope={"sales_quote_id": 1},
                             as_of="2026-09-14", source=quote, emit_audit=False)
+
+
+# --- a Quote builder quote: the seller's words, its letterhead, discount and tax ----------
+
+def _text(made):
+    from src.services.rga.render import extract_text_for
+    return extract_text_for(made.page)
+
+
+def test_a_builder_quote_prints_everything_the_customer_is_offered_and_passes():
+    made = Made(builder_quote())
+    assert made.blocking() == []
+    page = "\n".join(_text(made))
+    for said in ("Synthetic Seller Ltd", "Trading as SynSell", "Company no. 09876543",
+                 "VAT no. GB 123 4567 89", "Sort code 12-34-56", "Account 87654321",
+                 "What we will deliver", "Synthetic platform for eleven depots.",
+                 "Second line of scope.", "Depots have power", "Go-live in Q1",
+                 "Why Synthetic", "Seven years on the road.",
+                 "Start: 1 November 2026", "Term: 12 months", "Renewal: Auto, 60-day notice",
+                 "Service level: SLA-B", "Net 30 from invoice",
+                 "Registered in England No. 09876543", "Quotation"):
+        assert said in page, f"{said!r} is not on the page"
+    assert "data:image/png;base64," in made.html, "the letterhead wears the logo"
+    assert "Discount" in page and "4%" in page
+    assert any("Total excluding tax" in c and "£3,720" in c for c in _text(made))
+    assert any("Tax at 20%" in c and "£744" in c for c in _text(made))
+    assert any("Total including tax" in c and "£4,464" in c for c in _text(made))
+
+
+def test_the_page_follows_the_quotes_own_layout():
+    page = "\n".join(_text(Made(builder_quote())))
+    order = ["Synthetic Seller Ltd", "Quotation", "What we will deliver",
+             "Synthetic field seats", "Total excluding tax", "Start: 1 November 2026",
+             "Why Synthetic", "Assumptions"]
+    at = [page.index(w) for w in order]
+    assert at == sorted(at), dict(zip(order, at))
+
+
+def test_the_approvers_conditions_never_reach_the_customer():
+    made = Made(builder_quote())
+    assert "Do not discount further" not in made.html
+    assert "Conditions of approval" not in made.html
+
+
+def test_a_layout_that_leaves_out_the_totals_still_states_them():
+    sections = [{"key": "lines", "kind": "lines", "heading": "Pricing"}]
+    made = Made(builder_quote(sections=sections))
+    assert made.blocking() == []
+    assert any("Total including tax" in c for c in _text(made))
+    assert any("Net 30 from invoice" in c for c in _text(made)), "terms are not dropped either"
+
+
+def test_with_no_tax_rate_no_tax_is_printed_and_none_is_invented():
+    made = Made(builder_quote(tax_rate=None))
+    assert made.blocking() == []
+    assert not any("tax" in c.lower() and "including" in c.lower() for c in _text(made))
+    assert "Tax at" not in made.html
+
+
+def test_with_no_company_profile_there_is_no_letterhead_and_no_name_is_invented():
+    made = Made(builder_quote(seller=False))
+    assert made.blocking() == []
+    assert "letterhead" not in made.html.split("</style>")[1]
+    assert "Synthetic Seller Ltd" not in made.html
+
+
+def test_a_wrong_tax_figure_on_the_page_is_refused():
+    made = Made(builder_quote()).damaged("£744<", "£745<")
+    assert Code.QUOTE_TOTAL_MISMATCH in made.codes()
+
+
+def test_a_figure_slipped_into_the_sellers_words_on_the_page_is_refused():
+    made = Made(builder_quote()).damaged("Seven years on the road.", "Seven years, 9 depots.")
+    assert Code.REPORT_UNTRACED_FIGURE in made.codes()
+
+
+def test_our_cost_written_into_the_scope_is_caught_as_a_leak():
+    quote, internal = builder_quote()
+    quote["scope_html"] = "<p>We pay 2450.00 for this.</p>"
+    made = Made((quote, internal))
+    assert Code.INTERNAL_FIELD_LEAK in made.codes()
+
+
+def test_the_builder_quote_prints_as_a_pdf_with_its_logo():
+    made = Made(builder_quote())
+    pdf = quote_html.to_pdf(made.page)
+    assert pdf.content.startswith(b"%PDF") and pdf.ast_hash == made.page.ast_hash
