@@ -79,12 +79,16 @@ class GraphCredentials:
     client_secret: str
 
 
-def resolve_credentials(credential_ref: str, *, client=None) -> GraphCredentials:
+def resolve_credentials(credential_ref: str, *, client=None,
+                        tenant_id: Optional[str] = None) -> GraphCredentials:
     """Fetch client credentials from Secrets Manager.
 
     ``credential_ref`` is an ARN. It is never a token: the database refuses anything that
     does not look like a Secrets Manager ARN, so a secret cannot end up in an application
     table even by mistake.
+
+    ``tenant_id`` overrides the secret's own: with it, the secret need only hold
+    ``client_id`` and ``client_secret`` (the tenant comes from a customer's consent).
     """
 
     if not str(credential_ref or "").startswith("arn:aws:secretsmanager:"):
@@ -103,7 +107,7 @@ def resolve_credentials(credential_ref: str, *, client=None) -> GraphCredentials
     data = json.loads(raw) if isinstance(raw, str) else raw
     try:
         return GraphCredentials(
-            tenant_id=data["tenant_id"],
+            tenant_id=tenant_id or data["tenant_id"],
             client_id=data["client_id"],
             client_secret=data["client_secret"],
         )
