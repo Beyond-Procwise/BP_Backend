@@ -89,3 +89,13 @@ def test_org_default_any_none_without_test_send(repo):
 def test_list_org_excludes_user_bindings(repo):
     _active(repo, "m365-r6@example.test")
     assert all(b.user_ref == ORG_USER_REF for b in repo.list_org())
+
+
+def test_deactivate_forget_verification_clears_only_the_proof_time(repo):
+    b = _active(repo, "m365-forget@example.test")
+    repo.record_test_send(b.binding_id)
+    kept = repo.deactivate(b.binding_id, reason="health")
+    assert kept.scope_verified_at is not None and not kept.is_active
+    gone = repo.deactivate(b.binding_id, reason="removed", forget_verification=True)
+    assert gone.scope_verified_at is None and gone.scope_evidence_ref == b.scope_evidence_ref
+    assert gone.last_test_send_at is not None      # still keeps supplier email held

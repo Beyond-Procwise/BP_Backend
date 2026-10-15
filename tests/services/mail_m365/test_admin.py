@@ -59,9 +59,12 @@ def env(monkeypatch):
         def get(self, i):
             return state["rows"].get(i)
 
-        def deactivate(self, i, *, reason):
+        def deactivate(self, i, *, reason, forget_verification=False):
             b = state["rows"][i]
-            state["rows"][i] = MailboxBinding(**{**b.__dict__, "is_active": False})
+            state["rows"][i] = MailboxBinding(**{**b.__dict__, "is_active": False,
+                                                 "is_default": False,
+                                                 **({"scope_verified_at": None}
+                                                    if forget_verification else {})})
             return state["rows"][i]
 
         def record_test_send(self, i):
@@ -305,3 +308,43 @@ def test_test_send_refuses_an_inactive_binding(env):
         admin.test_send(None, b["binding_id"], "me@cust.com", actor="a", settings=S,
                         client_factory=lambda t: FakeClient(sent=sent))
     assert e.value.code == "not_found" and sent == []
+
+
+# ---- I7: a mailbox whose access was withdrawn stays visible until an admin removes it ----
+
+def _withdraw(env, binding_id):
+    """What the health job does on 403/404: REVOKED, then deactivated (verification kept)."""
+    b = env["rows"][binding_id]
+    env["rows"][binding_id] = MailboxBinding(**{**b.__dict__, "health_state": "REVOKED",
+                                                "is_active": False, "is_default": False})
+
+
+def test_status_shows_a_withdrawn_mailbox_labelled_until_removed(env):
+    b = _added(env)
+    _withdraw(env, b["binding_id"])
+    out = admin.status(object(), settings=S)
+    [m] = out["mailboxes"]
+    assert m["withdrawn"] is True and m["active"] is False
+    assert m["status_label"] == "Access withdrawn in Microsoft 365"
+    admin.remove_mailbox(None, b["binding_id"], actor="a")
+    assert admin.status(object(), settings=S)["mailboxes"] == []
+
+
+def test_status_does_not_list_a_mailbox_an_admin_removed(env):
+    b = _added(env)
+    admin.remove_mailbox(None, b["binding_id"], actor="a")
+    assert admin.status(object(), settings=S)["mailboxes"] == []
+
+
+def test_active_mailbox_is_not_withdrawn(env):
+    _added(env)
+    [m] = admin.status(object(), settings=S)["mailboxes"]
+    assert m["withdrawn"] is False and m["status_label"] is None
+
+
+def test_disconnect_clears_withdrawn_mailboxes_too(env):
+    b = _added(env)
+    _withdraw(env, b["binding_id"])
+    admin.disconnect(None, actor="boss")
+    env["integration"]["status"] = "connected"       # reconnected later
+    assert admin.status(object(), settings=S)["mailboxes"] == []

@@ -416,9 +416,16 @@ class MailboxBindingRepository:
                details={"binding_id": binding_id})
         return out
 
-    def deactivate(self, binding_id: int, *, reason: str) -> MailboxBinding:
+    def deactivate(self, binding_id: int, *, reason: str,
+                   forget_verification: bool = False) -> MailboxBinding:
+        """Stop using a binding. ``forget_verification`` (an admin removing it) also clears
+        scope_verified_at: its proof no longer stands, and a mailbox whose access was
+        withdrawn in Microsoft 365 stops being listed once an admin has removed it. The
+        evidence ref and last_test_send_at are kept (the latter keeps email held)."""
         b = self._update("UPDATE proc.bp_mailbox_binding SET is_active = FALSE, "
-                         "is_default = FALSE WHERE binding_id = %s", (binding_id,))
+                         "is_default = FALSE"
+                         + (", scope_verified_at = NULL" if forget_verification else "")
+                         + " WHERE binding_id = %s", (binding_id,))
         _audit("binding_deactivate", status="ok",
                summary=f"{b.mailbox_address} deactivated: {reason}",
                details={"binding_id": binding_id, "reason": reason})

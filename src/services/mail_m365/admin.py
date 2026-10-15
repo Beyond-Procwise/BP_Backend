@@ -14,7 +14,8 @@ from services.mail_m365.config import (M365Settings, merge_integration,
                                        read_integration)
 from services.mail_m365.graph_client import M365Client
 from services.style.graph_source import MailboxUnreachable, resolve_credentials
-from services.style.mailbox import (ORG_USER_REF, PROVIDER_GRAPH, ROLE_SEND_RECEIVE,
+from services.style.mailbox import (HEALTH_REVOKED, ORG_USER_REF, PROVIDER_GRAPH,
+                                    ROLE_SEND_RECEIVE,
                                     BindingNotFound, MailboxBinding,
                                     MailboxBindingRepository, ScopeVerificationFailed,
                                     normalise_address)
@@ -56,11 +57,20 @@ def _tenant(conn: Any) -> str:
     return integration["tenant_id"]
 
 
+def _withdrawn(b: MailboxBinding) -> bool:
+    """Access withdrawn in Microsoft 365 (health REVOKED, so deactivated) and not yet
+    removed by an admin (removal clears scope_verified_at)."""
+    return (not b.is_active and b.health_state == HEALTH_REVOKED
+            and b.role == ROLE_SEND_RECEIVE and b.scope_verified_at is not None)
+
+
 def _view(b: MailboxBinding) -> Dict[str, Any]:
     return {"binding_id": b.binding_id, "address": b.mailbox_address, "active": b.is_active,
             "is_default": b.is_default, "health_state": b.health_state,
             "verified_at": b.scope_verified_at, "last_test_send_at": b.last_test_send_at,
-            "can_be_default": bool(b.is_active and b.last_test_send_at and not b.is_default)}
+            "can_be_default": bool(b.is_active and b.last_test_send_at and not b.is_default),
+            "withdrawn": _withdrawn(b),
+            "status_label": "Access withdrawn in Microsoft 365" if _withdrawn(b) else None}
 
 
 def _org_binding(repo: MailboxBindingRepository, binding_id: int, *,
@@ -74,7 +84,10 @@ def _org_binding(repo: MailboxBindingRepository, binding_id: int, *,
 def status(conn: Any, *, settings: Optional[M365Settings]) -> Dict[str, Any]:
     integration = read_integration(conn) if conn is not None else {}
     connected = integration.get("status") == "connected"
-    mailboxes = [_view(b) for b in MailboxBindingRepository(conn).list_org()] if connected else []
+    # Active mailboxes, and those whose access was withdrawn in Microsoft 365 (so the admin
+    # sees why supplier email is held, and can Remove them) - not ones an admin removed.
+    mailboxes = [_view(b) for b in MailboxBindingRepository(conn).list_org(include_inactive=True)
+                 if b.is_active or _withdrawn(b)] if connected else []
     return {"configured": settings is not None, "connected": connected,
             "tenant_id": integration.get("tenant_id"),
             "consented_by": integration.get("consented_by"),
@@ -177,13 +190,16 @@ def make_default(conn: Any, binding_id: int, *, actor: str) -> Dict[str, Any]:
 def remove_mailbox(conn: Any, binding_id: int, *, actor: str) -> Dict[str, Any]:
     repo = MailboxBindingRepository(conn)
     _org_binding(repo, binding_id)
-    return {"ok": True, "mailbox": _view(repo.deactivate(binding_id, reason=f"removed by {actor}"))}
+    return {"ok": True, "mailbox": _view(repo.deactivate(binding_id, reason=f"removed by {actor}",
+                                                         forget_verification=True))}
 
 
 def disconnect(conn: Any, *, actor: str) -> Dict[str, Any]:
     repo = MailboxBindingRepository(conn)
-    for b in repo.list_org():
-        repo.deactivate(b.binding_id, reason=f"Microsoft 365 disconnected by {actor}")
+    for b in repo.list_org(include_inactive=True):
+        if b.is_active or _withdrawn(b):
+            repo.deactivate(b.binding_id, reason=f"Microsoft 365 disconnected by {actor}",
+                            forget_verification=True)
     # merge, never a whole-row write: a stale read must not resurrect spent consent nonces.
     merge_integration(conn, {"status": "disconnected", "disconnected_by": actor}, actor=actor)
     return {"ok": True, "note": ("Procwise has stopped using your mailboxes. To remove its "
