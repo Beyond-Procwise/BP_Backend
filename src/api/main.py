@@ -73,6 +73,7 @@ from api.routers import fx as fx_router
 from api.routers import value_summary as value_summary_router
 from api.routers import brief_signals as brief_signals_router
 from api.routers import daily_brief as daily_brief_router
+from api.routers import mail_integration as mail_integration_router
 from api.routers import contract_renewals as contract_renewals_router
 from api.routers import value_ledger as value_ledger_router
 from api.routers import analysis as analysis_router
@@ -640,10 +641,13 @@ _AUTHENTICATED_ROUTERS = [
     i18n_router.router,
     atb_router.router,
     demand_intake_router.router,
+    mail_integration_router.router,
 ]
 
 for _router in _AUTHENTICATED_ROUTERS:
     app.include_router(_router, dependencies=[Depends(_ask_auth.require_user)])
+# Microsoft redirects the admin's browser here with no bearer token; see the router docstring.
+app.include_router(mail_integration_router.callback_router)
 import src.services.requirement_similarity  # noqa: F401 — registers the quote_rival profile at startup
 
 
