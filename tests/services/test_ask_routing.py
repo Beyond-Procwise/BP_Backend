@@ -99,3 +99,48 @@ def test_the_policy_name_read_is_ask_screen_agents():
     seen = []
     ask_routing.screen_agent_map(lambda p: seen.append(p) or {"screens": {}})
     assert seen == ["ask_screen_agents"]
+
+
+from src.services.tool_runtime import ToolRunResult
+
+
+class _Agent:
+    def __init__(self, result=None, raises=None):
+        self.result, self.raises, self.seen = result, raises, {}
+
+    def reason(self, task, **kwargs):
+        self.seen = {"task": task, **kwargs}
+        if self.raises:
+            raise self.raises
+        return self.result
+
+
+def test_the_agent_answers_with_the_person_and_the_screen():
+    agent = _Agent(ToolRunResult(answer="Counter at £455."))
+    text = ask_routing.agent_answer(agent, "what should I counter at?",
+                                    user_id="nick", context="Screen: Negotiations")
+    assert text == "Counter at £455."
+    assert agent.seen["task"] == "what should I counter at?"
+    assert agent.seen["user_id"] == "nick"
+    assert "Screen: Negotiations" in agent.seen["extra_system"]
+
+
+def test_an_errored_run_is_not_an_answer():
+    assert ask_routing.agent_answer(_Agent(ToolRunResult(answer="", error="model down")),
+                                    "q", user_id="u", context=None) is None
+
+
+def test_a_blank_answer_is_not_an_answer():
+    assert ask_routing.agent_answer(_Agent(ToolRunResult(answer="   ")),
+                                    "q", user_id="u", context=None) is None
+
+
+def test_a_raising_agent_is_not_an_answer():
+    assert ask_routing.agent_answer(_Agent(raises=RuntimeError("boom")),
+                                    "q", user_id="u", context=None) is None
+
+
+def test_no_context_sends_no_extra_system():
+    agent = _Agent(ToolRunResult(answer="ok"))
+    ask_routing.agent_answer(agent, "q", user_id="u", context=None)
+    assert "extra_system" not in agent.seen
