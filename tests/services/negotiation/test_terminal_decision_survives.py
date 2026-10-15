@@ -127,7 +127,9 @@ class TestTheTradeStillHappensWhenWeAreStillNegotiating:
         )
         assert decision["strategy"] == "package-trade"
 
-    def test_the_trade_asks_are_added(self, agent, firm_signals):
+    def test_the_trade_adds_no_stock_figures(self, agent, firm_signals):
+        """The trade used to add "early pay discount vs Net45/60" and "stepped
+        pricing" to every deal; what it trades now is what the deal holds."""
         plan = decide_strategy(
             {"current_offer": 100.0, "target_price": 80.0, "round": 2},
             supplier_message="we are holding at this price for now",
@@ -136,4 +138,5 @@ class TestTheTradeStillHappensWhenWeAreStillNegotiating:
             base_decision=plan, zopa={}, signals=firm_signals, round_hint=2,
             lead_weeks=None, target_price=80.0, price=100.0,
         )
-        assert any("payment-terms trade" in ask for ask in decision["asks"])
+        assert decision["strategy"] == "package-trade"
+        assert not any("Net45" in ask or "stepped" in ask for ask in decision["asks"])

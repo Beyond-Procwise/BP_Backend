@@ -87,7 +87,7 @@ NEGOTIATION_PLAYBOOK_SYSTEM = """You are an expert procurement negotiator with 1
 1. **Build Rapport**: Always maintain a collaborative, respectful tone
 2. **Be Clear**: State your position transparently but diplomatically
 3. **Create Value**: Look for win-win outcomes, not just price concessions
-4. **Use Leverage Wisely**: Reference alternatives and market data subtly
+4. **Use Leverage Wisely**: Reference alternatives and market data only when the brief states them
 5. **Control Pace**: Set deadlines and expectations clearly
 6. **Document Everything**: Ensure all terms are explicit and traceable
 
@@ -107,7 +107,7 @@ NEGOTIATION_PLAYBOOK_SYSTEM = """You are an expert procurement negotiator with 1
 **Tactics**:
 - Acknowledge movement if they've adjusted their price
 - Answer the specific terms the supplier raised, using only the levers listed in the brief
-- Reference competitive pressure subtly: "We're evaluating multiple proposals..."
+- Mention other proposals only when the brief says other suppliers are bidding
 - Request detailed cost breakdowns to identify negotiable components
 - Show willingness to adjust scope/timeline for better pricing
 
@@ -252,8 +252,17 @@ def _determine_negotiation_objective(round_no: int, gap_percentage: float) -> st
     return "Close the deal at target price or prepare to walk away"
 
 
+def _competing(bidders: Any) -> bool:
+    """True only when more than one supplier is known to be bidding on the deal."""
+    try:
+        return bidders is not None and int(bidders) > 1
+    except (TypeError, ValueError):
+        return False
+
+
 def _determine_recommended_tactics(
-    round_no: int, gap_percentage: float, supplier_history: Dict[str, Any]
+    round_no: int, gap_percentage: float, supplier_history: Dict[str, Any],
+    bidders: Any = None,
 ) -> str:
     tactics: List[str] = []
 
@@ -272,9 +281,10 @@ def _determine_recommended_tactics(
                 "Acknowledge any price movement positively",
                 "Answer the terms the supplier raised, using only the listed levers",
                 "Request cost breakdown for transparency",
-                "Reference competitive landscape subtly",
             ]
         )
+        if _competing(bidders):
+            tactics.append("Reference competitive landscape subtly")
         if gap_percentage > 20:
             tactics.append("Consider scope adjustments to reduce cost")
     else:
@@ -355,7 +365,8 @@ def _generate_strategic_elements(round_no: int, context: Dict[str, Any]) -> List
             f"Reference market benchmarks: 'Industry rates are averaging around {market_rate}'"
         )
 
-    if round_no >= 2:
+    # A claim of other proposals is made only when other suppliers are bidding.
+    if round_no >= 2 and _competing(context.get("bidder_count")):
         elements.append("Mention: 'We're evaluating multiple proposals and need to finalize by [date]'")
 
     budget_ceiling = context.get("budget_ceiling")
@@ -375,6 +386,16 @@ def _generate_strategic_elements(round_no: int, context: Dict[str, Any]) -> List
         )
 
     return elements
+
+
+def _cta_guidance(round_no: int, bidders: Any = None) -> str:
+    if round_no == 1:
+        return "Request their thoughts on bridging the gap by [date 5-7 days out]"
+    if round_no == 2:
+        return "Ask for revised proposal incorporating suggested levers by [date 3-5 days out]"
+    if _competing(bidders):
+        return "Request confirmation of acceptance by [date 2-3 days out] or we proceed with alternatives"
+    return "Request confirmation of acceptance by [date 2-3 days out]"
 
 
 def _calculate_tone_guidance(round_no: int, gap_percentage: float) -> str:
@@ -2372,17 +2393,13 @@ class EmailDraftingAgent(BaseAgent):
         }
 
         objective = _determine_negotiation_objective(round_no, gap_percentage)
-        tactics = _determine_recommended_tactics(round_no, gap_percentage, supplier_history)
+        bidders = data.get("bidder_count")
+        tactics = _determine_recommended_tactics(round_no, gap_percentage, supplier_history, bidders)
         levers = _negotiation_levers(data, round_no)
         strategic_elements = _generate_strategic_elements(round_no, data)
         tone_guidance = _calculate_tone_guidance(round_no, gap_percentage)
 
-        if round_no == 1:
-            cta_guidance = "Request their thoughts on bridging the gap by [date 5-7 days out]"
-        elif round_no == 2:
-            cta_guidance = "Ask for revised proposal incorporating suggested levers by [date 3-5 days out]"
-        else:
-            cta_guidance = "Request confirmation of acceptance by [date 2-3 days out] or we proceed with alternatives"
+        cta_guidance = _cta_guidance(round_no, bidders)
 
         levers_formatted = "\n".join(f"   • {lever}" for lever in levers)
         strategic_formatted = (
