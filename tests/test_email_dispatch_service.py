@@ -822,6 +822,7 @@ def _send_with_capture(monkeypatch, record_sent, send_result=None):
 
     def fake_send(subject, body, recipients, sender, attachments=None, **kw):
         sent["body"] = body
+        sent["kwargs"] = kw
         return send_result or EmailSendResult(True, "<m-1>")
 
     monkeypatch.setattr(service.email_service, "send_email", fake_send)
@@ -899,3 +900,10 @@ def test_a_held_send_is_not_sent_and_carries_its_reason_and_an_audit(monkeypatch
     assert result["draft"]["held_reason"] == reason
     assert [a["action_type"] for a in audits] == ["send_held"]
     assert audits[0]["summary"] == reason
+
+
+def test_dispatch_asks_for_the_company_mailbox_on_every_supplier_send(monkeypatch):
+    # If dispatch ever stops passing the flag, supplier mail would silently go via SES.
+    result, sent, uid = _send_with_capture(monkeypatch, lambda *a, **k: None)
+    assert result["sent"] is True
+    assert sent["kwargs"].get("company_mailbox") is True
