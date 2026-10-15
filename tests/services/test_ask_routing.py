@@ -72,3 +72,30 @@ def test_answered_by_shape():
     assert Responder("negotiation", "screen").answered_by() == {
         "agent": "negotiation", "label": "Negotiation agent", "source": "screen", "note": None}
     assert Responder(None, "default").answered_by()["agent"] is None
+
+
+from src.services import ask_routing
+from src.services.governed_limits import LimitUnavailable
+
+
+def test_the_map_is_read_from_policy_and_lower_cased():
+    read = lambda policy: {"screens": {"Negotiations": "Negotiation", "quotes": "quote_comparison"}}
+    assert ask_routing.screen_agent_map(read) == {
+        "negotiations": "negotiation", "quotes": "quote_comparison"}
+
+
+def test_an_unreadable_map_routes_nothing():
+    def read(policy):
+        raise LimitUnavailable("no active ask_screen_agents policy")
+    assert ask_routing.screen_agent_map(read) == {}
+
+
+def test_a_malformed_map_routes_nothing():
+    assert ask_routing.screen_agent_map(lambda p: {"screens": ["negotiations"]}) == {}
+    assert ask_routing.screen_agent_map(lambda p: {}) == {}
+
+
+def test_the_policy_name_read_is_ask_screen_agents():
+    seen = []
+    ask_routing.screen_agent_map(lambda p: seen.append(p) or {"screens": {}})
+    assert seen == ["ask_screen_agents"]

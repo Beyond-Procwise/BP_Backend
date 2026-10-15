@@ -11,10 +11,16 @@ model. Spec: specs/2026-10-15-ask-agent-routing-design.md.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
+
+logger = logging.getLogger(__name__)
 
 GENERAL = "general"
+
+#: The governed policy holding the screen->agent map (proc.bp_policy).
+POLICY = "ask_screen_agents"
 
 #: Agents that send, act on documents, or exist as pipeline steps. They are never
 #: offered a question, even when a map row names one: an Ask must not be the way
@@ -68,3 +74,24 @@ def choose_responder(agent: Optional[str], screen: Optional[str],
     if mapped:
         return Responder(mapped, "screen") if mapped in pool else _unavailable(mapped)
     return Responder(None, "default")
+
+
+def screen_agent_map(read: Optional[Callable[[str], Dict[str, Any]]] = None) -> Dict[str, str]:
+    """The screen->agent map an admin governs, or {} when it cannot be read.
+
+    Empty is safe here, unlike a governed limit: no map means every screen
+    answers as General, which is the Ask box as it was. A routing outage must
+    not make every question fail.
+    """
+    if read is None:
+        from src.services import governed_limits
+        read = governed_limits.rules
+    try:
+        screens = (read(POLICY) or {}).get("screens")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ask screen map unreadable; every screen answers as General: %s", exc)
+        return {}
+    if not isinstance(screens, dict):
+        return {}
+    return {str(k).strip().lower(): str(v).strip().lower()
+            for k, v in screens.items() if str(k).strip() and str(v).strip()}
