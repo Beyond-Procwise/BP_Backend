@@ -86,9 +86,9 @@ def test_risk_threshold_is_on_the_0_to_100_scale():
         {"alternative_supplier_count": 200, "risk_score": 80.0})["supply_risk"]
 
 
-def test_thin_market_uses_the_per_deal_scale():
-    # 200 alternatives is a contested market, not a thin one
+def test_thin_market_uses_the_governed_supplier_count():
+    # Three or more suppliers on record is a contested market, not a thin one.
     assert "supply_risk" not in sg.market_context_dict(
-        {"alternative_supplier_count": 200, "risk_score": 10.0})
+        {"alternative_supplier_count": 3, "risk_score": 10.0})
     assert sg.market_context_dict(
-        {"alternative_supplier_count": 40, "risk_score": 10.0})["supply_risk"]
+        {"alternative_supplier_count": 2, "risk_score": 10.0})["supply_risk"]

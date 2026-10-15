@@ -18,12 +18,39 @@ STYLES = ("Competitive", "Collaborative", "Principled", "Accommodating",
 
 
 def default_thresholds() -> dict:
-    """Seeded from the live distribution: deal-value p90 (98,175; median 4,180)
-    and the per-DEAL median alternative-supplier count (93; min 38, p75 126,
-    max 232 over 80 sampled deals). NOT the per-item median, which is far lower
-    and would make every deal read as "many alternatives". Testdata-derived,
-    hence governed data rather than constants."""
-    return {"high_spend": 98175.0, "many_alternatives": 93}
+    """The fallback bars; the governed ones are in bp_policy.
+
+    high_spend is in pounds: a deal's value is converted before it is compared.
+    many_alternatives is a supplier count, not a percentile: a market is
+    contested when three or more suppliers on record quote the deal's items.
+    It was the corpus median (93), which went stale as the data grew (407 on
+    bp_testdb by 2026-10-15) and read every real deal as a thin market."""
+    return {"high_spend": 98175.0, "many_alternatives": 3}
+
+
+def _spend(signals: dict) -> tuple[Optional[float], Optional[str]]:
+    """(value in pounds, why it is unknown). Without ``deal_value_gbp`` the
+    caller's ``deal_value`` is taken as pounds, as it always was."""
+    if "deal_value_gbp" not in signals:
+        value = signals.get("deal_value")
+        return value, (None if value is not None else "deal value could not be determined")
+    gbp = signals.get("deal_value_gbp")
+    if gbp is not None:
+        return gbp, None
+    if signals.get("deal_value") is None:
+        return None, "deal value could not be determined"
+    return None, (f"deal value is in {signals.get('currency') or 'an unstated currency'} "
+                  "and has no exchange rate to pounds")
+
+
+def _spend_text(gbp: float, signals: dict) -> str:
+    ccy = str(signals.get("currency") or "").upper()
+    native = signals.get("deal_value")
+    if "deal_value_gbp" in signals and ccy and ccy != "GBP" and native is not None:
+        return f"Deal value £{float(gbp):,.0f} ({ccy} {float(native):,.0f})"
+    if "deal_value_gbp" in signals:
+        return f"Deal value £{float(gbp):,.0f}"
+    return f"Deal value {float(gbp):,.0f}"
 
 
 def _confidence(value: float, bar: float) -> float:
@@ -40,15 +67,15 @@ def classify(signals: dict, thresholds: Optional[dict] = None) -> dict:
     if thresholds:
         bars.update({k: v for k, v in thresholds.items() if v is not None})
 
-    spend = signals.get("deal_value")
+    spend, spend_unknown = _spend(signals)
     alternatives = signals.get("alternative_supplier_count")
 
     if spend is None or alternatives is None:
         missing = []
         if spend is None:
-            missing.append("deal value could not be determined")
+            missing.append(spend_unknown)
         if alternatives is None:
-            missing.append("no comparable suppliers found for this deal's items")
+            missing.append("no other supplier on record for this deal's items")
         return {
             "quadrant": None, "quadrant_reasons": missing,
             "quadrant_confidence": 0.0, "style": None, "style_reasons": [],
@@ -64,10 +91,11 @@ def classify(signals: dict, thresholds: Optional[dict] = None) -> dict:
         (False, False): "Bottleneck",
     }[(high_spend, many_alts)]
 
+    pounds = "£" if "deal_value_gbp" in signals else ""
     reasons = [
-        f"Deal value {float(spend):,.0f} is "
+        f"{_spend_text(spend, signals)} is "
         f"{'at or above' if high_spend else 'below'} the "
-        f"{float(bars['high_spend']):,.0f} high-spend bar",
+        f"{pounds}{float(bars['high_spend']):,.0f} high-spend bar",
         f"{int(alternatives)} supplier(s) quote comparable items — "
         f"{'a contested' if many_alts else 'a thin'} supply market",
     ]
