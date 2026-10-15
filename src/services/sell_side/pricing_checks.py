@@ -17,6 +17,8 @@ from src.services import governed_limits
 
 POLICY = "sales_quote_pricing"
 SET, NOT_SET, UNAVAILABLE = "policy", "not_set", "unavailable"
+# what margin_floor_action may say (see floor_test)
+FLOOR_ACTIONS = ("refuse", "override", "record")
 
 
 def _stated(rule: str) -> Tuple[Any, str]:
@@ -79,10 +81,22 @@ def _words(value: Any) -> Optional[str]:
     return value.strip()[:300]
 
 
+def _choice(choices):
+    return lambda v: v if v in choices and not isinstance(v, bool) else None
+
+
+def _flag(v: Any) -> Optional[bool]:
+    return v if isinstance(v, bool) else None
+
+
 _SETTINGS = (("quote.tax.rate_pct", "tax_rate_pct", _percent),
              ("quote.validity.days", "validity_days", _days),
              ("quote.terms.payment_default", "payment_terms_default", _words),
-             ("quote.margin.floor_pct", "margin_floor_pct", _percent))
+             ("quote.margin.floor_pct", "margin_floor_pct", _percent),
+             # how the floor is enforced; null here means the strict default applies
+             ("quote.margin.floor_action", "margin_floor_action", _choice(FLOOR_ACTIONS)),
+             ("quote.margin.untested", "margin_floor_untested", _choice(("refuse", "allow"))),
+             ("quote.margin.applies_to_catalog", "margin_floor_applies_to_catalog", _flag))
 
 
 def settings() -> Dict[str, Dict[str, Any]]:
@@ -114,3 +128,57 @@ def unset_blocks(quote_tax_rate_pct: Any) -> List[Dict[str, str]]:
         blocks.append({"code": "TAX_POLICY_UNSET",
                        "message": "The quote has no tax rate; none is set in pricing policy."})
     return blocks
+
+
+
+# How the floor is enforced, each a rule in the same policy row, so a user changes it
+# there and the next approval obeys. A rule nobody has stated (null, or a value that is
+# not one of its choices) takes the default beside it, which is the strict reading.
+_FLOOR_RULES = (
+    # below the floor: refuse outright; let an approver who holds the
+    # sales_quote.override_margin_floor permit approve it; or approve and record it
+    ("margin_floor_action", FLOOR_ACTIONS, "refuse"),
+    # no line carries a cost, so the margin cannot be shown: refuse, or let it through
+    ("margin_floor_untested", ("refuse", "allow"), "refuse"),
+    # whether a catalog quote (priced by the reseller's own rules) is held to the floor
+    ("margin_floor_applies_to_catalog", (True, False), False),
+)
+
+
+def floor_rules() -> Dict[str, Any]:
+    out = {}
+    for rule, choices, default in _FLOOR_RULES:
+        stated, _ = _stated(rule)
+        out[rule] = stated if stated in choices and not (
+            isinstance(stated, bool) != isinstance(default, bool)) else default
+    return out
+
+
+def floor_test(margin_fraction: Any, costed_lines: Any, *,
+               catalog: bool = False) -> Optional[Dict[str, Any]]:
+    """Whether a quote holds the margin floor, as the Quote builder measures it: the
+    margin over the lines that carry a cost (0.4 = 40%) against the policy floor (a
+    percent). None when it holds, or when policy does not hold this quote to it.
+    Otherwise the block, carrying the policy's `action` for it: MARGIN_BELOW_FLOOR,
+    MARGIN_UNTESTED (no line is costed), or MARGIN_POLICY_UNSET (no floor to test
+    against; always refused, as there is nothing an approver could be waiving)."""
+    rules = floor_rules()
+    if catalog and not rules["margin_floor_applies_to_catalog"]:
+        return None
+    floor = _percent(_stated("margin_floor_pct")[0])
+    if floor is None:
+        return {"code": "MARGIN_POLICY_UNSET", "floorPct": None, "marginPct": None,
+                "action": "refuse", "message": "No margin floor is set in pricing policy."}
+    if margin_fraction is None or not costed_lines:
+        if rules["margin_floor_untested"] == "allow":
+            return None
+        return {"code": "MARGIN_UNTESTED", "floorPct": floor, "marginPct": None,
+                "action": rules["margin_floor_action"],
+                "message": f"No line carries a cost, so the {floor:g}% margin floor "
+                           "cannot be shown to hold."}
+    margin = float(margin_fraction) * 100
+    if margin < floor:
+        return {"code": "MARGIN_BELOW_FLOOR", "floorPct": floor, "marginPct": round(margin, 2),
+                "action": rules["margin_floor_action"],
+                "message": f"The margin is {margin:.2f}%, below the {floor:g}% floor."}
+    return None

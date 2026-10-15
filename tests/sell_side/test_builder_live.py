@@ -277,6 +277,115 @@ def test_a_quote_priced_below_its_entered_cost_is_not_routinely_approved(live_db
         quotes.approve(conn, int(q["id"]), approver=REVIEWER)
 
 
+def _in_review(conn, lines):
+    q = _new(conn, lines=lines)
+    builder.submit(conn, int(q["id"]), actor=DRAFTER)
+    return int(q["id"])
+
+
+def test_a_quote_below_the_margin_floor_is_not_routinely_approved(live_db):
+    conn, _ = live_db
+    # 10% margin against the stated 20% floor
+    qid = _in_review(conn, [{"tag": "service", "description": "Thin", "qty": 1,
+                             "unitPrice": 100, "cost": 90}])
+    with pytest.raises(quotes.MarginBelowFloor, match="10.00%, below the 20% floor") as refused:
+        quotes.approve(conn, qid, approver=REVIEWER)
+    assert refused.value.codes == ["MARGIN_BELOW_FLOOR"]
+    assert builder.get(conn, qid)["status"] == "in-review", "the refusal changed nothing"
+
+
+def test_a_margin_exactly_at_the_floor_holds_it(live_db):
+    conn, _ = live_db
+    qid = _in_review(conn, [{"tag": "service", "description": "At floor", "qty": 1,
+                             "unitPrice": 100, "cost": 80}])
+    assert quotes.approve(conn, qid, approver=REVIEWER)["status"] == "approved"
+
+
+def test_a_quote_with_no_costed_line_cannot_show_it_holds_the_floor(live_db):
+    conn, _ = live_db
+    qid = _in_review(conn, [{"tag": "service", "description": "No cost", "qty": 1,
+                             "unitPrice": 100}])
+    with pytest.raises(quotes.MarginBelowFloor) as refused:
+        quotes.approve(conn, qid, approver=REVIEWER)
+    assert refused.value.codes == ["MARGIN_UNTESTED"]
+
+
+def test_the_floor_is_measured_over_the_costed_lines_as_the_screen_measures_it(live_db):
+    conn, _ = live_db
+    # costed line: 50% margin; the uncosted line is left out, not read as free
+    qid = _in_review(conn, [{"tag": "product", "description": "Costed", "qty": 1,
+                             "unitPrice": 100, "cost": 50},
+                            {"tag": "service", "description": "Uncosted", "qty": 1,
+                             "unitPrice": 1000}])
+    assert quotes.approve(conn, qid, approver=REVIEWER)["status"] == "approved"
+
+
+def test_an_approver_who_may_override_the_floor_approves_and_the_approval_says_so(live_db):
+    conn, _ = live_db
+    qid = _in_review(conn, [{"tag": "service", "description": "Thin", "qty": 1,
+                             "unitPrice": 100, "cost": 90}])
+    asked = []
+    with pytest.raises(quotes.MarginBelowFloor):
+        quotes.approve(conn, qid, approver=REVIEWER,
+                       may_override_floor=lambda b: asked.append(b) or False)
+    assert [b["code"] for b in asked] == ["MARGIN_BELOW_FLOOR"]
+    approved = quotes.approve(conn, qid, approver=REVIEWER, may_override_floor=lambda b: True)
+    assert approved["status"] == "approved"
+    cur = conn.cursor()
+    cur.execute("SELECT details FROM proc.bp_agent_actions WHERE doc_type = 'sales_quote' "
+                "AND doc_pk = %s AND action_type = 'sales_quote.approved'", (str(qid),))
+    details = cur.fetchone()[0]
+    conn.rollback()
+    assert details["margin_floor_override"] == {"code": "MARGIN_BELOW_FLOOR", "floor_pct": 20.0,
+                                                "by": "override"}
+    assert "10" not in repr(details["margin_floor_override"]), "the event never carries the margin"
+
+
+def test_how_the_floor_is_enforced_is_policy_and_a_change_there_applies_at_once(
+        live_db, monkeypatch):
+    from tests.sell_side.conftest import STATED_PRICING, state_pricing
+    conn, _ = live_db
+    thin = [{"tag": "service", "description": "Thin", "qty": 1, "unitPrice": 100, "cost": 90}]
+    # "refuse": not even an approver who could override may approve it
+    state_pricing(monkeypatch, {**STATED_PRICING, "margin_floor_action": "refuse"})
+    qid = _in_review(conn, thin)
+    with pytest.raises(quotes.MarginBelowFloor):
+        quotes.approve(conn, qid, approver=REVIEWER, may_override_floor=lambda b: True)
+    # "record": approved, and the approval says it was below the floor
+    state_pricing(monkeypatch, {**STATED_PRICING, "margin_floor_action": "record"})
+    asked = []
+    assert quotes.approve(conn, qid, approver=REVIEWER,
+                          may_override_floor=lambda b: asked.append(b))["status"] == "approved"
+    assert asked == [], "recording needs nobody's permit"
+    # a lower floor in policy: the same margin now holds it
+    state_pricing(monkeypatch, {**STATED_PRICING, "margin_floor_pct": 10})
+    assert quotes.approve(conn, _in_review(conn, thin), approver=REVIEWER)["status"] == "approved"
+    # untested quotes allowed through by policy
+    state_pricing(monkeypatch, {**STATED_PRICING, "margin_floor_untested": "allow"})
+    uncosted = _in_review(conn, [{"tag": "service", "description": "No cost", "qty": 1,
+                                  "unitPrice": 100}])
+    assert quotes.approve(conn, uncosted, approver=REVIEWER)["status"] == "approved"
+
+
+def test_a_rule_left_unset_or_misspelt_reads_as_the_strict_default(live_db, monkeypatch):
+    from src.services.sell_side import pricing_checks
+    from tests.sell_side.conftest import STATED_PRICING, state_pricing
+    state_pricing(monkeypatch, {**STATED_PRICING, "margin_floor_action": "Overide",
+                                "margin_floor_untested": None,
+                                "margin_floor_applies_to_catalog": "yes"})
+    assert pricing_checks.floor_rules() == {"margin_floor_action": "refuse",
+                                            "margin_floor_untested": "refuse",
+                                            "margin_floor_applies_to_catalog": False}
+
+
+def test_a_quote_that_holds_the_floor_never_asks_for_an_override(live_db):
+    conn, _ = live_db
+    qid = _in_review(conn, _draft()["lines"])
+    asked = []
+    quotes.approve(conn, qid, approver=REVIEWER, may_override_floor=lambda b: asked.append(b))
+    assert asked == []
+
+
 # --- after it has gone out ---------------------------------------------------------
 
 def test_superseding_leaves_what_was_sent_alone_and_starts_the_next_version(live_db):

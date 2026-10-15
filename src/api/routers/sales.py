@@ -261,11 +261,36 @@ def submit(quote_id: int, principal=Depends(require_user)):
         return money_json(quotes.submit(c, quote_id, actor=_subject(principal)))
 
 
+def floor_override(principal, quote_id: int):
+    """What quotes.approve asks when a builder quote misses the margin floor: may THIS
+    approver override it? Only a stated permit for sales_quote.override_margin_floor says
+    yes; the ask is on the audit spine either way."""
+    def _may(block: dict) -> bool:
+        try:
+            gate("sales_quote.override_margin_floor", principal, agent=_AGENT,
+                 context={"sales_quote_id": quote_id, "code": block["code"],
+                          "floor_pct": block["floorPct"]})
+        except NotPermitted:
+            return False
+        return True
+    return _may
+
+
+def margin_floor_refused(exc: "quotes.MarginBelowFloor") -> HTTPException:
+    return HTTPException(status_code=409, detail={
+        "message": str(exc), "codes": exc.codes,
+        "floorPct": exc.block["floorPct"]})
+
+
 @router.post("/quotes/{quote_id}/approve")
 def approve(quote_id: int, principal=Depends(require_user)):
     gate("sales_quote.approve", principal, agent=_AGENT, context={"sales_quote_id": quote_id})
     with http_errors(), get_conn() as c:
-        return money_json(quotes.approve(c, quote_id, approver=_subject(principal)))
+        try:
+            return money_json(quotes.approve(c, quote_id, approver=_subject(principal),
+                                             may_override_floor=floor_override(principal, quote_id)))
+        except quotes.MarginBelowFloor as exc:   # before http_errors flattens it to text
+            raise margin_floor_refused(exc) from None
 
 
 @router.post("/quotes/{quote_id}/issue")
