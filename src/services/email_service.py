@@ -64,13 +64,15 @@ class EmailService:
         *,
         headers: Optional[Dict[str, str]] = None,
         message_id: Optional[str] = None,
+        company_mailbox: bool = False,
     ) -> EmailSendResult:
         """Send an email using SMTP credentials configured in settings.
 
         Attachments should be provided as a list of ``(content, filename)`` tuples.
         ``headers`` allows callers to inject additional RFC-2822 headers such as
         ``X-Procwise-RFQ-ID`` while ``message_id`` can be provided to guarantee a
-        stable value across retries.
+        stable value across retries. ``company_mailbox=True`` (supplier email from the
+        dispatch service only) sends via the company's Microsoft 365 mailbox, or holds.
         """
 
         msg = MIMEMultipart()
@@ -103,25 +105,26 @@ class EmailService:
                 )
                 msg.attach(part)
 
-        from services.mail_m365 import sending as _m365
-        try:
-            decision = _m365.decide()
-        except Exception as exc:  # cannot tell whether a company mailbox applies: hold, never guess
-            self.logger.error("Could not decide the mail transport: %s", exc)
-            return EmailSendResult(False, generated_message_id,
-                                   held_reason=f"company mailbox unavailable: {exc}")
-        if decision.kind == "held":
-            return EmailSendResult(False, generated_message_id, held_reason=decision.reason)
-        if decision.kind == "graph":
-            del msg["From"]
-            msg["From"] = decision.binding.mailbox_address
+        if company_mailbox:
+            from services.mail_m365 import sending as _m365
             try:
-                _m365.send_via_graph(decision.binding, msg.as_bytes())
-            except Exception as exc:
-                self.logger.error("Microsoft 365 send failed: %s", exc)
-                return EmailSendResult(False, generated_message_id, transport="graph",
+                decision = _m365.decide()
+            except Exception as exc:  # cannot tell whether a company mailbox applies: hold, never guess
+                self.logger.error("Could not decide the mail transport: %s", exc)
+                return EmailSendResult(False, generated_message_id,
                                        held_reason=f"company mailbox unavailable: {exc}")
-            return EmailSendResult(True, generated_message_id, transport="graph")
+            if decision.kind == "held":
+                return EmailSendResult(False, generated_message_id, held_reason=decision.reason)
+            if decision.kind == "graph":
+                del msg["From"]
+                msg["From"] = decision.binding.mailbox_address
+                try:
+                    _m365.send_via_graph(decision.binding, msg.as_bytes())
+                except Exception as exc:
+                    self.logger.error("Microsoft 365 send failed: %s", exc)
+                    return EmailSendResult(False, generated_message_id, transport="graph",
+                                           held_reason=f"company mailbox unavailable: {exc}")
+                return EmailSendResult(True, generated_message_id, transport="graph")
 
         try:
             smtp_username, smtp_password = self._fetch_smtp_credentials()

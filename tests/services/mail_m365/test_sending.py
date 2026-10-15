@@ -73,7 +73,7 @@ def test_removed_default_with_queued_drafts_is_held_never_ses():  # Review Focus
     b = B(active=False, default=False)
     for integration in ({"status": "connected"}, {"status": "disconnected"}):
         d = sending.decide(repo=Repo(default=None, any_=b), integration=integration)
-        assert d.kind == "held" and d.kind != "ses"
+        assert d.kind == "held"
 
 
 class _Svc(es.EmailService):
@@ -94,7 +94,7 @@ def test_held_send_never_touches_smtp(monkeypatch):
     monkeypatch.setattr(sending, "decide",
                         lambda **k: sending.Decision("held", None, "company mailbox unavailable: x"))
     svc = _Svc()
-    res = svc.send_email("s", "<p>b</p>", ["sup@x.com"], "ignored@procwise.co.uk")
+    res = svc.send_email("s", "<p>b</p>", ["sup@x.com"], "ignored@procwise.co.uk", company_mailbox=True)
     assert res.success is False and res.held_reason.startswith("company mailbox unavailable")
     assert svc.smtp_calls == 0
 
@@ -104,14 +104,14 @@ def test_decision_failure_is_held_not_ses(monkeypatch):
         raise RuntimeError("db down")
     monkeypatch.setattr(sending, "decide", boom)
     svc = _Svc()
-    res = svc.send_email("s", "b", ["sup@x.com"], "x@y")
+    res = svc.send_email("s", "b", ["sup@x.com"], "x@y", company_mailbox=True)
     assert res.success is False and "db down" in res.held_reason and svc.smtp_calls == 0
 
 
 def test_ses_decision_still_sends_over_smtp(monkeypatch):
     monkeypatch.setattr(sending, "decide", lambda **k: sending.Decision("ses", None, None))
     svc = _Svc()
-    res = svc.send_email("s", "b", ["sup@x.com"], "x@y")
+    res = svc.send_email("s", "b", ["sup@x.com"], "x@y", company_mailbox=True)
     assert res.success and res.transport == "ses" and res.held_reason is None
     assert svc.smtp_calls == 2  # credentials + delivery
 
@@ -124,7 +124,7 @@ def test_graph_send_uses_the_shared_mailbox_as_from(monkeypatch):
                         lambda binding, mime, **k: sent.update(addr=binding.mailbox_address, mime=mime))
     svc = _Svc()
     res = svc.send_email("s", "<p>b</p>", ["sup@x.com"], "ignored@procwise.co.uk",
-                         headers={"X-Procwise-RFQ-ID": "RFQ-1"})
+                         headers={"X-Procwise-RFQ-ID": "RFQ-1"}, company_mailbox=True)
     assert res.success and res.transport == "graph" and svc.smtp_calls == 0
     assert b"From: procurement@cust.com" in sent["mime"]
     assert b"ignored@procwise.co.uk" not in sent["mime"]
@@ -139,7 +139,7 @@ def test_graph_failure_is_held_not_retried_on_ses(monkeypatch):
         raise RuntimeError("HTTP 500")
     monkeypatch.setattr(sending, "send_via_graph", boom)
     svc = _Svc()
-    res = svc.send_email("s", "b", ["sup@x.com"], "x@y")
+    res = svc.send_email("s", "b", ["sup@x.com"], "x@y", company_mailbox=True)
     assert res.success is False and "HTTP 500" in res.held_reason and svc.smtp_calls == 0
     assert res.held_reason == "company mailbox unavailable: HTTP 500"
 
@@ -166,3 +166,28 @@ def test_send_via_graph_sends_from_the_binding_mailbox(monkeypatch):
     sending.send_via_graph(B(), b"MIME", client_factory=lambda t: calls.append(t) or Client(),
                            settings=object())
     assert calls == ["T1", ("procurement@cust.com", b"MIME")]
+
+
+def test_unflagged_send_never_decides_and_uses_smtp_even_when_connected(monkeypatch):
+    def boom(**k):
+        raise AssertionError("decide must not run for non-supplier mail")
+    monkeypatch.setattr(sending, "decide", boom)
+    svc = _Svc()
+    res = svc.send_email("s", "b", ["ops@x.com"], "alerts@procwise.co.uk")
+    assert res.success and res.transport == "ses" and svc.smtp_calls == 2
+
+
+def test_missing_tenant_is_a_clear_error(monkeypatch):
+    from contextlib import contextmanager
+    from services import db
+    from services.mail_m365 import config
+    from services.style.graph_source import MailboxUnreachable
+
+    @contextmanager
+    def fake_conn():
+        yield object()
+    monkeypatch.setattr(db, "get_conn", fake_conn)
+    monkeypatch.setattr(config, "read_integration", lambda c: {})
+    import pytest
+    with pytest.raises(MailboxUnreachable, match="tenant not recorded"):
+        sending.send_via_graph(B(), b"x", client_factory=lambda t: None, settings=object())

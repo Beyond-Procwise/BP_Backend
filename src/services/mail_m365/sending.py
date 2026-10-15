@@ -12,6 +12,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
+from services.style.graph_source import MailboxUnreachable
 from services.style.mailbox import HEALTH_OK, MailboxBinding, MailboxBindingRepository
 
 logger = logging.getLogger(__name__)
@@ -72,5 +73,7 @@ def send_via_graph(binding: MailboxBinding, mime: bytes, *,
         raise RuntimeError("Microsoft 365 is not configured on this server")
     with get_conn() as c:
         tenant = read_integration(c).get("tenant_id")
+    if not tenant:
+        raise MailboxUnreachable("Microsoft 365 tenant not recorded")
     client = (client_factory or _default_factory(settings))(tenant)
     client.send_mime(binding.mailbox_address, mime)

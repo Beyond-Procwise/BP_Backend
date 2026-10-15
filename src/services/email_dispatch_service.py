@@ -479,12 +479,15 @@ class EmailDispatchService:
                 sender_email,
                 attachments,
                 headers=headers,
+                company_mailbox=True,
             )
 
             sent = send_result.success
             message_id = send_result.message_id
 
             held_reason = getattr(send_result, "held_reason", None)
+            if sent:
+                dispatch_payload.pop("held_reason", None)
             if held_reason:
                 dispatch_payload["held_reason"] = held_reason
                 try:
