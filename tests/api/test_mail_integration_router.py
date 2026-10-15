@@ -382,24 +382,26 @@ def test_sender_ses(sender, monkeypatch):
     monkeypatch.setattr(_sending, "decide", lambda conn: _decision("ses"))
     res = sender.get("/mail/sender")
     assert res.status_code == 200
-    assert res.json() == {"mode": "ses", "address": None, "can_send": True, "reason": None}
+    assert res.json() == {"mode": "ses", "address": None, "can_send": True, "reason": None,
+                          "max_attachment_bytes": 0}
 
 
 def test_sender_m365(sender, monkeypatch):
     monkeypatch.setattr(_sending, "decide", lambda conn: _decision("graph", "proc@cust.com"))
     res = sender.get("/mail/sender")
     assert res.status_code == 200
+    # I3: compose blocks above Graph's sendMail limit before the buyer presses send
     assert res.json() == {"mode": "m365", "address": "proc@cust.com", "can_send": True,
-                          "reason": None}
+                          "reason": None, "max_attachment_bytes": 3_000_000}
 
 
 def test_sender_held_with_and_without_binding(sender, monkeypatch):
-    why = "company mailbox unavailable: proc@cust.com is disconnected"
+    why = _sending.HELD_DISCONNECTED
     monkeypatch.setattr(_sending, "decide", lambda conn: _decision("held", "proc@cust.com", why))
     res = sender.get("/mail/sender")
     assert res.status_code == 200
     assert res.json() == {"mode": "held", "address": "proc@cust.com", "can_send": False,
-                          "reason": why}
+                          "reason": why, "max_attachment_bytes": 0}
     monkeypatch.setattr(_sending, "decide", lambda conn: _decision("held", None, "no default"))
     assert sender.get("/mail/sender").json()["address"] is None
 
@@ -411,7 +413,7 @@ def test_sender_decide_raising_is_held_200(sender, monkeypatch):
     res = sender.get("/mail/sender")
     assert res.status_code == 200
     assert res.json() == {"mode": "held", "address": None, "can_send": False,
-                          "reason": "company mailbox status unavailable"}
+                          "reason": _sending.HELD_UNCHECKED, "max_attachment_bytes": 0}
     assert "secret-dsn" not in res.text
 
 

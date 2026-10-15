@@ -236,17 +236,21 @@ def disconnect(principal: Any = Depends(require_user)) -> dict:
 @sender_router.get("/sender", summary="Which address supplier emails go out from, and can they")
 def get_sender(principal: Any = Depends(require_user)) -> dict:
     """A read for every signed-in user (the compose window needs it), so it is not gated
-    and writes no refused-attempt audit row. Exposes only mode, address, can_send, reason."""
+    and writes no refused-attempt audit row. Exposes only mode, address, can_send, reason
+    and max_attachment_bytes (0 = no cap Procwise knows of; compose blocks above it)."""
     try:
         with _conn() as conn:
             d = sending.decide(conn)
     except Exception:  # noqa: BLE001 - compose must get an answer, never a 500
         logger.exception("mail sender status failed")
         return {"mode": "held", "address": None, "can_send": False,
-                "reason": "company mailbox status unavailable"}
+                "reason": sending.HELD_UNCHECKED, "max_attachment_bytes": 0}
     address = d.binding.mailbox_address if d.binding is not None else None
     if d.kind == "ses":
-        return {"mode": "ses", "address": None, "can_send": True, "reason": None}
+        return {"mode": "ses", "address": None, "can_send": True, "reason": None,
+                "max_attachment_bytes": 0}
     if d.kind == "graph":
-        return {"mode": "m365", "address": address, "can_send": True, "reason": None}
-    return {"mode": "held", "address": address, "can_send": False, "reason": d.reason}
+        return {"mode": "m365", "address": address, "can_send": True, "reason": None,
+                "max_attachment_bytes": sending.MAX_MIME_BYTES}
+    return {"mode": "held", "address": address, "can_send": False, "reason": d.reason,
+            "max_attachment_bytes": 0}

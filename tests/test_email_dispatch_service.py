@@ -892,7 +892,7 @@ def test_a_held_send_is_not_sent_and_carries_its_reason_and_an_audit(monkeypatch
 
     audits = []
     monkeypatch.setattr(agent_actions, "record_action", lambda **kw: audits.append(kw))
-    reason = "company mailbox unavailable: procurement@cust.com is REVOKED"
+    reason = "Access to procurement@cust.com was withdrawn in Microsoft 365, so this email is held"
     result, sent, uid = _send_with_capture(
         monkeypatch, lambda *a, **k: None,
         send_result=EmailSendResult(False, "<m-1>", held_reason=reason))

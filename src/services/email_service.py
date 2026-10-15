@@ -112,7 +112,7 @@ class EmailService:
             except Exception as exc:  # cannot tell whether a company mailbox applies: hold, never guess
                 self.logger.error("Could not decide the mail transport: %s", exc)
                 return EmailSendResult(False, generated_message_id,
-                                       held_reason=f"company mailbox unavailable: {exc}")
+                                       held_reason=_m365.HELD_UNCHECKED)
             if decision.kind == "held":
                 return EmailSendResult(False, generated_message_id, held_reason=decision.reason)
             if decision.kind == "graph":
@@ -121,9 +121,11 @@ class EmailService:
                 try:
                     _m365.send_via_graph(decision.binding, msg.as_bytes())
                 except Exception as exc:
-                    self.logger.error("Microsoft 365 send failed: %s", exc)
+                    # The raw cause is for us; the buyer gets a sentence they can act on.
+                    self.logger.error("Microsoft 365 send from %s failed: %s",
+                                      decision.binding.mailbox_address, exc)
                     return EmailSendResult(False, generated_message_id, transport="graph",
-                                           held_reason=f"company mailbox unavailable: {exc}")
+                                           held_reason=_m365.held_reason_for(exc))
                 return EmailSendResult(True, generated_message_id, transport="graph")
 
         try:

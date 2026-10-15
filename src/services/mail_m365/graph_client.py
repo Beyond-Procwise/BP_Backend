@@ -34,6 +34,15 @@ class Throttled(MailboxUnreachable):
         self.retry_after = retry_after
 
 
+class MessageTooLarge(Exception):
+    """The message is over what Graph's sendMail accepts. Nothing was sent."""
+
+    def __init__(self, size: int, limit: int = 0) -> None:
+        super().__init__(f"message of {size} bytes is over the sendMail limit"
+                         + (f" of {limit} bytes" if limit else ""))
+        self.size, self.limit = size, limit
+
+
 class M365Client:
     def __init__(self, credentials: GraphCredentials, *, transport: Optional[Any] = None,
                  clock: Callable[[], float] = time.time) -> None:
@@ -166,6 +175,8 @@ class M365Client:
             return
         if status == 429:
             raise Throttled(self._retry_after(payload))
+        if status == 413:
+            raise MessageTooLarge(len(mime))
         if status in (401, 403):
             raise MailboxAccessDenied(f"send denied with HTTP {status}")
         raise MailboxUnreachable(f"send returned HTTP {status}")
