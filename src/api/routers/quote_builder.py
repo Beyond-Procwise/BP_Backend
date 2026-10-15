@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from src.services import brand_logos, entity_profile
 from src.services.sell_side import builder, pricing_checks, quote_agent, quotes
 from src.services.sell_side import templates as quote_templates
+from src.services.sell_side import template_reader
 from src.services.sell_side._db import transactional_conn as get_conn
 
 from api.auth import require_user
@@ -118,6 +119,23 @@ def list_quote_templates(include_retired: bool = False, principal=Depends(requir
     gate("quote.read", principal, agent=_AGENT, context={"scope": "quote-templates"})
     with http_errors(), get_conn() as c:
         return money_json(quote_templates.list_templates(c, include_retired=include_retired))
+
+
+@router.post("/spendiq/quote-templates/read")
+def read_quote_template(file: UploadFile = File(...), principal=Depends(require_user)):
+    """Read the FORMAT of one of the seller's own quotes and propose a template from it.
+    Saves nothing: the seller reviews the proposal and saves it with PUT. No price, cost,
+    discount or total is returned; how many lines carried one is (`pricesLeftOut`)."""
+    gate("quote.read", principal, agent=_AGENT, context={"scope": "quote-template-read"})
+    data = file.file.read(template_reader.MAX_BYTES + 1)
+    try:
+        return money_json(template_reader.read(data, file.filename or ""))
+    except template_reader.Unsupported as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except template_reader.Unreadable as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except quote_agent.AgentUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
 
 
 @router.get("/spendiq/quote-templates/{key}")

@@ -181,3 +181,46 @@ def test_the_entity_profile_is_read_by_anyone_signed_in_and_written_behind_a_gat
     client.put("/entity/profile", json={"legalName": "Northwind Ltd", "bank": {"name": "B"}})
     assert client.asked == ["entity_profile.write"]
     assert stored["legalName"] == "Northwind Ltd" and stored["by"] == CALLER
+
+
+# --- reading a seller's quote into a proposed template ------------------------------
+
+def test_reading_a_quote_asks_quote_read_writes_nothing_and_returns_the_reading(client, monkeypatch):
+    seen = {}
+
+    def _read(data, filename):
+        seen.update(data=data, filename=filename)
+        return {"name": "Acme", "lines": [], "pricesLeftOut": 0}
+
+    monkeypatch.setattr(qb.template_reader, "read", _read)
+    r = client.post("/spendiq/quote-templates/read",
+                    files={"file": ("acme.csv", b"Description,Qty\n", "text/csv")})
+    assert r.status_code == 200 and r.json()["name"] == "Acme"
+    assert client.asked == ["quote.read"]
+    assert seen == {"data": b"Description,Qty\n", "filename": "acme.csv"}
+    assert client.calls == []                       # no quote service touched
+
+
+@pytest.mark.parametrize("raised, status", [
+    (lambda: qb.template_reader.Unsupported("I can read PDF ... not “.exe”."), 400),
+    (lambda: qb.template_reader.Unreadable("I could not find a pricing table"), 422),
+    (lambda: qb.quote_agent.AgentUnavailable("the model is busy"), 503),
+])
+def test_reading_a_quote_says_why_it_could_not(client, monkeypatch, raised, status):
+    def _read(*a, **k):
+        raise raised()
+
+    monkeypatch.setattr(qb.template_reader, "read", _read)
+    r = client.post("/spendiq/quote-templates/read",
+                    files={"file": ("q.exe", b"x", "application/octet-stream")})
+    assert r.status_code == status
+    assert r.json()["detail"] == str(raised())
+
+
+def test_reading_a_quote_reads_at_most_one_byte_past_the_limit(client, monkeypatch):
+    got = {}
+    monkeypatch.setattr(qb.template_reader, "MAX_BYTES", 4)
+    monkeypatch.setattr(qb.template_reader, "read",
+                        lambda data, filename: got.setdefault("n", len(data)) and {})
+    client.post("/spendiq/quote-templates/read", files={"file": ("q.txt", b"x" * 100, "text/plain")})
+    assert got["n"] == 5
