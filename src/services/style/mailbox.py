@@ -35,6 +35,8 @@ PROVIDER_IMAP = "imap"
 ROLE_EXEMPLAR_SOURCE = "exemplar_source"
 ROLE_DRAFT_TARGET = "draft_target"
 ROLE_BOTH = "both"
+ROLE_SEND_RECEIVE = "send_receive"
+ORG_USER_REF = "org"
 
 HEALTH_OK = "OK"
 HEALTH_DEGRADED = "DEGRADED"
@@ -43,7 +45,7 @@ HEALTH_REVOKED = "REVOKED"
 _COLUMNS = (
     "binding_id, user_ref, provider, mailbox_address, role, credential_ref, "
     "scope_policy_ref, scope_verified_at, scope_evidence_ref, last_health_check, "
-    "health_state, is_active"
+    "health_state, is_active, is_default, last_test_send_at"
 )
 
 
@@ -76,10 +78,16 @@ class MailboxBinding:
     last_health_check: Optional[datetime]
     health_state: str
     is_active: bool
+    is_default: bool = False
+    last_test_send_at: Optional[datetime] = None
+
+    @property
+    def can_send(self) -> bool:
+        return self.role == ROLE_SEND_RECEIVE
 
     @property
     def can_read(self) -> bool:
-        return self.role in (ROLE_EXEMPLAR_SOURCE, ROLE_BOTH)
+        return self.role in (ROLE_EXEMPLAR_SOURCE, ROLE_BOTH, ROLE_SEND_RECEIVE)
 
     @property
     def can_receive_drafts(self) -> bool:
@@ -92,13 +100,18 @@ class MailboxBinding:
         return self.is_active and self.health_state != HEALTH_REVOKED
 
 
+_FIELDS = ("binding_id", "user_ref", "provider", "mailbox_address", "role", "credential_ref",
+           "scope_policy_ref", "scope_verified_at", "scope_evidence_ref", "last_health_check",
+           "health_state", "is_active", "is_default", "last_test_send_at")
+
+
 def _row(r) -> MailboxBinding:
-    return MailboxBinding(
-        binding_id=r[0], user_ref=r[1], provider=r[2], mailbox_address=r[3],
-        role=r[4], credential_ref=r[5], scope_policy_ref=r[6],
-        scope_verified_at=r[7], scope_evidence_ref=r[8], last_health_check=r[9],
-        health_state=r[10], is_active=r[11],
-    )
+    values = [r[k] for k in _FIELDS] if isinstance(r, dict) else list(r)
+    return MailboxBinding(**dict(zip(_FIELDS, values)))
+
+
+def normalise_address(addr: str) -> str:
+    return str(addr or "").strip().lower()
 
 
 def _audit(action_type: str, *, status: str, summary: str, details: Any = None) -> None:
@@ -161,7 +174,8 @@ class MailboxBindingRepository:
                 "(user_ref, provider, mailbox_address, role, credential_ref, "
                 " scope_policy_ref, is_active) "
                 f"VALUES (%s, %s, %s, %s, %s, %s, FALSE) RETURNING {_COLUMNS}",
-                (user_ref, provider, mailbox_address, role, credential_ref, scope_policy_ref),
+                (user_ref, provider, normalise_address(mailbox_address), role, credential_ref,
+                 scope_policy_ref),
             )
             record = _row(cur.fetchone())
             cur.close()
@@ -199,7 +213,7 @@ class MailboxBindingRepository:
         if binding is None:
             raise BindingNotFound(f"no mailbox binding with binding_id={binding_id}")
 
-        if control_mailbox.strip().lower() == binding.mailbox_address.strip().lower():
+        if normalise_address(control_mailbox) == normalise_address(binding.mailbox_address):
             raise ValueError(
                 "the control mailbox must be a DIFFERENT mailbox from the bound one — "
                 "probing the bound mailbox proves nothing"
@@ -322,6 +336,93 @@ class MailboxBindingRepository:
             return [_row(r) for r in rows]
 
         return self._with_conn(_run)
+
+    # -- company (org) mailboxes ----------------------------------------------------
+
+    def list_org(self, *, include_inactive: bool = False) -> List[MailboxBinding]:
+        def _run(conn):
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT {_COLUMNS} FROM proc.bp_mailbox_binding WHERE user_ref = %s "
+                + ("" if include_inactive else "AND is_active ")
+                + "ORDER BY binding_id", (ORG_USER_REF,))
+            rows = cur.fetchall()
+            cur.close()
+            return [_row(r) for r in rows]
+        return self._with_conn(_run)
+
+    def _one(self, where: str, params) -> Optional[MailboxBinding]:
+        def _run(conn):
+            cur = conn.cursor()
+            cur.execute(f"SELECT {_COLUMNS} FROM proc.bp_mailbox_binding WHERE {where} "
+                        "ORDER BY binding_id DESC LIMIT 1", params)
+            row = cur.fetchone()
+            cur.close()
+            return _row(row) if row else None
+        return self._with_conn(_run)
+
+    def get_default_sender(self) -> Optional[MailboxBinding]:
+        return self._one("user_ref = %s AND is_default AND is_active", (ORG_USER_REF,))
+
+    def get_org_default_any(self) -> Optional[MailboxBinding]:
+        """An org send_receive mailbox that has ever sent a test email, active or not.
+
+        Its existence turns "no mailbox" into "the company mailbox is unavailable":
+        the first sends through SES, the second must be held (spec 5.1).
+        """
+        return self._one("user_ref = %s AND role = %s AND last_test_send_at IS NOT NULL",
+                         (ORG_USER_REF, ROLE_SEND_RECEIVE))
+
+    def _update(self, sql: str, params) -> MailboxBinding:
+        def _run(conn):
+            cur = conn.cursor()
+            cur.execute(sql + f" RETURNING {_COLUMNS}", params)
+            row = cur.fetchone()
+            cur.close()
+            if row is None:
+                raise BindingNotFound("no such mailbox binding")
+            return _row(row)
+        return self._with_conn(_run)
+
+    def record_test_send(self, binding_id: int) -> MailboxBinding:
+        b = self._update("UPDATE proc.bp_mailbox_binding SET last_test_send_at = NOW() "
+                         "WHERE binding_id = %s", (binding_id,))
+        _audit("test_send", status="ok", summary=f"test email sent from {b.mailbox_address}",
+               details={"binding_id": binding_id})
+        return b
+
+    def set_default(self, binding_id: int) -> MailboxBinding:
+        b = self.get(binding_id)
+        if b is None:
+            raise BindingNotFound(f"no mailbox binding with binding_id={binding_id}")
+        if not (b.is_active and b.can_send and b.last_test_send_at):
+            raise ValueError("a mailbox can be the default only once it is verified and a "
+                             "test email has been sent from it")
+
+        def _run(conn):
+            cur = conn.cursor()
+            # Clear first: the partial unique index admits one active default at a time.
+            cur.execute("UPDATE proc.bp_mailbox_binding SET is_default = FALSE "
+                        "WHERE user_ref = %s AND is_default AND binding_id <> %s",
+                        (ORG_USER_REF, binding_id))
+            cur.execute("UPDATE proc.bp_mailbox_binding SET is_default = TRUE "
+                        f"WHERE binding_id = %s RETURNING {_COLUMNS}", (binding_id,))
+            row = cur.fetchone()
+            cur.close()
+            return _row(row)
+
+        out = self._with_conn(_run)
+        _audit("default_set", status="ok", summary=f"{b.mailbox_address} is now the default",
+               details={"binding_id": binding_id})
+        return out
+
+    def deactivate(self, binding_id: int, *, reason: str) -> MailboxBinding:
+        b = self._update("UPDATE proc.bp_mailbox_binding SET is_active = FALSE, "
+                         "is_default = FALSE WHERE binding_id = %s", (binding_id,))
+        _audit("binding_deactivate", status="ok",
+               summary=f"{b.mailbox_address} deactivated: {reason}",
+               details={"binding_id": binding_id, "reason": reason})
+        return b
 
     # -- health --------------------------------------------------------------------
 
