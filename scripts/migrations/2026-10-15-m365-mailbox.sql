@@ -1,7 +1,10 @@
 -- scripts/migrations/2026-10-15-m365-mailbox.sql
 -- Shared company mailboxes on Microsoft 365 (spec 2026-10-15-m365-shared-mailbox-design §4.2).
 -- Runs AFTER 2026-08-07-mail-intake.sql and 2026-10-14-mail-intake-relay-binding.sql.
--- Idempotent. Every row valid before is valid after (no send_receive row exists yet).
+-- Idempotent and all-or-nothing (one transaction). Every row valid before is valid after
+-- (no send_receive row exists yet).
+
+BEGIN;
 
 ALTER TABLE proc.bp_mailbox_binding
     DROP CONSTRAINT IF EXISTS bp_mailbox_binding_role_check;
@@ -29,3 +32,5 @@ CREATE UNIQUE INDEX IF NOT EXISTS ix_bp_mailbox_binding_default
 CREATE UNIQUE INDEX IF NOT EXISTS ix_bp_mailbox_binding_org_address
     ON proc.bp_mailbox_binding (lower(mailbox_address))
     WHERE user_ref = 'org' AND is_active;
+
+COMMIT;
