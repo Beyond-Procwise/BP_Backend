@@ -5,7 +5,8 @@ import pytest
 from services.mail_m365 import receiving
 from services.mail_m365.graph_client import M365Client, Throttled
 from services.style import health
-from services.style.graph_source import GraphCredentials, MailboxUnreachable
+from services.style.graph_source import MailboxUnreachable
+from tests.services.mail_m365.certs import fake_credentials
 from services.style.mailbox import MailboxBinding
 
 NOW = datetime(2026, 10, 15, tzinfo=timezone.utc)
@@ -92,7 +93,7 @@ class StatusTransport:
     (200, "OK", False),
 ])
 def test_http_status_maps_to_state_end_to_end(monkeypatch, status, state, deactivated):
-    client = M365Client(GraphCredentials("t", "c", "s"), transport=StatusTransport(status))
+    client = M365Client(fake_credentials(), transport=StatusTransport(status))
     _use(monkeypatch, client)
     repo = Repo()
     assert health.check_binding(B, repo=repo) == state

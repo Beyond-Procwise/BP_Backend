@@ -6,15 +6,89 @@ The allowlist below is checked on every call, and a test tries the paths it refu
 from __future__ import annotations
 
 import base64
+import json
 import re
+import threading
 import time
+import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
-from services.style.graph_source import (GRAPH_BASE, GRAPH_SCOPE, TOKEN_URL, GraphCredentials,
+import jwt
+
+from services.style.graph_source import (GRAPH_BASE, GRAPH_SCOPE, TOKEN_URL,
                                          MailboxAccessDenied, MailboxUnreachable,
                                          RequestsTransport)
+
+ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+CERT_TTL_SECONDS = 600
+_CERT_FIELDS = ("client_id", "private_key_pem", "thumbprint_sha1_b64url")
+
+
+@dataclass(frozen=True)
+class CertCredentials:
+    """Our app's identity in one customer's tenant: the app id plus the certificate's
+    private key and SHA-1 thumbprint. There is no client secret anywhere in this path.
+    The key is kept out of repr so it cannot reach a log line or a traceback."""
+    tenant_id: str
+    client_id: str
+    private_key_pem: str = field(repr=False)
+    x5t: str
+
+
+def client_assertion(client_id: str, tenant_id: str, private_key_pem: str, x5t: str,
+                     now: float) -> str:
+    """A short-lived JWT, signed with our certificate's private key, that proves to
+    Microsoft's token endpoint for `tenant_id` that this request comes from our app."""
+    claims = {"aud": f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token",
+              "iss": client_id, "sub": client_id, "jti": uuid.uuid4().hex,
+              "nbf": int(now) - 5, "exp": int(now) + 300}
+    return jwt.encode(claims, private_key_pem, algorithm="RS256", headers={"x5t": x5t})
+
+
+_cert_lock = threading.Lock()
+_cert_cache: Dict[str, Dict[str, Any]] = {}
+
+
+def _reset_certificate_cache() -> None:
+    with _cert_lock:
+        _cert_cache.clear()
+
+
+def load_app_certificate(cert_arn: str, *, tenant_id: str, client: Any = None
+                         ) -> CertCredentials:
+    """Our certificate from Secrets Manager, as credentials for `tenant_id`.
+
+    The secret is JSON {"client_id", "private_key_pem", "thumbprint_sha1_b64url"}. It is
+    read once per process and reused for CERT_TTL_SECONDS, so a rotated certificate is
+    picked up within that time without a Secrets Manager call on every token.
+    """
+    if not str(cert_arn or "").startswith("arn:aws:secretsmanager:"):
+        raise ValueError("the certificate reference must be a Secrets Manager ARN")
+    now = time.monotonic()
+    with _cert_lock:
+        hit = _cert_cache.get(cert_arn)
+    if hit is None or now - hit["at"] >= CERT_TTL_SECONDS:
+        if client is None:  # pragma: no cover - real AWS only
+            from src.services import egress
+            client = egress.aws_client("secretsmanager", purpose=egress.Purpose.SECRETS,
+                                       region_name=cert_arn.split(":")[3])
+        raw = client.get_secret_value(SecretId=cert_arn).get("SecretString")
+        if not raw:
+            raise ValueError(f"secret {cert_arn} has no SecretString payload")
+        data = json.loads(raw) if isinstance(raw, str) else dict(raw)
+        missing = [k for k in _CERT_FIELDS if not str(data.get(k) or "").strip()]
+        if missing:
+            raise ValueError(f"secret {cert_arn} is missing {', '.join(missing)}")
+        hit = {"at": now, "data": {k: str(data[k]) for k in _CERT_FIELDS}}
+        with _cert_lock:
+            _cert_cache[cert_arn] = hit
+    d = hit["data"]
+    return CertCredentials(tenant_id=tenant_id, client_id=d["client_id"],
+                           private_key_pem=d["private_key_pem"],
+                           x5t=d["thumbprint_sha1_b64url"])
 
 _MBX = r"/users/[^/]+"
 ALLOWED_PATH_PATTERNS = {
@@ -44,7 +118,7 @@ class MessageTooLarge(Exception):
 
 
 class M365Client:
-    def __init__(self, credentials: GraphCredentials, *, transport: Optional[Any] = None,
+    def __init__(self, credentials: CertCredentials, *, transport: Optional[Any] = None,
                  clock: Callable[[], float] = time.time) -> None:
         self.credentials = credentials
         self.transport = transport or RequestsTransport()
@@ -58,7 +132,9 @@ class M365Client:
         c = self.credentials
         status, payload = self.transport.post_form(
             TOKEN_URL.format(tenant_id=c.tenant_id),
-            {"client_id": c.client_id, "client_secret": c.client_secret,
+            {"client_id": c.client_id, "client_assertion_type": ASSERTION_TYPE,
+             "client_assertion": client_assertion(c.client_id, c.tenant_id,
+                                                  c.private_key_pem, c.x5t, self._clock()),
              "scope": GRAPH_SCOPE, "grant_type": "client_credentials"})
         if status != 200 or not isinstance(payload, dict) or not payload.get("access_token"):
             raise MailboxUnreachable(

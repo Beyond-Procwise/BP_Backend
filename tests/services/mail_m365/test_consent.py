@@ -118,11 +118,17 @@ _JWK.update({"kid": "k1", "use": "sig"})
 NOW = 1_000.0
 
 
+GLOBAL_ADMIN = "62e90394-69f5-4237-9190-012177145e10"
+USER_ADMIN = "fe930be7-5e62-47db-91af-98c3a49a38b1"     # an admin role, but not one that may connect
+
+
 def _id_token(nonce, *, tid=T1, aud="app-client-id", iss=None, exp=NOW + 3600,
-              nbf=NOW - 10, key=_RSA, kid="k1", drop=()):
+              nbf=NOW - 10, key=_RSA, kid="k1", drop=(), wids=(GLOBAL_ADMIN,)):
     claims = {"aud": aud, "iss": iss or f"https://login.microsoftonline.com/{tid}/v2.0",
               "tid": tid, "exp": int(exp), "nbf": int(nbf), "iat": int(nbf),
               "nonce": nonce, "sub": "s", "oid": "o"}
+    if wids is not None:
+        claims["wids"] = list(wids) if isinstance(wids, (list, tuple)) else wids
     for k in drop:
         claims.pop(k)
     return pyjwt.encode(claims, key, algorithm="RS256", headers={"kid": kid})
@@ -155,7 +161,9 @@ class FakeMicrosoft:
         return 404, {}
 
 
-CREDS = lambda settings: ("app-client-id", "app-secret")  # noqa: E731
+from tests.services.mail_m365.certs import PUBLIC_KEY, X5T, fake_credentials  # noqa: E402
+
+CREDS = lambda settings: fake_credentials("organizations", "app-client-id")  # noqa: E731
 
 
 def _consent_return(conn, *, tenant=T1, t0=NOW - 20, actor="admin@x"):
@@ -200,10 +208,19 @@ def test_happy_path_stores_the_verified_tid():
     out = json.loads(conn.value)
     assert out["tenant_id"] == T1 and out["status"] == "connected"
     assert out["consented_by"] == "admin@x"
-    # the code was redeemed server-side with our secret, for openid only
+    # the code was redeemed server-side with our certificate (never a secret), openid only
     post = [c for c in ms.calls if c[0] == "POST"][0]
-    assert post[1] == f"https://login.microsoftonline.com/{T1}/oauth2/v2.0/token"
-    assert post[2]["client_secret"] == "app-secret" and post[2]["scope"] == "openid"
+    token_url = f"https://login.microsoftonline.com/{T1}/oauth2/v2.0/token"
+    assert post[1] == token_url
+    assert "client_secret" not in post[2] and post[2]["scope"] == "openid"
+    assert post[2]["client_id"] == "app-client-id"
+    assert post[2]["client_assertion_type"] == \
+        "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+    assertion = pyjwt.decode(post[2]["client_assertion"], PUBLIC_KEY, algorithms=["RS256"],
+                             audience=token_url, options={"verify_exp": False,
+                                                          "verify_nbf": False})
+    assert assertion["iss"] == assertion["sub"] == "app-client-id"
+    assert pyjwt.get_unverified_header(post[2]["client_assertion"])["x5t"] == X5T
     assert post[2]["grant_type"] == "authorization_code" and post[2]["code"] == "the-code"
 
 
@@ -361,3 +378,69 @@ def test_signed_non_object_payload_is_malformed():
     assert e.value.code == "malformed"
 
 
+
+
+# ---- only a Microsoft administrator may connect --------------------------------------------
+
+@pytest.mark.parametrize("wids,why", [
+    (None, "no directory roles at all"),
+    ([USER_ADMIN], "an admin role that may not connect"),
+    ([], "an empty role list"),
+    (GLOBAL_ADMIN, "wids is a string, not a list"),
+    ({"role": GLOBAL_ADMIN}, "wids is an object, not a list"),
+])
+def test_a_non_administrator_cannot_connect(wids, why):
+    conn = MemConn()
+    url = _consent_return(conn)
+    with pytest.raises(consent.ConsentNotGiven) as e:
+        _signin_return(conn, url, FakeMicrosoft(lambda n: _id_token(n, wids=wids)))
+    assert e.value.code == "not_admin", why
+    assert "administrator" in e.value.detail
+    assert "tenant_id" not in json.loads(conn.value)
+    assert json.loads(conn.value).get("status") != "connected"
+
+
+@pytest.mark.parametrize("role", sorted(consent.ADMIN_ROLE_IDS))
+def test_each_connecting_administrator_role_may_connect(role):
+    conn = MemConn()
+    url = _consent_return(conn)
+    _signin_return(conn, url, FakeMicrosoft(lambda n: _id_token(n, wids=[USER_ADMIN, role])))
+    assert json.loads(conn.value)["status"] == "connected"
+
+
+def test_role_ids_compare_without_case():
+    conn = MemConn()
+    url = _consent_return(conn)
+    _signin_return(conn, url, FakeMicrosoft(lambda n: _id_token(n, wids=[GLOBAL_ADMIN.upper()])))
+    assert json.loads(conn.value)["tenant_id"] == T1
+
+
+def test_admin_role_ids_are_exactly_the_four_that_may_consent():
+    assert consent.ADMIN_ROLE_IDS == frozenset({
+        "62e90394-69f5-4237-9190-012177145e10",   # Global Administrator
+        "e8611ab8-c189-46e8-94e1-60213ab1f814",   # Privileged Role Administrator
+        "158c047a-c907-4556-b7ef-446551a6b5f7",   # Cloud Application Administrator
+        "9b895d92-2cd3-44c7-9d02-a6ac2d5ea5c3",   # Application Administrator
+    })
+
+
+def test_verify_id_token_returns_claims_for_a_global_administrator():
+    claims = consent.verify_id_token(_id_token("n1"), client_id="app-client-id",
+                                     expected_nonce="n1", transport=FakeMicrosoft(), now=NOW)
+    assert claims["tid"] == T1 and claims["wids"] == [GLOBAL_ADMIN]
+
+
+def test_verify_id_token_refuses_a_token_without_roles():
+    with pytest.raises(consent.ConsentNotGiven) as e:
+        consent.verify_id_token(_id_token("n1", wids=None), client_id="app-client-id",
+                                expected_nonce="n1", transport=FakeMicrosoft(), now=NOW)
+    assert e.value.code == "not_admin"
+
+
+def test_a_forged_role_on_a_badly_signed_token_is_still_a_signature_failure():
+    """The role check reads verified claims only: a token signed by someone else that
+    claims Global Administrator is refused for its signature, not believed."""
+    with pytest.raises(consent.ConsentNotGiven) as e:
+        consent.verify_id_token(_id_token("n1", key=_OTHER_RSA), client_id="app-client-id",
+                                expected_nonce="n1", transport=FakeMicrosoft(), now=NOW)
+    assert e.value.code == "signin_failed"

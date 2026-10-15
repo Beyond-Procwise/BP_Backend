@@ -252,7 +252,7 @@ def test_can_read_unreachable_is_inconclusive_and_creates_nothing(env):
 
 def test_our_token_rejected_is_inconclusive_not_cannot_read(env):
     from services.mail_m365.graph_client import M365Client
-    from services.style.graph_source import GraphCredentials
+    from tests.services.mail_m365.certs import fake_credentials
 
     class T401:
         def post_form(self, url, data):
@@ -263,7 +263,7 @@ def test_our_token_rejected_is_inconclusive_not_cannot_read(env):
 
     with pytest.raises(admin.MailboxRefused) as e:
         admin.add_mailbox(None, "procurement@cust.com", "me@cust.com", actor="a", settings=S,
-                          client_factory=lambda t: M365Client(GraphCredentials("t", "c", "s"),
+                          client_factory=lambda t: M365Client(fake_credentials(),
                                                               transport=T401()))
     assert e.value.code == "inconclusive" and env["rows"] == {}
 

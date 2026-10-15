@@ -4,7 +4,8 @@ from datetime import datetime, timezone
 import pytest
 
 from services.mail_m365.graph_client import M365Client, Throttled
-from services.style.graph_source import (GraphCredentials, MailboxAccessDenied,
+from tests.services.mail_m365.certs import fake_credentials
+from services.style.graph_source import (MailboxAccessDenied,
                                          MailboxUnreachable, RequestsTransport)
 
 
@@ -38,7 +39,7 @@ class Stub:
 
 
 def client(routes, clock=lambda: 1000.0):
-    return M365Client(GraphCredentials("t", "c", "s"), transport=Stub(routes), clock=clock)
+    return M365Client(fake_credentials(), transport=Stub(routes), clock=clock)
 
 
 def test_token_is_cached_until_near_expiry():
@@ -110,7 +111,7 @@ class PagedInbox(Stub):
 
 def test_list_inbox_pages_with_its_own_urls_and_never_follows_next_link():
     """I4: 120 messages over three pages of 50; every request is one we built."""
-    c = M365Client(GraphCredentials("t", "c", "s"), transport=PagedInbox(120))
+    c = M365Client(fake_credentials(), transport=PagedInbox(120))
     got = c.list_inbox("m@x", datetime(2026, 10, 15, tzinfo=timezone.utc))
     assert [m["id"] for m in got] == [f"m{i:03d}" for i in range(120)]
     urls = [u for _, u in c.transport.calls]
@@ -124,7 +125,7 @@ def test_list_inbox_pages_with_its_own_urls_and_never_follows_next_link():
 
 
 def test_list_inbox_exact_multiple_of_page_size_stops_on_the_empty_page():
-    c = M365Client(GraphCredentials("t", "c", "s"), transport=PagedInbox(100))
+    c = M365Client(fake_credentials(), transport=PagedInbox(100))
     assert len(c.list_inbox("m@x", datetime(2026, 10, 15, tzinfo=timezone.utc))) == 100
     assert len(c.transport.calls) == 3
 

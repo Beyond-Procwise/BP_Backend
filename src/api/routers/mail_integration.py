@@ -41,7 +41,7 @@ _STATUS = {"not_connected": 409, "duplicate": 409, "same_as_control": 422,
 # The only codes the callback may put in the redirect; anything else becomes consent_failed.
 _STATE_CODES = {"malformed", "bad_signature", "expired", "reused"}
 _CONSENT_CODES = {"not_granted", "bad_tenant", "tenant_mismatch", "access_denied",
-                  "wrong_account", "signin_failed"}
+                  "wrong_account", "signin_failed", "not_admin"}
 
 
 def _conn():

@@ -129,7 +129,7 @@ def test_callback_known_consent_codes_pass(client, monkeypatch, code):
     assert res.headers["location"].endswith(f"mail_error={code}")
 
 
-@pytest.mark.parametrize("code", ["wrong_account", "signin_failed"])
+@pytest.mark.parametrize("code", ["wrong_account", "signin_failed", "not_admin"])
 def test_callback_sign_in_codes_pass(client, monkeypatch, code):
     def bad(*a, **k):
         raise consent.ConsentNotGiven(code, "raw Microsoft detail")

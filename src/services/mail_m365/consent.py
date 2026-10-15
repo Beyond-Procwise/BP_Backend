@@ -9,9 +9,11 @@ The `tenant` Microsoft appends to the consent return is NOT evidence of anything
 query parameter anyone can edit, and a forged one would connect this deployment to
 another customer's tenant (our multitenant app's token for that tenant is valid). So the
 consent return only starts step two: the admin signs in to Microsoft (authorization code,
-scope `openid` — no mail permission), we redeem the code ourselves with our client secret,
-verify the id_token (Microsoft's signature, our client id, issuer = its tenant, time
-window, our nonce) and take the tenant from its verified `tid` claim, never from the URL.
+scope `openid` — no mail permission), we redeem the code ourselves with a client assertion
+signed by our certificate (there is no client secret), verify the id_token (Microsoft's
+signature, our client id, issuer = its tenant, time window, our nonce, and that the person
+holds one of the Microsoft administrator roles that may connect an app) and take the
+tenant from its verified `tid` claim, never from the URL.
 Both steps ride one chain of single-use nonces: the consent nonce is spent to issue the
 sign-in nonce, and the sign-in nonce is spent before the code is redeemed.
 """
@@ -33,6 +35,8 @@ import jwt
 
 from services.mail_m365.config import (M365Settings, append_nonce, consume_nonce,
                                        merge_integration, redirect_uri)
+from services.mail_m365.graph_client import (ASSERTION_TYPE, CertCredentials,
+                                             client_assertion, load_app_certificate)
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +50,13 @@ SIGNIN_SCOPE = "openid"
 _KEEP_NONCES = 20
 _LEEWAY = 120          # seconds of clock skew allowed on exp/nbf
 GUID = re.compile(r"[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}")
+
+# Directory roles (the id_token's `wids`) allowed to connect Procwise: Global Administrator,
+# Privileged Role Administrator, Cloud Application Administrator, Application Administrator.
+ADMIN_ROLE_IDS = frozenset({"62e90394-69f5-4237-9190-012177145e10",
+                            "e8611ab8-c189-46e8-94e1-60213ab1f814",
+                            "158c047a-c907-4556-b7ef-446551a6b5f7",
+                            "9b895d92-2cd3-44c7-9d02-a6ac2d5ea5c3"})
 
 PHASE_CONSENT = "consent"
 PHASE_SIGNIN = "signin"
@@ -175,7 +186,8 @@ def verify_id_token(id_token: str, *, client_id: str, expected_nonce: str,
     The tenant to fetch keys for is read from the unverified token only to find its
     issuer's OpenID configuration; nothing is believed until the signature (RS256, a key
     from that issuer's JWKS), audience, issuer, time window and nonce all check out, and
-    the issuer must be exactly that tenant's v2 issuer.
+    the issuer must be exactly that tenant's v2 issuer. The signer must also hold one of
+    ADMIN_ROLE_IDS (`wids`), else ConsentNotGiven("not_admin").
     """
     try:
         unverified = jwt.decode(id_token, options={"verify_signature": False})
@@ -213,6 +225,11 @@ def verify_id_token(id_token: str, *, client_id: str, expected_nonce: str,
         raise _fail(f"id_token rejected: {exc}")
     if str(claims["tid"]).lower() != tid:
         raise _fail("id_token tid does not match its issuer")
+    wids = claims.get("wids") or []
+    if not isinstance(wids, list) or not (
+            {str(w).lower() for w in wids} & ADMIN_ROLE_IDS):
+        raise ConsentNotGiven("not_admin",
+                              "Only a Microsoft 365 administrator can connect Procwise")
     try:
         exp, nbf = float(claims["exp"]), float(claims["nbf"])
     except (TypeError, ValueError):
@@ -226,16 +243,15 @@ def verify_id_token(id_token: str, *, client_id: str, expected_nonce: str,
     return claims
 
 
-def _default_app_credentials(settings: M365Settings) -> Tuple[str, str]:
-    from services.style.graph_source import resolve_credentials
-    c = resolve_credentials(settings.secret_arn, tenant_id="organizations")
-    return c.client_id, c.client_secret
+def _default_app_credentials(settings: M365Settings) -> CertCredentials:
+    # The tenant is not used here: the assertion is built for the tenant being redeemed.
+    return load_app_certificate(settings.cert_arn, tenant_id="organizations")
 
 
 def complete_signin(conn: Any, settings: M365Settings, key: bytes, *, state: str,
                     code: Optional[str], error: Optional[str],
                     transport: Any = None,
-                    app_credentials: Optional[Callable[[M365Settings], Tuple[str, str]]] = None,
+                    app_credentials: Optional[Callable[[M365Settings], CertCredentials]] = None,
                     now: Callable[[], float] = time.time) -> Dict[str, Any]:
     v = _verify(key, state, now())
     if v["phase"] != PHASE_SIGNIN:
@@ -249,9 +265,12 @@ def complete_signin(conn: Any, settings: M365Settings, key: bytes, *, state: str
     if transport is None:
         from services.style.graph_source import RequestsTransport
         transport = RequestsTransport()
-    client_id, client_secret = (app_credentials or _default_app_credentials)(settings)
+    cert = (app_credentials or _default_app_credentials)(settings)
     status, payload = transport.post_form(SIGNIN_TOKEN_URL.format(tenant=claimed), {
-        "client_id": client_id, "client_secret": client_secret, "code": code,
+        "client_id": cert.client_id, "client_assertion_type": ASSERTION_TYPE,
+        "client_assertion": client_assertion(cert.client_id, claimed, cert.private_key_pem,
+                                             cert.x5t, now()),
+        "code": code,
         "grant_type": "authorization_code", "redirect_uri": redirect_uri(settings),
         "scope": SIGNIN_SCOPE})
     if status != 200 or not isinstance(payload, dict) or not payload.get("id_token"):
@@ -277,7 +296,7 @@ def handle_callback(conn: Any, settings: M365Settings, key: bytes, *, state: str
                     tenant: Optional[str] = None, admin_consent: Optional[str] = None,
                     error: Optional[str] = None, code: Optional[str] = None,
                     transport: Any = None,
-                    app_credentials: Optional[Callable[[M365Settings], Tuple[str, str]]] = None,
+                    app_credentials: Optional[Callable[[M365Settings], CertCredentials]] = None,
                     now: Callable[[], float] = time.time) -> Optional[str]:
     """One callback URL serves both steps; the signed state says which.
 

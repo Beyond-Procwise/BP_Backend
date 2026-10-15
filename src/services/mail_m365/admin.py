@@ -12,8 +12,8 @@ from typing import Any, Callable, Dict, Optional
 
 from services.mail_m365.config import (M365Settings, merge_integration,
                                        read_integration)
-from services.mail_m365.graph_client import M365Client
-from services.style.graph_source import MailboxUnreachable, resolve_credentials
+from services.mail_m365.graph_client import M365Client, load_app_certificate
+from services.style.graph_source import MailboxUnreachable
 from services.style.mailbox import (HEALTH_REVOKED, ORG_USER_REF, PROVIDER_GRAPH,
                                     ROLE_SEND_RECEIVE,
                                     BindingNotFound, MailboxBinding,
@@ -46,7 +46,7 @@ class MailboxRefused(Exception):
 
 def _default_factory(settings: M365Settings) -> ClientFactory:
     def build(tenant_id: str) -> M365Client:
-        return M365Client(resolve_credentials(settings.secret_arn, tenant_id=tenant_id))
+        return M365Client(load_app_certificate(settings.cert_arn, tenant_id=tenant_id))
     return build
 
 
@@ -108,7 +108,7 @@ def add_mailbox(conn: Any, address: str, control_mailbox: str, *, actor: str,
     _require_readable(client, address)
     binding = repo.create(user_ref=ORG_USER_REF, provider=PROVIDER_GRAPH,
                           mailbox_address=address, role=ROLE_SEND_RECEIVE,
-                          credential_ref=settings.secret_arn)
+                          credential_ref=settings.cert_arn)
     return {"ok": True, "mailbox": _view(_prove(repo, binding.binding_id, control, client, address))}
 
 

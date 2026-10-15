@@ -1,7 +1,7 @@
 """Where Microsoft 365 mail is configured.
 
-Two places, deliberately apart. The server's own settings (our app id, where its secret
-lives, the public address Microsoft returns to) come from the environment: they are the
+Two places, deliberately apart. The server's own settings (our app id, where its
+certificate lives, the public address Microsoft returns to) come from the environment: they are the
 same for every customer. What the customer's admin did — which tenant approved us, when,
 who — is company configuration and lives in proc.bp_admin_config['mail_integration'],
 next to the other admin settings.
@@ -19,7 +19,9 @@ CONFIG_KEY = "mail_integration"
 @dataclass(frozen=True)
 class M365Settings:
     client_id: str
-    secret_arn: str
+    # Secrets Manager ARN of our app's certificate: {"client_id", "private_key_pem",
+    # "thumbprint_sha1_b64url"}. Microsoft sign-in uses this certificate; no client secret.
+    cert_arn: str
     public_base_url: str
     state_key_arn: str
     poll_seconds: int
@@ -30,7 +32,7 @@ class M365Settings:
 
 def load_settings() -> Optional[M365Settings]:
     values = {k: os.getenv(k, "").strip() for k in (
-        "M365_CLIENT_ID", "M365_CLIENT_SECRET_ARN", "PUBLIC_BASE_URL",
+        "M365_CLIENT_ID", "M365_CLIENT_CERT_ARN", "PUBLIC_BASE_URL",
         "MAIL_STATE_SIGNING_KEY_ARN")}
     if not all(values.values()):
         return None
@@ -38,7 +40,7 @@ def load_settings() -> Optional[M365Settings]:
         poll = max(30, int(os.getenv("M365_POLL_SECONDS", "120")))
     except ValueError:
         poll = 120
-    return M365Settings(values["M365_CLIENT_ID"], values["M365_CLIENT_SECRET_ARN"],
+    return M365Settings(values["M365_CLIENT_ID"], values["M365_CLIENT_CERT_ARN"],
                         values["PUBLIC_BASE_URL"], values["MAIL_STATE_SIGNING_KEY_ARN"], poll,
                         os.getenv("APP_BASE_URL", "").strip())
 

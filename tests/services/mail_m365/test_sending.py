@@ -238,7 +238,7 @@ def test_oversize_send_is_held_with_the_size_reason(monkeypatch):
 
 def test_graph_413_is_the_size_reason_too(monkeypatch):
     from services.mail_m365.graph_client import M365Client, MessageTooLarge
-    from services.style.graph_source import GraphCredentials
+    from tests.services.mail_m365.certs import fake_credentials
     import pytest
 
     class T:
@@ -247,7 +247,7 @@ def test_graph_413_is_the_size_reason_too(monkeypatch):
 
         def post_body(self, url, headers, body):
             return 413, {"error": {"message": "RequestEntityTooLarge"}}
-    c = M365Client(GraphCredentials("t", "c", "s"), transport=T())
+    c = M365Client(fake_credentials(), transport=T())
     with pytest.raises(MessageTooLarge) as e:
         c.send_mime("procurement@cust.com", b"small")
     assert sending.held_reason_for(e.value) == sending.HELD_TOO_LARGE

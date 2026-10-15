@@ -2,7 +2,8 @@
 
 Procwise sends supplier email from, and reads replies in, a shared mailbox the customer
 chooses. Procwise holds **no customer password or refresh token**. Its only credential is
-its own app secret (a Secrets Manager ARN). The Entra app requests **no mail permissions**;
+its own app certificate (the private key lives only in Secrets Manager, referenced by ARN;
+there is no client secret). The Entra app requests **no mail permissions**;
 access is granted in Exchange (RBAC for Applications) and is limited to members of one
 mail-enabled security group. Procwise never moves, deletes, flags or marks-read anything in
 the customer's mailbox. Graph paths used: `/users/{m}/mailFolders...`, `/users/{m}/messages...`
@@ -13,7 +14,7 @@ the customer's mailbox. Graph paths used: `/users/{m}/mailFolders...`, `/users/{
 | Variable | Meaning |
 |---|---|
 | `M365_CLIENT_ID` | Application (client) ID of "Procwise Mail". |
-| `M365_CLIENT_SECRET_ARN` | Secrets Manager ARN of `{"client_id": "...", "client_secret": "..."}`. |
+| `M365_CLIENT_CERT_ARN` | Secrets Manager ARN of the app certificate: `{"client_id": "...", "private_key_pem": "-----BEGIN PRIVATE KEY-----...", "thumbprint_sha1_b64url": "..."}`. Microsoft sign-in uses a client assertion signed with this key; client secrets are not supported. |
 | `PUBLIC_BASE_URL` | The server's public **https** address. Microsoft returns the admin to `PUBLIC_BASE_URL/admin/integrations/mail/m365/callback` (after the approval page and again after the sign-in); a non-https value makes Connect fail. |
 | `APP_BASE_URL` | Optional. The screen's own address when the UI runs on a different origin from the API (the usual case). After Microsoft, the admin's browser lands on `APP_BASE_URL/?view=settings&mail=...`. Unset = `PUBLIC_BASE_URL`. |
 | `MAIL_STATE_SIGNING_KEY_ARN` | ARN of a secret holding 48 random bytes (at least 32) that signs the single-use consent and sign-in `state` (and derives the sign-in nonce). |
@@ -38,9 +39,18 @@ the other routes answer 503 "Microsoft 365 is not configured on this server."
    Exchange scoping and would widen access (the probe in step 3(e) below proves this is
    caught). Leave "ID tokens" under Authentication -> Implicit grant **unticked** (the code is
    redeemed server-side).
-5. Certificates and secrets -> New client secret, 24 months.
-6. Secrets Manager: store `{"client_id": "...", "client_secret": "..."}`; put its ARN in
-   `M365_CLIENT_SECRET_ARN`. Put the application ID in `M365_CLIENT_ID`.
+   **Manifest: set `"groupMembershipClaims": "DirectoryRole"`** so Microsoft puts the signer's
+   directory roles (`wids`) in the id_token. Procwise only accepts a connection from a Global
+   Administrator, Privileged Role Administrator, Cloud Application Administrator or
+   Application Administrator; without this setting every sign-in is refused as `not_admin`.
+5. Make a certificate (for example `openssl req -x509 -newkey rsa:2048 -nodes -days 730
+   -keyout key.pem -out cert.pem -subj "/CN=Procwise Mail"`). Certificates and secrets ->
+   Certificates -> Upload `cert.pem`. Create **no** client secret.
+6. Secrets Manager: store `{"client_id": "...", "private_key_pem": "<key.pem contents>",
+   "thumbprint_sha1_b64url": "..."}` (the SHA-1 thumbprint as base64url, no padding:
+   `openssl x509 -in cert.pem -outform DER | openssl dgst -sha1 -binary | basenc --base64url | tr -d '='`);
+   put its ARN in `M365_CLIENT_CERT_ARN`. Put the application ID in `M365_CLIENT_ID`. Delete
+   `key.pem` from disk.
 7. Create a second secret holding 48 random bytes (for example `openssl rand -base64 48`) and
    put its ARN in `MAIL_STATE_SIGNING_KEY_ARN`.
 8. Set `PUBLIC_BASE_URL`, restart the service.
@@ -53,8 +63,11 @@ Only users who may `mailbox.bind` (Admin) can use these routes.
    "Procwise Mail". It lists *no* mail permissions (that is expected and is what to point a
    cautious IT team at). They approve as a Global/tenant administrator, then Microsoft asks
    them to **sign in once** (scope `openid` only). Procwise redeems that sign-in server-side
-   with its own secret, verifies the id_token (Microsoft's signature from its published keys,
-   audience = our client id, issuer = the token's own tenant, not expired, our nonce) and
+   with its own certificate, verifies the id_token (Microsoft's signature from its published keys,
+   audience = our client id, issuer = the token's own tenant, not expired, our nonce, and the
+   person holds Global Administrator, Privileged Role Administrator, Cloud Application
+   Administrator or Application Administrator in the token's `wids` claim; anyone else gets
+   `mail_error=not_admin`) and
    records the tenant **only** from the verified `tid` claim. The `tenant` Microsoft appends
    to the approval return is ignored as evidence: it is a URL parameter anyone can edit, and
    trusting it would let one customer's admin connect their Procwise to another customer's
@@ -200,9 +213,9 @@ Prerequisites: step 1 done on a server with an https `PUBLIC_BASE_URL`; one shar
   health interval (`STYLE_MAILBOX_HEALTH_INTERVAL_MINUTES`, default 60) the mailbox goes
   REVOKED (403/404). A queued draft is **held**, not sent via SES. `GET /mail/sender` shows
   `mode: held` with a reason.
-- **(k) 401 vs revocation.** Temporarily break `M365_CLIENT_SECRET_ARN`'s secret (wrong
-  value); the next health check must give DEGRADED, **not** REVOKED, and the mailbox stays
-  active. Restore the secret.
+- **(k) 401 vs revocation.** Temporarily break `M365_CLIENT_CERT_ARN`'s secret (a key whose
+  certificate is not uploaded to the app); the next health check must give DEGRADED, **not**
+  REVOKED, and the mailbox stays active. Restore the secret.
 - **(l) Tenant mismatch.** While connected, complete consent and sign-in from a second tenant
   -> redirect with `mail_error=tenant_mismatch`; the first connection is untouched.
   Disconnect, then connect the second tenant.
@@ -211,9 +224,8 @@ Prerequisites: step 1 done on a server with an https `PUBLIC_BASE_URL`; one shar
 
 ## 4. Rotation
 
-Client secret (24-month life): create a new secret in Entra beside the old one, update the
-Secrets Manager value (the ARN does not change), confirm a test-send and a health check pass,
-then delete the old secret in Entra. Procwise caches credentials briefly, so allow about ten
+Certificate: upload the new certificate in Entra beside the old one, update the Secrets
+Manager value with the new key and thumbprint (the ARN does not change), confirm a test-send
+and a health check pass, then delete the old certificate in Entra. Procwise caches credentials briefly, so allow about ten
 minutes. Rotate the state-signing key the same way (in-flight consent links, valid for ten
-minutes, fail as `bad_signature`; the admin just clicks Connect again). A certificate
-credential in place of the client secret is the planned follow-up.
+minutes, fail as `bad_signature`; the admin just clicks Connect again).
