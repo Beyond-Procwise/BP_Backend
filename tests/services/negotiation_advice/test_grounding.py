@@ -96,3 +96,37 @@ def test_apply_states_drops_not_applicable_and_puts_ready_first():
     assert all(p["state"] != "not_applicable" for p in out)
     assert [p["state"] for p in out] == sorted(
         [p["state"] for p in out], key=lambda s: 0 if s == "ready" else 1)
+
+
+# Money evidence names its currency. "38,536,342.28" of rupees, bare, reads as
+# pounds on a screen that is in pounds everywhere else.
+_REFUND = {"play": "Full refund/credit for non-compliant goods", "score": 1.0}
+_TIERS = {"play": "Demand tiered volume discounts", "score": 1.0}
+
+
+def _values(play, signals):
+    return [e["value"] for e in gr.assess(play, signals)["evidence"]]
+
+
+def test_pounds_read_as_pounds():
+    assert _values(_REFUND, {"invoice_total": 1200.0, "po_total": 1000.0,
+                             "currency": "GBP"}) == ["£1,200.00", "£1,000.00"]
+
+
+def test_a_foreign_amount_names_its_currency():
+    assert _values(_REFUND, {"invoice_total": 38536342.28, "po_total": 19268171.14,
+                             "currency": "inr"}) == ["INR 38,536,342.28", "INR 19,268,171.14"]
+
+
+def test_a_foreign_deal_value_shows_pounds_beside_it():
+    assert _values(_TIERS, {"deal_value": 38536342.28, "currency": "INR",
+                            "deal_value_gbp": 305921.4}) == ["INR 38,536,342.28 (£305,921)"]
+
+
+def test_a_foreign_deal_value_with_no_rate_borrows_no_pounds():
+    assert _values(_TIERS, {"deal_value": 3303.0, "currency": "USD",
+                            "deal_value_gbp": None}) == ["USD 3,303.00"]
+
+
+def test_an_unrecorded_currency_is_said_not_assumed():
+    assert _values(_TIERS, {"deal_value": 891.0}) == ["891.00 (currency not recorded)"]

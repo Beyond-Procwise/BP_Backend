@@ -414,7 +414,7 @@ def market_context_score(lever: str, market=None):
 
 @formula(
     "negotiation.play_readiness",
-    version="1.1.0",
+    version="1.2.0",
     owner=_OWNER,
     purpose="Whether a play's precondition actually holds on this deal's evidence",
     effective_from=_FROM,
@@ -430,7 +430,9 @@ def market_context_score(lever: str, market=None):
         "competing quote they do not have loses standing. A known sole-source deal "
         "returns not_applicable rather than groundwork: there is no second supplier to "
         "go and find, so advising a competitive event would be noise. Since 1.1.0 a "
-        "play no evidence family can test is groundwork, not ready (fail closed)."
+        "play no evidence family can test is groundwork, not ready (fail closed). "
+        "Since 1.2.0 money evidence names its currency (the deal's), with pounds "
+        "beside a foreign deal value; an unrecorded currency is said, not assumed."
     ),
     golden=[
         GoldenVector(
@@ -450,6 +452,16 @@ def market_context_score(lever: str, market=None):
                              "score": 1.0},
                     "signals": {"invoice_total": 1200.0, "po_total": 1000.0}},
             expected={"state": "ready", "family": "overbilling"},
+        ),
+        GoldenVector(
+            inputs={"play": {"play": "Request a refund for non-compliant charges",
+                             "score": 1.0},
+                    "signals": {"invoice_total": 1200.0, "po_total": 1000.0,
+                                "currency": "inr"}},
+            expected={"state": "ready", "evidence": [
+                {"label": "Invoiced", "value": "INR 1,200.00", "source": "deal"},
+                {"label": "PO value", "value": "INR 1,000.00", "source": "deal"}]},
+            note="money evidence names the deal's currency",
         ),
         GoldenVector(
             inputs={"play": {"play": "Hold a supplier day", "score": 1.0}, "signals": {}},

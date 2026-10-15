@@ -38,6 +38,25 @@ def _ev(label: str, value, source: str) -> dict:
     return {"label": label, "value": value, "source": source}
 
 
+def _money(amount: float, signals: dict, *, with_pounds: bool = False) -> str:
+    """An amount in the deal's own currency, named.
+
+    A bare "38,536,342.28" of rupees reads as pounds on a screen that shows
+    pounds everywhere else. The deal's totals are all in its one currency; when
+    that is unrecorded the figure says so rather than borrow one.
+    """
+    code = str(signals.get("currency") or "").strip().upper()
+    if code == "GBP":
+        return f"£{amount:,.2f}"
+    if not code:
+        return f"{amount:,.2f} (currency not recorded)"
+    text = f"{code} {amount:,.2f}"
+    gbp = signals.get("deal_value_gbp")
+    if with_pounds and gbp is not None:
+        text += f" (£{float(gbp):,.0f})"
+    return text
+
+
 def assess(play: dict, signals: dict) -> dict:
     family = _family(play.get("play", ""))
     out = dict(play)
@@ -76,8 +95,8 @@ def assess(play: dict, signals: dict) -> dict:
         inv, po = signals.get("invoice_total"), signals.get("po_total")
         if inv is not None and po is not None and inv > po:
             out["state"] = "ready"
-            out["evidence"] = [_ev("Invoiced", f"{inv:,.2f}", "deal"),
-                               _ev("PO value", f"{po:,.2f}", "deal")]
+            out["evidence"] = [_ev("Invoiced", _money(inv, signals), "deal"),
+                               _ev("PO value", _money(po, signals), "deal")]
         else:
             out["state"] = "groundwork"
             out["unlocked_by"] = ("Needs matched invoice and PO totals showing "
@@ -88,7 +107,8 @@ def assess(play: dict, signals: dict) -> dict:
         value = signals.get("deal_value")
         if value is not None:
             out["state"] = "ready"
-            out["evidence"] = [_ev("Deal value", f"{value:,.2f}", "deal")]
+            out["evidence"] = [_ev("Deal value",
+                                   _money(value, signals, with_pounds=True), "deal")]
         else:
             out["state"] = "groundwork"
             out["unlocked_by"] = "Needs a known deal value to size a tier"
