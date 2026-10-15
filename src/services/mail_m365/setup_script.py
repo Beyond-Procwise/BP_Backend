@@ -24,15 +24,21 @@ def render(tenant_id: str, app_client_id: str, service_principal_object_id: Opti
                  or GUID.fullmatch(service_principal_object_id))
             and _GROUP.fullmatch(group)):
         raise ValueError("setup script input is not in the allowed form")
-    sp_id = service_principal_object_id or "<Object ID of 'Procwise Mail' under Entra > Enterprise applications>"
+    sp_id = service_principal_object_id or "PASTE-OBJECT-ID-HERE"
     return f"""# Restrict Procwise to your chosen shared mailboxes. No secret is needed to run this.
 # Tenant: {tenant_id}
 # 1. Create a mail-enabled security group called "{group}" and add each shared mailbox
 #    Procwise should use. Adding or removing a mailbox later = changing this group.
+# Fill these two in before running. ("<" is reserved in PowerShell, so they are plain strings.)
+#   ServicePrincipalId: Microsoft Entra > Enterprise applications > Procwise Mail > Object ID
+#   TestMailbox: one shared mailbox that is a member of the group, for the check in step 5
+$ServicePrincipalId = "{sp_id}"
+$TestMailbox = "shared-mailbox@yourdomain"
+
 Connect-ExchangeOnline
 
 # 2. Register Procwise's app in Exchange.
-New-ServicePrincipal -AppId {app_client_id} -ObjectId {sp_id} -DisplayName "Procwise Mail"
+New-ServicePrincipal -AppId {app_client_id} -ObjectId $ServicePrincipalId -DisplayName "Procwise Mail"
 
 # 3. A scope containing only members of the group.
 $group = Get-DistributionGroup -Identity "{group}"
@@ -43,5 +49,5 @@ New-ManagementRoleAssignment -App {app_client_id} -Role "Application Mail.Send" 
 New-ManagementRoleAssignment -App {app_client_id} -Role "Application Mail.ReadWrite" -CustomResourceScope "Procwise Mailboxes Scope"
 
 # 5. Check (should say InScope = True for a shared mailbox, False for anyone else).
-Test-ServicePrincipalAuthorization -Identity {app_client_id} -Resource <a shared mailbox address>
+Test-ServicePrincipalAuthorization -Identity {app_client_id} -Resource $TestMailbox
 """

@@ -32,3 +32,15 @@ def test_script_rejects_anything_outside_the_allow_list(bad):
             render(*args)
     with pytest.raises(ValueError):
         render(T, A, SP, group=bad)
+
+
+def test_script_has_no_angle_bracket_placeholders_and_uses_variables():
+    for sp in (SP, None):
+        text = render(T, A, sp)
+        code = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
+        assert not any("<" in ln or ">" in ln for ln in code)
+        assert '$TestMailbox = "shared-mailbox@yourdomain"' in text
+        assert "-ObjectId $ServicePrincipalId" in text
+        assert "-Resource $TestMailbox" in text
+    assert f'$ServicePrincipalId = "{SP}"' in render(T, A, SP)
+    assert '$ServicePrincipalId = "PASTE-OBJECT-ID-HERE"' in render(T, A, None)
