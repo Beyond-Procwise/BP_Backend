@@ -71,3 +71,25 @@ def write_integration(conn: Any, value: Dict[str, Any], *, actor: str) -> Dict[s
     if not getattr(conn, "autocommit", False):
         conn.commit()
     return value
+
+
+def consume_nonce(conn: Any, nonce: str, *, actor: str) -> bool:
+    """Spend a pending consent nonce, atomically. True iff it was pending.
+
+    One UPDATE whose WHERE requires the nonce to be present, so two callbacks racing
+    with the same state cannot both win (the row lock serialises them and the loser
+    re-checks the WHERE against the already-spent array).
+    """
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE proc.bp_admin_config "
+        "SET config_value = jsonb_set(config_value, '{pending_nonces}', "
+        "(config_value->'pending_nonces') - %s), "
+        "last_modified_by = %s, last_modified_date = now() "
+        "WHERE config_key = %s AND config_value->'pending_nonces' ? %s",
+        (nonce, actor, CONFIG_KEY, nonce))
+    spent = cur.rowcount == 1
+    cur.close()
+    if not getattr(conn, "autocommit", False):
+        conn.commit()
+    return spent
