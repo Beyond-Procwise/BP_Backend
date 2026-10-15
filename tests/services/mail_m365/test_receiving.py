@@ -152,6 +152,61 @@ def test_a_crashing_binding_does_not_stop_the_others(monkeypatch):
     assert out["binding_errors"] == 1 and out["messages"] == 1
 
 
+class HealthRepo:
+    """Bindings by id with their health; records every record_health call."""
+
+    def __init__(self, **states):
+        from services.style.mailbox import MailboxBinding
+        self.rows = {}
+        for i, (addr, (state, active)) in enumerate(states.items(), start=1):
+            self.rows[i] = MailboxBinding(i, "org", "graph", f"{addr}@cust.com", "send_receive",
+                                          "arn:aws:secretsmanager:x", None, SINCE, "ev", None,
+                                          state, active)
+        self.recorded = []
+
+    def get(self, binding_id):
+        return self.rows.get(binding_id)
+
+    def record_health(self, binding_id, state):
+        self.recorded.append((binding_id, state))
+
+
+def _poll_with(monkeypatch, repo, throttle=()):
+    bindings = [{"binding_id": i, "mailbox_address": b.mailbox_address, "last_sync_at": SINCE}
+                for i, b in repo.rows.items()]
+    monkeypatch.setattr("services.mail_intake.poll.active_bindings",
+                        lambda cur, provider, roles: bindings)
+
+    class Router:
+        def list_inbox(self, mailbox, since):
+            return Client(throttle=mailbox in throttle).list_inbox(mailbox, since)
+        def get_mime(self, mailbox, mid): return MIME
+    monkeypatch.setattr(receiving, "_default_client_for", lambda: (lambda: Router()))
+    conn = FakeConn()
+    receiving.poll_m365(conn, Pipeline(), repo=repo)
+    return conn
+
+
+def test_a_successful_poll_lifts_degraded_to_ok(monkeypatch):
+    """I6: one 429/5xx in the hourly probe must not hold supplier email for an hour."""
+    repo = HealthRepo(a=("DEGRADED", True), b=("OK", True))
+    conn = _poll_with(monkeypatch, repo)
+    assert repo.recorded == [(1, "OK")]          # only the degraded one, and only to OK
+    assert conn.commits >= 1
+
+
+def test_a_poll_never_lifts_revoked_or_inactive(monkeypatch):
+    repo = HealthRepo(a=("REVOKED", False), b=("DEGRADED", False), c=("REVOKED", True))
+    _poll_with(monkeypatch, repo)
+    assert repo.recorded == []
+
+
+def test_a_throttled_poll_does_not_lift_degraded(monkeypatch):
+    repo = HealthRepo(a=("DEGRADED", True))
+    _poll_with(monkeypatch, repo, throttle=("a@cust.com",))
+    assert repo.recorded == []
+
+
 def test_active_bindings_defaults_to_intake_and_accepts_roles():
     from services.mail_intake.poll import active_bindings
     seen = []

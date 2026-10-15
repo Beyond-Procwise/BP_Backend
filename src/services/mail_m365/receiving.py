@@ -157,7 +157,24 @@ def poll_one(conn: Any, binding: Mapping[str, Any], source: GraphMailSource,
         return {"throttled": 1}
 
 
-def poll_m365(conn: Any, pipeline: Any) -> Dict[str, int]:
+def _mark_ok_if_degraded(repo: Any, conn: Any, binding_id: Any) -> None:
+    """The Inbox was just listed successfully, which is exactly what the hourly health
+    probe checks: a mailbox left DEGRADED by one 429/5xx is healthy again now, not in up to
+    an hour (sending holds while DEGRADED). Only DEGRADED and active is lifted: REVOKED or
+    removed is the customer's or an admin's decision, which a poll never reverses."""
+    try:
+        from services.style.mailbox import HEALTH_DEGRADED, HEALTH_OK
+        b = repo.get(binding_id)
+        if b is not None and b.is_active and b.health_state == HEALTH_DEGRADED:
+            repo.record_health(binding_id, HEALTH_OK)
+            if conn is not None and not getattr(conn, "autocommit", False):
+                conn.commit()
+            log.info("m365 mailbox %s answered the poll; DEGRADED -> OK", b.mailbox_address)
+    except Exception:  # health bookkeeping never breaks the poll
+        log.debug("m365 health recovery skipped for binding=%s", binding_id, exc_info=True)
+
+
+def poll_m365(conn: Any, pipeline: Any, *, repo: Any = None) -> Dict[str, int]:
     from services.mail_intake.poll import active_bindings
     with conn.cursor() as cur:
         bindings = active_bindings(cur, provider="graph", roles=("send_receive",))
@@ -167,6 +184,9 @@ def poll_m365(conn: Any, pipeline: Any) -> Dict[str, int]:
     client_for = _default_client_for()
     if client_for is None:
         return {"bindings": 0}
+    if repo is None:
+        from services.style.mailbox import MailboxBindingRepository
+        repo = MailboxBindingRepository(conn)
     source = GraphMailSource(client_for)
     total: Dict[str, int] = {"bindings": len(bindings)}
     for binding in bindings:
@@ -177,6 +197,8 @@ def poll_m365(conn: Any, pipeline: Any) -> Dict[str, int]:
             log.exception("m365 poll binding=%s failed", binding.get("binding_id"))
             total["binding_errors"] = total.get("binding_errors", 0) + 1
             continue
+        if not counts.get("throttled"):
+            _mark_ok_if_degraded(repo, conn, binding.get("binding_id"))
         for k, v in counts.items():
             total[k] = total.get(k, 0) + v
     return total
