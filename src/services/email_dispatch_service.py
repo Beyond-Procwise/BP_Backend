@@ -31,7 +31,7 @@ from .email_dispatch_chain_store import (
 from src.services import email_dispatch_guard
 from src.services.agent_actions import record_action_or_fail
 from src.services.draft_hydration import DRAFT_COLUMNS, hydrate_draft, resolve_effective_content
-from .email_service import EmailService
+from .email_service import EmailSendResult, EmailService
 from .email_thread_store import (
     DEFAULT_THREAD_TABLE,
     ensure_thread_table,
@@ -472,15 +472,19 @@ class EmailDispatchService:
                     )
                 headers[key] = str(value)
 
-            send_result = self.email_service.send_email(
-                subject,
-                body,
-                recipient_list,
-                sender_email,
-                attachments,
-                headers=headers,
-                company_mailbox=True,
-            )
+            policy_refusal = self._email_policy_refusal(conn, recipient_list, body, attachments)
+            if policy_refusal:
+                send_result = EmailSendResult(False, None, held_reason=policy_refusal)
+            else:
+                send_result = self.email_service.send_email(
+                    subject,
+                    body,
+                    recipient_list,
+                    sender_email,
+                    attachments,
+                    headers=headers,
+                    company_mailbox=True,
+                )
 
             sent = send_result.success
             message_id = send_result.message_id
@@ -1115,6 +1119,35 @@ class EmailDispatchService:
             Body=data,
             ContentType=content_type or "application/octet-stream",
         )
+
+    def _email_policy_refusal(self, conn: Any, recipients: Sequence[str], body: str,
+                              attachments: Optional[List[Tuple[bytes, str]]]) -> Optional[str]:
+        """Why the company's email policy stops this supplier email, or None to go on.
+
+        The rules only apply when the email will leave from the company mailbox; a
+        customer that never connected Microsoft 365 sends through SES and never has
+        the policy read. If the route cannot be told, send_email holds it itself."""
+        from services import mail_policy, mail_rules, supplier_contact
+        from services.mail_m365 import sending
+
+        try:
+            decision = sending.decide()
+        except Exception:  # noqa: BLE001 - send_email holds on the same failure
+            return None
+        if decision.kind != "graph":
+            return None
+        try:
+            policy = mail_policy.load()
+            raw_bytes = len((body or "").encode("utf-8")) + sum(len(a[0]) for a in attachments or [])
+            size = raw_bytes * 4 // 3 + 10_000  # Graph's limit is on the base64 MIME
+            verdict = mail_rules.check_supplier_email(
+                list(recipients), size, policy,
+                is_supplier=lambda a: supplier_contact.is_known_supplier_email(conn, a),
+                size_limit=sending.MAX_MIME_BYTES)
+        except Exception:  # noqa: BLE001 - an outage must never look like "no rules"
+            self.logger.exception("email policy could not be applied")
+            return "Your email policy could not be read; nothing was sent"
+        return None if verdict.allowed else verdict.reason
 
     def _load_attachments(self, draft: Dict[str, Any]) -> List[Tuple[bytes, str]]:
         """Stored attachments as (bytes, filename), ready for the MIME path.

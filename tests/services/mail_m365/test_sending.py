@@ -271,3 +271,42 @@ def test_never_connected_is_ses_on_a_real_connection_path(monkeypatch):
     monkeypatch.setattr(sending, "MailboxBindingRepository",
                         lambda conn: _ExplodingRepo())
     assert sending.decide(object()).kind == "ses"
+
+
+# ---- the policy's on_disconnect choice ----
+
+def _policy(monkeypatch, on_disconnect=None, error=None):
+    from types import SimpleNamespace
+    from services import mail_policy
+
+    def load(conn=None):
+        if error:
+            raise error
+        return SimpleNamespace(on_disconnect=on_disconnect)
+    monkeypatch.setattr(mail_policy, "load", load)
+
+
+def test_disconnected_with_procwise_address_policy_uses_ses(monkeypatch):
+    _policy(monkeypatch, "procwise_address")
+    assert sending.decide(repo=Repo(any_=B()), integration=DISCONNECTED).kind == "ses"
+
+
+def test_connected_without_default_with_procwise_address_policy_uses_ses(monkeypatch):
+    _policy(monkeypatch, "procwise_address")
+    assert sending.decide(repo=Repo(), integration=CONNECTED).kind == "ses"
+
+
+def test_disconnected_with_hold_policy_is_held(monkeypatch):
+    _policy(monkeypatch, "hold")
+    assert sending.decide(repo=Repo(any_=B()), integration=DISCONNECTED).kind == "held"
+
+
+def test_unreadable_policy_stays_held(monkeypatch):
+    from services import mail_policy
+    _policy(monkeypatch, error=mail_policy.PolicyUnavailable("x"))
+    assert sending.decide(repo=Repo(any_=B()), integration=DISCONNECTED).kind == "held"
+
+
+def test_never_connected_does_not_read_the_policy(monkeypatch):
+    _policy(monkeypatch, error=AssertionError("policy read for a never-connected customer"))
+    assert sending.decide(repo=Repo(), integration={}).kind == "ses"

@@ -105,3 +105,17 @@ def resolve_emails(conn: Any, supplier_id: Optional[str]) -> List[str]:
     """Just the addresses. The shape ``email_dispatch_guard`` already consumed."""
 
     return resolve_contact(conn, supplier_id).emails
+
+
+def is_known_supplier_email(conn: Any, address: str) -> bool:
+    """Is ``address`` one of the contact emails on file for any supplier?
+
+    ``address`` must already be the lower-cased bare address."""
+
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT 1 FROM proc.bp_supplier WHERE lower(trim(contact_email_1)) = %s "
+        "OR lower(trim(contact_email_2)) = %s LIMIT 1",
+        (address, address),
+    )
+    return cur.fetchone() is not None

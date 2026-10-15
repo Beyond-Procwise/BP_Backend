@@ -87,6 +87,17 @@ def _reason_for(binding: MailboxBinding) -> str:
     return HELD_INACTIVE.format(address=binding.mailbox_address)
 
 
+def _policy_sends_from_procwise() -> bool:
+    """The email policy's ``on_disconnect`` choice. Only asked when the company mailbox
+    cannot be used; an unreadable policy means held, as it always was."""
+    from services import mail_policy
+    try:
+        return mail_policy.load().on_disconnect == "procwise_address"
+    except Exception as exc:  # noqa: BLE001 - cannot tell what the company chose: hold
+        logger.warning("Email policy unreadable while choosing the mail route: %s", exc)
+        return False
+
+
 def _decide(repo: Any, integration: Dict[str, Any]) -> Decision:
     if _never_connected(integration):
         return Decision("ses", None, None)
@@ -99,8 +110,12 @@ def _decide(repo: Any, integration: Dict[str, Any]) -> Decision:
     # No usable default. Has the company ever sent from its own mailbox?
     ever = default or repo.get_org_default_any()
     if ever is not None:
+        if not connected and _policy_sends_from_procwise():
+            return Decision("ses", None, None)
         return Decision("held", ever, _reason_for(ever) if connected else HELD_DISCONNECTED)
     if connected:
+        if _policy_sends_from_procwise():
+            return Decision("ses", None, None)
         return Decision("held", None, HELD_NO_DEFAULT)
     # Connected once, disconnected before any test send: nothing was ever sent from the
     # company's mailbox, so the Procwise sender is what suppliers have seen.

@@ -907,3 +907,49 @@ def test_dispatch_asks_for_the_company_mailbox_on_every_supplier_send(monkeypatc
     result, sent, uid = _send_with_capture(monkeypatch, lambda *a, **k: None)
     assert result["sent"] is True
     assert sent["kwargs"].get("company_mailbox") is True
+
+
+# --- the email policy at the moment of sending ---------------------------------------
+def _policy_send(monkeypatch, kind, verdict_policy=None, load_error=None):
+    from services import mail_policy, supplier_contact
+    from services.mail_m365 import sending
+    from src.services import agent_actions
+
+    audits = []
+    monkeypatch.setattr(agent_actions, "record_action", lambda **kw: audits.append(kw))
+    monkeypatch.setattr(sending, "decide", lambda *a, **k: SimpleNamespace(kind=kind))
+    loads = []
+
+    def load(conn=None):
+        loads.append(1)
+        if load_error:
+            raise load_error
+        return SimpleNamespace(company_domains=("example.com",),
+                               external_recipients="known_suppliers_only")
+    monkeypatch.setattr(mail_policy, "load", load)
+    monkeypatch.setattr(supplier_contact, "is_known_supplier_email", lambda conn, a: False)
+    result, sent, uid = _send_with_capture(monkeypatch, lambda *a, **k: None)
+    return result, sent, audits, loads
+
+
+def test_graph_send_to_an_unknown_recipient_is_held_by_the_policy(monkeypatch):
+    # recipients are buyer@example.com: an internal address under this policy
+    result, sent, audits, _ = _policy_send(monkeypatch, "graph")
+    assert result["sent"] is False
+    assert "colleagues" in result["draft"]["held_reason"]
+    assert "kwargs" not in sent  # send_email never called
+    assert [a["action_type"] for a in audits] == ["send_held"]
+
+
+def test_ses_decision_does_not_apply_the_rules(monkeypatch):
+    result, sent, audits, loads = _policy_send(monkeypatch, "ses")
+    assert result["sent"] is True and loads == [] and audits == []
+
+
+def test_unreadable_policy_under_graph_is_held(monkeypatch):
+    from services import mail_policy
+    result, sent, audits, _ = _policy_send(monkeypatch, "graph",
+                                           load_error=mail_policy.PolicyUnavailable("gone"))
+    assert result["sent"] is False
+    assert result["draft"]["held_reason"] == "Your email policy could not be read; nothing was sent"
+    assert "kwargs" not in sent and [a["action_type"] for a in audits] == ["send_held"]
