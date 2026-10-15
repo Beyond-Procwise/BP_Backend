@@ -95,3 +95,26 @@ def screen_agent_map(read: Optional[Callable[[str], Dict[str, Any]]] = None) -> 
         return {}
     return {str(k).strip().lower(): str(v).strip().lower()
             for k, v in screens.items() if str(k).strip() and str(v).strip()}
+
+
+def agent_answer(agent: Any, query: str, *, user_id: Optional[str],
+                 context: Optional[str]) -> Optional[str]:
+    """The agent's answer to one question, or None, meaning "answer it generally".
+
+    The agent reasons under its own instructions, tools and policies
+    (BaseAgent.reason). `user_id` reaches the agent-policy gate on every tool
+    call, which is the per-person check on what this agent may do for them.
+    """
+    kwargs: Dict[str, Any] = {"user_id": user_id}
+    if context:
+        kwargs["extra_system"] = context
+    try:
+        result = agent.reason(query, **kwargs)
+    except Exception:  # noqa: BLE001 - a broken agent is a General answer, not a 500
+        logger.exception("ask agent %s failed", type(agent).__name__)
+        return None
+    text = str(getattr(result, "answer", "") or "").strip()
+    if getattr(result, "error", None) and not text:
+        logger.warning("ask agent %s errored: %s", type(agent).__name__, result.error)
+        return None
+    return text or None
