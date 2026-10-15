@@ -50,7 +50,9 @@ def default_document(pack: QuotePack) -> QuoteAST:
     otherwise every line, the total, then the notes and terms the pack holds. Either way
     every line, every total and every term is placed: what the layout leaves out of those
     follows at the end, because a quote that drops one is not the quote on record."""
-    columns = ["line_no", "sku", "description", "quantity", "unit_of_measure", "unit_price",
+    # a column no line fills is left off (a builder quote's lines have no SKU)
+    columns = ["line_no", *(["sku"] if any(l.sku for l in pack.lines) else []),
+               "description", "quantity", "unit_of_measure", "unit_price",
                *(["discount_pct"] if any(l.discount_pct for l in pack.lines) else []),
                "line_total"]
     general = [t.term_id for t in pack.terms if t.kind == "general"]
