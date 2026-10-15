@@ -379,6 +379,80 @@ def test_the_cost_record_is_written_on_its_own_and_the_price_does_not_move(live_
                               lines={saved["lines"][0]["id"]: {"unitPrice": 1}})
 
 
+def test_a_line_keeps_its_id_through_a_save_so_its_cost_record_still_finds_it(live_db):
+    conn, _ = live_db
+    q = _new(conn)
+    ids = [l["id"] for l in q["lines"]]
+    # the screen moves the third line to the top, edits the first and adds a new one
+    lines = [q["lines"][2], {**q["lines"][0], "description": "Seats, renamed"},
+             q["lines"][1], {"tag": "service", "description": "Training", "qty": 1,
+                             "unitPrice": 500}]
+    saved = builder.save(conn, int(q["id"]), draft=_draft(lines=lines), actor=DRAFTER)
+    assert [l["id"] for l in saved["lines"][:3]] == [ids[2], ids[0], ids[1]]
+    assert saved["lines"][3]["id"] not in ids
+    assert saved["lines"][1]["description"] == "Seats, renamed"
+    # the cost record read before the save is still about these lines
+    again = builder.save_internal(conn, int(q["id"]), actor=DRAFTER,
+                                  lines={ids[0]: {"cost": 130}})
+    assert [l["cost"] for l in again["lines"]][:3] == [None, D("130.0000"), D("12000.0000")]
+    # a line the save leaves out is gone, and its id is not reused by the next one
+    dropped = builder.save(conn, int(q["id"]), actor=DRAFTER,
+                           draft=_draft(lines=[again["lines"][1], {**again["lines"][1], "id": ids[0]}]))
+    assert [l["id"] for l in dropped["lines"]][0] == ids[0]
+    assert dropped["lines"][1]["id"] not in ids, "the same id twice is one kept line and one new"
+
+
+def test_a_save_that_sends_a_blank_cost_does_not_erase_it(live_db):
+    conn, _ = live_db
+    q = _new(conn)
+    # a screen that does not hold the cost record sends every cost and markup as null
+    blank = [{**l, "cost": None, "markupPct": None} for l in q["lines"]]
+    saved = builder.save(conn, int(q["id"]), draft=_draft(lines=blank), actor=DRAFTER)
+    assert [(l["cost"], l["markupPct"]) for l in saved["lines"]] == [
+        (D("125.0000"), D("60.0000")), (D("12000.0000"), D("50.0000")), (None, None)]
+    # clearing one is the cost record's own route
+    cleared = builder.save_internal(conn, int(q["id"]), actor=DRAFTER,
+                                    lines={q["lines"][0]["id"]: {"cost": None, "markupPct": None}})
+    assert (cleared["lines"][0]["cost"], cleared["lines"][0]["markupPct"]) == (None, None)
+    assert cleared["totals"]["uncostedLines"] == 2
+
+
+def test_a_quote_given_to_another_customer_is_not_filed_under_the_first(live_db):
+    conn, _ = live_db
+    first = _customer(contact="A. Reyes", email="a.reyes@first.livetest.example")
+    q = _new(conn, customer=first)
+    other = _customer(contact="B. Lane", email="b.lane@second.livetest.example")
+    saved = builder.save(conn, int(q["id"]), draft=_draft(customer=other), actor=DRAFTER)
+    assert saved["customer"]["accountId"] != q["customer"]["accountId"]
+    assert saved["customer"]["email"] == "b.lane@second.livetest.example"
+    old = accounts.get_account(conn, q["customer"]["accountId"])
+    assert [c["contact_email"] for c in old["contacts"]] == ["a.reyes@first.livetest.example"]
+    assert quotes.get_quote(conn, int(q["id"]))["account_name"] == other["name"]
+
+
+def test_a_customer_renamed_keeps_its_record_and_the_page_prints_the_typed_name(live_db):
+    conn, _ = live_db
+    who = _customer(contact="A. Reyes", email="a.reyes@renamed.livetest.example")
+    q = _new(conn, customer=who)
+    longer = {**who, "name": who["name"] + " Holdings Ltd"}
+    saved = builder.save(conn, int(q["id"]), draft=_draft(customer=longer), actor=DRAFTER)
+    assert saved["customer"]["accountId"] == q["customer"]["accountId"]
+    assert quotes.get_quote(conn, int(q["id"]))["account_name"] == longer["name"]
+
+
+def test_an_address_taken_off_the_quote_leaves_nobody_to_send_it_to(live_db):
+    conn, _ = live_db
+    who = _customer(contact="A. Reyes", email="a.reyes@removed.livetest.example")
+    q = _new(conn, customer=who)
+    saved = builder.save(conn, int(q["id"]), actor=DRAFTER,
+                         draft=_draft(customer={k: v for k, v in who.items() if k != "email"}))
+    assert saved["customer"]["email"] is None
+    assert saved["customer"]["accountId"] == q["customer"]["accountId"], "same name, same customer"
+    renamed = builder.save(conn, int(q["id"]), actor=DRAFTER,
+                           draft=_draft(customer={"name": f"{SENTINEL} Someone Else", "contact": "X"}))
+    assert renamed["customer"]["accountId"] is None, "another name with no address is not theirs"
+
+
 def test_the_customer_fields_carry_nothing_that_is_ours(live_db):
     conn, _ = live_db
     q = _new(conn)

@@ -205,9 +205,9 @@ def get_quote_internal(quote_id: int, principal=Depends(require_user)):
 
 @router.put("/spendiq/quotes/{quote_id}/internal")
 def save_quote_internal(quote_id: int, body: InternalBody, principal=Depends(require_user)):
-    """Write a draft's cost record. The customer's price does not move here. A save gives
-    the quote's lines new ids, so the answer carries both records: `quote` (the customer's)
-    and `internal`, each with the new ids."""
+    """Write a draft's cost record. The customer's price does not move here. Line ids are
+    kept by every save; the answer carries both records: `quote` (the customer's) and
+    `internal`. A null cost or markup here clears it -- the one route that does."""
     gate("sales_quote.price", principal, agent=_AGENT, context={"sales_quote_id": quote_id})
     _require_margin_permit(principal, {"sales_quote_id": quote_id})
     with http_errors(), get_conn() as c:
@@ -351,10 +351,12 @@ def agent_turn(quote_id: int, body: AgentTurn, principal=Depends(require_user)):
                                                "sections", "scopeHtml", "assumptionsHtml")
                          if k in held}}
     # The screen holds the cost record apart, so its lines may come without it: each line
-    # it read gets its saved tag, cost and markup unless the screen sent its own.
+    # it read gets its saved tag, cost and markup unless the screen sent its own (a null
+    # cost or markup is not its own: it is one the screen does not hold, as on a save).
     own = {l["id"]: l for l in saved.get("lines") or []}
     quote["lines"] = [
-        {**{k: own[l["id"]].get(k) for k in builder.INTERNAL_LINE_KEYS if k not in l}, **l}
+        {**l, **{k: own[l["id"]].get(k) for k in builder.INTERNAL_LINE_KEYS
+                 if k not in l or (k != "tag" and l.get(k) in (None, ""))}}
         if isinstance(l, dict) and l.get("id") in own else l
         for l in quote.get("lines") or []]
     try:
