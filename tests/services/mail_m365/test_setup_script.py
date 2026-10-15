@@ -44,3 +44,23 @@ def test_script_has_no_angle_bracket_placeholders_and_uses_variables():
         assert "-Resource $TestMailbox" in text
     assert f'$ServicePrincipalId = "{SP}"' in render(T, A, SP)
     assert '$ServicePrincipalId = "PASTE-OBJECT-ID-HERE"' in render(T, A, None)
+
+
+def test_read_send_grants_read_not_readwrite_and_uses_the_group():
+    text = render(T, A, SP, group="Finance Shared", access_level="read_send")
+    assert '-Role "Application Mail.Read"' in text
+    assert "Mail.ReadWrite" not in text
+    assert '-Role "Application Mail.Send"' in text
+    assert "Finance Shared" in text
+
+
+def test_read_send_change_grants_readwrite():
+    text = render(T, A, SP, access_level="read_send_change")
+    assert '-Role "Application Mail.ReadWrite"' in text
+    assert '-Role "Application Mail.Send"' in text
+
+
+@pytest.mark.parametrize("bad", ["", "admin", "read_send; Remove-Mailbox", None])
+def test_unknown_access_level_is_rejected(bad):
+    with pytest.raises(ValueError):
+        render(T, A, SP, access_level=bad)

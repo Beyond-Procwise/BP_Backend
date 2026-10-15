@@ -39,9 +39,12 @@ def client(monkeypatch):
 
 def test_get_status_is_gated_and_reports_can_configure(client, monkeypatch):
     monkeypatch.setattr(admin, "status", lambda conn, settings: {"connected": False})
+    monkeypatch.setattr(r, "_can_configure", lambda p: True)
     res = client.get("/admin/integrations/mail")
-    assert client.gate_calls == ["mailbox.bind"]
+    assert client.gate_calls == ["mailbox.view"]
     assert res.json()["canConfigure"] is True
+    monkeypatch.setattr(r, "_can_configure", lambda p: False)
+    assert client.get("/admin/integrations/mail").json()["canConfigure"] is False
 
 
 def test_gate_refusal_is_403(client, monkeypatch):
@@ -211,6 +214,8 @@ def test_callback_success_writes_no_refusal_audit(client, monkeypatch):
 
 
 def test_setup_script_bad_id_is_400(client, monkeypatch):
+    monkeypatch.setattr(r.mail_policy, "load", lambda conn=None: type(
+        "Pol", (), {"restriction_group": "Procwise Mailboxes", "access_level": "read_send"})())
     monkeypatch.setattr(r, "read_integration",
                         lambda conn: {"tenant_id": "11111111-1111-1111-1111-111111111111"})
     res = client.get("/admin/integrations/mail/m365/setup-script",
@@ -222,8 +227,12 @@ def test_setup_script_bad_id_is_400(client, monkeypatch):
 def test_setup_script_ok(client, monkeypatch):
     monkeypatch.setattr(r, "read_integration",
                         lambda conn: {"tenant_id": "11111111-1111-1111-1111-111111111111"})
-    monkeypatch.setattr(r, "render_script", lambda *a: "SCRIPT")
+    seen = {}
+    monkeypatch.setattr(r.mail_policy, "load", lambda conn=None: type(
+        "Pol", (), {"restriction_group": "Finance Shared", "access_level": "read_send"})())
+    monkeypatch.setattr(r, "render_script", lambda *a, **k: seen.update(k) or "SCRIPT")
     assert client.get("/admin/integrations/mail/m365/setup-script").text == "SCRIPT"
+    assert seen == {"group": "Finance Shared", "access_level": "read_send"}
 
 
 def test_make_default_value_error_is_422(client, monkeypatch):
@@ -264,7 +273,8 @@ def test_callback_is_the_only_unauthenticated_mail_route(monkeypatch):
     try:
         c = TC(app, raise_server_exceptions=False)
         b = "/admin/integrations/mail"
-        for method, url in [("get", b), ("post", f"{b}/m365/connect"),
+        for method, url in [("get", b), ("get", f"{b}/policy"), ("patch", f"{b}/policy"),
+                            ("post", f"{b}/m365/connect"),
                             ("get", f"{b}/m365/setup-script"), ("post", f"{b}/mailboxes"),
                             ("post", f"{b}/mailboxes/1/verify"),
                             ("post", f"{b}/mailboxes/1/test-send"),

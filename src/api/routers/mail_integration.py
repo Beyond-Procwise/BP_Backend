@@ -19,6 +19,8 @@ from pydantic import BaseModel, Field
 from api.auth import require_user
 from api.endpoint_gate import require as gate
 from services.db import get_conn
+from services import mail_policy, rbac
+from services.actions import action_class
 from services.mail_m365 import admin, consent, sending
 from services.mail_m365.config import load_settings, read_integration, settings_page_url
 from services.mail_m365.consent import load_state_key
@@ -80,9 +82,70 @@ class DefaultBody(BaseModel):
 
 @router.get("", summary="Microsoft 365 connection and shared mailboxes")
 def get_status(principal: Any = Depends(require_user)) -> dict:
-    gate("mailbox.bind", principal, agent=_AGENT, context={"op": "read"})
+    gate("mailbox.view", principal, agent=_AGENT, context={"op": "read"})
     with _conn() as conn:
-        return {**admin.status(conn, settings=load_settings()), "canConfigure": True}
+        return {**admin.status(conn, settings=load_settings()),
+                "canConfigure": _can_configure(principal)}
+
+
+def _can_configure(principal: Any) -> bool:
+    """May this caller change the settings? Asked of the role table directly: the gate
+    would write a refused-attempt audit row on every read of the page."""
+    try:
+        return rbac.may(rbac.effective_role(principal), action_class("mailbox.bind"))
+    except Exception:  # noqa: BLE001 - when unsure, show no controls (the server still decides)
+        logger.exception("could not work out whether the caller may configure email")
+        return False
+
+
+def _policy_view(p: Any) -> dict:
+    return {"policy": {"version": p.version, "internal_send": p.internal_send,
+                       "company_domains": list(p.company_domains),
+                       "external_recipients": p.external_recipients,
+                       "read_scope": p.read_scope, "on_disconnect": p.on_disconnect,
+                       "access_level": p.access_level,
+                       "notices_from_mailbox": p.notices_from_mailbox,
+                       "poll_seconds": p.poll_seconds,
+                       "restriction_group": p.restriction_group},
+            "history": list(p.history)}
+
+
+class PolicyBody(BaseModel):
+    changes: dict
+    version: int
+
+
+def _detail(status: int, code: str, message: str) -> JSONResponse:
+    return JSONResponse(status_code=status, content={"detail": {"code": code, "message": message}})
+
+
+@router.get("/policy", summary="The email rules for this company")
+def get_policy(principal: Any = Depends(require_user)) -> Any:
+    gate("mailbox.view", principal, agent=_AGENT, context={"op": "policy_read"})
+    try:
+        policy = mail_policy.load()
+    except mail_policy.PolicyUnavailable:
+        logger.exception("email policy unavailable")
+        return _detail(503, "policy_unavailable",
+                       "The email settings cannot be read right now. Nothing has been changed.")
+    return {**_policy_view(policy), "canConfigure": _can_configure(principal)}
+
+
+@router.patch("/policy", summary="Change the email rules")
+def patch_policy(body: PolicyBody, principal: Any = Depends(require_user)) -> Any:
+    gate("mailbox.bind", principal, agent=_AGENT,
+         context={"op": "policy_save", "fields": sorted(body.changes)})
+    try:
+        policy = mail_policy.save(body.changes, by=_actor(principal), expected_version=body.version)
+    except mail_policy.PolicyConflict as exc:
+        return _detail(409, "conflict", str(exc))
+    except ValueError as exc:
+        return _detail(422, "invalid", str(exc))
+    except mail_policy.PolicyUnavailable:
+        logger.exception("email policy unavailable on save")
+        return _detail(503, "policy_unavailable",
+                       "The email settings cannot be saved right now. Nothing has been changed.")
+    return _policy_view(policy)
 
 
 @router.post("/m365/connect", summary="Start Microsoft's admin approval")
@@ -146,10 +209,16 @@ def setup_script(principal: Any = Depends(require_user),
                  service_principal_object_id: Optional[str] = None) -> str:
     gate("mailbox.bind", principal, agent=_AGENT, context={"op": "script"})
     s = _settings_or_503()
+    try:
+        policy = mail_policy.load()
+    except mail_policy.PolicyUnavailable:
+        raise HTTPException(503, "The email settings cannot be read right now, so the "
+                                 "script was not made.")
     with _conn() as conn:
         tenant = read_integration(conn).get("tenant_id") or "<your tenant id>"
     try:
-        return render_script(tenant, s.client_id, service_principal_object_id)
+        return render_script(tenant, s.client_id, service_principal_object_id,
+                             group=policy.restriction_group, access_level=policy.access_level)
     except ValueError:
         raise HTTPException(400, "That is not a valid Object ID. Copy it from Microsoft Entra "
                                  "-> Enterprise applications -> Procwise Mail, or connect "
