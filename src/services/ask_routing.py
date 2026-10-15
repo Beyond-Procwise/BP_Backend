@@ -39,7 +39,7 @@ def _norm(value: Optional[str]) -> Optional[str]:
 def agent_label(slug: Optional[str]) -> str:
     if not slug:
         return "General"
-    return slug.replace("_", " ").strip().capitalize() + " agent"
+    return slug.replace("_", " ").replace("-", " ").strip().capitalize() + " agent"
 
 
 @dataclass(frozen=True)

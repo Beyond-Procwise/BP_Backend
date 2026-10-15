@@ -144,3 +144,8 @@ def test_no_context_sends_no_extra_system():
     agent = _Agent(ToolRunResult(answer="ok"))
     ask_routing.agent_answer(agent, "q", user_id="u", context=None)
     assert "extra_system" not in agent.seen
+
+
+def test_a_created_agent_slug_reads_as_words():
+    # Created agents are keyed by hyphenated slugs (cap-buy-negotiator).
+    assert agent_label("cap-buy-negotiator") == "Cap buy negotiator agent"
