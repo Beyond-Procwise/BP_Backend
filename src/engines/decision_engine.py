@@ -1360,14 +1360,17 @@ class DecisionEngine:
                         )
                     else:
                         # Open states keep resolved_* NULL — they are not resolved.
-                        # resolved_at is cleared explicitly: a finding that was
+                        # All three are cleared explicitly: a finding that was
                         # resolved and is now flagged back open would otherwise keep
-                        # the stamp saying it was closed, and read as both at once.
+                        # the stamp, the value and the name of whoever closed it, and
+                        # read as both at once. Who re-opened it is on bp_decision.
                         cur.execute(
                             """
                             UPDATE proc.bp_extraction_discrepancy
                                SET status = %s,
                                    resolution_action = %s,
+                                   resolved_value = NULL,
+                                   resolved_by = NULL,
                                    resolved_at = NULL
                              WHERE discrepancy_id::text = %s
                             """,

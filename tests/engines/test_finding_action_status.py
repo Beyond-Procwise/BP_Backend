@@ -173,6 +173,18 @@ def test_reopening_a_finding_clears_the_resolution_stamp():
     )
 
 
+def test_reopening_a_finding_clears_who_closed_it_and_with_what():
+    """The stamp was not the only thing left behind. Live on bp_testdb (finding 85,
+    2026-10-15): dismissed, then flagged back open, it read status=open with
+    resolved_by still naming the person who dismissed it. A re-opened finding is not
+    resolved, so it carries no resolver and no resolved value."""
+    eng, cur = _engine()
+    eng.execute(4242, "flag", user_id="tester", override_reason="under test")
+    sql = cur.update_sql[-1]
+    for column in ("resolved_by = NULL", "resolved_value = NULL", "resolved_at = NULL"):
+        assert column in sql, f"re-opening must set {column}: {sql}"
+
+
 @pytest.mark.parametrize("action,expected", [
     ("apply_value", "resolved"), ("confirm", "resolved"), ("approve", "resolved"),
     ("dismiss", "ignored"), ("reject", "ignored"),
