@@ -53,14 +53,16 @@ def _domains(x):
 
 
 def _poll(x):
-    x = int(x)
+    if isinstance(x, bool) or not isinstance(x, int):
+        raise ValueError("must be a whole number of seconds")
     if not 60 <= x <= 3600:
         raise ValueError("must be between 60 and 3600 seconds")
     return x
 
 
 def _group(x):
-    x = str(x)
+    if not isinstance(x, str):
+        raise ValueError("must be text")
     if not _RE_GROUP.fullmatch(x):
         raise ValueError("letters, numbers, spaces, . _ - only (max 64)")
     return x
@@ -107,8 +109,22 @@ def _fetch(cur, for_update: bool = False):
         raise PolicyUnavailable("email policy: the policy row is missing")
     policy_id, version, details = row[0], row[1], row[2]
     if isinstance(details, str):
-        details = json.loads(details)
-    return policy_id, int(version or 0), details or {}
+        try:
+            details = json.loads(details)
+        except ValueError as exc:
+            raise PolicyUnavailable(f"email policy: policy_details is not valid JSON: {exc}") from exc
+    if not isinstance(details, dict):
+        raise PolicyUnavailable("email policy: policy_details is not an object")
+    return policy_id, int(version or 0), details
+
+
+def _history(details: dict) -> list:
+    history = details.get("history", [])
+    if history is None:
+        history = []
+    if not isinstance(history, list) or not all(isinstance(h, dict) for h in history):
+        raise PolicyUnavailable("email policy: history: must be a list of entries")
+    return history
 
 
 def _build(version: int, details: dict) -> EmailPolicy:
@@ -123,7 +139,7 @@ def _build(version: int, details: dict) -> EmailPolicy:
             raise PolicyUnavailable(f"email policy: {key}: missing") from None
         except (ValueError, TypeError) as exc:
             raise PolicyUnavailable(f"email policy: {key}: {exc}") from exc
-    history = details.get("history") or []
+    history = _history(details)
     return EmailPolicy(version=version, history=tuple(history), **values)
 
 
@@ -171,7 +187,10 @@ def _save(conn, cleaned: Dict[str, Any], by: str, expected_version: int) -> Emai
             policy_id, version, details = _fetch(cur, for_update=True)
             if version != int(expected_version):
                 raise PolicyConflict("the email settings were changed by somebody else; reload and try again")
-            rules = dict(details.get("rules") or {})
+            history = _history(details)
+            if not isinstance(details.get("rules"), dict):
+                raise PolicyUnavailable("email policy: rules: missing")
+            rules = dict(details["rules"])
             diff = []
             for key, after in cleaned.items():
                 before = rules.get(key)
@@ -187,7 +206,7 @@ def _save(conn, cleaned: Dict[str, Any], by: str, expected_version: int) -> Emai
                 conn.rollback()
                 return _build(version, details)
             now = datetime.now(timezone.utc).isoformat()
-            history = list(details.get("history") or []) + [
+            history = history + [
                 {"version": version + 1, "changed_by": by, "changed_at": now, **d} for d in diff]
             merged["history"] = history
             # The version is in the WHERE as well as the check above: a stale save

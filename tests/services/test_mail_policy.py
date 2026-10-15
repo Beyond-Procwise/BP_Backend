@@ -1,5 +1,6 @@
 """Email policy: strict read, validated save, optimistic lock, history."""
 
+import json
 import os
 
 import pytest
@@ -44,7 +45,6 @@ def live_policy():
         cur.execute("""SELECT policy_id, policy_details, version, last_modified_by, last_modified_date
                          FROM proc.bp_policy WHERE policy_name='email_policy' AND policy_status=1""")
         pid, details, version, by, when = cur.fetchone()
-    import json
     try:
         yield mp.load()
     finally:
@@ -124,3 +124,80 @@ def test_a_failed_audit_write_means_the_save_does_not_apply(live_policy, monkeyp
     assert now.poll_seconds == live_policy.poll_seconds
     assert now.version == live_policy.version
     assert now.company_domains == live_policy.company_domains
+
+
+_GOOD = {"internal_send": "off", "company_domains": [], "external_recipients": "any",
+         "read_scope": "whole_inbox", "on_disconnect": "hold", "access_level": "read_send",
+         "notices_from_mailbox": "off", "poll_seconds": 120, "restriction_group": "G"}
+
+
+@pytest.mark.parametrize("details", [
+    "{not json",
+    ["a", "list"],
+    42,
+    {"rules": _GOOD, "history": 5},
+    {"rules": _GOOD, "history": "abc"},
+    {"rules": _GOOD, "history": {"a": 1}},
+    {"rules": _GOOD, "history": [{"ok": 1}, "bad"]},
+    {"rules": ["not", "a", "dict"], "history": []},
+])
+def test_load_malformed_rows_raise_policy_unavailable(details):
+    with pytest.raises(mp.PolicyUnavailable):
+        mp.load(_Conn((1, 1, details)))
+
+
+@pytest.mark.parametrize("field,bad", [("poll_seconds", True), ("poll_seconds", "120"),
+                                       ("poll_seconds", 120.5), ("restriction_group", 5)])
+def test_validators_require_the_right_type(field, bad):
+    with pytest.raises(ValueError):
+        mp.FIELDS[field](bad)
+
+
+class _TxCur(_Cur):
+    def __init__(self, row, rowcount):
+        super().__init__(row)
+        self.rowcount = rowcount
+
+
+class _TxConn(_Conn):
+    def __init__(self, row, rowcount=1):
+        super().__init__(row)
+        self.autocommit = True
+        self.rowcount = rowcount
+        self.rolled_back = 0
+
+    def cursor(self):
+        return _TxCur(self.row, self.rowcount)
+
+    def rollback(self):
+        self.rolled_back += 1
+
+    def commit(self):
+        pass
+
+
+def _row(history=None):
+    return (1, 1, {"rules": {**_GOOD}, "history": history if history is not None else []})
+
+
+def test_autocommit_restored_after_conflict():
+    conn = _TxConn(_row(), rowcount=0)
+    with pytest.raises(mp.PolicyConflict):
+        mp.save({"poll_seconds": 300}, by="a@x", expected_version=1, conn=conn)
+    assert conn.autocommit is True and conn.rolled_back == 1
+
+
+def test_autocommit_restored_after_error_mid_save(monkeypatch):
+    conn = _TxConn(_row())
+    monkeypatch.setattr(mp, "record_action_or_fail",
+                        lambda **kw: (_ for _ in ()).throw(RuntimeError("audit down")))
+    with pytest.raises(RuntimeError):
+        mp.save({"poll_seconds": 300}, by="a@x", expected_version=1, conn=conn)
+    assert conn.autocommit is True and conn.rolled_back == 1
+
+
+def test_save_refuses_to_rewrite_a_malformed_history():
+    conn = _TxConn((1, 1, {"rules": {**_GOOD}, "history": "oops"}))
+    with pytest.raises(mp.PolicyUnavailable):
+        mp.save({"poll_seconds": 300}, by="a@x", expected_version=1, conn=conn)
+    assert conn.autocommit is True
