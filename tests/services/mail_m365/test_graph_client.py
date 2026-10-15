@@ -58,6 +58,12 @@ def test_can_read_allowed_and_denied():
     assert c.can_read("no@x")[0] is False
 
 
+def test_can_read_401_is_our_token_not_a_denial():
+    c = client({("GET", "/mailFolders/inbox"): (401, {})})
+    with pytest.raises(MailboxUnreachable, match="sign-in"):
+        c.can_read("m@x")
+
+
 def test_can_read_inconclusive_raises():
     c = client({("GET", "/mailFolders/inbox"): (500, {})})
     with pytest.raises(MailboxUnreachable):

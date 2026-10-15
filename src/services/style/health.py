@@ -116,8 +116,9 @@ def check_binding(
             binding.binding_id, binding.mailbox_address, binding.user_ref,
         )
         if binding.role == ROLE_SEND_RECEIVE:
-            # record_health deactivates and audits; deactivate also clears is_default so
-            # sending then holds mail instead of using a mailbox we may no longer touch.
+            # record_health already set is_active FALSE and audited, but it leaves
+            # is_default set. deactivate clears it, so sending holds mail instead of
+            # picking this mailbox as the default sender.
             repo.deactivate(binding.binding_id, reason="access withdrawn in Microsoft 365")
     return state
 

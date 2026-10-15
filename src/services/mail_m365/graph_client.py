@@ -86,7 +86,11 @@ class M365Client:
             self._url(f"{self._mbx(mailbox)}/mailFolders/inbox", method="GET"), self._headers())
         if 200 <= status < 300:
             return True, f"read Inbox with HTTP {status}"
-        if status in (401, 403, 404):
+        if status == 401:
+            # Microsoft rejected OUR token, which says nothing about this mailbox. Treating it
+            # as a denial would read as every customer withdrawing access at once.
+            raise MailboxUnreachable("Microsoft rejected our sign-in (HTTP 401)")
+        if status in (403, 404):
             return False, f"denied with HTTP {status}"
         raise MailboxUnreachable(f"Inbox read returned HTTP {status}; inconclusive")
 

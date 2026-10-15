@@ -247,6 +247,24 @@ def test_can_read_unreachable_is_inconclusive_and_creates_nothing(env):
     assert e.value.code == "inconclusive" and env["rows"] == {}
 
 
+def test_our_token_rejected_is_inconclusive_not_cannot_read(env):
+    from services.mail_m365.graph_client import M365Client
+    from services.style.graph_source import GraphCredentials
+
+    class T401:
+        def post_form(self, url, data):
+            return 200, {"access_token": "t", "expires_in": 3600}
+
+        def get(self, url, headers):
+            return 401, {}
+
+    with pytest.raises(admin.MailboxRefused) as e:
+        admin.add_mailbox(None, "procurement@cust.com", "me@cust.com", actor="a", settings=S,
+                          client_factory=lambda t: M365Client(GraphCredentials("t", "c", "s"),
+                                                              transport=T401()))
+    assert e.value.code == "inconclusive" and env["rows"] == {}
+
+
 def test_unique_violation_on_activation_is_a_duplicate(env, monkeypatch):
     class UniqueViolation(Exception):
         pgcode = "23505"

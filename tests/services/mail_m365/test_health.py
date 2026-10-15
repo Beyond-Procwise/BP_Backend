@@ -3,9 +3,9 @@ from datetime import datetime, timezone
 import pytest
 
 from services.mail_m365 import receiving
-from services.mail_m365.graph_client import Throttled
+from services.mail_m365.graph_client import M365Client, Throttled
 from services.style import health
-from services.style.graph_source import MailboxUnreachable
+from services.style.graph_source import GraphCredentials, MailboxUnreachable
 from services.style.mailbox import MailboxBinding
 
 NOW = datetime(2026, 10, 15, tzinfo=timezone.utc)
@@ -70,3 +70,39 @@ def test_m365_not_connected_leaves_state_unchanged(monkeypatch):
     repo = Repo()
     assert health.check_binding(B, repo=repo) == "OK"
     assert repo.recorded == [] and repo.deactivated == []
+
+
+class StatusTransport:
+    def __init__(self, status):
+        self.status = status
+
+    def post_form(self, url, data):
+        return 200, {"access_token": "t", "expires_in": 3600}
+
+    def get(self, url, headers):
+        return self.status, {}
+
+
+@pytest.mark.parametrize("status,state,deactivated", [
+    (401, "DEGRADED", False),   # Microsoft rejected OUR token: not the customer's decision
+    (403, "REVOKED", True),
+    (404, "REVOKED", True),
+    (429, "DEGRADED", False),
+    (500, "DEGRADED", False),
+    (200, "OK", False),
+])
+def test_http_status_maps_to_state_end_to_end(monkeypatch, status, state, deactivated):
+    client = M365Client(GraphCredentials("t", "c", "s"), transport=StatusTransport(status))
+    _use(monkeypatch, client)
+    repo = Repo()
+    assert health.check_binding(B, repo=repo) == state
+    assert repo.recorded == [state]
+    assert bool(repo.deactivated) is deactivated
+
+
+def test_revoked_non_send_receive_binding_does_not_call_deactivate():
+    from dataclasses import replace
+    repo = Repo()
+    assert health.check_binding(replace(B, role="exemplar_source"), repo=repo,
+                                probe=lambda b: "REVOKED") == "REVOKED"
+    assert repo.deactivated == []
