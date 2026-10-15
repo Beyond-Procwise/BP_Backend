@@ -19,20 +19,21 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
 
-def active_bindings(cur: Any, provider: str = "relay") -> List[Dict[str, Any]]:
+def active_bindings(cur: Any, provider: str = "relay",
+                    roles: Tuple[str, ...] = ("intake",)) -> List[Dict[str, Any]]:
     cur.execute(
         """
         SELECT binding_id, user_ref, mailbox_address, folder_scope, last_sync_at
           FROM proc.bp_mailbox_binding
-         WHERE role = 'intake' AND provider = %s AND is_active
+         WHERE role = ANY(%s) AND provider = %s AND is_active
          ORDER BY binding_id
         """,
-        (provider,),
+        (list(roles), provider),
     )
     out = []
     for row in cur.fetchall() or ():

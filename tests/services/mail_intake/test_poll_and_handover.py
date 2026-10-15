@@ -160,7 +160,7 @@ def test_poll_all_reads_only_active_relay_intake_bindings_and_owner_is_user_ref(
     seen = []
     poll.poll_all(conn, lambda b: seen.append(b) or FakeSource([]), FakePipeline())
     sql, params = conn.sql("FROM proc.bp_mailbox_binding")[0]
-    assert "role = 'intake'" in sql and "is_active" in sql and params == ("relay",)
+    assert "role = ANY(%s)" in sql and "is_active" in sql and params == (["intake"], "relay")
     assert seen[0]["owner_ref"] == "owner-1"
 
 

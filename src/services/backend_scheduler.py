@@ -420,6 +420,7 @@ class BackendScheduler:
     ANALYSIS_SWEEP_LANE = "analysis"
     MAIL_INTAKE_SWEEP_JOB_NAME = "mail-intake-sweep"
     MAIL_INTAKE_POLL_JOB_NAME = "mail-intake-poll"
+    M365_POLL_JOB_NAME = "mail-m365-poll"
     # Its own lane: reading a document's type runs the L0 parser (OCR on a scan),
     # which must not hold up the shared lane.
     MAIL_INTAKE_POLL_LANE = "mail-intake"
@@ -447,6 +448,7 @@ class BackendScheduler:
         self._register_style_feedback_job()
         self._register_mail_intake_sweep_job()
         self._register_mail_intake_poll_job()
+        self._register_m365_poll_job()
         self._register_triage_job()
         self._register_playbook_sweep_job()
         self._register_contract_link_job()
@@ -1463,6 +1465,57 @@ class BackendScheduler:
                     logger.info("mail intake %s: %s", step, result)
             except Exception:
                 logger.exception("mail intake %s failed", step)
+
+    def _register_m365_poll_job(self) -> None:
+        """Read the company's shared Microsoft 365 mailboxes into mail-intake.
+
+        ON unless M365_POLL=off; a no-op until Microsoft 365 is configured on this
+        server and a shared mailbox is connected. Read-only: nothing in the mailbox
+        is moved, flagged or marked read.
+        """
+        import os
+        if os.environ.get("M365_POLL", "on").strip().lower() in ("off", "0", "false"):
+            logger.info("m365 poll not registered (M365_POLL=off)")
+            return
+        if self.M365_POLL_JOB_NAME in self._jobs:
+            return
+        if not self._mail_intake_tables_present():
+            return
+        from src.services.mail_m365.config import load_settings
+        settings = load_settings()
+        if settings is None:
+            logger.info("m365 poll not registered (Microsoft 365 is not configured)")
+            return
+        self.register_job(
+            self.M365_POLL_JOB_NAME,
+            self._run_m365_poll,
+            interval=timedelta(seconds=settings.poll_seconds),
+            initial_delay=timedelta(seconds=60),
+            lane=self.MAIL_INTAKE_POLL_LANE,
+        )
+
+    def _run_m365_poll(self) -> None:
+        import os
+
+        from config.settings import Settings
+        from src.services.mail_intake.pipeline import IngestPipeline
+        from src.services.mail_intake.store import ObjectStore
+        from src.services.mail_m365.receiving import poll_m365
+        from src.services.sell_side._db import transactional_conn
+
+        try:
+            bucket = Settings().s3_bucket_name
+            # Graph hands over the message as the mailbox holds it; no relay in between
+            # vouches for it, so there is no trusted Authentication-Results asserter.
+            pipeline = IngestPipeline(
+                ObjectStore(bucket), bucket,
+                trusted_asserter=os.environ.get("M365_TRUSTED_ASSERTER") or None)
+            with transactional_conn() as conn:
+                result = poll_m365(conn, pipeline)
+            if any(v for k, v in result.items() if k != "bindings"):
+                logger.info("m365 poll: %s", result)
+        except Exception:
+            logger.exception("m365 poll failed")
 
     def _run_mail_intake_sweep(self) -> None:
         try:
