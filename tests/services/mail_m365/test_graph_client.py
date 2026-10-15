@@ -74,6 +74,13 @@ def test_probe_control_success_is_the_failure_case():
         c.probe_control("ctl@x")
 
 
+@pytest.mark.parametrize("status", [401, 404])
+def test_probe_control_only_403_counts_as_denied(status):
+    c = client({("GET", "/users/ctl@x/messages"): (status, {})})
+    with pytest.raises(MailboxUnreachable):
+        c.probe_control("ctl@x")
+
+
 def test_list_inbox_follows_paging_and_sorts_oldest_first():
     page2 = "https://graph.microsoft.com/v1.0/users/m@x/mailFolders/inbox/messages?page=2"
     c = client({

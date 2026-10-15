@@ -181,3 +181,109 @@ def test_status_lists_mailboxes_when_connected(env):
     out = admin.status(object(), settings=S)
     assert out["connected"] and out["tenant_id"] == "t1"
     assert [m["address"] for m in out["mailboxes"]] == ["procurement@cust.com"]
+
+
+# ---- fix round 1 ----
+from services.style.graph_source import MailboxUnreachable
+from services.style.mailbox import BindingNotFound
+
+
+class Flaky(FakeClient):
+    def __init__(self, *a, read_error=None, control_error=None, **kw):
+        super().__init__(*a, **kw)
+        self.read_error, self.control_error = read_error, control_error
+
+    def can_read(self, m):
+        if self.read_error:
+            raise MailboxUnreachable(self.read_error)
+        return super().can_read(m)
+
+    def probe_control(self, m):
+        if self.control_error:
+            raise MailboxUnreachable(self.control_error)
+        return super().probe_control(m)
+
+
+def _added(env):
+    c = FakeClient(readable={"procurement@cust.com"})
+    return admin.add_mailbox(None, "procurement@cust.com", "me@cust.com", actor="a",
+                             settings=S, client_factory=lambda t: c)["mailbox"]
+
+
+def test_verify_requires_the_bound_mailbox_to_be_readable(env):
+    b = _added(env)
+    before = env["rows"][b["binding_id"]]
+    with pytest.raises(admin.MailboxRefused) as e:       # dead secret / removed from group
+        admin.verify_mailbox(None, b["binding_id"], "me@cust.com", actor="a", settings=S,
+                             client_factory=lambda t: FakeClient())
+    assert e.value.code == "cannot_read"
+    assert env["rows"][b["binding_id"]] is before        # not re-stamped
+
+
+def test_verify_refuses_an_inactive_binding(env):
+    b = _added(env)
+    admin.remove_mailbox(None, b["binding_id"], actor="a")
+    with pytest.raises(admin.MailboxRefused) as e:
+        admin.verify_mailbox(None, b["binding_id"], "me@cust.com", actor="a", settings=S,
+                             client_factory=lambda t: FakeClient(readable={"procurement@cust.com"}))
+    assert e.value.code == "not_found"
+    assert env["rows"][b["binding_id"]].is_active is False
+
+
+def test_control_not_found_is_inconclusive_and_not_activated(env):
+    c = Flaky(readable={"procurement@cust.com"},
+              control_error="the control mailbox was not found - check the address")
+    with pytest.raises(admin.MailboxRefused) as e:
+        admin.add_mailbox(None, "procurement@cust.com", "typo@cust.com", actor="a",
+                          settings=S, client_factory=lambda t: c)
+    assert e.value.code == "inconclusive" and "not found" in e.value.message
+    assert all(not b.is_active for b in env["rows"].values())
+
+
+def test_can_read_unreachable_is_inconclusive_and_creates_nothing(env):
+    with pytest.raises(admin.MailboxRefused) as e:
+        admin.add_mailbox(None, "procurement@cust.com", "me@cust.com", actor="a", settings=S,
+                          client_factory=lambda t: Flaky(read_error="HTTP 500"))
+    assert e.value.code == "inconclusive" and env["rows"] == {}
+
+
+def test_unique_violation_on_activation_is_a_duplicate(env, monkeypatch):
+    class UniqueViolation(Exception):
+        pgcode = "23505"
+
+    def boom(self, *a, **k):
+        raise UniqueViolation()
+    monkeypatch.setattr(admin.MailboxBindingRepository, "verify_scope", boom)
+    with pytest.raises(admin.MailboxRefused) as e:
+        admin.add_mailbox(None, "procurement@cust.com", "me@cust.com", actor="a", settings=S,
+                          client_factory=lambda t: FakeClient(readable={"procurement@cust.com"}))
+    assert e.value.code == "duplicate"
+
+
+def test_make_default_value_error_propagates_and_missing_is_not_found(env, monkeypatch):
+    b = _added(env)
+
+    def not_ready(self, i):
+        raise ValueError("a mailbox can be the default only once it is verified")
+    monkeypatch.setattr(admin.MailboxBindingRepository, "set_default", not_ready, raising=False)
+    with pytest.raises(ValueError, match="default only once"):
+        admin.make_default(None, b["binding_id"], actor="a")
+
+    def gone(self, i):
+        raise BindingNotFound("x")
+    monkeypatch.setattr(admin.MailboxBindingRepository, "set_default", gone, raising=False)
+    with pytest.raises(admin.MailboxRefused) as e:
+        admin.make_default(None, b["binding_id"], actor="a")
+    assert e.value.code == "not_found"
+    with pytest.raises(admin.MailboxRefused):
+        admin.make_default(None, 999, actor="a")
+
+
+def test_test_send_refuses_an_inactive_binding(env):
+    b = _added(env)
+    admin.remove_mailbox(None, b["binding_id"], actor="a")
+    sent = []
+    with pytest.raises(admin.MailboxRefused) as e:
+        admin.test_send(None, b["binding_id"], "me@cust.com", actor="a", settings=S,
+                        client_factory=lambda t: FakeClient(sent=sent))
+    assert e.value.code == "not_found" and sent == []

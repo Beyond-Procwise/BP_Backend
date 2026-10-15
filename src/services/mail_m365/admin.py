@@ -92,26 +92,38 @@ def add_mailbox(conn: Any, address: str, control_mailbox: str, *, actor: str,
     if any(normalise_address(b.mailbox_address) == address for b in repo.list_org()):
         raise MailboxRefused("duplicate", address=address)
     client = (client_factory or _default_factory(settings))(tenant)
+    _require_readable(client, address)
+    binding = repo.create(user_ref=ORG_USER_REF, provider=PROVIDER_GRAPH,
+                          mailbox_address=address, role=ROLE_SEND_RECEIVE,
+                          credential_ref=settings.secret_arn)
+    return {"ok": True, "mailbox": _view(_prove(repo, binding.binding_id, control, client, address))}
+
+
+def _require_readable(client: M365Client, address: str) -> None:
     try:
         readable, _detail = client.can_read(address)
     except MailboxUnreachable as exc:
         raise MailboxRefused("inconclusive", detail=str(exc))
     if not readable:
         raise MailboxRefused("cannot_read", address=address)
-    binding = repo.create(user_ref=ORG_USER_REF, provider=PROVIDER_GRAPH,
-                          mailbox_address=address, role=ROLE_SEND_RECEIVE,
-                          credential_ref=settings.secret_arn)
-    return {"ok": True, "mailbox": _view(_prove(repo, binding.binding_id, control, client))}
+
+
+def _is_unique_violation(exc: Exception) -> bool:
+    return getattr(exc, "pgcode", None) == "23505" or type(exc).__name__ == "UniqueViolation"
 
 
 def _prove(repo: MailboxBindingRepository, binding_id: int, control: str,
-           client: M365Client) -> MailboxBinding:
+           client: M365Client, address: str = "") -> MailboxBinding:
     try:
         return repo.verify_scope(binding_id, control_mailbox=control, probe=client.probe_control)
     except ScopeVerificationFailed:
         raise MailboxRefused("over_scoped", control=control)
     except MailboxUnreachable as exc:
         raise MailboxRefused("inconclusive", detail=str(exc))
+    except Exception as exc:
+        if _is_unique_violation(exc):      # two simultaneous adds raced to activate
+            raise MailboxRefused("duplicate", address=address)
+        raise
 
 
 def verify_mailbox(conn: Any, binding_id: int, control_mailbox: str, *, actor: str,
@@ -119,12 +131,14 @@ def verify_mailbox(conn: Any, binding_id: int, control_mailbox: str, *, actor: s
                    ) -> Dict[str, Any]:
     tenant = _tenant(conn)
     repo = MailboxBindingRepository(conn)
-    b = _org_binding(repo, binding_id)
+    b = _org_binding(repo, binding_id, active_only=True)
     control = normalise_address(control_mailbox)
     if control == normalise_address(b.mailbox_address):
         raise MailboxRefused("same_as_control")
     client = (client_factory or _default_factory(settings))(tenant)
-    return {"ok": True, "mailbox": _view(_prove(repo, binding_id, control, client))}
+    _require_readable(client, b.mailbox_address)
+    return {"ok": True,
+            "mailbox": _view(_prove(repo, binding_id, control, client, b.mailbox_address))}
 
 
 def _test_message(sender: str, to: str) -> bytes:

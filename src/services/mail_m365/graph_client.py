@@ -96,10 +96,17 @@ class M365Client:
         status, _ = self.transport.get(
             self._url(f"{self._mbx(mailbox)}/messages", method="GET") + "?$top=1",
             self._headers())
-        if status in (401, 403, 404):
-            return False, f"denied with HTTP {status}"
+        if status == 403:
+            return False, "denied with HTTP 403"
         if 200 <= status < 300:
             return True, f"READ SUCCEEDED with HTTP {status}"
+        # Only 403 proves the grant is narrow. 404 usually means the control address does
+        # not exist (Graph says 404 for unknown users) and 401 means our own token is bad;
+        # neither shows the grant is restricted, so neither may pass the proof.
+        if status == 404:
+            raise MailboxUnreachable("the control mailbox was not found - check the address")
+        if status == 401:
+            raise MailboxUnreachable("Microsoft rejected our sign-in (HTTP 401)")
         raise MailboxUnreachable(f"control probe returned HTTP {status}; inconclusive")
 
     def list_inbox(self, mailbox: str, since: datetime, *, page_size: int = 50
