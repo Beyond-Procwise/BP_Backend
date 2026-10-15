@@ -46,6 +46,9 @@ class Decision:
     kind: str                       # "ses" | "graph" | "held"
     binding: Optional[MailboxBinding]
     reason: Optional[str]
+    # True when the email goes out from the Procwise address although Microsoft 365 was
+    # connected at some point: the supplier-email recipient rules still apply to it.
+    fallback: bool = False
 
 
 def _never_connected(integration: Dict[str, Any]) -> bool:
@@ -107,21 +110,21 @@ def _decide(repo: Any, integration: Dict[str, Any]) -> Decision:
         if default.is_active and default.health_state == HEALTH_OK:
             return Decision("graph", default, None)
         if default.health_state != HEALTH_DEGRADED and _policy_sends_from_procwise():
-            return Decision("ses", None, None)   # access withdrawn / mailbox deactivated
+            return Decision("ses", None, None, True)   # access withdrawn / mailbox deactivated
         return Decision("held", default, _reason_for(default))
     # No usable default. Has the company ever sent from its own mailbox?
     ever = default or repo.get_org_default_any()
     if ever is not None:
         if (not connected or ever.health_state != HEALTH_DEGRADED) and _policy_sends_from_procwise():
-            return Decision("ses", None, None)
+            return Decision("ses", None, None, True)
         return Decision("held", ever, _reason_for(ever) if connected else HELD_DISCONNECTED)
     if connected:
         if _policy_sends_from_procwise():
-            return Decision("ses", None, None)
+            return Decision("ses", None, None, True)
         return Decision("held", None, HELD_NO_DEFAULT)
     # Connected once, disconnected before any test send: nothing was ever sent from the
     # company's mailbox, so the Procwise sender is what suppliers have seen.
-    return Decision("ses", None, None)
+    return Decision("ses", None, None, True)
 
 
 def held_reason_for(exc: BaseException) -> str:

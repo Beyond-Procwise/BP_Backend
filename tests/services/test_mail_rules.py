@@ -45,3 +45,14 @@ def test_oversize_is_held_with_the_limit():
     v = mail_rules.check_supplier_email(["quotes@supplier.com"], 3_000_001, P(), is_supplier=sup,
                                         size_limit=LIM)
     assert not v.allowed and "3 MB" in v.reason
+
+
+import pytest
+
+
+@pytest.mark.parametrize("external", ["known_suppliers_only", "any"])
+@pytest.mark.parametrize("raw", ["a@x.com, b@y.com", "not an address", ""])
+def test_an_unparseable_or_multi_address_is_refused_with_the_raw_text(external, raw):
+    v = mail_rules.check_supplier_email([raw], 10, P(external_recipients=external), is_supplier=sup,
+                                        size_limit=LIM)
+    assert not v.allowed and v.reason == f"'{raw}' is not a single email address"

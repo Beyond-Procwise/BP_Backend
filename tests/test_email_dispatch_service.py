@@ -910,46 +910,113 @@ def test_dispatch_asks_for_the_company_mailbox_on_every_supplier_send(monkeypatc
 
 
 # --- the email policy at the moment of sending ---------------------------------------
-def _policy_send(monkeypatch, kind, verdict_policy=None, load_error=None):
+class _LookupConn:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _policy_send(monkeypatch, kind, fallback=False, load_error=None, known=False,
+                 lookup_error=None, domains=("example.com",), decide_error=None,
+                 external="known_suppliers_only"):
     from services import mail_policy, supplier_contact
+    from services import db as _db
     from services.mail_m365 import sending
     from src.services import agent_actions
 
     audits = []
     monkeypatch.setattr(agent_actions, "record_action", lambda **kw: audits.append(kw))
-    monkeypatch.setattr(sending, "decide", lambda *a, **k: SimpleNamespace(kind=kind))
+
+    def decide(*a, **k):
+        if decide_error:
+            raise decide_error
+        return sending.Decision(kind, None, None, fallback)
+    monkeypatch.setattr(sending, "decide", decide)
     loads = []
 
     def load(conn=None):
         loads.append(1)
         if load_error:
             raise load_error
-        return SimpleNamespace(company_domains=("example.com",),
-                               external_recipients="known_suppliers_only")
+        return SimpleNamespace(company_domains=domains, external_recipients=external)
     monkeypatch.setattr(mail_policy, "load", load)
-    monkeypatch.setattr(supplier_contact, "is_known_supplier_email", lambda conn, a: False)
+    monkeypatch.setattr(_db, "get_conn", lambda *a, **k: _LookupConn())
+
+    def lookup(conn, a):
+        if lookup_error:
+            raise lookup_error
+        return known
+    monkeypatch.setattr(supplier_contact, "is_known_supplier_email", lookup)
     result, sent, uid = _send_with_capture(monkeypatch, lambda *a, **k: None)
     return result, sent, audits, loads
 
 
-def test_graph_send_to_an_unknown_recipient_is_held_by_the_policy(monkeypatch):
-    # recipients are buyer@example.com: an internal address under this policy
-    result, sent, audits, _ = _policy_send(monkeypatch, "graph")
+def _held(result, sent, audits, text):
     assert result["sent"] is False
-    assert "colleagues" in result["draft"]["held_reason"]
+    assert text in result["draft"]["held_reason"]
     assert "kwargs" not in sent  # send_email never called
     assert [a["action_type"] for a in audits] == ["send_held"]
 
 
-def test_ses_decision_does_not_apply_the_rules(monkeypatch):
+def test_graph_send_to_a_colleague_is_held_by_the_policy(monkeypatch):
+    # recipients are buyer@example.com: an internal address under this policy
+    result, sent, audits, _ = _policy_send(monkeypatch, "graph")
+    _held(result, sent, audits, "colleagues")
+
+
+def test_graph_send_to_an_unknown_external_is_held(monkeypatch):
+    result, sent, audits, _ = _policy_send(monkeypatch, "graph", domains=("corp.com",))
+    _held(result, sent, audits, "buyer@example.com is not a known supplier")
+
+
+def test_graph_send_to_a_known_supplier_goes(monkeypatch):
+    result, sent, audits, _ = _policy_send(monkeypatch, "graph", domains=("corp.com",), known=True)
+    assert result["sent"] is True and sent["kwargs"]["company_mailbox"] is True
+
+
+def test_send_email_receives_the_decision_the_rules_used(monkeypatch):
+    result, sent, audits, _ = _policy_send(monkeypatch, "graph", domains=("corp.com",), known=True)
+    assert sent["kwargs"]["decision"].kind == "graph"
+
+
+def test_never_connected_ses_applies_no_rules_and_reads_no_policy(monkeypatch):
     result, sent, audits, loads = _policy_send(monkeypatch, "ses")
     assert result["sent"] is True and loads == [] and audits == []
+
+
+def test_procwise_address_fallback_still_holds_an_unknown_recipient(monkeypatch):
+    result, sent, audits, loads = _policy_send(monkeypatch, "ses", fallback=True, domains=("corp.com",))
+    assert loads == [1]
+    _held(result, sent, audits, "is not a known supplier")
+
+
+def test_procwise_address_fallback_sends_to_a_known_supplier(monkeypatch):
+    result, sent, audits, _ = _policy_send(monkeypatch, "ses", fallback=True, domains=("corp.com",),
+                                           known=True)
+    assert result["sent"] is True
+
+
+def test_held_route_skips_the_rules(monkeypatch):
+    result, sent, audits, loads = _policy_send(monkeypatch, "held")
+    assert loads == []
 
 
 def test_unreadable_policy_under_graph_is_held(monkeypatch):
     from services import mail_policy
     result, sent, audits, _ = _policy_send(monkeypatch, "graph",
                                            load_error=mail_policy.PolicyUnavailable("gone"))
-    assert result["sent"] is False
-    assert result["draft"]["held_reason"] == "Your email policy could not be read; nothing was sent"
-    assert "kwargs" not in sent and [a["action_type"] for a in audits] == ["send_held"]
+    _held(result, sent, audits, "Your email policy could not be read; nothing was sent")
+
+
+def test_a_failing_supplier_lookup_holds_the_draft_with_the_policy_reason(monkeypatch):
+    result, sent, audits, _ = _policy_send(monkeypatch, "graph", domains=("corp.com",),
+                                           lookup_error=RuntimeError("sql error"))
+    _held(result, sent, audits, "Your email policy could not be read; nothing was sent")
+
+
+def test_a_decide_failure_in_the_rules_holds(monkeypatch):
+    from services.mail_m365 import sending
+    result, sent, audits, _ = _policy_send(monkeypatch, "graph", decide_error=RuntimeError("db"))
+    _held(result, sent, audits, sending.HELD_UNCHECKED)

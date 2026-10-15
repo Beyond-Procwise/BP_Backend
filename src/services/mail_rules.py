@@ -33,6 +33,10 @@ def check_supplier_email(recipients: List[str], size_bytes: int, policy, *,
     if size_bytes > size_limit:
         return Verdict(False, f"Too large to send from your company mailbox "
                               f"(limit {size_limit // 1_000_000} MB)", False)
+    for raw in recipients:
+        addr = bare_address(raw)
+        if "@" not in addr or addr.startswith("@") or addr.endswith("@"):
+            return Verdict(False, f"'{raw}' is not a single email address", False)
     kinds = [(bare_address(r), classify(r, policy, is_supplier=is_supplier)) for r in recipients]
     if any(k == "internal" for _, k in kinds):
         return Verdict(False, "Emails to colleagues go through 'Send to a colleague' "

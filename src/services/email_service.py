@@ -9,7 +9,7 @@ from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formatdate, make_msgid
-from typing import Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 from botocore.exceptions import ClientError
 
@@ -65,6 +65,7 @@ class EmailService:
         headers: Optional[Dict[str, str]] = None,
         message_id: Optional[str] = None,
         company_mailbox: bool = False,
+        decision: Any = None,
     ) -> EmailSendResult:
         """Send an email using SMTP credentials configured in settings.
 
@@ -108,7 +109,9 @@ class EmailService:
         if company_mailbox:
             from services.mail_m365 import sending as _m365
             try:
-                decision = _m365.decide()
+                # The caller may already have decided (the dispatch rules need the same
+                # answer this send acts on); otherwise decide here.
+                decision = decision if decision is not None else _m365.decide()
             except Exception as exc:  # cannot tell whether a company mailbox applies: hold, never guess
                 self.logger.error("Could not decide the mail transport: %s", exc)
                 return EmailSendResult(False, generated_message_id,

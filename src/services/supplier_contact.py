@@ -110,7 +110,9 @@ def resolve_emails(conn: Any, supplier_id: Optional[str]) -> List[str]:
 def is_known_supplier_email(conn: Any, address: str) -> bool:
     """Is ``address`` one of the contact emails on file for any supplier?
 
-    ``address`` must already be the lower-cased bare address."""
+    ``address`` must already be the lower-cased bare address; the stored contact emails are
+    compared trimmed and lower-cased. The caller chooses the connection: a send path should
+    use its own short-lived one so a failed lookup cannot abort a surrounding transaction."""
 
     cur = conn.cursor()
     cur.execute(
