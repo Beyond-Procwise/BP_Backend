@@ -68,3 +68,13 @@ def test_append_keeps_only_the_newest_twenty_and_creates_the_row(conn):
     for i in range(23):
         append_nonce(conn, f"n{i}", actor="tester")
     assert read_integration(conn)["pending_nonces"] == [f"n{i}" for i in range(3, 23)]
+
+
+def test_merge_refuses_a_different_tenant_atomically(conn):
+    write_integration(conn, {"status": "connected", "tenant_id": "AAA"}, actor="tester")
+    assert merge_integration(conn, {"tenant_id": "BBB"}, actor="tester",
+                             unless_other_tenant="BBB") is None
+    assert read_integration(conn)["tenant_id"] == "AAA"
+    ok = merge_integration(conn, {"consented_by": "x"}, actor="tester",
+                           unless_other_tenant="aaa")
+    assert ok["tenant_id"] == "AAA" and ok["consented_by"] == "x"

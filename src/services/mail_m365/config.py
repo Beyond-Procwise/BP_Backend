@@ -119,20 +119,30 @@ def append_nonce(conn: Any, nonce: str, *, actor: str, keep: int = 20) -> None:
         conn.commit()
 
 
-def merge_integration(conn: Any, fields: Dict[str, Any], *, actor: str) -> Dict[str, Any]:
+def merge_integration(conn: Any, fields: Dict[str, Any], *, actor: str,
+                      unless_other_tenant: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Merge top-level `fields` into the stored row without touching other keys
-    (notably pending_nonces, which other requests may be changing). Returns the row."""
+    (notably pending_nonces, which other requests may be changing). Returns the row,
+    or None when nothing was updated: no row, or (with `unless_other_tenant`) the row
+    is already connected to a different tenant. The tenant test is in the WHERE, so
+    it is atomic with the write."""
+    guard, extra = "", ()
+    if unless_other_tenant is not None:
+        guard = (" AND NOT (config_value->>'status' = 'connected' "
+                 "AND coalesce(config_value->>'tenant_id', '') <> '' "
+                 "AND lower(config_value->>'tenant_id') <> lower(%s))")
+        extra = (unless_other_tenant,)
     cur = conn.cursor()
     cur.execute(
         "UPDATE proc.bp_admin_config SET config_value = config_value || %s::jsonb, "
         "last_modified_by = %s, last_modified_date = now() "
-        "WHERE config_key = %s RETURNING config_value",
-        (json.dumps(fields, default=str), actor, CONFIG_KEY))
+        "WHERE config_key = %s" + guard + " RETURNING config_value",
+        (json.dumps(fields, default=str), actor, CONFIG_KEY) + extra)
     row = cur.fetchone()
     cur.close()
     if not getattr(conn, "autocommit", False):
         conn.commit()
     if not row:
-        return dict(fields)
+        return None
     value = row["config_value"] if isinstance(row, dict) else row[0]
     return json.loads(value) if isinstance(value, str) else dict(value or {})

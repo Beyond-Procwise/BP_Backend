@@ -19,12 +19,12 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from urllib.parse import urlencode
 
 from services.mail_m365.config import (M365Settings, append_nonce, consume_nonce,
-                                       merge_integration, read_integration, redirect_uri)
+                                       merge_integration, redirect_uri)
 
 ADMIN_CONSENT_URL = "https://login.microsoftonline.com/organizations/v2.0/adminconsent"
 _SCOPE = "https://graph.microsoft.com/.default"
 _KEEP_NONCES = 20
-_GUID = re.compile(r"^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$")
+GUID = re.compile(r"[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}")
 
 
 class StateRejected(Exception):
@@ -95,17 +95,16 @@ def complete(conn: Any, settings: M365Settings, key: bytes, *, state: str,
         raise ConsentNotGiven(error or "not_granted")
     # The tenant arrives on an unauthenticated request and is later printed into a
     # script an admin runs, so it must be exactly a GUID.
-    if not _GUID.match(tenant):
+    if not GUID.fullmatch(tenant):
         raise ConsentNotGiven("bad_tenant")
-    current = read_integration(conn)
-    if current.get("status") == "connected" and current.get("tenant_id") \
-            and current["tenant_id"].lower() != tenant.lower():
-        raise ConsentNotGiven("tenant_mismatch")
-    return merge_integration(conn, {
+    merged = merge_integration(conn, {
         "provider": "m365", "tenant_id": tenant, "status": "connected",
         "consented_by": actor,
         "consented_at": datetime.fromtimestamp(now(), tz=timezone.utc).isoformat()},
-        actor=actor)
+        actor=actor, unless_other_tenant=tenant)
+    if merged is None:   # already connected to a different tenant: Disconnect first
+        raise ConsentNotGiven("tenant_mismatch")
+    return merged
 
 
 _KEY_CACHE: Dict[str, bytes] = {}

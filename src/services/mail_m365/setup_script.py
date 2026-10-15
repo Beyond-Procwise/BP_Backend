@@ -8,14 +8,22 @@ against a live tenant before release — see docs/m365-setup.md.
 """
 from __future__ import annotations
 
+import re
 from typing import Optional
+
+from services.mail_m365.consent import GUID
+
+_GROUP = re.compile(r"[A-Za-z0-9 ._-]{1,64}")
 
 
 def render(tenant_id: str, app_client_id: str, service_principal_object_id: Optional[str],
            group: str = "Procwise Mailboxes") -> str:
-    for value in (tenant_id, app_client_id, service_principal_object_id or "", group):
-        if any(c in value for c in '\r\n"`'):
-            raise ValueError("setup script input contains a character that is not allowed")
+    # Allow-list, not block-list: these land in a PowerShell script an admin runs.
+    if not (GUID.fullmatch(tenant_id) and GUID.fullmatch(app_client_id)
+            and (service_principal_object_id is None
+                 or GUID.fullmatch(service_principal_object_id))
+            and _GROUP.fullmatch(group)):
+        raise ValueError("setup script input is not in the allowed form")
     sp_id = service_principal_object_id or "<Object ID of 'Procwise Mail' under Entra > Enterprise applications>"
     return f"""# Restrict Procwise to your chosen shared mailboxes. No secret is needed to run this.
 # Tenant: {tenant_id}

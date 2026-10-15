@@ -41,6 +41,11 @@ class MemConn:
                     conn.value = params[1]
                 elif sql.startswith("UPDATE") and "||" in sql:                   # merge_integration
                     cur = conn._obj()
+                    if "lower(" in sql and cur.get("status") == "connected" \
+                            and cur.get("tenant_id") \
+                            and cur["tenant_id"].lower() != params[3].lower():
+                        self._ret = None
+                        return
                     cur.update(json.loads(params[0]))
                     conn.value = json.dumps(cur)
                     self._ret = (conn.value,)
@@ -181,3 +186,13 @@ def test_signed_non_object_payload_is_malformed():
     with pytest.raises(consent.StateRejected) as e:
         consent.verify_state(KEY, f"{body}.{sig}", now=1.0)
     assert e.value.code == "malformed"
+
+
+def test_tenant_with_trailing_newline_is_refused():
+    conn = MemConn()
+    state = _state_from(consent.begin(conn, S, KEY, "admin@x", now=lambda: 100.0))
+    with pytest.raises(consent.ConsentNotGiven) as e:
+        consent.complete(conn, S, KEY, state=state, tenant=T1 + "\n",
+                         admin_consent="True", error=None, now=lambda: 120.0)
+    assert e.value.code == "bad_tenant"
+    assert "tenant_id" not in json.loads(conn.value)
