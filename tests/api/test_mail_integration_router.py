@@ -271,3 +271,77 @@ def test_real_app_callback_unexpected_error_still_redirects(real, monkeypatch):
     res = real.get(f"{B}/m365/callback", params={"state": "s"}, follow_redirects=False)
     assert res.status_code == 302
     assert res.headers["location"].endswith("mail_error=consent_failed")
+
+
+# ---- GET /mail/sender: any signed-in user, never gated ----
+
+from types import SimpleNamespace as _NS
+from services.mail_m365 import sending as _sending
+
+
+def _decision(kind, address=None, reason=None):
+    b = _NS(mailbox_address=address) if address else None
+    return _sending.Decision(kind, b, reason)
+
+
+def _gate_must_not_run(*a, **k):
+    raise AssertionError("the sender endpoint must not call the endpoint gate")
+
+
+@pytest.fixture
+def sender(real, monkeypatch):
+    monkeypatch.setattr(r, "gate", _gate_must_not_run)
+    return real
+
+
+def test_sender_ses(sender, monkeypatch):
+    monkeypatch.setattr(_sending, "decide", lambda conn: _decision("ses"))
+    res = sender.get("/mail/sender")
+    assert res.status_code == 200
+    assert res.json() == {"mode": "ses", "address": None, "can_send": True, "reason": None}
+
+
+def test_sender_m365(sender, monkeypatch):
+    monkeypatch.setattr(_sending, "decide", lambda conn: _decision("graph", "proc@cust.com"))
+    res = sender.get("/mail/sender")
+    assert res.status_code == 200
+    assert res.json() == {"mode": "m365", "address": "proc@cust.com", "can_send": True,
+                          "reason": None}
+
+
+def test_sender_held_with_and_without_binding(sender, monkeypatch):
+    why = "company mailbox unavailable: proc@cust.com is disconnected"
+    monkeypatch.setattr(_sending, "decide", lambda conn: _decision("held", "proc@cust.com", why))
+    res = sender.get("/mail/sender")
+    assert res.status_code == 200
+    assert res.json() == {"mode": "held", "address": "proc@cust.com", "can_send": False,
+                          "reason": why}
+    monkeypatch.setattr(_sending, "decide", lambda conn: _decision("held", None, "no default"))
+    assert sender.get("/mail/sender").json()["address"] is None
+
+
+def test_sender_decide_raising_is_held_200(sender, monkeypatch):
+    def boom(conn):
+        raise RuntimeError("db down: secret-dsn")
+    monkeypatch.setattr(_sending, "decide", boom)
+    res = sender.get("/mail/sender")
+    assert res.status_code == 200
+    assert res.json() == {"mode": "held", "address": None, "can_send": False,
+                          "reason": "company mailbox status unavailable"}
+    assert "secret-dsn" not in res.text
+
+
+def test_sender_unauthenticated_is_refused(monkeypatch):
+    from api.main import app
+    from api import auth as _auth
+
+    class _RefuseAll:
+        def verify(self, token):
+            raise _auth.AuthError("no tokens are valid in this test")
+
+    monkeypatch.setattr(_auth, "_mode", "enforce")
+    monkeypatch.setattr(_auth, "_verifier", _RefuseAll())
+    monkeypatch.setattr(r, "gate", _gate_must_not_run)
+    app.dependency_overrides.pop(r.require_user, None)
+    res = TestClient(app, raise_server_exceptions=False).get("/mail/sender")
+    assert res.status_code == 401

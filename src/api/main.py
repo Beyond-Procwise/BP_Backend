@@ -642,6 +642,7 @@ _AUTHENTICATED_ROUTERS = [
     atb_router.router,
     demand_intake_router.router,
     mail_integration_router.router,
+    mail_integration_router.sender_router,
 ]
 
 for _router in _AUTHENTICATED_ROUTERS:

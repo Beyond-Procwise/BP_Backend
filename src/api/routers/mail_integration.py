@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from api.auth import require_user
 from api.endpoint_gate import require as gate
 from services.db import get_conn
-from services.mail_m365 import admin, consent
+from services.mail_m365 import admin, consent, sending
 from services.mail_m365.config import load_settings, read_integration
 from services.mail_m365.consent import load_state_key
 from services.mail_m365.graph_client import Throttled
@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/integrations/mail", tags=["Mail integration"])
 callback_router = APIRouter(prefix="/admin/integrations/mail", tags=["Mail integration"])
+# Any signed-in user may ask which address supplier email leaves from; no endpoint gate.
+sender_router = APIRouter(prefix="/mail", tags=["Mail integration"])
 
 _AGENT = "MailIntegrationRouter"
 _STATUS = {"not_connected": 409, "duplicate": 409, "same_as_control": 422,
@@ -203,3 +205,22 @@ def disconnect(principal: Any = Depends(require_user)) -> dict:
     gate("mailbox.bind", principal, agent=_AGENT, context={"op": "disconnect"})
     with _conn() as conn:
         return admin.disconnect(conn, actor=_actor(principal))
+
+
+@sender_router.get("/sender", summary="Which address supplier emails go out from, and can they")
+def get_sender(principal: Any = Depends(require_user)) -> dict:
+    """A read for every signed-in user (the compose window needs it), so it is not gated
+    and writes no refused-attempt audit row. Exposes only mode, address, can_send, reason."""
+    try:
+        with _conn() as conn:
+            d = sending.decide(conn)
+    except Exception:  # noqa: BLE001 - compose must get an answer, never a 500
+        logger.exception("mail sender status failed")
+        return {"mode": "held", "address": None, "can_send": False,
+                "reason": "company mailbox status unavailable"}
+    address = d.binding.mailbox_address if d.binding is not None else None
+    if d.kind == "ses":
+        return {"mode": "ses", "address": None, "can_send": True, "reason": None}
+    if d.kind == "graph":
+        return {"mode": "m365", "address": address, "can_send": True, "reason": None}
+    return {"mode": "held", "address": address, "can_send": False, "reason": d.reason}
