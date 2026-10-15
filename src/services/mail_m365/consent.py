@@ -11,18 +11,20 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional, Tuple
 from urllib.parse import urlencode
 
-from services.mail_m365.config import (M365Settings, consume_nonce, read_integration,
-                                       redirect_uri, write_integration)
+from services.mail_m365.config import (M365Settings, append_nonce, consume_nonce,
+                                       merge_integration, read_integration, redirect_uri)
 
 ADMIN_CONSENT_URL = "https://login.microsoftonline.com/organizations/v2.0/adminconsent"
 _SCOPE = "https://graph.microsoft.com/.default"
 _KEEP_NONCES = 20
+_GUID = re.compile(r"^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$")
 
 
 class StateRejected(Exception):
@@ -54,23 +56,27 @@ def sign_state(key: bytes, actor: str, nonce: str, now: float) -> str:
 def verify_state(key: bytes, state: str, now: float, max_age: int = 600) -> Tuple[str, str]:
     try:
         body, sig = state.split(".", 1)
-        payload = json.loads(_unb64(body))
     except Exception:
         raise StateRejected("malformed")
-    expected = _b64(hmac.new(key, body.encode(), hashlib.sha256).digest())
-    if not hmac.compare_digest(expected, sig):
+    expected = _b64(hmac.new(key, body.encode(), hashlib.sha256).digest()).encode()
+    if not hmac.compare_digest(expected, sig.encode("utf-8", "replace")):
         raise StateRejected("bad_signature")
-    if now - float(payload.get("t", 0)) > max_age:
+    try:
+        payload = json.loads(_unb64(body))
+        if not isinstance(payload, dict):
+            raise ValueError
+        actor, nonce, issued = str(payload["a"]), str(payload["n"]), float(payload["t"])
+    except Exception:
+        raise StateRejected("malformed")
+    if now - issued > max_age:
         raise StateRejected("expired")
-    return str(payload["a"]), str(payload["n"])
+    return actor, nonce
 
 
 def begin(conn: Any, settings: M365Settings, key: bytes, actor: str, *,
           now: Callable[[], float] = time.time) -> str:
     nonce = secrets.token_urlsafe(16)
-    current = read_integration(conn)
-    pending = (list(current.get("pending_nonces") or []) + [nonce])[-_KEEP_NONCES:]
-    write_integration(conn, {**current, "pending_nonces": pending}, actor=actor)
+    append_nonce(conn, nonce, actor=actor, keep=_KEEP_NONCES)
     return ADMIN_CONSENT_URL + "?" + urlencode({
         "client_id": settings.client_id,
         "redirect_uri": redirect_uri(settings),
@@ -85,13 +91,21 @@ def complete(conn: Any, settings: M365Settings, key: bytes, *, state: str,
     actor, nonce = verify_state(key, state, now())
     if not consume_nonce(conn, nonce, actor=actor):
         raise StateRejected("reused")
-    current = read_integration(conn)
     if error or str(admin_consent).lower() != "true" or not tenant:
         raise ConsentNotGiven(error or "not_granted")
-    updated = {**current, "provider": "m365",
-               "tenant_id": tenant, "status": "connected", "consented_by": actor,
-               "consented_at": datetime.fromtimestamp(now(), tz=timezone.utc).isoformat()}
-    return write_integration(conn, updated, actor=actor)
+    # The tenant arrives on an unauthenticated request and is later printed into a
+    # script an admin runs, so it must be exactly a GUID.
+    if not _GUID.match(tenant):
+        raise ConsentNotGiven("bad_tenant")
+    current = read_integration(conn)
+    if current.get("status") == "connected" and current.get("tenant_id") \
+            and current["tenant_id"].lower() != tenant.lower():
+        raise ConsentNotGiven("tenant_mismatch")
+    return merge_integration(conn, {
+        "provider": "m365", "tenant_id": tenant, "status": "connected",
+        "consented_by": actor,
+        "consented_at": datetime.fromtimestamp(now(), tz=timezone.utc).isoformat()},
+        actor=actor)
 
 
 _KEY_CACHE: Dict[str, bytes] = {}

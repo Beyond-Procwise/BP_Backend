@@ -13,6 +13,9 @@ from typing import Optional
 
 def render(tenant_id: str, app_client_id: str, service_principal_object_id: Optional[str],
            group: str = "Procwise Mailboxes") -> str:
+    for value in (tenant_id, app_client_id, service_principal_object_id or "", group):
+        if any(c in value for c in '\r\n"`'):
+            raise ValueError("setup script input contains a character that is not allowed")
     sp_id = service_principal_object_id or "<Object ID of 'Procwise Mail' under Entra > Enterprise applications>"
     return f"""# Restrict Procwise to your chosen shared mailboxes. No secret is needed to run this.
 # Tenant: {tenant_id}

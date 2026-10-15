@@ -93,3 +93,46 @@ def consume_nonce(conn: Any, nonce: str, *, actor: str) -> bool:
     if not getattr(conn, "autocommit", False):
         conn.commit()
     return spent
+
+
+def append_nonce(conn: Any, nonce: str, *, actor: str, keep: int = 20) -> None:
+    """Add a pending nonce in one statement, trimmed to the newest `keep`.
+
+    Appending inside SQL (not read-modify-write) means a callback spending another
+    nonce at the same moment cannot be undone by this write.
+    """
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO proc.bp_admin_config (config_key, config_value, last_modified_by) "
+        "VALUES (%s, jsonb_build_object('pending_nonces', jsonb_build_array(%s::text)), %s) "
+        "ON CONFLICT (config_key) DO UPDATE SET config_value = jsonb_set("
+        "proc.bp_admin_config.config_value, '{pending_nonces}', "
+        "(SELECT coalesce(jsonb_agg(e ORDER BY o), '[]'::jsonb) FROM ("
+        "SELECT e, o FROM jsonb_array_elements(coalesce("
+        "proc.bp_admin_config.config_value->'pending_nonces', '[]'::jsonb) "
+        "|| to_jsonb(%s::text)) WITH ORDINALITY AS t(e, o) "
+        "ORDER BY o DESC LIMIT %s) s)), "
+        "last_modified_by = %s, last_modified_date = now()",
+        (CONFIG_KEY, nonce, actor, nonce, keep, actor))
+    cur.close()
+    if not getattr(conn, "autocommit", False):
+        conn.commit()
+
+
+def merge_integration(conn: Any, fields: Dict[str, Any], *, actor: str) -> Dict[str, Any]:
+    """Merge top-level `fields` into the stored row without touching other keys
+    (notably pending_nonces, which other requests may be changing). Returns the row."""
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE proc.bp_admin_config SET config_value = config_value || %s::jsonb, "
+        "last_modified_by = %s, last_modified_date = now() "
+        "WHERE config_key = %s RETURNING config_value",
+        (json.dumps(fields, default=str), actor, CONFIG_KEY))
+    row = cur.fetchone()
+    cur.close()
+    if not getattr(conn, "autocommit", False):
+        conn.commit()
+    if not row:
+        return dict(fields)
+    value = row["config_value"] if isinstance(row, dict) else row[0]
+    return json.loads(value) if isinstance(value, str) else dict(value or {})
