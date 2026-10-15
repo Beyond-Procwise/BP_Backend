@@ -88,9 +88,22 @@ class AskRequest(BaseModel):
         "analytic.supplier_concentration). The chip's label is not a question and must "
         "not be re-parsed as one; the id names the answer that was offered.",
     )
+    agent: Optional[str] = Field(
+        default=None,
+        max_length=128,
+        description="The agent the person chose to answer (an agent slug), or 'general' "
+        "for the general answer. Absent: the screen's agent answers, if it has one.",
+    )
+    screen: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description="The screen the question was asked on (SpendIQ's screen id). Picks "
+        "the screen's agent when the person chose none.",
+    )
 
     @field_validator("doc_type", "product_type", "file_path", "session_id", "context",
-                     "display_currency", "persona", "action_id", mode="before")
+                     "display_currency", "persona", "action_id", "agent", "screen",
+                     mode="before")
     @classmethod
     def _empty_to_none(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
@@ -926,6 +939,8 @@ async def ask_question(
         display_currency=req.display_currency,
         persona=req.persona,
         action_id=req.action_id,
+        agent=req.agent,
+        screen=req.screen,
     )
     return result
 
@@ -981,6 +996,8 @@ async def ask_question_stream(
                 display_currency=req.display_currency,
                 persona=req.persona,
                 action_id=req.action_id,
+                agent=req.agent,
+                screen=req.screen,
                 on_event=_on_event,
             )
             events.put(
@@ -992,6 +1009,9 @@ async def ask_question_stream(
                     # An analytic answer's steps: an action and the ids it
                     # applies to, so a chip dispatches rather than re-asks.
                     "next_steps": result.get("next_steps") or [],
+                    # Who answered: the screen's agent, the one the person chose,
+                    # the records, or General (with a note when it stood in).
+                    "answered_by": result.get("answered_by"),
                 }
             )
         except Exception as exc:  # noqa: BLE001
@@ -1024,6 +1044,19 @@ async def ask_question_stream(
         },
     )
 
+
+
+@router.get("/ask/agents")
+async def list_ask_agents(
+    agent_nick=Depends(get_agent_nick),
+    principal: object = Depends(require_user),
+):
+    """The agents a person can pick to answer in an Ask box: every loaded agent
+    that does not send or act (ask_routing.NOT_ASKABLE)."""
+    from services import ask_routing
+
+    slugs = ask_routing.askable_agents(getattr(agent_nick, "agents", None) or {})
+    return {"agents": [{"slug": s, "label": ask_routing.agent_label(s)} for s in slugs]}
 
 @router.post("/rank")
 def rank_suppliers(
