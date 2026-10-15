@@ -268,8 +268,9 @@ def _time_per_round(cur, d: dict) -> str:
 # ---------------------------------------------------------------------------
 def _advice_plays(deal_id: str) -> list[dict]:
     """Ranked, grounded plays. Imported lazily to avoid an import cycle."""
-    from src.services.negotiation_advice import build_advice
-    advice = build_advice(deal_id)
+    from src.services.negotiation_advice import view_advice
+    # The buyer's stated facts count here as they do on the advice panel.
+    advice = view_advice(deal_id, explain=True)
     return list((advice or {}).get("plays") or [])
 
 

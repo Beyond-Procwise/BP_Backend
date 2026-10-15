@@ -242,11 +242,26 @@ def read_posture(*, deal_id: Optional[str] = None, quote_id: Optional[str] = Non
     return build_advice(deal_id, conn=conn, stated=stated, save=False, explain=False)
 
 
+def view_advice(deal_id: str, *, conn=None, created_by: Optional[str] = None,
+                explain: bool = False) -> Optional[dict]:
+    """The advice as the buyer sees it on the deal screen.
+
+    The buyer's stated facts count, as they do for the NegotiationAgent's
+    posture; a plain rebuild ignored them, so the screen and the emails could
+    disagree. ``explain=False`` uses each play's fixed rationale: asking the
+    model for every play took tens of seconds per view.
+    """
+    return apply_turn(deal_id, {}, conn=conn, created_by=created_by,
+                      explain=explain)
+
+
 def apply_turn(deal_id: str, message: dict, *, conn=None,
-               created_by: Optional[str] = None) -> Optional[dict]:
+               created_by: Optional[str] = None,
+               explain: bool = True) -> Optional[dict]:
     if conn is None:
         with get_conn() as own:
-            return apply_turn(deal_id, message, conn=own, created_by=created_by)
+            return apply_turn(deal_id, message, conn=own, created_by=created_by,
+                              explain=explain)
 
     action = str((message or {}).get("action") or "").strip()
     existing = load_advice(conn, deal_id)
@@ -256,7 +271,8 @@ def apply_turn(deal_id: str, message: dict, *, conn=None,
         # Nothing says the buyer viewed the deal before correcting it. Without a
         # row there is no advice_id to attach the fact to and the turn used to
         # drop it in silence, so build the advice this fact belongs to first.
-        seed = build_advice(deal_id, conn=conn, created_by=created_by)
+        seed = build_advice(deal_id, conn=conn, created_by=created_by,
+                            explain=explain)
         if seed is None:
             return None
         advice_id = seed.get("advice_id")
@@ -287,7 +303,7 @@ def apply_turn(deal_id: str, message: dict, *, conn=None,
 
     out = build_advice(deal_id, conn=conn, created_by=created_by,
                        overrides=overrides, stated=stated, lever=lever,
-                       limit=limit)
+                       limit=limit, explain=explain)
     if out is None:
         return None
 
