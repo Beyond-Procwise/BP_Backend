@@ -2310,7 +2310,10 @@ def run_email_watcher_for_workflow(
         or "INBOX"
     )
 
-    if not imap_host or not imap_password or not (imap_username or imap_login):
+    imap_configured = bool(imap_host and imap_password and (imap_username or imap_login))
+    # Replies to email sent from a company Microsoft 365 mailbox arrive there, not over
+    # IMAP; _fetch_emails reads them. Skip only when neither source exists.
+    if not imap_configured and not _m365_has_bindings():
         logger.warning(
             "IMAP credentials are not configured; skipping EmailWatcher (host=%s user=%s)",
             imap_host,
