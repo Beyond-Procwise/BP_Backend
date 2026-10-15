@@ -148,3 +148,80 @@ def test_stating_a_fact_on_an_unknown_deal_is_not_fatal(monkeypatch):
 def test_unknown_action_is_ignored_not_fatal():
     out = ad.apply_turn("D-1", {"action": "nonsense"}, conn=_Conn())
     assert out["quadrant"] == "Leverage"
+
+
+def test_an_on_time_figure_never_reaches_the_ranking(monkeypatch):
+    # No table holds on-time delivery data; the read is gone rather than fed from
+    # nowhere, so even a stated ratio adds no nudge.
+    seen = []
+    real = ad.evaluate
+
+    def spy(name, inputs):
+        if name == "negotiation.play_rank":
+            seen.append(inputs["supplier_performance"])
+        return real(name, inputs)
+
+    monkeypatch.setattr(ad, "evaluate", spy)
+    ad.build_advice("D-1", conn=_Conn(), stated={"on_time_ratio": 0.5})
+    assert seen == [{}]
+
+
+def test_advice_can_be_read_without_saving_or_asking_the_model(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("must not be called")
+
+    monkeypatch.setattr(ad, "save_advice", boom)
+    monkeypatch.setattr(ad, "explain_play", boom)
+    out = ad.build_advice("D-1", conn=_Conn(), save=False, explain=False)
+    assert out["quadrant"] == "Leverage" and out["style"] == "Competitive"
+    assert out["advice_id"] is None
+    assert out["plays"]
+    assert all(p["why"] == p.get("rationale", "") for p in out["plays"])
+
+
+class _QuoteConn(_Conn):
+    """A connection whose quote lookup maps Q-1 to deal D-1 and nothing else."""
+
+    def __init__(self):
+        self.saved = False
+
+    def cursor(self):
+        conn = self
+
+        class _Cur:
+            def execute(self, sql, params=()):
+                self._row = ("D-1",) if params == ("Q-1",) else None
+
+            def fetchone(self):
+                return self._row
+        return _Cur()
+
+
+def test_posture_for_a_deal_is_read_without_saving(monkeypatch):
+    monkeypatch.setattr(ad, "save_advice", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("must not save")))
+    monkeypatch.setattr(ad, "explain_play", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("must not call the model")))
+    out = ad.read_posture(deal_id="D-1", conn=_Conn())
+    assert (out["quadrant"], out["style"]) == ("Leverage", "Competitive")
+
+
+def test_posture_follows_a_quote_to_its_deal(monkeypatch):
+    monkeypatch.setattr(ad, "explain_play", lambda *a, **k: "")
+    out = ad.read_posture(quote_id="Q-1", conn=_QuoteConn())
+    assert out["deal_id"] == "D-1"
+
+
+def test_no_deal_means_no_posture():
+    assert ad.read_posture(conn=_QuoteConn()) is None
+    assert ad.read_posture(quote_id="Q-UNKNOWN", conn=_QuoteConn()) is None
+    assert ad.read_posture(deal_id="NOPE", conn=_Conn()) is None
+
+
+def test_posture_honours_the_buyers_stated_facts(monkeypatch):
+    monkeypatch.setattr(ad, "explain_play", lambda *a, **k: "")
+    monkeypatch.setattr(ad, "active_facts", lambda conn, advice_id:
+                        {"alternative_supplier_count": "3"})
+    out = ad.read_posture(deal_id="D-1", conn=_Conn())
+    # Few alternatives at this spend is Strategic, not Leverage.
+    assert out["quadrant"] == "Strategic"
