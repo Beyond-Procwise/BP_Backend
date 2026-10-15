@@ -87,34 +87,54 @@ def test_probe_control_only_403_counts_as_denied(status):
         c.probe_control("ctl@x")
 
 
-def test_list_inbox_follows_paging_and_sorts_oldest_first():
-    page2 = "https://graph.microsoft.com/v1.0/users/m@x/mailFolders/inbox/messages?page=2"
-    c = client({
-        ("GET", "page=2"): (200, {"value": [{"id": "a", "receivedDateTime": "2026-10-15T09:00:00Z"}]}),
-        ("GET", "/users/m@x/mailFolders/inbox/messages"): (200, {
-            "value": [{"id": "b", "receivedDateTime": "2026-10-15T10:00:00Z"}],
-            "@odata.nextLink": page2}),
-    })
+class PagedInbox(Stub):
+    """An Inbox of `n` messages served $top/$skip at a time. Every page also carries a
+    hostile nextLink, which must never be requested."""
+
+    def __init__(self, n):
+        super().__init__({})
+        self.msgs = [{"id": f"m{i:03d}", "receivedDateTime": f"2026-10-15T{i // 60:02d}:{i % 60:02d}:00Z"}
+                     for i in range(n)]
+
+    def get(self, url, headers):
+        self.calls.append(("GET", url))
+        from urllib.parse import parse_qs, urlparse
+        q = parse_qs(urlparse(url).query)
+        top, skip = int(q["$top"][0]), int(q["$skip"][0])
+        page = self.msgs[skip:skip + top]
+        body = {"value": page}
+        if skip + top < len(self.msgs):
+            body["@odata.nextLink"] = "https://evil.example/users/other@x/messages?steal=1"
+        return 200, body
+
+
+def test_list_inbox_pages_with_its_own_urls_and_never_follows_next_link():
+    """I4: 120 messages over three pages of 50; every request is one we built."""
+    c = M365Client(GraphCredentials("t", "c", "s"), transport=PagedInbox(120))
+    got = c.list_inbox("m@x", datetime(2026, 10, 15, tzinfo=timezone.utc))
+    assert [m["id"] for m in got] == [f"m{i:03d}" for i in range(120)]
+    urls = [u for _, u in c.transport.calls]
+    assert len(urls) == 3
+    assert all(u.startswith("https://graph.microsoft.com/v1.0/users/m@x/mailFolders/inbox/messages?")
+               for u in urls)
+    assert ["$skip=0" in urls[0], "$skip=50" in urls[1], "$skip=100" in urls[2]] == [True] * 3
+    assert all("$filter=receivedDateTime ge 2026-10-15T00:00:00Z" in u
+               and "$orderby=receivedDateTime asc" in u for u in urls)
+    assert not any("evil" in u or "steal" in u for u in urls)
+
+
+def test_list_inbox_exact_multiple_of_page_size_stops_on_the_empty_page():
+    c = M365Client(GraphCredentials("t", "c", "s"), transport=PagedInbox(100))
+    assert len(c.list_inbox("m@x", datetime(2026, 10, 15, tzinfo=timezone.utc))) == 100
+    assert len(c.transport.calls) == 3
+
+
+def test_list_inbox_sorts_oldest_first():
+    c = client({("GET", "/users/m@x/mailFolders/inbox/messages"): (200, {"value": [
+        {"id": "b", "receivedDateTime": "2026-10-15T10:00:00Z"},
+        {"id": "a", "receivedDateTime": "2026-10-15T09:00:00Z"}]})})
     got = c.list_inbox("m@x", datetime(2026, 10, 15, tzinfo=timezone.utc))
     assert [m["id"] for m in got] == ["a", "b"]
-
-
-def test_list_inbox_refuses_a_next_link_off_graph():
-    c = client({("GET", "/messages"): (200, {"value": [],
-                                             "@odata.nextLink": "https://evil.example/x"})})
-    with pytest.raises(ValueError):
-        c.list_inbox("m@x", datetime(2026, 10, 15, tzinfo=timezone.utc))
-
-
-@pytest.mark.parametrize("link", [
-    "https://graph.microsoft.com/v1.0/users/other@x/mailFolders/drafts/messages?x",
-    "https://graph.microsoft.com/v1.0/users/other@x/mailFolders/inbox/messages?x",
-    "https://graph.microsoft.com/v1.0/users/m@x/mailFolders/inbox/messages/../../drafts/messages",
-])
-def test_list_inbox_refuses_a_next_link_to_another_path(link):
-    c = client({("GET", "/messages"): (200, {"value": [], "@odata.nextLink": link})})
-    with pytest.raises(ValueError):
-        c.list_inbox("m@x", datetime(2026, 10, 15, tzinfo=timezone.utc))
 
 
 def test_list_inbox_filter_is_utc_for_aware_and_naive_since():

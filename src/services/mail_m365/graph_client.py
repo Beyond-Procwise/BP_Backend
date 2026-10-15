@@ -115,17 +115,23 @@ class M365Client:
 
     def list_inbox(self, mailbox: str, since: datetime, *, page_size: int = 50
                    ) -> List[Dict[str, Any]]:
+        """Every Inbox message received at or after `since`, oldest first.
+
+        Pages are fetched with URLs WE build ($top/$skip on the same $filter/$orderby, each
+        through the allowlist); the server's @odata.nextLink is never followed, so nothing
+        Microsoft returns can steer a request, and a nextLink encoded differently from our
+        own path cannot stall the listing at the first page.
+        """
         # A naive datetime is taken to be UTC; an aware one is converted, so a +01:00 cursor
         # is not written as local wall-clock time labelled Z (which would skip messages).
         since = since.replace(tzinfo=timezone.utc) if since.tzinfo is None else since
         stamp = since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        first_path = f"{self._mbx(mailbox)}/mailFolders/inbox/messages"
-        url: Optional[str] = (
-            self._url(first_path, method="GET")
-            + f"?$top={page_size}&$select=id,receivedDateTime"
-            f"&$filter=receivedDateTime ge {stamp}&$orderby=receivedDateTime asc")
+        base = self._url(f"{self._mbx(mailbox)}/mailFolders/inbox/messages", method="GET")
         out: List[Dict[str, Any]] = []
-        while url:
+        skip = 0
+        while True:
+            url = (base + f"?$top={page_size}&$skip={skip}&$select=id,receivedDateTime"
+                   f"&$filter=receivedDateTime ge {stamp}&$orderby=receivedDateTime asc")
             status, payload = self.transport.get(url, self._headers())
             if status == 429:
                 raise Throttled(self._retry_after(payload))
@@ -133,16 +139,11 @@ class M365Client:
                 raise MailboxAccessDenied(f"Inbox listing denied with HTTP {status}")
             if not 200 <= status < 300:
                 raise MailboxUnreachable(f"Inbox listing returned HTTP {status}")
-            out.extend((payload or {}).get("value", []))
-            url = (payload or {}).get("@odata.nextLink")
-            if url:
-                # A nextLink is server-supplied: it may only continue the same listing.
-                if not url.startswith(GRAPH_BASE + "/"):
-                    raise ValueError("nextLink left Microsoft Graph")
-                rest = url[len(GRAPH_BASE):].split("?", 1)[0]
-                self._url(rest, method="GET")
-                if rest != first_path:
-                    raise ValueError("nextLink points somewhere other than the Inbox listing")
+            page = (payload or {}).get("value", []) or []
+            out.extend(page)
+            if len(page) < page_size:
+                break
+            skip += page_size
         return sorted(out, key=lambda m: m.get("receivedDateTime") or "")
 
     def get_mime(self, mailbox: str, message_id: str) -> bytes:
