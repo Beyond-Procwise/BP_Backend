@@ -484,6 +484,17 @@ class EmailDispatchService:
             sent = send_result.success
             message_id = send_result.message_id
 
+            held_reason = getattr(send_result, "held_reason", None)
+            if held_reason:
+                dispatch_payload["held_reason"] = held_reason
+                try:
+                    from src.services.agent_actions import record_action
+                    record_action(phase="dispatch", action_type="send_held", agent="EmailDispatch",
+                                  status="error", summary=held_reason,
+                                  details={"draft_id": draft_row[0] if draft_row else None})
+                except Exception:  # audit never breaks dispatch
+                    logger.debug("send_held audit failed", exc_info=True)
+
             self._update_draft_status(
                 conn,
                 draft_row,

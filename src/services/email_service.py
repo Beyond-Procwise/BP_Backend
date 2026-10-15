@@ -24,10 +24,12 @@ from .email_credentials_manager import (
 
 @dataclass
 class EmailSendResult:
-    """Outcome of an SES SMTP send attempt."""
+    """Outcome of a send attempt (SES SMTP, or the company's Microsoft 365 mailbox)."""
 
     success: bool
     message_id: Optional[str] = None
+    held_reason: Optional[str] = None
+    transport: str = "ses"
 
 
 configure_gpu()
@@ -100,6 +102,26 @@ class EmailService:
                     f"attachment; filename=\"{filename}\"",
                 )
                 msg.attach(part)
+
+        from services.mail_m365 import sending as _m365
+        try:
+            decision = _m365.decide()
+        except Exception as exc:  # cannot tell whether a company mailbox applies: hold, never guess
+            self.logger.error("Could not decide the mail transport: %s", exc)
+            return EmailSendResult(False, generated_message_id,
+                                   held_reason=f"company mailbox unavailable: {exc}")
+        if decision.kind == "held":
+            return EmailSendResult(False, generated_message_id, held_reason=decision.reason)
+        if decision.kind == "graph":
+            del msg["From"]
+            msg["From"] = decision.binding.mailbox_address
+            try:
+                _m365.send_via_graph(decision.binding, msg.as_bytes())
+            except Exception as exc:
+                self.logger.error("Microsoft 365 send failed: %s", exc)
+                return EmailSendResult(False, generated_message_id, transport="graph",
+                                       held_reason=f"company mailbox unavailable: {exc}")
+            return EmailSendResult(True, generated_message_id, transport="graph")
 
         try:
             smtp_username, smtp_password = self._fetch_smtp_credentials()

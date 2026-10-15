@@ -795,7 +795,7 @@ def test_send_draft_wiring_denies_and_audits_when_the_guard_refuses(monkeypatch)
 
 
 # --- the send hands what was sent to the capture layer ------------------------------
-def _send_with_capture(monkeypatch, record_sent):
+def _send_with_capture(monkeypatch, record_sent, send_result=None):
     _BackendSchedulerProxy.reset()
     _tracking_dispatches.clear()
     _stub_guard_allows(monkeypatch)
@@ -822,7 +822,7 @@ def _send_with_capture(monkeypatch, record_sent):
 
     def fake_send(subject, body, recipients, sender, attachments=None, **kw):
         sent["body"] = body
-        return EmailSendResult(True, "<m-1>")
+        return send_result or EmailSendResult(True, "<m-1>")
 
     monkeypatch.setattr(service.email_service, "send_email", fake_send)
     monkeypatch.setattr(service, "_record_thread_mapping", lambda *a, **k: None)
@@ -884,3 +884,18 @@ def test_a_failure_while_reading_the_period_still_sends_and_still_records_the_ou
     seen = {}
     result, _, _ = _send_with_capture(monkeypatch, lambda conn, unique_id, body, **kw: seen.update(kw))
     assert result["sent"] is True and seen["retention_days"] is None
+
+
+def test_a_held_send_is_not_sent_and_carries_its_reason_and_an_audit(monkeypatch):
+    from src.services import agent_actions
+
+    audits = []
+    monkeypatch.setattr(agent_actions, "record_action", lambda **kw: audits.append(kw))
+    reason = "company mailbox unavailable: procurement@cust.com is REVOKED"
+    result, sent, uid = _send_with_capture(
+        monkeypatch, lambda *a, **k: None,
+        send_result=EmailSendResult(False, "<m-1>", held_reason=reason))
+    assert result["sent"] is False
+    assert result["draft"]["held_reason"] == reason
+    assert [a["action_type"] for a in audits] == ["send_held"]
+    assert audits[0]["summary"] == reason
