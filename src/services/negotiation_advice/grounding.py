@@ -19,7 +19,9 @@ _FAMILY_KEYWORDS = (
     ("competitive_tension", ("competitor", "e-auction", "bidders",
                              "dual-sourc", "competitive")),
     ("overbilling", ("refund", "credit", "non-compliant")),
-    ("volume", ("volume", "tiered", "bundle", "rebate")),
+    # Not "bundle": "Bundle 2-year warranty" bundles a term, not spend, and must
+    # not be passed as ready on the strength of the deal value.
+    ("volume", ("volume", "tiered", "consolidat", "rebate")),
     ("price_challenge", ("benchmark", "cost breakdown", "should-cost", "price")),
 )
 
@@ -44,7 +46,9 @@ def assess(play: dict, signals: dict) -> dict:
     out.pop("unlocked_by", None)
 
     if family is None:
-        out["state"] = "ready"
+        # Fail closed: a play no evidence on this deal can test is not advice yet.
+        out["state"] = "groundwork"
+        out["unlocked_by"] = "No evidence on this deal supports this play yet"
         return out
 
     if family == "competitive_tension":
