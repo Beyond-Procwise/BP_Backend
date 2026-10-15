@@ -23,6 +23,37 @@ GENERAL = "general"
 #: The governed policy holding the screen->agent map (proc.bp_policy).
 POLICY = "ask_screen_agents"
 
+#: The only tools an agent answering a question may use (Nick, 2026-10-15: Ask
+#: is read-only). A list of what is allowed, not of what is barred, so a tool
+#: added later stays out until someone puts it here. Every agent tool (run_*) is
+#: absent because running an agent writes its own records and results, and
+#: evaluate_opportunity_lever is absent because it records the lever on the
+#: bucket. run_calculation stays: it writes only an audit line saying it ran.
+READ_ONLY_TOOLS = frozenset({
+    "list_governance", "get_policy", "get_prompt",
+    "get_corpus_facts",
+    "list_opportunity_levers", "get_opportunity_bucket",
+    "list_calculations", "run_calculation",
+})
+
+#: Told to every answering agent, so one whose instructions say "send" or
+#: "record" does not claim to have done it.
+READ_ONLY_NOTE = (
+    "You are answering a question in the Ask box. Here you can look things up "
+    "but not change anything: do not say you have sent, saved, recorded or "
+    "approved anything. If the person wants a change made, say where in the "
+    "app they can make it."
+)
+
+
+def _read_only_tools(agent: Any) -> List[str]:
+    """The reading tools, narrowed to the agent's own list if it was given one."""
+    allowed = getattr(agent, "allowed_tools", None)
+    if allowed is None:
+        return sorted(READ_ONLY_TOOLS)
+    return sorted(READ_ONLY_TOOLS & set(allowed))
+
+
 #: Agents that send, write records, or exist as pipeline steps. They are never
 #: offered a question, even when a map row names one, and an agent answering a
 #: question is never given them as tools: an Ask must not be the way an email
@@ -139,15 +170,16 @@ def agent_answer(agent: Any, query: str, *, user_id: Optional[str],
                  context: Optional[str], slug: Optional[str] = None) -> Optional[str]:
     """The agent's answer to one question, or None, meaning "answer it generally".
 
-    The agent reasons under its own instructions, tools and policies
-    (BaseAgent.reason). `user_id` reaches the agent-policy gate on every tool
+    The agent reasons under its own instructions and policies
+    (BaseAgent.reason), with the reading tools only (READ_ONLY_TOOLS). `user_id` reaches the agent-policy gate on every tool
     call, which is the per-person check on what this agent may do for them.
     """
     # Never the sending or writing agents, nor itself (a built-in agent has no
     # governance_slug, so BaseAgent.reason cannot exclude it for us).
-    kwargs: Dict[str, Any] = {"user_id": user_id, "exclude": _tool_exclusions(slug)}
-    if context:
-        kwargs["extra_system"] = context
+    # And only the reading tools: an Ask changes nothing.
+    kwargs: Dict[str, Any] = {"user_id": user_id, "exclude": _tool_exclusions(slug),
+                              "only": _read_only_tools(agent),
+                              "extra_system": "\n\n".join(p for p in (context, READ_ONLY_NOTE) if p)}
     try:
         result = agent.reason(query, **kwargs)
     except Exception:  # noqa: BLE001 - a broken agent is a General answer, not a 500
