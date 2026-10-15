@@ -152,3 +152,47 @@ def test_a_fallback_note_is_stamped_on_the_general_answer(monkeypatch):
     assert result["answered_by"]["source"] == "fallback"
     assert result["answered_by"]["note"] == (
         "The Negotiation agent could not answer, so this was answered generally.")
+
+
+def test_an_upload_on_a_mapped_screen_says_general_answered(monkeypatch):
+    from src.services import model_selector
+
+    real = model_selector.RAGPipeline._answer_general
+
+    def _general_after_routing(self, **kw):
+        try:
+            return real(self, **kw)
+        except AttributeError:
+            return {"answer": "general"}
+
+    monkeypatch.setattr(model_selector.RAGPipeline, "_answer_general", _general_after_routing)
+    result = _pipeline({"negotiation": _Agent()}).answer_question(
+        query="q", user_id="u", screen="negotiations", files=[(b"x", "a.pdf")])
+    assert result["answered_by"]["agent"] is None
+    assert result["answered_by"]["source"] == "fallback"
+    assert "uploaded" in result["answered_by"]["note"]
+
+
+def test_a_reworked_previous_answer_is_not_credited_to_the_screen_agent(monkeypatch):
+    from src.services import model_selector
+    monkeypatch.setattr(model_selector.RAGPipeline, "_is_presentation_directive",
+                        lambda self, q, has_history: True)
+    monkeypatch.setattr(model_selector.RAGPipeline, "_answer_presentation_directive",
+                        lambda self, **kw: {"answer": "<table/>"})
+    agent = _Agent()
+    result = _pipeline({"negotiation": agent},
+                       history=[{"query": "q0", "answer": "a0"}]).answer_question(
+        query="put that in a table", user_id="u", screen="negotiations")
+    assert result["answered_by"]["agent"] is None
+    assert result["answered_by"]["label"] == "Reworked from the previous answer"
+    assert not agent.calls
+
+
+def test_someone_elses_draft_answers_generally():
+    class _DraftAgent(_Agent):
+        draft_owner = "someone_else"
+
+    draft = _DraftAgent()
+    with pytest.raises(AttributeError):   # General reached
+        _pipeline({"my-draft": draft}).answer_question(query="q", user_id="intruder", agent="my-draft")
+    assert not draft.calls

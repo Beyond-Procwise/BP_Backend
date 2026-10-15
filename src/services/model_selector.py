@@ -2564,7 +2564,7 @@ class RAGPipeline:
         """
         registry = getattr(getattr(self, "agent_nick", None), "agents", None) or {}
         responder = ask_routing.choose_responder(
-            agent, screen, ask_routing.askable_agents(registry),
+            agent, screen, ask_routing.askable_agents(registry, user_id),
             ask_routing.screen_agent_map() if screen and not agent else {})
         routing = {"responder": responder, "answered_by": responder.answered_by()}
         if on_event is not None:
@@ -2654,6 +2654,10 @@ class RAGPipeline:
         if history and self._is_presentation_directive(query, has_history=bool(history)):
             previous = self._history_answer_as_text(str(history[-1].get("answer", "")).strip())
             if previous:
+                # Whoever wrote the previous answer, this one is a reworking of it.
+                if routing is not None:
+                    routing["answered_by"] = ask_routing.Responder(None, "previous").answered_by(
+                        "Reworked from the previous answer")
                 return self._answer_presentation_directive(
                     query=query,
                     previous_answer=previous,
@@ -2690,11 +2694,16 @@ class RAGPipeline:
         # The screen's agent, or the one the person chose. An uploaded file is
         # read by the general path only; an agent would answer without it.
         responder = (routing or {}).get("responder")
-        if responder is not None and responder.slug and not files:
+        if responder is not None and responder.slug and files:
+            routing["answered_by"] = ask_routing.Responder(
+                None, "fallback",
+                f"The {ask_routing.agent_label(responder.slug)} cannot read uploaded files, "
+                "so this was answered generally.").answered_by()
+        elif responder is not None and responder.slug:
             agent_obj = (getattr(self.agent_nick, "agents", None) or {}).get(responder.slug)
             _emit("stage", stage="agent_working", answered_by=routing["answered_by"])
             text = ask_routing.agent_answer(
-                agent_obj, query, user_id=user_id,
+                agent_obj, query, user_id=user_id, slug=responder.slug,
                 context=self._agent_context(history, screen_context),
             ) if agent_obj is not None else None
             if text:
