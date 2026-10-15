@@ -29,6 +29,8 @@ from agents.rag_agent import RAGAgent
 from services.redis_client import get_redis_client
 from . import corpus_facts
 from .analytics import ask as analytics_ask
+from . import ask_routing
+from .agent_actions import record_action
 from .json_field_stream import JsonFieldStreamer
 from .response_style import enforce_response_style
 from .rag_service import RAGService
@@ -243,6 +245,20 @@ class ChatHistoryManager:
                 self._store_cache(key, list(history))
             else:
                 self._evict_cache_entry(key)
+
+
+def _records_answered_by() -> Dict[str, Any]:
+    return ask_routing.Responder(None, "records").answered_by("Answered from the records")
+
+
+def record_ask_route(*, user_id: Optional[str], screen: Optional[str],
+                     answered_by: Optional[Dict[str, Any]]) -> None:
+    """Which agent answered, for the record. Best-effort, like every read's audit row."""
+    ab = answered_by or {}
+    record_action(phase="ask", action_type="ask_routed", agent=ab.get("agent") or "general",
+                  status="ok", summary=ab.get("label"),
+                  details={"source": ab.get("source"), "screen": screen,
+                           "note": ab.get("note"), "user_id": user_id})
 
 
 class RAGPipeline:
@@ -2534,6 +2550,56 @@ class RAGPipeline:
         query: str,
         user_id: str,
         *,
+        agent: Optional[str] = None,
+        screen: Optional[str] = None,
+        on_event: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        **kwargs: Any,
+    ) -> Dict:
+        """Answer a question: the agent the person chose, else the screen's agent, else General.
+
+        General is the pipeline this method used to be (now ``_answer_general``),
+        and it still answers first when the question has one exact answer.
+        Every result says who answered in ``answered_by``. Spec:
+        specs/2026-10-15-ask-agent-routing-design.md.
+        """
+        registry = getattr(getattr(self, "agent_nick", None), "agents", None) or {}
+        responder = ask_routing.choose_responder(
+            agent, screen, ask_routing.askable_agents(registry, user_id),
+            ask_routing.screen_agent_map() if screen and not agent else {})
+        routing = {"responder": responder, "answered_by": responder.answered_by()}
+        if on_event is not None:
+            try:
+                on_event("stage", {"stage": "routed", "answered_by": routing["answered_by"]})
+            except Exception:  # pragma: no cover - a broken consumer must not stop the answer
+                logger.debug("ask on_event consumer raised", exc_info=True)
+        result = self._answer_general(query=query, user_id=user_id, on_event=on_event,
+                                      routing=routing, **kwargs)
+        if isinstance(result, dict):
+            result.setdefault("answered_by", routing["answered_by"])
+            record_ask_route(user_id=user_id, screen=screen, answered_by=result["answered_by"])
+        return result
+
+    def _agent_context(self, history: List[Dict[str, Any]],
+                       screen_context: Optional[str]) -> Optional[str]:
+        """What the agent is told besides the question: the screen, and the last three turns."""
+        parts: List[str] = []
+        if isinstance(screen_context, str) and screen_context.strip():
+            parts.append("What the person is looking at: " + screen_context.strip()[:500])
+        turns = [
+            f"Q: {str(h.get('query', '')).strip()}\n"
+            f"A: {self._history_answer_as_text(str(h.get('answer', '')).strip())[:600]}"
+            for h in (history or [])[-3:] if h.get("query")
+        ]
+        if turns:
+            parts.append("Earlier in this conversation:\n" + "\n\n".join(turns))
+        return "\n\n".join(parts) or None
+
+    def _answer_general(
+        self,
+        query: str,
+        user_id: str,
+        *,
+        routing: Optional[Dict[str, Any]] = None,
         session_id: Optional[str] = None,
         model_name: Optional[str] = None,
         files: Optional[List[tuple[bytes, str]]] = None,
@@ -2588,6 +2654,10 @@ class RAGPipeline:
         if history and self._is_presentation_directive(query, has_history=bool(history)):
             previous = self._history_answer_as_text(str(history[-1].get("answer", "")).strip())
             if previous:
+                # Whoever wrote the previous answer, this one is a reworking of it.
+                if routing is not None:
+                    routing["answered_by"] = ask_routing.Responder(None, "previous").answered_by(
+                        "Reworked from the previous answer")
                 return self._answer_presentation_directive(
                     query=query,
                     previous_answer=previous,
@@ -2618,7 +2688,35 @@ class RAGPipeline:
                             "answer": analytic["answer"]})
             self.history_manager.save_history(user_id, history)
             _emit("stage", stage="answer_complete")
+            analytic["answered_by"] = _records_answered_by()
             return analytic
+
+        # The screen's agent, or the one the person chose. An uploaded file is
+        # read by the general path only; an agent would answer without it.
+        responder = (routing or {}).get("responder")
+        if responder is not None and responder.slug and files:
+            routing["answered_by"] = ask_routing.Responder(
+                None, "fallback",
+                f"The {ask_routing.agent_label(responder.slug)} cannot read uploaded files, "
+                "so this was answered generally.").answered_by()
+        elif responder is not None and responder.slug:
+            agent_obj = (getattr(self.agent_nick, "agents", None) or {}).get(responder.slug)
+            _emit("stage", stage="agent_working", answered_by=routing["answered_by"])
+            text = ask_routing.agent_answer(
+                agent_obj, query, user_id=user_id, slug=responder.slug,
+                context=self._agent_context(history, screen_context),
+            ) if agent_obj is not None else None
+            if text:
+                _emit("delta", text=text)
+                _emit("stage", stage="answer_complete")
+                history.append({"query": self._redact_identifiers(query), "answer": text})
+                self.history_manager.save_history(user_id, history)
+                return {"answer": text, "follow_ups": [], "retrieved_documents": [],
+                        "next_steps": [], "answered_by": routing["answered_by"]}
+            routing["answered_by"] = ask_routing.Responder(
+                None, "fallback",
+                f"The {ask_routing.agent_label(responder.slug)} could not answer, "
+                "so this was answered generally.").answered_by()
 
         _emit("stage", stage="retrieving")
 

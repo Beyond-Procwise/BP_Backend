@@ -167,3 +167,9 @@ General. This trade-off was accepted with the decision to answer automatically.
 - Live: on the local server against bp_testdb, ask one question on Negotiations, one on
   Quotes and one on Home. Then switch the Negotiations panel to General and confirm the
   answer matches today's.
+
+**Verified 2026-10-15** (branch `ask-agent-routing`, in-process against bp_testdb with the real agents and model; no server restart):
+Negotiations → Negotiation agent (screen); Quotes → Quote comparison agent (screen); Home → General (default);
+Negotiations with General picked → General (chosen); "top 10 suppliers by spend" on Negotiations → from the records.
+Fallback seen live: a timed-out Negotiation agent was answered by General with the note. Full backend suite:
+identical failure set to the base commit (427 failed / 314 errors pre-existing), +46 passing.
