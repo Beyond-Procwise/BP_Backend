@@ -77,11 +77,6 @@ def test_market_context_flags_high_supply_risk_when_few_alternatives():
     assert market["supply_risk"] in {"high", "elevated", "tight"}
 
 
-def test_supplier_performance_uses_a_key_the_scorer_reads():
-    perf = sg.supplier_performance_dict({"on_time_ratio": 0.72})
-    assert set(perf) & {"on_time_delivery", "on_time", "delivery_score", "otif"}
-
-
 def test_risk_threshold_is_on_the_0_to_100_scale():
     # 0.8 is a low risk on a 0-100 scale and must NOT flag
     assert "supply_risk" not in sg.market_context_dict(

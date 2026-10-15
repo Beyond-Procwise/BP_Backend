@@ -4952,6 +4952,10 @@ class NegotiationAgent(BaseAgent):
                 decision["playbook_examples"] = examples
         else:
             decision.setdefault("play_recommendations", [])
+        # The levers the supplier raised in their own words; the email proposes
+        # these and the ready plays, not a stock menu.
+        deal_levers = list(signals.get("deal_levers") or [])
+        decision["deal_levers"] = deal_levers
 
         message_id = self._coerce_text(context.input_data.get("message_id"))
         supplier_reply_registered = False
@@ -5301,6 +5305,7 @@ class NegotiationAgent(BaseAgent):
             "from_address": context.input_data.get("from_address"),
             "negotiation_message": negotiation_message,
             "play_recommendations": play_recommendations,
+            "deal_levers": deal_levers,
             "playbook_descriptor": playbook_context.get("descriptor"),
             "playbook_examples": playbook_context.get("examples"),
             "counter_options": counter_options,
@@ -5384,6 +5389,7 @@ class NegotiationAgent(BaseAgent):
             "rationale": decision.get("rationale"),
             "intent": "NEGOTIATION_COUNTER",
             "play_recommendations": play_recommendations,
+            "deal_levers": deal_levers,
             "positions": decision.get("positions"),
             "validation_issues": decision.get("validation_issues"),
             "outlier_alerts": decision.get("outlier_alerts"),
@@ -7249,6 +7255,16 @@ class NegotiationAgent(BaseAgent):
             or decision.get("negotiation_style")
         )
 
+        # The Advisor's reading of the deal this negotiation is about. No caller
+        # supplied a bucket or style, so without this the plays were always empty.
+        # A bucket the caller did supply still wins; the deal's evidence grounds
+        # the plays either way. No deal, no lookup, nothing assumed.
+        posture = self._deal_posture(context)
+        if posture and not supplier_type:
+            supplier_type = self._normalise_supplier_type(posture.get("quadrant"))
+            if not negotiation_style:
+                negotiation_style = self._normalise_negotiation_style(posture.get("style"))
+
         if not supplier_type or supplier_type not in playbook:
             return {"plays": [], "lever_priorities": []}
 
@@ -7274,7 +7290,7 @@ class NegotiationAgent(BaseAgent):
         if not isinstance(market_context, dict):
             market_context = {}
 
-        return rank_plays(
+        ranked = rank_plays(
             supplier_type,
             negotiation_style,
             lever_priorities=lever_priorities,
@@ -7283,6 +7299,33 @@ class NegotiationAgent(BaseAgent):
             market_context=market_context,
             playbook=playbook,
         )
+        if posture:
+            from src.services.negotiation_advice.grounding import apply_states
+
+            evidence = {**(posture.get("signals") or {}), **(posture.get("stated_facts") or {})}
+            ranked["plays"] = apply_states(ranked.get("plays") or [], evidence)
+            ranked["deal_id"] = posture.get("deal_id")
+        return ranked
+
+    def _deal_posture(self, context: AgentContext) -> Optional[Dict[str, Any]]:
+        """The Advisor's advice for this negotiation's deal, or None.
+
+        The deal is ``deal_id`` when given, else the one ``quote_id`` belongs to.
+        Read only: no advice row is written and no model is asked.
+        """
+        data = context.input_data if isinstance(context.input_data, dict) else {}
+        deal_id = self._coerce_text(data.get("deal_id"))
+        quote_id = self._coerce_text(data.get("quote_id"))
+        if not deal_id and not quote_id:
+            return None
+        try:
+            from src.services.negotiation_advice import advisor as _advisor
+
+            return _advisor.read_posture(deal_id=deal_id, quote_id=quote_id)
+        except Exception:
+            logger.warning("deal posture lookup failed for deal=%s quote=%s",
+                           deal_id, quote_id, exc_info=True)
+            return None
 
     def _resolve_lever_priorities(self, context: AgentContext, style_plays: Dict[str, Any]) -> List[str]:
         raw_candidates = (

@@ -348,9 +348,9 @@ def policy_alignment_score(lever: str, guidance=None):
     output=Output("tuple", RATIO, "(score nudge, notes)"),
     notes=(
         "An empty performance dict yields (0.0, []) -- the honest 'no signal' outcome. "
-        "`negotiation_advice.signals.supplier_performance_dict` deliberately omits "
-        "unknown keys rather than defaulting them, so an unmeasured supplier produces "
-        "no nudge instead of an invented one."
+        "No table holds on-time/OTIF data, so the negotiation advisor passes an empty "
+        "dict rather than default one, and an unmeasured supplier produces no nudge "
+        "instead of an invented one."
     ),
     golden=[
         GoldenVector(inputs={"lever": "Operational", "performance": {"on_time_delivery": 0.8}},

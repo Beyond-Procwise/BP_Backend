@@ -118,15 +118,6 @@ def gather_signals(cur, deal_id: str) -> Optional[dict]:
     }
 
 
-def supplier_performance_dict(signals: dict) -> dict:
-    """Only keys _score_supplier_performance actually reads, and only when known."""
-    out: dict = {}
-    on_time = signals.get("on_time_ratio")
-    if on_time is not None:
-        out["on_time_delivery"] = on_time
-    return out
-
-
 RISK_ELEVATED = 60.0        # risk_score is a 0-100 scale here, median 49.57
 THIN_MARKET_ALTERNATIVES = 93   # the per-deal median; below it the market is thin
 

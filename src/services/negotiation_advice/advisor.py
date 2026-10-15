@@ -27,8 +27,13 @@ _INDETERMINATE = {
     "indeterminate": True,
 }
 from src.services.negotiation_advice.signals import (
-    gather_signals, market_context_dict, supplier_performance_dict,
+    gather_signals, market_context_dict,
 )
+
+#: No table holds on-time delivery or OTIF data, so there is no measured supplier
+#: performance to rank on. The ranking scorer still reads one when a caller passes
+#: it; the advisor passes none rather than feed it from nowhere.
+_NO_PERFORMANCE: dict = {}
 from src.services.negotiation_advice.store import (
     active_facts, load_advice, save_advice, state_fact, withdraw_fact,
 )
@@ -121,12 +126,16 @@ def build_advice(deal_id: str, *, conn=None, created_by: Optional[str] = None,
                  overrides: Optional[dict] = None,
                  stated: Optional[dict] = None,
                  lever: Optional[str] = None,
-                 limit: int = _DEFAULT_LIMIT) -> Optional[dict]:
+                 limit: int = _DEFAULT_LIMIT,
+                 save: bool = True, explain: bool = True) -> Optional[dict]:
+    """``save=False, explain=False`` reads the advice without writing a row or
+    calling the model -- what the NegotiationAgent uses mid-negotiation."""
     if conn is None:
         with get_conn() as own:
             return build_advice(deal_id, conn=own, created_by=created_by,
                                 overrides=overrides, stated=stated,
-                                lever=lever, limit=limit)
+                                lever=lever, limit=limit, save=save,
+                                explain=explain)
 
     measured = gather_signals(conn.cursor(), deal_id)
     if measured is None:
@@ -163,21 +172,24 @@ def build_advice(deal_id: str, *, conn=None, created_by: Optional[str] = None,
             "supplier_type": quadrant, "negotiation_style": style,
             "lever_priorities": [lever] if lever else None,
             "policy_guidance": None,
-            "supplier_performance": supplier_performance_dict(effective),
+            "supplier_performance": _NO_PERFORMANCE,
             "market_context": market_context_dict(effective),
             "playbook": None, "limit": limit,
         }).or_else({"plays": []})
         plays = apply_states(ranked.get("plays") or [], effective)
         for p in plays:
-            p["why"] = explain_play(p, effective)
+            p["why"] = (explain_play(p, effective) if explain
+                        else str(p.get("rationale") or ""))
 
-    saved = save_advice(
-        conn, deal_id=deal_id, supplier_id=measured.get("supplier_id"),
-        quadrant=quadrant, quadrant_source=quadrant_source,
-        quadrant_confidence=verdict.get("quadrant_confidence"),
-        style=style, style_source=style_source, signals=measured, plays=plays,
-        created_by=created_by,
-    )
+    saved: dict = {}
+    if save:
+        saved = save_advice(
+            conn, deal_id=deal_id, supplier_id=measured.get("supplier_id"),
+            quadrant=quadrant, quadrant_source=quadrant_source,
+            quadrant_confidence=verdict.get("quadrant_confidence"),
+            style=style, style_source=style_source, signals=measured, plays=plays,
+            created_by=created_by,
+        )
 
     return {
         "advice_id": saved.get("advice_id"),
@@ -196,6 +208,38 @@ def build_advice(deal_id: str, *, conn=None, created_by: Optional[str] = None,
         "stated_facts": stated,
         "plays": plays,
     }
+
+
+def _deal_for_quote(conn, quote_id: str) -> Optional[str]:
+    cur = conn.cursor()
+    cur.execute("SELECT deal_id FROM proc.bp_quote_trgt "
+                "WHERE quote_id=%s AND deal_id IS NOT NULL LIMIT 1", (quote_id,))
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+def read_posture(*, deal_id: Optional[str] = None, quote_id: Optional[str] = None,
+                 conn=None) -> Optional[dict]:
+    """The advice for the deal a negotiation is about, or None when no deal is known.
+
+    For the NegotiationAgent mid-negotiation: it writes no advice row and asks no
+    model. The deal is the one named, else the one the quote belongs to -- never
+    guessed from the supplier. The buyer's stated facts count, as they do on the
+    Advisor screen.
+    """
+    if conn is None:
+        with get_conn() as own:
+            return read_posture(deal_id=deal_id, quote_id=quote_id, conn=own)
+    if not deal_id and quote_id:
+        deal_id = _deal_for_quote(conn, quote_id)
+    if not deal_id:
+        return None
+    existing = load_advice(conn, deal_id)
+    stated: dict = {}
+    if existing and existing.get("advice_id"):
+        stated = {k: _coerce(v) for k, v in
+                  (active_facts(conn, existing["advice_id"]) or {}).items()}
+    return build_advice(deal_id, conn=conn, stated=stated, save=False, explain=False)
 
 
 def apply_turn(deal_id: str, message: dict, *, conn=None,
@@ -252,7 +296,7 @@ def apply_turn(deal_id: str, message: dict, *, conn=None,
         other = evaluate("negotiation.play_rank", {
             "supplier_type": out["quadrant"], "negotiation_style": message["style"],
             "lever_priorities": None, "policy_guidance": None,
-            "supplier_performance": supplier_performance_dict(out["signals"]),
+            "supplier_performance": _NO_PERFORMANCE,
             "market_context": market_context_dict(out["signals"]),
             "playbook": None, "limit": _DEFAULT_LIMIT,
         }).or_else({"plays": []})
