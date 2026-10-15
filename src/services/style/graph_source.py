@@ -151,6 +151,24 @@ class RequestsTransport:
             raise MailboxUnreachable(str(exc)) from exc
         return response.status_code, _safe_json(response)
 
+    def get_bytes(self, url: str, headers: Dict[str, str]) -> Tuple[int, bytes]:
+        """A raw (non-JSON) body, e.g. a message's MIME. A refused call is unreachable."""
+        try:
+            response = egress.get(url, purpose=egress.Purpose.MAILBOX,
+                                  headers=headers, timeout=self.timeout)
+            return response.status_code, response.content
+        except Exception as exc:
+            raise MailboxUnreachable(str(exc)) from exc
+
+    def post_body(self, url: str, headers: Dict[str, str], body: bytes) -> Tuple[int, Any]:
+        """POST a raw body (not form, not JSON)."""
+        try:
+            response = egress.post(url, purpose=egress.Purpose.MAILBOX,
+                                   headers=headers, data=body, timeout=self.timeout)
+            return response.status_code, _safe_json(response)
+        except Exception as exc:
+            raise MailboxUnreachable(str(exc)) from exc
+
 
 def _safe_json(response) -> Any:  # pragma: no cover - trivial
     try:
