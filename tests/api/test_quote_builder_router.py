@@ -37,7 +37,7 @@ def client(monkeypatch):
             return result
         return _f
 
-    for name in ("create", "save", "submit", "supersede", "get"):
+    for name in ("create", "save", "submit", "supersede", "get", "link"):
         monkeypatch.setattr(qb.builder, name, _record(name))
     for name in ("list_for_deal", "list_unlinked", "review_queue"):
         monkeypatch.setattr(qb.builder, name, _record(name, [QUOTE]))
@@ -65,6 +65,7 @@ def _call(client, name):
     ("post", "/spendiq/quotes", BODY, ["sales_quote.create", "margin.read"]),
     ("put", "/spendiq/quotes/12", BODY, ["sales_quote.price", "margin.read"]),
     ("post", "/spendiq/quotes/12/supersede", None, ["sales_quote.create", "margin.read"]),
+    ("post", "/spendiq/quotes/12/link", {"dealId": "D1"}, ["sales.write", "margin.read"]),
     ("post", "/spendiq/quotes/12/review", None, ["sales.write", "margin.read"]),
     ("post", "/spendiq/quotes/12/withdraw", None, ["sales.write", "margin.read"]),
     ("post", "/spendiq/quotes/12/approve", {"conditions": ["x"]}, ["sales_quote.approve", "margin.read"]),

@@ -379,6 +379,33 @@ def test_the_cost_record_is_written_on_its_own_and_the_price_does_not_move(live_
                               lines={saved["lines"][0]["id"]: {"unitPrice": 1}})
 
 
+def test_a_quote_approved_before_its_deal_existed_is_linked_without_a_second_review(live_db):
+    conn, _ = live_db
+    q = builder.create(conn, deal_id=None, draft=_draft(), created_by=DRAFTER)
+    builder.submit(conn, int(q["id"]), actor=DRAFTER)
+    quotes.approve(conn, int(q["id"]), approver=REVIEWER)
+    deal = _deal(conn)
+    with pytest.raises(StateConflict, match="only a draft is edited"):
+        builder.save(conn, int(q["id"]), draft=_draft(), actor=DRAFTER, deal_id=deal)
+    linked = builder.link(conn, int(q["id"]), deal_id=deal, actor=DRAFTER)
+    assert linked["dealId"] == deal and linked["status"] == "approved"
+    assert linked["approvedBy"] == REVIEWER, "the approval stands: nothing the customer reads moved"
+    # the same deal again is nothing to do; another deal is refused
+    assert builder.link(conn, int(q["id"]), deal_id=deal, actor=DRAFTER)["dealId"] == deal
+    with pytest.raises(StateConflict, match="set once"):
+        builder.link(conn, int(q["id"]), deal_id=_deal(conn), actor=DRAFTER)
+
+
+def test_a_link_is_refused_where_a_save_would_refuse_it(live_db):
+    conn, _ = live_db
+    held = _new(conn)
+    loose = builder.create(conn, deal_id=None, draft=_draft(), created_by=DRAFTER)
+    with pytest.raises(StateConflict, match="already has quote"):
+        builder.link(conn, int(loose["id"]), deal_id=held["dealId"], actor=DRAFTER)
+    with pytest.raises(NotFound):
+        builder.link(conn, int(loose["id"]), deal_id=f"{SENTINEL}-DEAL-nope", actor=DRAFTER)
+
+
 def test_a_line_keeps_its_id_through_a_save_so_its_cost_record_still_finds_it(live_db):
     conn, _ = live_db
     q = _new(conn)

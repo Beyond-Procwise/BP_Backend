@@ -623,6 +623,43 @@ def supersede(conn: Any, quote_id: int, *, actor: Optional[str]) -> Dict[str, An
     return get(conn, new["sales_quote_id"])
 
 
+# A deal may be named on a quote at any point before it is replaced: naming it changes
+# nothing the customer reads, so a review or an approval already given stands.
+_LINKABLE = ("draft", "in_review", "approved", "issued")
+
+
+def link(conn: Any, quote_id: int, *, deal_id: str, actor: Optional[str]) -> Dict[str, Any]:
+    """File a quote under its deal, once. Unlike a save this is allowed after the quote
+    has gone for review or been approved, so a quote started before its deal existed is
+    not withdrawn and reviewed again only to be linked (2026-10-12: link before send)."""
+    if not isinstance(deal_id, str) or not deal_id.strip():
+        raise ValueError("dealId is needed")
+    deal_id = deal_id.strip()
+    cur = dict_cursor(conn)
+    try:
+        row = _lock(cur, quote_id)
+        if row["deal_id"] == deal_id:
+            conn.rollback()
+            return get(conn, quote_id)          # already linked there: nothing to do
+        if row["deal_id"] is not None:
+            raise StateConflict(f"quote {quote_id} is already on deal {row['deal_id']}; "
+                                "a quote's deal is set once")
+        if row["status"] not in _LINKABLE:
+            raise StateConflict(f"quote {quote_id} is {row['status']}; it is not linked now")
+        _refuse_catalog_quote(cur, quote_id)
+        _check_deal(cur, deal_id, for_quote=quote_id)
+        cur.execute("UPDATE proc.bp_sales_quote SET deal_id = %s, "
+                    "last_modified_date = clock_timestamp() WHERE sales_quote_id = %s",
+                    (deal_id, quote_id))
+        quotes.record_event(conn, "sales_quote.linked", row, actor=actor,
+                            deal_id=deal_id, status=row["status"])
+    except Exception as exc:
+        conn.rollback()
+        raise (_deal_taken(exc, deal_id) or exc) from None
+    conn.commit()
+    return get(conn, quote_id)
+
+
 class PolicyUnset(StateConflict):
     """A builder quote may not go for review while pricing policy has no margin floor, or
     while the quote has no tax rate. `codes` are the ones the screen refuses on

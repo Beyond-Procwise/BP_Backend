@@ -259,6 +259,24 @@ def save_quote(quote_id: int, body: QuoteDraft, principal=Depends(require_user))
             revision=body.revision)))
 
 
+class LinkBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    dealId: str
+
+
+@router.post("/spendiq/quotes/{quote_id}/link")
+def link_quote(quote_id: int, body: LinkBody, principal=Depends(require_user)):
+    """File the quote under its deal, once -- also after it has gone for review or been
+    approved, which a save refuses. The review or approval stands: the customer's quote
+    does not change."""
+    gate("sales.write", principal, agent=_AGENT, context={"sales_quote_id": quote_id})
+    _require_margin_permit(principal, {"sales_quote_id": quote_id})
+    with http_errors(), get_conn() as c:
+        return money_json(_with_checks(builder.link(c, quote_id, deal_id=body.dealId,
+                                                    actor=_subject(principal))))
+
+
 @router.post("/spendiq/quotes/{quote_id}/supersede")
 def supersede(quote_id: int, principal=Depends(require_user)):
     gate("sales_quote.create", principal, agent=_AGENT, context={"sales_quote_id": quote_id})
