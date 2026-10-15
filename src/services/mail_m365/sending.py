@@ -106,11 +106,13 @@ def _decide(repo: Any, integration: Dict[str, Any]) -> Decision:
     if default is not None and connected:
         if default.is_active and default.health_state == HEALTH_OK:
             return Decision("graph", default, None)
+        if default.health_state != HEALTH_DEGRADED and _policy_sends_from_procwise():
+            return Decision("ses", None, None)   # access withdrawn / mailbox deactivated
         return Decision("held", default, _reason_for(default))
     # No usable default. Has the company ever sent from its own mailbox?
     ever = default or repo.get_org_default_any()
     if ever is not None:
-        if not connected and _policy_sends_from_procwise():
+        if (not connected or ever.health_state != HEALTH_DEGRADED) and _policy_sends_from_procwise():
             return Decision("ses", None, None)
         return Decision("held", ever, _reason_for(ever) if connected else HELD_DISCONNECTED)
     if connected:

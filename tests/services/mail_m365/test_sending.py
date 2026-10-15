@@ -310,3 +310,29 @@ def test_unreadable_policy_stays_held(monkeypatch):
 def test_never_connected_does_not_read_the_policy(monkeypatch):
     _policy(monkeypatch, error=AssertionError("policy read for a never-connected customer"))
     assert sending.decide(repo=Repo(), integration={}).kind == "ses"
+
+
+def test_revoked_default_follows_procwise_address_policy(monkeypatch):
+    _policy(monkeypatch, "procwise_address")
+    assert sending.decide(repo=Repo(default=B(health="REVOKED")), integration=CONNECTED).kind == "ses"
+
+
+def test_deactivated_default_follows_procwise_address_policy(monkeypatch):
+    _policy(monkeypatch, "procwise_address")
+    assert sending.decide(repo=Repo(default=B(active=False)), integration=CONNECTED).kind == "ses"
+
+
+def test_revoked_default_with_hold_policy_is_held(monkeypatch):
+    _policy(monkeypatch, "hold")
+    assert sending.decide(repo=Repo(default=B(health="REVOKED")), integration=CONNECTED).kind == "held"
+
+
+def test_degraded_default_is_held_whatever_the_policy(monkeypatch):
+    _policy(monkeypatch, "procwise_address")
+    assert sending.decide(repo=Repo(default=B(health="DEGRADED")), integration=CONNECTED).kind == "held"
+
+
+def test_revoked_with_unreadable_policy_stays_held(monkeypatch):
+    from services import mail_policy
+    _policy(monkeypatch, error=mail_policy.PolicyUnavailable("x"))
+    assert sending.decide(repo=Repo(default=B(health="REVOKED")), integration=CONNECTED).kind == "held"
