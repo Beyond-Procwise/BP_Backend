@@ -164,7 +164,9 @@ def _line(raw: Dict[str, Any], n: int) -> Dict[str, Any]:
         raise ValueError(f"line {n}: discountPct must be between 0 and 100")
     if markup is not None and abs(markup) >= Decimal(1_000_000):
         raise ValueError(f"line {n}: markupPct {markup} is out of range")
-    return {"tag": tag, "description": _text(raw.get("description"), f"line {n}: description", 1000) or "",
+    line_id = raw.get("id")
+    return {"id": int(line_id) if str(line_id or "").isdigit() else None,
+            "tag": tag, "description": _text(raw.get("description"), f"line {n}: description", 1000) or "",
             "qty": qty, "unit": _text(raw.get("unit"), f"line {n}: unit", 40),
             "unit_price": price, "cost": cost, "markup_pct": markup, "discount_pct": discount,
             "priced": builder_line(qty, price, discount, cost)}
@@ -266,22 +268,54 @@ def _check_deal(cur: Any, deal_id: str, *, for_quote: Optional[int]) -> None:
 # --- writes ------------------------------------------------------------------------
 
 def _write_lines(cur: Any, quote_id: int, currency: str, lines: Sequence[Dict[str, Any]]) -> None:
-    cur.execute("DELETE FROM proc.bp_sales_quote_line WHERE sales_quote_id = %s", (quote_id,))
-    for n, l in enumerate(lines, start=1):
+    """Store the quote's lines. A line that comes back with the id of one of this quote's
+    own lines is updated IN PLACE and keeps its id, so the cost record and anything else
+    keyed by line id still points at it after the save; a line without one (or with an
+    id that is not this quote's) is new; a line the save leaves out is deleted."""
+    cur.execute("SELECT sales_quote_line_id FROM proc.bp_sales_quote_line "
+                "WHERE sales_quote_id = %s", (quote_id,))
+    held = {r["sales_quote_line_id"] for r in cur.fetchall()}
+    seen: set = set()
+    kept = []
+    for l in lines:
+        # the same id twice is one line kept and one new, never two rows on one id
+        own = l.get("id") if l.get("id") in held and l.get("id") not in seen else None
+        seen.add(own)
+        kept.append(own)
+    gone = sorted(held - set(kept))
+    if gone:
+        cur.execute("DELETE FROM proc.bp_sales_quote_line WHERE sales_quote_line_id = ANY(%s)",
+                    (gone,))
+    # (sales_quote_id, line_no) is unique and not deferrable: park the kept lines on
+    # negative numbers before handing out the new order
+    cur.execute("UPDATE proc.bp_sales_quote_line SET line_no = -line_no "
+                "WHERE sales_quote_id = %s", (quote_id,))
+    for n, (l, own) in enumerate(zip(lines, kept), start=1):
         p = l["priced"]
-        cur.execute(
-            "INSERT INTO proc.bp_sales_quote_line (sales_quote_id, line_no, item_description, "
-            "quantity, unit_of_measure, currency, unit_price, entered_discount_pct, line_total, "
-            "line_tag) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
-            "RETURNING sales_quote_line_id",
-            (quote_id, n, l["description"], l["qty"], l["unit"], currency, l["unit_price"],
-             l["discount_pct"], p.line_total, l["tag"]))
+        values = (l["description"], l["qty"], l["unit"], currency, l["unit_price"],
+                  l["discount_pct"], p.line_total, l["tag"])
+        if own is None:
+            cur.execute(
+                "INSERT INTO proc.bp_sales_quote_line (sales_quote_id, line_no, item_description, "
+                "quantity, unit_of_measure, currency, unit_price, entered_discount_pct, line_total, "
+                "line_tag) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "RETURNING sales_quote_line_id", (quote_id, n, *values))
+            own = cur.fetchone()["sales_quote_line_id"]
+        else:
+            cur.execute(
+                "UPDATE proc.bp_sales_quote_line SET line_no = %s, item_description = %s, "
+                "quantity = %s, unit_of_measure = %s, currency = %s, unit_price = %s, "
+                "entered_discount_pct = %s, line_total = %s, line_tag = %s "
+                "WHERE sales_quote_line_id = %s", (n, *values, own))
         cur.execute(
             "INSERT INTO proc.bp_sales_quote_line_internal (sales_quote_line_id, sales_quote_id, "
             "unit_cost, line_margin, line_margin_pct, cost_source, markup_pct) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-            (cur.fetchone()["sales_quote_line_id"], quote_id, l["cost"], p.line_margin,
-             p.line_margin_pct, "entered" if l["cost"] is not None else None, l["markup_pct"]))
+            "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (sales_quote_line_id) DO UPDATE SET unit_cost = EXCLUDED.unit_cost, "
+            "line_margin = EXCLUDED.line_margin, line_margin_pct = EXCLUDED.line_margin_pct, "
+            "cost_source = EXCLUDED.cost_source, markup_pct = EXCLUDED.markup_pct",
+            (own, quote_id, l["cost"], p.line_margin, p.line_margin_pct,
+             "entered" if l["cost"] is not None else None, l["markup_pct"]))
     t = total_builder([l["priced"] for l in lines])
     cur.execute("UPDATE proc.bp_sales_quote SET total_ex_tax = %s WHERE sales_quote_id = %s",
                 (t.total_ex_tax, quote_id))
@@ -294,19 +328,36 @@ def _write_lines(cur: Any, quote_id: int, currency: str, lines: Sequence[Dict[st
         (quote_id, t.total_cost, t.total_margin, t.margin_pct, t.costed_lines, t.uncosted_lines))
 
 
-def _customer(cur: Any, *, account_id: Optional[str], name: Optional[str],
-              contact: Optional[str], email: Optional[str]) -> Dict[str, Any]:
-    """The customer a typed email belongs to, as (account_id, contact_id) -- ruled
-    2026-10-14: the email is saved to that customer, and what else is typed about them is
-    added to the same record as it comes in.
+def _norm(name: Optional[str]) -> str:
+    return " ".join((name or "").split()).lower()
 
-    The account is the quote's own if it has one; else the one that already has a
-    contact with this address; else the one account with this exact name; else a new
-    one. Two accounts with the same name are not guessed between: a new one is made, and
-    a person can merge them. The contact is the account's one with this address, or a
-    new one; a contact first saved under its address gets its name once one is typed."""
+
+def _customer(cur: Any, *, account_id: Optional[str], name: Optional[str],
+              contact: Optional[str], email: Optional[str]) -> Dict[str, Optional[Any]]:
+    """The customer this quote is for, as {account_id, contact_id} -- ruled 2026-10-14: a
+    typed email is saved to that customer, and what else is typed about them is added to
+    the same record as it comes in. Both keys are always returned; None means none.
+
+    The quote's own account is kept while it is still the same customer: it has a contact
+    with this address, or (with no address typed) its name is the one typed. A customer
+    renamed to somebody else, or an address that is not theirs, is a different customer
+    and is found afresh -- never filed under the old one. Found afresh: the one account
+    that already has a contact with this address; else the one account with this exact
+    name; else a new one (two accounts with the same name are not guessed between). With
+    no address there is no contact: nobody to send the quote to."""
+    if account_id is not None:
+        cur.execute("SELECT account_name, EXISTS (SELECT 1 FROM proc.bp_account_contact c "
+                    "WHERE c.account_id = a.account_id AND lower(c.contact_email) = lower(%s)) "
+                    "AS has_email FROM proc.bp_account a WHERE a.account_id = %s",
+                    (email, account_id))
+        held = cur.fetchone()
+        same = held is not None and (
+            held["has_email"] if email is not None
+            else name is None or _norm(name) == _norm(held["account_name"]))
+        if not same:
+            account_id = None
     if email is None:
-        return {}
+        return {"account_id": account_id, "contact_id": None}
     if account_id is None:
         cur.execute("SELECT c.account_id FROM proc.bp_account_contact c "
                     "WHERE lower(c.contact_email) = lower(%s) "
@@ -346,7 +397,14 @@ def _customer(cur: Any, *, account_id: Optional[str], name: Optional[str],
 INTERNAL_LINE_KEYS = ("tag", "cost", "markupPct")
 
 
-def _carry_internal(cur: Any, quote_id: int, draft: Dict[str, Any]) -> Dict[str, Any]:
+# Of those, the ones a quote save may set but never clear: a null cost or markup on a line
+# the quote already holds means "the sender does not hold the cost record", not "no cost"
+# -- clearing one is the cost record's own route (save_internal).
+_KEPT_WHEN_NULL = ("cost", "markupPct")
+
+
+def _carry_internal(cur: Any, quote_id: int, draft: Dict[str, Any], *,
+                    nulls_clear: bool = False) -> Dict[str, Any]:
     raw = draft.get("lines")
     if not isinstance(raw, list) or not raw:
         return draft
@@ -360,8 +418,11 @@ def _carry_internal(cur: Any, quote_id: int, draft: Dict[str, Any]) -> Dict[str,
     lines = []
     for line in raw:
         own = held.get(str(line.get("id"))) if isinstance(line, dict) else None
-        lines.append({**{k: own[k] for k in INTERNAL_LINE_KEYS if k not in line}, **line}
-                     if own else line)
+        if own:
+            line = {**{k: own[k] for k in INTERNAL_LINE_KEYS if k not in line}, **line}
+            if not nulls_clear:
+                line.update({k: own[k] for k in _KEPT_WHEN_NULL if line.get(k) in (None, "")})
+        lines.append(line)
     return {**draft, "lines": lines}
 
 
@@ -443,16 +504,18 @@ def _refuse_catalog_quote(cur: Any, quote_id: int) -> None:
 
 
 def save(conn: Any, quote_id: int, *, draft: Dict[str, Any], actor: Optional[str],
-         deal_id: Any = UNSET, revision: Optional[str] = None) -> Dict[str, Any]:
+         deal_id: Any = UNSET, revision: Optional[str] = None,
+         _nulls_clear: bool = False) -> Dict[str, Any]:
     """Save a draft in place. Only a draft is editable. `deal_id` links the quote to its
     deal, once. `revision` is the value the last read returned: when given, a save over
     somebody else's later save is refused instead of silently undoing it. A line that
-    comes back without its tag, cost or markup keeps the ones it had (INTERNAL_LINE_KEYS)."""
+    comes back without its tag, cost or markup keeps the ones it had (INTERNAL_LINE_KEYS),
+    and a null cost or markup does not clear one (only save_internal does)."""
     _clean(draft)                        # refuse a bad draft before taking any lock
     cur = dict_cursor(conn)
     try:
         row = _lock(cur, quote_id)
-        d = _clean(_carry_internal(cur, quote_id, draft))
+        d = _clean(_carry_internal(cur, quote_id, draft, nulls_clear=_nulls_clear))
         if row["status"] != "draft":
             raise StateConflict(f"quote {quote_id} is {row['status']}; only a draft is edited"
                                 + (" (supersede it to change it)" if row["status"] == "issued" else ""))
@@ -472,15 +535,14 @@ def save(conn: Any, quote_id: int, *, draft: Dict[str, Any], actor: Optional[str
         who = _customer(cur, account_id=row["account_id"], name=d["customer_name"],
                         contact=d["customer_contact"], email=d["customer_email"])
         cur.execute(
-            "UPDATE proc.bp_sales_quote SET account_id = COALESCE(%s, account_id), "
-            "contact_id = COALESCE(%s, contact_id), "
+            "UPDATE proc.bp_sales_quote SET account_id = %s, contact_id = %s, "
             "tax_rate_pct = CASE WHEN %s THEN tax_rate_pct ELSE %s END, currency = %s, quote_date = %s, valid_until = %s, "
             "category = %s, prepared_by = %s, customer_name = %s, customer_contact = %s, "
             "scope_html = %s, assumptions_html = %s, terms = %s::jsonb, "
             "sections = COALESCE(%s::jsonb, sections), "
             "deal_id = COALESCE(%s, deal_id), last_modified_date = clock_timestamp() "
             "WHERE sales_quote_id = %s",
-            (who.get("account_id"), who.get("contact_id"), d["tax_rate_pct"] is UNSET,
+            (who["account_id"], who["contact_id"], d["tax_rate_pct"] is UNSET,
              None if d["tax_rate_pct"] is UNSET else d["tax_rate_pct"],
              d["currency"], d["quote_date"], d["valid_until"], d["category"], d["prepared_by"],
              d["customer_name"], d["customer_contact"], d["scope_html"], d["assumptions_html"],
@@ -616,7 +678,8 @@ def save_internal(conn: Any, quote_id: int, *, lines: Dict[str, Dict[str, Any]],
                              f"written here, not {', '.join(sorted(extra))}")
     draft = {**saved, "lines": [{**l, **lines.get(l["id"], {})} for l in saved["lines"]]}
     return save(conn, quote_id, draft=draft, actor=actor,
-                revision=revision if revision is not None else saved["revision"])
+                revision=revision if revision is not None else saved["revision"],
+                _nulls_clear=True)
 
 
 # --- reads -------------------------------------------------------------------------

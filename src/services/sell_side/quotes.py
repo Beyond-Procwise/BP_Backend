@@ -224,9 +224,11 @@ def get_quote(conn: Any, sales_quote_id: int) -> Dict[str, Any]:
     cur = dict_cursor(conn)
     cur.execute(
         f"SELECT {', '.join('q.' + c for c in _QUOTE_COLS)}, "
-        # A Quote builder quote may have no account yet; it names its customer in words.
-        "COALESCE(a.account_name, q.customer_name) AS account_name, "
-        "COALESCE(c.contact_name, q.customer_contact) AS contact_name "
+        # A Quote builder quote names its customer in the seller's words, and those are
+        # what the customer reads even once the quote is filed on an account (whose name
+        # may be shorter or older); a catalog quote has no such words and uses the account's.
+        "COALESCE(q.customer_name, a.account_name) AS account_name, "
+        "COALESCE(q.customer_contact, c.contact_name) AS contact_name "
         "FROM proc.bp_sales_quote q "
         "LEFT JOIN proc.bp_account a ON a.account_id = q.account_id "
         "LEFT JOIN proc.bp_account_contact c ON c.contact_id = q.contact_id "
