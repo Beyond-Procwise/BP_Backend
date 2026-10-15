@@ -19,7 +19,10 @@ UPDATE proc.bp_policy
        last_modified_by = 'rollback:2026-10-16-email-settings',
        last_modified_date = now()
  WHERE policy_status = 1
-   AND policy_details->>'policy_identifier' = 'role_definition';
+   AND policy_details->>'policy_identifier' = 'role_definition'
+   AND (policy_details #> '{rules,roles}' ? 'SecurityReviewer'
+        OR policy_details #> '{rules,roles,Admin,allow}' ? 'inspect'
+        OR COALESCE(policy_details #> '{rules,reversible_classes}', '[]'::jsonb) ? 'inspect');
 
 UPDATE proc.bp_policy
    SET policy_details = policy_details #- '{rules,group_to_role,PROCWISE_SECURITY_REVIEWER}',

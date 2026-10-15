@@ -1,5 +1,5 @@
 -- Email settings part 1: the per-customer email policy, the internal-email outbox, and a
--- read-only Security reviewer role with a new `inspect` action class.
+-- Security reviewer role that may only inspect with a new `inspect` action class.
 --
 -- `inspect` is for looking at how mail is configured and what was read (mailbox.view). It is
 -- NOT part of `read`, because every role has `read`. It is listed as a reversible class so
@@ -52,7 +52,7 @@ UPDATE proc.bp_policy
    SET policy_details = jsonb_set(
          jsonb_set(
            jsonb_set(policy_details, '{rules,roles,SecurityReviewer}',
-                     '{"rank":1,"allow":["read","inspect"]}'::jsonb, true),
+                     '{"rank":1,"allow":["inspect"]}'::jsonb, true),
            '{rules,roles,Admin,allow}',
            CASE WHEN policy_details #> '{rules,roles,Admin,allow}' ? 'inspect'
                 THEN policy_details #> '{rules,roles,Admin,allow}'
@@ -68,7 +68,7 @@ UPDATE proc.bp_policy
        last_modified_date = now()
  WHERE policy_status = 1
    AND policy_details->>'policy_identifier' = 'role_definition'
-   AND NOT (policy_details #> '{rules,roles}' ? 'SecurityReviewer'
+   AND NOT (policy_details #> '{rules,roles,SecurityReviewer}' = '{"rank":1,"allow":["inspect"]}'::jsonb
             AND policy_details #> '{rules,roles,Admin,allow}' ? 'inspect'
             AND COALESCE(policy_details #> '{rules,reversible_classes}', '[]'::jsonb) ? 'inspect');
 

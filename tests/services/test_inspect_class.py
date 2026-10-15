@@ -68,3 +68,19 @@ def test_binding_stays_admin_only():
 def test_security_reviewer_cannot_write_or_approve_internal_mail():
     for action in ("mail.internal.create", "mail.internal.approve"):
         assert not _decide(action, "SecurityReviewer").allowed
+
+
+@pytest.mark.parametrize("action", ["supplier.read", "invoice.read", "email.draft.read", "contract.read"])
+def test_security_reviewer_sees_no_commercial_data(action):
+    from src.services import actions as a
+    if not a.is_known(action):
+        pytest.skip(f"{action} not in the vocabulary")
+    assert a.action_class(action) == "read"
+    assert not _decide(action, "SecurityReviewer").allowed
+
+
+@pytest.mark.xfail(strict=True, reason="rank tie with Viewer; no safe rank exists (see report, fix round 1 item 2)")
+def test_reviewer_and_viewer_groups_resolve_the_same_whichever_order():
+    a = rbac.effective_role(type("Q", (), {"subject": "x", "claims": {"cognito:groups": ["PROCWISE_VIEWER", "PROCWISE_SECURITY_REVIEWER"]}})())
+    b = rbac.effective_role(type("Q", (), {"subject": "x", "claims": {"cognito:groups": ["PROCWISE_SECURITY_REVIEWER", "PROCWISE_VIEWER"]}})())
+    assert a == b
