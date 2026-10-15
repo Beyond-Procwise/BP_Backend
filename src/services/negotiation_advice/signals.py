@@ -65,12 +65,18 @@ def gather_signals(cur, deal_id: str) -> Optional[dict]:
         return None
     d = deal_rows[0]
 
+    # Suppliers on record for this deal's items, the deal's own included. One is
+    # the deal's own supplier and nobody else: that is no data about the market,
+    # not evidence of a thin one, so the count the classifier reads stays None.
+    # A buyer who knows it is sole-source can state it.
+    on_record: Optional[int] = None
     alt: Optional[int] = None
     try:
         alt_rows = _rows(cur, _ALT_SQL, (deal_id,))
         if alt_rows:
             raw = alt_rows[0].get("n")
-            alt = int(raw) if raw not in (None, 0) else None
+            on_record = int(raw) if raw not in (None, 0) else None
+            alt = on_record if on_record is not None and on_record > 1 else None
     except Exception:
         log.debug("alternative-supplier count failed for %s", deal_id,
                   exc_info=True)
@@ -100,29 +106,51 @@ def gather_signals(cur, deal_id: str) -> Optional[dict]:
     invoice_total = _f(d.get("invoice_total"))
     po_total = _f(d.get("po_total"))
     quote_total = _f(d.get("quote_total"))
+    deal_value = invoice_total or po_total or quote_total
     return {
         "deal_id": d.get("deal_id"),
         "supplier_id": d.get("supplier_id"),
         "supplier_name": d.get("supplier_name"),
         "currency": d.get("currency"),
-        "deal_value": invoice_total or po_total or quote_total,
+        "deal_value": deal_value,
+        # The spend bar is in pounds. None when the currency is unknown or has no rate.
+        "deal_value_gbp": _in_gbp(deal_value, d.get("currency")),
         "invoice_total": invoice_total,
         "po_total": po_total,
         # Suppliers bidding, not quote documents: one supplier's V1-V3 used to read as three
         # competing suppliers and mark "competitive tension" ready on a single-bidder deal.
         "quote_supplier_count": bidders,
         "alternative_supplier_count": alt,
+        "suppliers_on_record": on_record,
         "risk_score": risk,
         "is_preferred": preferred,
         "price_variance_pct": _f(d.get("price_variance_pct")),
     }
 
 
+def _in_gbp(amount: Optional[float], currency: Any) -> Optional[float]:
+    """``amount`` in pounds, or None. A rate is fetched only for a foreign amount."""
+    if amount is None:
+        return None
+    code = str(currency or "").strip().upper()
+    if code == "GBP":
+        return amount
+    if not code:
+        return None
+    try:
+        from src.services import value_summary_service
+
+        return value_summary_service._to_gbp(amount, code,
+                                             value_summary_service._get_rates())[0]
+    except Exception:
+        log.debug("no pounds value for %s %s", currency, amount, exc_info=True)
+        return None
+
+
 RISK_ELEVATED = 60.0        # risk_score is a 0-100 scale here, median 49.57
-THIN_MARKET_ALTERNATIVES = 93   # the per-deal median; below it the market is thin
 
 
-def market_context_dict(signals: dict) -> dict:
+def market_context_dict(signals: dict, thresholds: Optional[dict] = None) -> dict:
     """Only keys _score_market_context reads, and only when known.
 
     An uncomputable signal is omitted: the scorer returns (0.0, []) on an empty
@@ -131,16 +159,19 @@ def market_context_dict(signals: dict) -> dict:
     Both thresholds are on measured scales. `risk_score` is stored as VARCHAR on
     a 0-100 scale (min 5.00, median 49.57, max 94.94) — comparing it against 0.6
     matches 5000 of 5000 suppliers, i.e. always. `alternative_supplier_count` is
-    a per-deal union whose median is 93, so a "thin market" test of <= 2 would
-    never fire.
+    tested against the governed many_alternatives bar, the same one the
+    classifier uses (it was a second, ungoverned copy of 93).
 
     The scorer treats "high", "elevated" and "tight" identically, so there is one
     tier and one string rather than a false distinction.
     """
     out: dict = {}
-    alt = signals.get("alternative_supplier_count")
-    risk = signals.get("risk_score")
-    if alt is not None and alt < THIN_MARKET_ALTERNATIVES:
+    from src.services.negotiation_advice.classification import default_thresholds
+
+    bar = _f({**default_thresholds(), **(thresholds or {})}.get("many_alternatives"))
+    alt = _f(signals.get("alternative_supplier_count"))
+    risk = _f(signals.get("risk_score"))
+    if alt is not None and bar is not None and alt < bar:
         out["supply_risk"] = "elevated"
     elif risk is not None and risk >= RISK_ELEVATED:
         out["supply_risk"] = "elevated"

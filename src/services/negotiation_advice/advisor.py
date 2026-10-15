@@ -173,7 +173,7 @@ def build_advice(deal_id: str, *, conn=None, created_by: Optional[str] = None,
             "lever_priorities": [lever] if lever else None,
             "policy_guidance": None,
             "supplier_performance": _NO_PERFORMANCE,
-            "market_context": market_context_dict(effective),
+            "market_context": market_context_dict(effective, load_thresholds(conn)),
             "playbook": None, "limit": limit,
         }).or_else({"plays": []})
         plays = apply_states(ranked.get("plays") or [], effective)
@@ -297,7 +297,7 @@ def apply_turn(deal_id: str, message: dict, *, conn=None,
             "supplier_type": out["quadrant"], "negotiation_style": message["style"],
             "lever_priorities": None, "policy_guidance": None,
             "supplier_performance": _NO_PERFORMANCE,
-            "market_context": market_context_dict(out["signals"]),
+            "market_context": market_context_dict(out["signals"], load_thresholds(conn)),
             "playbook": None, "limit": _DEFAULT_LIMIT,
         }).or_else({"plays": []})
         out["comparison"] = {

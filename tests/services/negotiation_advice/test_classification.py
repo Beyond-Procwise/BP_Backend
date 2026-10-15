@@ -1,12 +1,10 @@
 from src.services.negotiation_advice import classification as cl
 
-# Spend either side of the 98,175 bar; alternatives either side of the 93 bar.
-# 93 is the measured per-DEAL median (min 38, p75 126, max 232) — not the
-# per-item median, which is far lower and would make every deal "many".
+# Spend either side of the 98,175 bar; suppliers on record either side of 3.
 HIGH = 200_000.0
 LOW = 1_000.0
 MANY = 120
-FEW = 30
+FEW = 2
 
 
 def _sig(value, alt, risk=50.0, preferred=False, variance=None):
@@ -34,11 +32,11 @@ def test_low_spend_few_alternatives_is_bottleneck():
     assert cl.classify(_sig(LOW, FEW))["quadrant"] == "Bottleneck"
 
 
-def test_a_typical_deal_is_not_forced_into_one_quadrant():
-    # Regression guard on the seed: at the wrong threshold (23) every real deal
-    # reads as "many alternatives" and Strategic/Bottleneck become unreachable.
-    assert cl.classify(_sig(HIGH, 65))["quadrant"] == "Strategic"
-    assert cl.classify(_sig(HIGH, 126))["quadrant"] == "Leverage"
+def test_a_contested_market_starts_at_three_suppliers():
+    # The bar was the corpus median (93): every test deal read as contested and
+    # every real one, with only its own supplier on record, as thin.
+    assert cl.classify(_sig(HIGH, 2))["quadrant"] == "Strategic"
+    assert cl.classify(_sig(HIGH, 3))["quadrant"] == "Leverage"
 
 
 def test_quadrant_is_one_of_the_playbook_keys():
@@ -87,6 +85,6 @@ def test_style_is_one_of_the_playbook_styles():
 
 
 def test_confidence_is_lower_near_a_threshold():
-    near = cl.classify(_sig(98_200.0, 93))["quadrant_confidence"]
+    near = cl.classify(_sig(98_200.0, 3))["quadrant_confidence"]
     clear = cl.classify(_sig(1_000_000.0, 300))["quadrant_confidence"]
     assert near < clear

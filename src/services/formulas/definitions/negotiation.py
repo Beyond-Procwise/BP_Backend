@@ -171,25 +171,26 @@ def counter_plan(current_offer, target_price, round=None, max_rounds=None,
 
 @formula(
     "negotiation.kraljic_quadrant",
-    version="1.0.0",
+    version="1.1.0",
     owner=_OWNER,
     purpose="Kraljic quadrant and suggested negotiation style for a deal",
     effective_from=_FROM,
     inputs=[
         Term("signals", RECORD,
-             "deal_value, alternative_supplier_count, risk_score, is_preferred, "
-             "price_variance_pct"),
+             "deal_value, deal_value_gbp, currency, alternative_supplier_count, "
+             "risk_score, is_preferred, price_variance_pct"),
         Term("thresholds", RECORD, "high_spend and many_alternatives overrides",
              required=False),
     ],
     output=Output("dict", LABEL,
                   "quadrant, reasons, confidence, style, style_reasons, indeterminate"),
     notes=(
-        "Default bars `high_spend = 98,175` and `many_alternatives = 93` are the live "
-        "deal-value p90 and per-deal median alternative count. They are distribution "
-        "parameters compiled into source: when the corpus moves they go stale silently "
-        "and nothing measures the drift (gap report D-10). `many_alternatives = 93` is "
-        "also defined a second time as `signals.THIN_MARKET_ALTERNATIVES` (D-11). "
+        "Since 1.1.0 spend is compared in pounds (`deal_value_gbp`; a foreign value "
+        "with no rate is no verdict, never a native comparison) and "
+        "`many_alternatives` is a supplier count, 3, not the corpus median (93, which "
+        "went stale as the data grew: D-10). `signals.market_context_dict` reads the "
+        "same governed bar (D-11 closed). A deal whose items only its own supplier "
+        "has quoted carries no count, so it is no verdict until a buyer states one. "
         "Note bp_supplier.supplier_type is NOT a Kraljic axis and is deliberately unused."
     ),
     golden=[
@@ -202,12 +203,12 @@ def counter_plan(current_offer, target_price, round=None, max_rounds=None,
                       "quadrant_confidence": 1.0, "indeterminate": False},
         ),
         GoldenVector(
-            inputs={"signals": {"deal_value": 4000.0, "alternative_supplier_count": 12,
+            inputs={"signals": {"deal_value": 4000.0, "alternative_supplier_count": 2,
                                 "risk_score": 70.0}, "thresholds": None},
             expected={"quadrant": "Bottleneck", "style": "Principled"},
         ),
         GoldenVector(
-            inputs={"signals": {"deal_value": 250000.0, "alternative_supplier_count": 12,
+            inputs={"signals": {"deal_value": 250000.0, "alternative_supplier_count": 2,
                                 "is_preferred": True}, "thresholds": None},
             expected={"quadrant": "Strategic", "style": "Collaborative"},
         ),
@@ -221,6 +222,20 @@ def counter_plan(current_offer, target_price, round=None, max_rounds=None,
                     "thresholds": None},
             expected={"quadrant": None, "indeterminate": True, "quadrant_confidence": 0.0},
             note="no spend and no market -- says so rather than guessing a quadrant",
+        ),
+        GoldenVector(
+            inputs={"signals": {"deal_value": 22100000.0, "currency": "INR",
+                                "deal_value_gbp": 20000.0,
+                                "alternative_supplier_count": 150}, "thresholds": None},
+            expected={"quadrant": "Transactional"},
+            note="a large rupee amount is a small pound one",
+        ),
+        GoldenVector(
+            inputs={"signals": {"deal_value": 22100000.0, "currency": "INR",
+                                "deal_value_gbp": None,
+                                "alternative_supplier_count": 150}, "thresholds": None},
+            expected={"quadrant": None, "indeterminate": True},
+            note="no rate to pounds -- no verdict, not a rupee comparison",
         ),
     ],
 )
