@@ -287,9 +287,12 @@ def _customer_record(pack: Any) -> Dict[str, Any]:
     return {
         "quote_ref": f"{who.quote_ref} {who.number or ''}", "currency": who.currency,
         "quote_date": who.quote_date, "valid_until": who.valid_until,
-        "total_ex_tax": total.value if total else None,
+        # the tax and the total with it are the quote's own figures as well
+        "total_ex_tax": [total.value if total else None,
+                         *(pack.fact(f).value for f in pack.tax_fact_ids if pack.fact(f))],
         "lines": [{"line_no": l.line_no, "distributor_sku": l.sku, "mpn": l.mpn,
                    "quantity": l.quantity, "unit_price": l.unit_price,
+                   "discount_pct": l.discount_pct,
                    "line_total": l.line_total, "currency": l.currency}
                   for l in pack.lines],
     }
@@ -411,16 +414,23 @@ def run_quote(
     allowed: set = set()
     for line in pack.lines:
         words.extend((line.description, line.sku, line.mpn, line.unit_of_measure))
-        for column in ("line_no", "quantity", "unit_price", "line_total"):
+        for column in ("line_no", "quantity", "unit_price", "discount_pct", "line_total"):
             allowed.update(m.group(0) for m in NUMBER.finditer(line.cell(column)))
     words.extend(t.text for t in pack.terms)
     words.extend(n.text for n in pack.notes)
+    # the seller's own passages and its letterhead are words too, as typed
+    for section in pack.sections:
+        words.extend(section.words())
+    if pack.seller is not None:
+        words.extend(pack.seller.words())
     for entry in pack.facts:
         words.append(entry.label)
         allowed |= entry.tokens()
     for day in (who.quote_date, who.valid_until):
         allowed.update(m.group(0) for m in NUMBER.finditer(long_date(day)))
     allowed = _same(allowed)
+    # the page reads with its whitespace collapsed, so the words are matched the same way
+    words = [" ".join(w.split()) for w in words if w]
     for chunk in chunks:
         stripped = chunk
         for word in sorted((w for w in words if w), key=len, reverse=True):
@@ -438,8 +448,9 @@ def run_quote(
     # whole file bar the stylesheet, so one hidden in an attribute or a comment is caught.
     try:
         quote_render.assert_no_internal_names(_STYLE.sub(" ", source))
-        quote_render.assert_no_internal_values("\n".join(chunks), _customer_record(pack),
-                                               internal)
+        quote_render.assert_no_internal_values(
+            "\n".join(chunks), _customer_record(pack), internal,
+            accounted=pack.seller.words() if pack.seller is not None else ())
     except quote_render.InternalFieldLeak as leak:
         raise_finding(FindingCode.INTERNAL_FIELD_LEAK, str(leak))
 

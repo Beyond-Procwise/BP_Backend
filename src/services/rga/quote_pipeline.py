@@ -17,11 +17,14 @@ from src.services.rga.builders.sales_quote import REPORT_TYPE_ID
 from src.services.rga.factpack import build_fact_pack
 from src.services.rga.models import Finding, FindingCode
 from src.services.rga.quote_models import (
+    LetterheadBlock,
     LineTableBlock,
     NotesBlock,
     PaymentBlock,
     QuoteAST,
     QuotePack,
+    SectionBlock,
+    SignatureBlock,
     TermsBlock,
     TotalsBlock,
 )
@@ -43,15 +46,41 @@ class QuoteBlocked(StateConflict):
 
 
 def default_document(pack: QuotePack) -> QuoteAST:
-    """Every line in order, the total, then the notes and terms the pack holds."""
-    blocks: list = [LineTableBlock(line_refs=[l.line_id for l in pack.lines]),
-                    TotalsBlock(fact_refs=[pack.total_fact_id])]
+    """The quote in its own layout's order when it has one (a Quote builder quote);
+    otherwise every line, the total, then the notes and terms the pack holds. Either way
+    every line, every total and every term is placed: what the layout leaves out of those
+    follows at the end, because a quote that drops one is not the quote on record."""
+    columns = ["line_no", "sku", "description", "quantity", "unit_of_measure", "unit_price",
+               *(["discount_pct"] if any(l.discount_pct for l in pack.lines) else []),
+               "line_total"]
+    general = [t.term_id for t in pack.terms if t.kind == "general"]
+
+    def lines() -> list:
+        return [LineTableBlock(line_refs=[l.line_id for l in pack.lines], columns=columns)]
+
+    def totals() -> list:
+        return [TotalsBlock(fact_refs=[pack.total_fact_id, *pack.tax_fact_ids])]
+
+    def terms() -> list:
+        return ([TermsBlock(term_refs=general)] if general else []) + [
+            PaymentBlock(term_ref=t.term_id) for t in pack.terms if t.kind == "payment"]
+
+    placed = {"lines": lines, "totals": totals, "terms": terms,
+              "letterhead": lambda: [LetterheadBlock()],
+              "signature": lambda: [SignatureBlock(party="customer")]}
+    blocks: list = []
+    done: set = set()
+    for item in pack.layout:
+        if item in placed:
+            blocks.extend(placed[item]())
+            done.add(item)
+        elif pack.section(item) is not None:
+            blocks.append(SectionBlock(section_ref=item))
+    for must in ("lines", "totals", "terms"):
+        if must not in done:
+            blocks.extend(placed[must]())
     if pack.notes:
         blocks.append(NotesBlock(note_refs=[n.note_id for n in pack.notes]))
-    general = [t.term_id for t in pack.terms if t.kind == "general"]
-    if general:
-        blocks.append(TermsBlock(term_refs=general))
-    blocks.extend(PaymentBlock(term_ref=t.term_id) for t in pack.terms if t.kind == "payment")
     return QuoteAST(blocks=blocks)
 
 

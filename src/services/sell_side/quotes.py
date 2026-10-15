@@ -45,6 +45,8 @@ _LINE_COLS = ("sales_quote_id", "line_no", "sales_opportunity_id", "catalog_item
               "currency", "list_price_at_quote", "unit_price", "discount_pct", "line_total",
               "justification_id")
 _LINE_READ_COLS = ("sales_quote_line_id",) + _LINE_COLS + ("created_date",)
+# Read for the customer's document only (get_quote): the seller's words on a builder quote.
+_DOCUMENT_COLS = ("scope_html", "assumptions_html", "terms", "sections", "tax_rate_pct")
 
 # The internal record.
 _INTERNAL_QUOTE_COLS = ("total_cost", "total_margin", "margin_pct")
@@ -228,7 +230,10 @@ def get_quote(conn: Any, sales_quote_id: int) -> Dict[str, Any]:
         # what the customer reads even once the quote is filed on an account (whose name
         # may be shorter or older); a catalog quote has no such words and uses the account's.
         "COALESCE(q.customer_name, a.account_name) AS account_name, "
-        "COALESCE(q.customer_contact, c.contact_name) AS contact_name "
+        "COALESCE(q.customer_contact, c.contact_name) AS contact_name, "
+        # what a Quote builder quote says to its customer besides its lines; all null or
+        # empty on a catalog quote
+        f"{', '.join('q.' + c for c in _DOCUMENT_COLS)} "
         "FROM proc.bp_sales_quote q "
         "LEFT JOIN proc.bp_account a ON a.account_id = q.account_id "
         "LEFT JOIN proc.bp_account_contact c ON c.contact_id = q.contact_id "
@@ -237,7 +242,8 @@ def get_quote(conn: Any, sales_quote_id: int) -> Dict[str, Any]:
     if row is None:
         raise NotFound(f"quote {sales_quote_id} does not exist")
     out = dict(row)
-    cur.execute(f"SELECT {', '.join(_LINE_READ_COLS)} FROM proc.bp_sales_quote_line "
+    cur.execute(f"SELECT {', '.join(_LINE_READ_COLS)}, entered_discount_pct "
+                "FROM proc.bp_sales_quote_line "
                 "WHERE sales_quote_id = %s ORDER BY line_no", (sales_quote_id,))
     out["lines"] = [dict(r) for r in cur.fetchall()]
     out["justifications"] = _justifications(cur, out["lines"], customer_safe_only=True)
