@@ -12,6 +12,7 @@ model. Spec: specs/2026-10-15-ask-agent-routing-design.md.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 
@@ -22,13 +23,21 @@ GENERAL = "general"
 #: The governed policy holding the screen->agent map (proc.bp_policy).
 POLICY = "ask_screen_agents"
 
-#: Agents that send, act on documents, or exist as pipeline steps. They are never
-#: offered a question, even when a map row names one: an Ask must not be the way
-#: an email goes out.
+#: Agents that send, write records, or exist as pipeline steps. They are never
+#: offered a question, even when a map row names one, and an agent answering a
+#: question is never given them as tools: an Ask must not be the way an email
+#: goes out or an approval is filed.
 NOT_ASKABLE = frozenset({
     "email_dispatch", "email_drafting", "email_watcher",
-    "data_extraction", "supplier_interaction",
+    "data_extraction", "supplier_interaction", "approvals",
+    # pipeline-internal: General is the rag path, the other two check opportunities
+    "rag", "opportunity_critic", "opportunity_evidence",
 })
+
+#: How long the screen map is trusted before it is read again, so an admin's edit
+#: applies within a minute without a restart.
+MAP_TTL_SECONDS = 60.0
+_MAP_CACHE: Dict[str, Any] = {"at": None, "value": {}}
 
 
 def _norm(value: Optional[str]) -> Optional[str]:
@@ -58,8 +67,18 @@ def _unavailable(slug: str) -> Responder:
                      f"{agent_label(slug)} is not available, so this was answered generally.")
 
 
-def askable_agents(registry: Mapping[str, Any]) -> List[str]:
-    return sorted(s for s in registry.keys() if s not in NOT_ASKABLE)
+def askable_agents(registry: Mapping[str, Any], user_id: Optional[str] = None) -> List[str]:
+    """The agents this person may ask. A draft is offered to its creator only, the
+    rule BaseAgent.execute enforces for every other way of running one."""
+    out = []
+    for slug, agent in registry.items():
+        if slug in NOT_ASKABLE:
+            continue
+        owner = getattr(agent, "draft_owner", None)
+        if owner is not None and (not user_id or owner != user_id):
+            continue
+        out.append(slug)
+    return sorted(out)
 
 
 def choose_responder(agent: Optional[str], screen: Optional[str],
@@ -76,7 +95,8 @@ def choose_responder(agent: Optional[str], screen: Optional[str],
     return Responder(None, "default")
 
 
-def screen_agent_map(read: Optional[Callable[[str], Dict[str, Any]]] = None) -> Dict[str, str]:
+def screen_agent_map(read: Optional[Callable[[str], Dict[str, Any]]] = None, *,
+                     now: Callable[[], float] = time.monotonic) -> Dict[str, str]:
     """The screen->agent map an admin governs, or {} when it cannot be read.
 
     Empty is safe here, unlike a governed limit: no map means every screen
@@ -84,8 +104,12 @@ def screen_agent_map(read: Optional[Callable[[str], Dict[str, Any]]] = None) -> 
     not make every question fail.
     """
     if read is None:
-        from src.services import governed_limits
-        read = governed_limits.rules
+        at = _MAP_CACHE["at"]
+        if at is not None and now() - at < MAP_TTL_SECONDS:
+            return dict(_MAP_CACHE["value"])
+        value = screen_agent_map(_fresh_rules)
+        _MAP_CACHE.update(at=now(), value=value)
+        return dict(value)
     try:
         screens = (read(POLICY) or {}).get("screens")
     except Exception as exc:  # noqa: BLE001
@@ -97,15 +121,31 @@ def screen_agent_map(read: Optional[Callable[[str], Dict[str, Any]]] = None) -> 
             for k, v in screens.items() if str(k).strip() and str(v).strip()}
 
 
+def _fresh_rules(policy: str) -> Dict[str, Any]:
+    from src.services import governed_limits
+    return governed_limits.rules(policy, fresh=True)
+
+
+def _tool_exclusions(slug: Optional[str]) -> tuple:
+    try:
+        from agents.base_agent import NODE_TOOL_EXCLUSIONS
+    except ImportError:  # pragma: no cover - imported as src.services
+        from src.agents.base_agent import NODE_TOOL_EXCLUSIONS
+    own = (f"run_{slug}",) if slug else ()
+    return tuple(NODE_TOOL_EXCLUSIONS) + tuple(f"run_{s}" for s in sorted(NOT_ASKABLE)) + own
+
+
 def agent_answer(agent: Any, query: str, *, user_id: Optional[str],
-                 context: Optional[str]) -> Optional[str]:
+                 context: Optional[str], slug: Optional[str] = None) -> Optional[str]:
     """The agent's answer to one question, or None, meaning "answer it generally".
 
     The agent reasons under its own instructions, tools and policies
     (BaseAgent.reason). `user_id` reaches the agent-policy gate on every tool
     call, which is the per-person check on what this agent may do for them.
     """
-    kwargs: Dict[str, Any] = {"user_id": user_id}
+    # Never the sending or writing agents, nor itself (a built-in agent has no
+    # governance_slug, so BaseAgent.reason cannot exclude it for us).
+    kwargs: Dict[str, Any] = {"user_id": user_id, "exclude": _tool_exclusions(slug)}
     if context:
         kwargs["extra_system"] = context
     try:

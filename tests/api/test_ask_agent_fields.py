@@ -86,3 +86,12 @@ def test_the_askable_agents_are_listed_with_names():
     nick = types.SimpleNamespace(agents={"negotiation": object(), "email_dispatch": object()})
     result = asyncio.run(workflows.list_ask_agents(agent_nick=nick, principal=object()))
     assert result == {"agents": [{"slug": "negotiation", "label": "Negotiation agent"}]}
+
+
+def test_the_list_offers_a_draft_only_to_its_creator():
+    draft = types.SimpleNamespace(draft_owner="nick")
+    nick = types.SimpleNamespace(agents={"negotiation": object(), "my-draft": draft})
+    mine = asyncio.run(workflows.list_ask_agents(agent_nick=nick, principal=types.SimpleNamespace(subject="nick")))
+    theirs = asyncio.run(workflows.list_ask_agents(agent_nick=nick, principal=types.SimpleNamespace(subject="x")))
+    assert [a["slug"] for a in mine["agents"]] == ["my-draft", "negotiation"]
+    assert [a["slug"] for a in theirs["agents"]] == ["negotiation"]

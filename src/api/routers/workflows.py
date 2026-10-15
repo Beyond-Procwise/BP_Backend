@@ -1052,10 +1052,11 @@ async def list_ask_agents(
     principal: object = Depends(require_user),
 ):
     """The agents a person can pick to answer in an Ask box: every loaded agent
-    that does not send or act (ask_routing.NOT_ASKABLE)."""
+    that does not send or act (ask_routing.NOT_ASKABLE), and a draft only to its creator."""
     from services import ask_routing
 
-    slugs = ask_routing.askable_agents(getattr(agent_nick, "agents", None) or {})
+    slugs = ask_routing.askable_agents(getattr(agent_nick, "agents", None) or {},
+                                       getattr(principal, "subject", None))
     return {"agents": [{"slug": s, "label": ask_routing.agent_label(s)} for s in slugs]}
 
 @router.post("/rank")

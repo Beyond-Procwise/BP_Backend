@@ -149,3 +149,49 @@ def test_no_context_sends_no_extra_system():
 def test_a_created_agent_slug_reads_as_words():
     # Created agents are keyed by hyphenated slugs (cap-buy-negotiator).
     assert agent_label("cap-buy-negotiator") == "Cap buy negotiator agent"
+
+
+# --- final-review fixes -------------------------------------------------------
+
+class _Draft:
+    def __init__(self, owner):
+        self.draft_owner = owner
+
+
+def test_a_draft_is_askable_only_by_its_creator():
+    registry = {"negotiation": object(), "my-draft": _Draft("nick"), "nobodys-draft": _Draft("")}
+    assert askable_agents(registry, user_id="nick") == ["my-draft", "negotiation"]
+    assert askable_agents(registry, user_id="intruder") == ["negotiation"]
+    assert askable_agents(registry) == ["negotiation"]
+
+
+def test_internal_and_writing_agents_are_not_offered():
+    registry = {s: object() for s in ["negotiation", "rag", "opportunity_critic",
+                                     "opportunity_evidence", "approvals"]}
+    assert askable_agents(registry) == ["negotiation"]
+
+
+def test_an_answering_agent_cannot_reach_sending_or_writing_agents_or_itself():
+    agent = _Agent(ToolRunResult(answer="ok"))
+    ask_routing.agent_answer(agent, "q", user_id="u", context=None, slug="negotiation")
+    excluded = set(agent.seen["exclude"])
+    assert {"run_email_dispatch", "run_email_drafting", "run_email_watcher",
+            "run_supplier_interaction", "run_data_extraction", "run_approvals",
+            "run_negotiation"} <= excluded
+
+
+def test_the_map_is_read_fresh_after_a_minute(monkeypatch):
+    from src.services import governed_limits
+    reads = []
+    monkeypatch.setattr(governed_limits, "rules",
+                        lambda p, fresh=False: reads.append(fresh) or {"screens": {"quotes": "q"}})
+    monkeypatch.setattr(ask_routing, "_MAP_CACHE", {"at": None, "value": {}})
+    clock = [1000.0]
+    now = lambda: clock[0]
+    assert ask_routing.screen_agent_map(now=now) == {"quotes": "q"}
+    clock[0] += 30
+    ask_routing.screen_agent_map(now=now)
+    assert reads == [True]            # cached inside the minute, and the read was fresh
+    clock[0] += 31
+    ask_routing.screen_agent_map(now=now)
+    assert reads == [True, True]      # an admin's edit applies within a minute
