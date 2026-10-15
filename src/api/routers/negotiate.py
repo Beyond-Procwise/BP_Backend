@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from api.auth import require_user
 from src.services.negotiate_dashboard import build_negotiate_dashboard
-from src.services.negotiation_advice import apply_turn, build_advice
+from src.services.negotiation_advice import apply_turn, view_advice
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +41,11 @@ def get_negotiate_dashboard(deal_id: str) -> dict[str, Any]:
 # dashboard route is /deals/{deal_id}/negotiate — and Task 7 does not touch
 # main.py, so a second top-level router was never intended.
 @router.get("/{deal_id}/advice", summary="Grounded negotiation advice for a deal")
-def get_negotiate_advice(deal_id: str) -> dict[str, Any]:
+def get_negotiate_advice(deal_id: str, explain: bool = False) -> dict[str, Any]:
+    # The buyer's stated facts count. The model writes each play's "why" only
+    # when asked (?explain=true); otherwise it is the play's fixed rationale.
     try:
-        result = build_advice(deal_id)
+        result = view_advice(deal_id, explain=explain)
     except Exception as exc:
         logger.exception("negotiation advice failed for %s", deal_id)
         raise HTTPException(status_code=500, detail=str(exc))
@@ -55,12 +57,14 @@ def get_negotiate_advice(deal_id: str) -> dict[str, Any]:
 @router.post("/{deal_id}/advice/message", summary="One advice conversation turn")
 def post_negotiate_advice_message(deal_id: str,
                                   body: dict[str, Any],
+                                  explain: bool = False,
                                   principal=Depends(require_user)) -> dict[str, Any]:
     # A stated fact changes the advice, and its stated_by was the literal
     # "buyer". Who stated it is the token, or nobody.
     try:
         result = apply_turn(deal_id, body or {},
-                            created_by=getattr(principal, "subject", None) or None)
+                            created_by=getattr(principal, "subject", None) or None,
+                            explain=explain)
     except Exception as exc:
         logger.exception("advice turn failed for %s", deal_id)
         raise HTTPException(status_code=500, detail=str(exc))
@@ -72,12 +76,14 @@ def post_negotiate_advice_message(deal_id: str,
 @router.delete("/{deal_id}/advice/fact/{fact_key}",
                summary="Withdraw a buyer-stated fact")
 def delete_negotiate_advice_fact(deal_id: str, fact_key: str,
+                                 explain: bool = False,
                                  principal=Depends(require_user)) -> dict[str, Any]:
     # Withdrawing can seed the advice row first, and that row has a created_by.
     try:
         result = apply_turn(deal_id, {"action": "withdraw_fact",
                                       "fact_key": fact_key},
-                            created_by=getattr(principal, "subject", None) or None)
+                            created_by=getattr(principal, "subject", None) or None,
+                            explain=explain)
     except Exception as exc:
         logger.exception("fact withdrawal failed for %s", deal_id)
         raise HTTPException(status_code=500, detail=str(exc))

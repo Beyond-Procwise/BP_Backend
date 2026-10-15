@@ -31,7 +31,7 @@ def client():
 
 
 def test_get_advice_returns_the_payload(client, monkeypatch):
-    monkeypatch.setattr(rt, "build_advice", lambda deal_id, **kw: dict(_ADVICE))
+    monkeypatch.setattr(rt, "view_advice", lambda deal_id, **kw: dict(_ADVICE))
     r = client.get("/deals/D-1/advice")
     assert r.status_code == 200
     assert r.json()["quadrant"] == "Leverage"
@@ -39,7 +39,7 @@ def test_get_advice_returns_the_payload(client, monkeypatch):
 
 
 def test_get_advice_404s_for_unknown_deal(client, monkeypatch):
-    monkeypatch.setattr(rt, "build_advice", lambda deal_id, **kw: None)
+    monkeypatch.setattr(rt, "view_advice", lambda deal_id, **kw: None)
     assert client.get("/deals/NOPE/advice").status_code == 404
 
 
@@ -120,3 +120,23 @@ def test_strategy_degrades_to_empty_plays_when_advice_fails(monkeypatch):
                         lambda deal_id: (_ for _ in ()).throw(RuntimeError("x")))
     out = nd.negotiation_strategy(_Cur(), "D-1")[0]
     assert out["plays"] == []
+
+
+def test_the_advice_view_asks_the_model_only_when_told(client, monkeypatch):
+    seen = []
+    monkeypatch.setattr(rt, "view_advice",
+                        lambda deal_id, **kw: seen.append(kw) or dict(_ADVICE))
+    client.get("/deals/D-1/advice")
+    client.get("/deals/D-1/advice?explain=true")
+    assert [kw.get("explain") for kw in seen] == [False, True]
+
+
+def test_a_turn_from_the_screen_does_not_ask_the_model(client, monkeypatch):
+    seen = []
+    monkeypatch.setattr(rt, "apply_turn",
+                        lambda deal_id, message, **kw: seen.append(kw) or dict(_ADVICE))
+    client.post("/deals/D-1/advice/message",
+                json={"action": "state_fact", "fact_key": "alternative_supplier_count",
+                      "fact_value": "4"})
+    client.delete("/deals/D-1/advice/fact/alternative_supplier_count")
+    assert [kw.get("explain") for kw in seen] == [False, False]

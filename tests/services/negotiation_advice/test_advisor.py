@@ -225,3 +225,36 @@ def test_posture_honours_the_buyers_stated_facts(monkeypatch):
     out = ad.read_posture(deal_id="D-1", conn=_Conn())
     # Few alternatives at this spend is Strategic, not Leverage.
     assert out["quadrant"] == "Strategic"
+
+
+def test_the_deal_screen_honours_the_buyers_stated_facts(monkeypatch):
+    """The panel and the NegotiationAgent read the same advice."""
+    monkeypatch.setattr(ad, "explain_play", lambda *a, **k: "")
+    monkeypatch.setattr(ad, "active_facts", lambda conn, advice_id:
+                        {"alternative_supplier_count": "3"})
+    out = ad.view_advice("D-1", conn=_Conn())
+    assert out["quadrant"] == "Strategic"
+    assert out["stated_facts"] == {"alternative_supplier_count": 3}
+
+
+def test_the_deal_screen_does_not_ask_the_model_unless_told(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("must not call the model")
+
+    monkeypatch.setattr(ad, "explain_play", boom)
+    out = ad.view_advice("D-1", conn=_Conn())
+    assert out["plays"]
+    assert all(p["why"] == p.get("rationale", "") for p in out["plays"])
+
+    asked = []
+    monkeypatch.setattr(ad, "explain_play", lambda p, s: asked.append(p) or "model says")
+    out = ad.view_advice("D-1", conn=_Conn(), explain=True)
+    assert asked and all(p["why"] == "model says" for p in out["plays"])
+
+
+def test_a_turn_without_explain_does_not_ask_the_model(monkeypatch):
+    monkeypatch.setattr(ad, "explain_play", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("must not call the model")))
+    out = ad.apply_turn("D-1", {"action": "state_fact", "fact_key": "k",
+                                "fact_value": "1"}, conn=_Conn(), explain=False)
+    assert out["plays"]
