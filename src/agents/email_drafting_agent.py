@@ -98,33 +98,27 @@ NEGOTIATION_PLAYBOOK_SYSTEM = """You are an expert procurement negotiator with 1
 **Tactics**:
 - Express appreciation for their initial proposal
 - Share your budget constraints transparently
-- Offer 2-3 commercial levers they can adjust (payment terms, volume, contract length)
+- Raise only the commercial levers listed in the brief (the terms the supplier raised, and plays this deal's evidence supports)
 - Ask open-ended questions about their flexibility
 - Set a collaborative tone
-
-**Example Opening**: "Thank you for your proposal. We're impressed with the solution, though our budget positioning is around £X. We'd value discussing how we might bridge this gap through adjusted payment terms or extended contract commitment."
 
 ### Round 2 - Exploration (Middle Game)
 **Objective**: Test boundaries and explore trade-offs
 **Tactics**:
 - Acknowledge movement if they've adjusted their price
-- Introduce specific commercial levers: "If we commit to 24 months instead of 12..."
+- Answer the specific terms the supplier raised, using only the levers listed in the brief
 - Reference competitive pressure subtly: "We're evaluating multiple proposals..."
 - Request detailed cost breakdowns to identify negotiable components
 - Show willingness to adjust scope/timeline for better pricing
-
-**Example Middle**: "We appreciate your revised position. To help us move forward, could you share the cost breakdown? We're prepared to commit to a 24-month term and Net-15 payment if we can align on £X per unit."
 
 ### Round 3+ - Final Push (End Game)
 **Objective**: Close the deal or walk away gracefully
 **Tactics**:
 - Use firm but respectful language: "This represents our final position..."
 - Create urgency with real deadlines: "We need to finalize by Friday..."
-- Offer face-saving concessions: small scope additions, faster payment
+- Offer a face-saving concession only from the levers listed in the brief
 - Make it easy to say yes: "Simply confirm acceptance by replying..."
 - Prepare alternative: "We'll need to explore other options if we can't align..."
-
-**Example Closing**: "We've reached our maximum flexibility at £X with Net-15 payment terms. This represents our best and final offer. If you can accommodate these terms, please confirm by close of business Thursday, and we'll proceed with the award immediately."
 
 ## STRATEGIC TECHNIQUES
 
@@ -137,19 +131,13 @@ NEGOTIATION_PLAYBOOK_SYSTEM = """You are an expert procurement negotiator with 1
 - Don't rush follow-ups unless deadline-driven
 
 ### 3. Commercial Levers (Non-Price Concessions)
-Common levers to offer:
-- Extended contract duration (12→24 months)
-- Volume commitments or guaranteed orders
-- Payment terms (Net-30 → Net-15 with discount)
-- Simplified scope or phased delivery
-- Marketing/reference opportunities
-- Exclusivity or preferred supplier status
+Use only the levers listed in the brief: the terms the supplier raised in their own words, and plays this deal's evidence supports.
+- Quote the supplier's own figures for the terms they raised
+- Never introduce a term length, payment term, volume or percentage that is not in the brief
+- If the brief lists none, negotiate on price alone
 
 ### 4. Market Intelligence
-Subtly reference:
-- "Market rates we're seeing are around £X..."
-- "Competitive proposals are positioning at £X..."
-- "Industry benchmarks suggest £X is achievable..."
+Reference market rates, competing proposals or benchmarks only when the brief gives the figure; never invent one.
 
 ### 5. Building Urgency
 - "We need to finalize awards by [specific date]..."
@@ -171,7 +159,7 @@ Subtly reference:
 3. **Commercial Position**: State your target clearly
    - Current offer vs. Your target
    - Gap to close and why
-4. **Commercial Levers**: Offer 2-3 specific adjustments you can make
+4. **Commercial Levers**: The levers listed in the brief, if any
 5. **Rationale**: Brief explanation (budget, market, alternatives)
 6. **Call to Action**: Clear next step with timeline
 7. **Closing**: Positive, forward-looking
@@ -274,7 +262,7 @@ def _determine_recommended_tactics(
             [
                 "Express appreciation and set collaborative tone",
                 "State budget constraints transparently",
-                "Offer 2-3 commercial levers (payment, volume, duration)",
+                "Propose only the levers listed under Commercial Levers, if any",
                 "Ask about their flexibility and cost structure",
             ]
         )
@@ -282,7 +270,7 @@ def _determine_recommended_tactics(
         tactics.extend(
             [
                 "Acknowledge any price movement positively",
-                "Introduce specific lever combinations",
+                "Answer the terms the supplier raised, using only the listed levers",
                 "Request cost breakdown for transparency",
                 "Reference competitive landscape subtly",
             ]
@@ -295,7 +283,7 @@ def _determine_recommended_tactics(
                 "Use firm but respectful language",
                 "State this is your final position clearly",
                 "Create urgency with specific deadline",
-                "Offer small face-saving concession",
+                "Offer a small face-saving concession only from the listed levers",
                 "Make acceptance simple and clear",
             ]
         )
@@ -308,70 +296,54 @@ def _determine_recommended_tactics(
     return "\n".join(f"- {tactic}" for tactic in tactics)
 
 
-def _select_commercial_levers(round_no: int, context: Dict[str, Any]) -> List[str]:
-    all_levers = {
-        "payment": {
-            "label": "Payment Terms",
-            "options": [
-                "Net-15 payment (from Net-30) with 2% early payment discount",
-                "Net-7 payment for expedited cash flow",
-                "Milestone-based payments aligned to delivery",
-            ],
-            "priority": 1,
-        },
-        "duration": {
-            "label": "Contract Duration",
-            "options": [
-                "24-month commitment (from 12 months) with price lock",
-                "36-month agreement with annual volume guarantees",
-                "Multi-year framework with call-off flexibility",
-            ],
-            "priority": 1,
-        },
-        "volume": {
-            "label": "Volume Commitment",
-            "options": [
-                "Guaranteed minimum order quantity per quarter",
-                "Consolidated spend across product lines",
-                "Increased volume commitment (specify percentage)",
-            ],
-            "priority": 2,
-        },
-        "scope": {
-            "label": "Scope Adjustments",
-            "options": [
-                "Simplified packaging or delivery requirements",
-                "Extended lead time (add X weeks) for better pricing",
-                "Phased delivery to manage cash flow",
-            ],
-            "priority": 3,
-        },
-        "strategic": {
-            "label": "Strategic Benefits",
-            "options": [
-                "Preferred supplier status for future opportunities",
-                "Marketing/case study collaboration rights",
-                "Early access to new requirements in pipeline",
-            ],
-            "priority": 3,
-        },
-    }
+#: Ready plays offered per email, beside the levers the supplier raised.
+_MAX_READY_PLAYS = 2
 
-    selected: List[str] = []
+_PRICE_ONLY = ("None. The supplier raised no other terms and no play is supported by "
+               "this deal's evidence. Negotiate on price alone: do not introduce payment, "
+               "term, volume or any other trade of your own.")
 
-    if round_no == 1:
-        selected.extend(all_levers["payment"]["options"][:1])
-        selected.extend(all_levers["duration"]["options"][:1])
-    elif round_no == 2:
-        selected.extend(all_levers["payment"]["options"][:1])
-        selected.extend(all_levers["duration"]["options"][:1])
-        selected.extend(all_levers["volume"]["options"][:1])
-    else:
-        selected.append("Net-15 payment terms with 24-month commitment")
-        if context.get("willing_to_adjust_scope"):
-            selected.extend(all_levers["scope"]["options"][:1])
 
-    return selected[:3]
+def _negotiation_levers(data: Dict[str, Any], round_no: int = 1) -> List[str]:
+    """The levers this email may propose: the supplier's own, then ready plays.
+
+    Replaces a fixed menu by round (Net-15 with 2% early payment, a 24-month term,
+    a volume tier) that every deal got whatever it was about. A lever is listed
+    because the supplier raised it -- quoted, with the figure they wrote -- or
+    because the deal's evidence makes the play ready. The round no longer picks
+    levers; it is accepted only so callers need not change.
+    """
+    from src.services.negotiation.deal_levers import read_levers
+
+    raised = data.get("deal_levers")
+    if not isinstance(raised, list):
+        raised = []
+        sources = [data.get("supplier_message")] + list(data.get("supplier_snippets") or [])
+        for source in sources:
+            for lever in read_levers(source if isinstance(source, str) else None):
+                if all(lever["lever"] != seen["lever"] for seen in raised):
+                    raised.append(lever)
+
+    lines: List[str] = []
+    for lever in raised:
+        if not isinstance(lever, dict) or not lever.get("label"):
+            continue
+        figure = lever.get("figure")
+        stated = (f"their figure: {figure}" if figure
+                  else "no figure stated; do not supply one")
+        lines.append(f'{lever["label"]} -- the supplier raised this: '
+                     f'"{lever.get("phrase", "")}" ({stated})')
+
+    ready = [p for p in (data.get("play_recommendations") or [])
+             if isinstance(p, dict) and p.get("state") == "ready" and p.get("play")]
+    for play in ready[:_MAX_READY_PLAYS]:
+        evidence = "; ".join(f"{e.get('label')}: {e.get('value')}"
+                             for e in (play.get("evidence") or []) if isinstance(e, dict))
+        lines.append(f'{play["play"]} -- a {play.get("lever") or "commercial"} play this '
+                     f"deal's evidence supports ({evidence or 'deal evidence'}); use the "
+                     "approach, not any figure in its wording")
+
+    return lines or [_PRICE_ONLY]
 
 
 def _generate_strategic_elements(round_no: int, context: Dict[str, Any]) -> List[str]:
@@ -2400,7 +2372,7 @@ class EmailDraftingAgent(BaseAgent):
 
         objective = _determine_negotiation_objective(round_no, gap_percentage)
         tactics = _determine_recommended_tactics(round_no, gap_percentage, supplier_history)
-        levers = _select_commercial_levers(round_no, data)
+        levers = _negotiation_levers(data, round_no)
         strategic_elements = _generate_strategic_elements(round_no, data)
         tone_guidance = _calculate_tone_guidance(round_no, gap_percentage)
 
