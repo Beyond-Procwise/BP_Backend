@@ -53,6 +53,7 @@ from pathlib import Path
 from services.redis_client import get_workflow_redis_client
 from src.services.formulas import ensure_registered, evaluate
 from src.services.negotiation import final_offer as _final_offer
+from src.services.negotiation.deal_levers import payment_days as _payment_days
 # Play ranking lives in negotiation_advice: it is pure scoring and the advisor needs
 # it without instantiating an agent. TRADE_OFF_HINTS is imported rather than
 # redefined so the hints cannot drift between the two callers.
@@ -264,6 +265,51 @@ def _format_currency(amount: float, currency: Optional[str]) -> str:
     return f"{amount:,.2f}"
 
 
+def early_pay_discount(term_days: Optional[float], cost_of_capital: Optional[float]) -> Optional[float]:
+    """What paying on receipt instead of at ``term_days`` is worth to us, as a ratio.
+
+    Cost of capital over the days given up: Net 45 at 12% is 0.12 * 45 / 365, 1.5%.
+    A larger discount is worth taking; a smaller one costs more than it saves.
+    None when either input is unknown -- the ask is then left out, not assumed.
+    """
+    try:
+        days = float(term_days) if term_days is not None else None
+        rate = float(cost_of_capital) if cost_of_capital is not None else None
+    except (TypeError, ValueError):
+        return None
+    if not days or days <= 0 or not rate or rate <= 0:
+        return None
+    return rate * days / 365.0
+
+
+def _early_pay_ask(ctx: NegotiationContext, when: str = "") -> Optional[str]:
+    if not ctx.ask_early_pay_disc or ctx.ask_early_pay_disc <= 0:
+        return None
+    pct = f"{ctx.ask_early_pay_disc * 100:.1f}%"
+    if ctx.term_days:
+        return (f"Offer to pay on receipt instead of at {ctx.term_days:g} days "
+                f"for a {pct} discount{when}.")
+    return f"Offer early payment for {pct} discount{when}."
+
+
+def _is_early_pay_ask(ask: Any) -> bool:
+    text = str(ask).lower()
+    return text.startswith("offer to pay on receipt") or text.startswith("offer early payment")
+
+
+def _volume_ask(volume_units: Optional[float]) -> Optional[str]:
+    if not volume_units or volume_units <= 0:
+        return None
+    return f"What price applies above the {volume_units:g} units quoted?"
+
+
+def _lead_time_ask(lead_weeks: Optional[float]) -> Optional[str]:
+    """Asked only of a quoted lead time over three weeks; no target of our own."""
+    if not lead_weeks or lead_weeks <= 3:
+        return None
+    return f"Can the quoted {lead_weeks:g}-week lead time be shortened?"
+
+
 def plan_counter(ctx: NegotiationContext, signals: SupplierSignals) -> Dict[str, object]:
     """Plan counter pricing and supporting asks for the negotiation agent."""
 
@@ -318,11 +364,10 @@ def plan_counter(ctx: NegotiationContext, signals: SupplierSignals) -> Dict[str,
             message = (
                 "Supplier signalled final offer within acceptable threshold; accept with a minor sweetener."
             )
-            if ctx.ask_early_pay_disc:
-                asks.append(
-                    f"Offer early payment for {ctx.ask_early_pay_disc * 100:.1f}% discount on this final offer."
-                )
-            asks.append("Confirm net 30 terms and shipment schedule before closing.")
+            early = _early_pay_ask(ctx, " on this final offer")
+            if early:
+                asks.append(early)
+            asks.append("Confirm payment terms and delivery schedule before closing.")
             if ctx.ask_lead_time_keep:
                 lead_time_request = "Confirm committed lead time"
             return {
@@ -353,11 +398,10 @@ def plan_counter(ctx: NegotiationContext, signals: SupplierSignals) -> Dict[str,
         counter = round(min(current_offer, target_price), 2)
         message = "Supplier already at/below target; accept while requesting a minor sweetener."
         log.append("Offer meets target; recommending soft acceptance.")
-        if ctx.ask_early_pay_disc:
-            asks.append(
-                f"Offer early payment for {ctx.ask_early_pay_disc * 100:.1f}% discount."
-            )
-        asks.append("Confirm lead time and packaging before sign-off.")
+        early = _early_pay_ask(ctx)
+        if early:
+            asks.append(early)
+        asks.append("Confirm lead time before sign-off.")
         if ctx.ask_lead_time_keep:
             lead_time_request = "Maintain committed lead time"
         return {
@@ -380,24 +424,16 @@ def plan_counter(ctx: NegotiationContext, signals: SupplierSignals) -> Dict[str,
                 f"Round 1 anchor strategy applied with ~{ctx.anchor_reduction_pct * 100:.0f}% "
                 "reduction from supplier offer."
             )
-            asks.extend(
-                [
-                    "Volume-based discount for 250/500 unit tiers?",
-                    "Improved payment terms (net 45 or early-pay option).",
-                    "Explore alternative specs or components to lower cost.",
-                ]
-            )
+            # Payment terms are asked for once, below, with a worked-out figure.
+            volume = _volume_ask(ctx.volume_units)
+            if volume:
+                asks.append(volume)
         else:
             counter_price = (current_offer + target_price) / 2
             log.append(
                 f"Round 1 gap within {ctx.anchor_gap_pct * 100:.0f}%; proposing midpoint counter."
             )
-            asks.extend(
-                [
-                    "Hold quoted price for the full project timeline.",
-                    "Include expedited production slot if volumes increase.",
-                ]
-            )
+            asks.append("Hold quoted price for the full project timeline.")
         message_intro = "Round 1 plan"
     elif round_no == 2:
         if gap_pct is not None and gap_pct <= ctx.anchor_gap_pct:
@@ -424,13 +460,11 @@ def plan_counter(ctx: NegotiationContext, signals: SupplierSignals) -> Dict[str,
 
     counter_price = round(max(counter_price, target_price), 2)
 
-    if ctx.ask_early_pay_disc and ctx.ask_early_pay_disc > 0:
-        asks.append(
-            f"Offer early payment for {ctx.ask_early_pay_disc * 100:.1f}% discount if counter accepted."
-        )
+    early = _early_pay_ask(ctx, " if counter accepted")
+    if early:
+        asks.append(early)
     if ctx.ask_lead_time_keep:
         lead_time_request = "Hold quoted lead time"
-    asks.append("Validate packaging, warranty, and compliance terms before sign-off.")
 
     message = (
         f"{message_intro}: counter at {_format_currency(counter_price, ctx.currency)}."
@@ -1164,16 +1198,53 @@ class NegotiationEmailHTMLBuilder:
 
 
 
+def _merge_optimised(decision: Dict[str, Any], optimised: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Fold the optimiser's result into ``decision``; return the counter options.
+
+    A locked price holds everywhere it is published: the options used to keep the
+    optimiser's own figure, so an email could offer 220,000 beside a locked
+    240,000. The optimiser's asks are added to the plan's, not put in their place.
+    """
+    overrides = dict(optimised.get("decision_overrides") or {})
+    locked = bool(decision.get("price_plan_locked"))
+    if locked:
+        overrides.pop("counter_price", None)
+    extra_asks = [a for a in (overrides.pop("asks", None) or [])
+                  if a != decision.get("lead_time_request")]
+    decision.update(overrides)
+    if extra_asks:
+        decision["asks"] = list(dict.fromkeys(list(decision.get("asks") or []) + list(extra_asks)))
+    options = [dict(o) for o in (optimised.get("counter_options") or [])]
+    if locked and decision.get("counter_price") is not None:
+        for option in options:
+            option["price"] = decision["counter_price"]
+    return options
+
+
+def _positive(value: Any) -> Optional[float]:
+    try:
+        number = float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+    return number if number is not None and number > 0 else None
+
+
 def compute_decision(
     payload: Dict[str, Any],
     supplier_message_text: str = "",
     offer_prev: Optional[float] = None,
 ) -> Dict[str, Any]:
-    ask_disc_raw = payload.get("ask_early_pay_disc", 0.02)
+    term_days = _positive(payload.get("term_days"))
+    volume_units = _positive(payload.get("volume_units"))
+    # A figure a person gave is theirs to use. Otherwise the discount is worked
+    # out from the supplier's payment days; with no days stated, nothing is asked.
+    ask_disc_raw = payload.get("ask_early_pay_disc")
     try:
         ask_disc = float(ask_disc_raw) if ask_disc_raw is not None else None
     except (TypeError, ValueError):
         ask_disc = None
+    if ask_disc is None and term_days is not None:
+        ask_disc = early_pay_discount(term_days, COST_OF_CAPITAL_APR())
 
     walkaway_raw = payload.get("walkaway_price")
     try:
@@ -1206,6 +1277,8 @@ def compute_decision(
         walkaway_price=walkaway,
         ask_early_pay_disc=ask_disc,
         ask_lead_time_keep=bool(payload.get("ask_lead_time_keep", True)),
+        volume_units=volume_units,
+        term_days=term_days,
     )
     signals = SupplierSignals(
         offer_prev=offer_prev,
@@ -1248,6 +1321,8 @@ def decide_strategy(
         "ask_lead_time_keep": payload.get("ask_lead_time_keep"),
         "supplier_message_text": supplier_message or "",
         "offer_prev": offer_prev,
+        "term_days": _positive(payload.get("term_days")),
+        "volume_units": _positive(payload.get("volume_units")),
     }).or_else(None)
     if plan is None:
         # The contract refused the payload -- a negative price, a round below 1.
@@ -1272,12 +1347,11 @@ def decide_strategy(
         "price_plan_locked": True,
     }
 
-    if lead_weeks and lead_weeks > 3:
-        lead_req = plan.get("lead_time_request") or "≤ 2 weeks or split shipment (20–30% now, balance later)"
-        decision["lead_time_request"] = lead_req
-        if plan.get("asks") is None:
-            decision["asks"] = []
-        decision["asks"] = list(dict.fromkeys((decision.get("asks") or []) + ["Split shipment or expedite option"]))
+    # A long quoted lead time is asked about, not held: "Hold quoted lead time"
+    # beside "can it be shortened?" asked for both.
+    lead_ask = _lead_time_ask(lead_weeks)
+    if lead_ask:
+        decision["lead_time_request"] = lead_ask
 
     if constraints:
         decision.setdefault("constraints", constraints)
@@ -4813,8 +4887,12 @@ class NegotiationAgent(BaseAgent):
             "currency": currency,
             "max_rounds": context.input_data.get("max_rounds") or MAX_ROUNDS(),
             "walkaway_price": walkaway_price,
-            "ask_early_pay_disc": context.input_data.get("ask_early_pay_disc", 0.02),
+            "ask_early_pay_disc": context.input_data.get("ask_early_pay_disc"),
             "ask_lead_time_keep": context.input_data.get("ask_lead_time_keep", True),
+            # The offer's own payment days, else the ones the supplier wrote.
+            "term_days": term_days if term_days is not None
+            else _payment_days(signals.get("deal_levers")),
+            "volume_units": volume_units,
         }
         pricing_payload["start_position"] = positions.start
         pricing_payload["desired_position"] = positions.desired
@@ -4956,6 +5034,8 @@ class NegotiationAgent(BaseAgent):
         # these and the ready plays, not a stock menu.
         deal_levers = list(signals.get("deal_levers") or [])
         decision["deal_levers"] = deal_levers
+        bidder_count = playbook_context.get("bidder_count")
+        decision["bidder_count"] = bidder_count
 
         message_id = self._coerce_text(context.input_data.get("message_id"))
         supplier_reply_registered = False
@@ -5202,11 +5282,7 @@ class NegotiationAgent(BaseAgent):
             signals=signals,
             round_no=round_no,
         )
-        overrides = optimized.get("decision_overrides", {}) or {}
-        if decision.get("price_plan_locked"):
-            overrides = {k: v for k, v in overrides.items() if k != "counter_price"}
-        decision.update(overrides)
-        counter_options = optimized.get("counter_options") or []
+        counter_options = _merge_optimised(decision, optimized)
         if decision.get("authority_withheld"):
             # `_optimize_multi_issue` knows nothing about the mandate, and its
             # options are published to draft_payload["counter_proposals"] and to
@@ -5306,6 +5382,7 @@ class NegotiationAgent(BaseAgent):
             "negotiation_message": negotiation_message,
             "play_recommendations": play_recommendations,
             "deal_levers": deal_levers,
+            "bidder_count": bidder_count,
             "playbook_descriptor": playbook_context.get("descriptor"),
             "playbook_examples": playbook_context.get("examples"),
             "counter_options": counter_options,
@@ -5390,6 +5467,7 @@ class NegotiationAgent(BaseAgent):
             "intent": "NEGOTIATION_COUNTER",
             "play_recommendations": play_recommendations,
             "deal_levers": deal_levers,
+            "bidder_count": bidder_count,
             "positions": decision.get("positions"),
             "validation_issues": decision.get("validation_issues"),
             "outlier_alerts": decision.get("outlier_alerts"),
@@ -6139,13 +6217,12 @@ class NegotiationAgent(BaseAgent):
             return decision
 
         if signals.get("finality_hint"):
+            # What is traded is what the deal holds: the plan's worked-out asks and
+            # the levers the supplier raised, which reach the email separately.
             decision["strategy"] = "package-trade"
-            decision["asks"] = (decision.get("asks") or []) + [
-                "Consider payment-terms trade (early pay discount vs Net45/60)",
-                "Bundle volume commitment for stepped pricing",
-            ]
-            if lead_weeks and lead_weeks > 3:
-                decision["lead_time_request"] = "Split shipment or expedite slot if possible"
+            lead_ask = _lead_time_ask(lead_weeks)
+            if lead_ask:
+                decision["lead_time_request"] = lead_ask
             return decision
 
         buyer_max = self._validate_buyer_max(zopa.get("buyer_max"))
@@ -6170,10 +6247,13 @@ class NegotiationAgent(BaseAgent):
                     )
 
         asks = decision.get("asks", [])
-        if signals.get("payment_terms_hint") == "tradeable":
-            asks.append("Offer early payment for additional 1–2% discount")
-        if signals.get("delivery_flex") == "possible" and (lead_weeks or 0) > 3:
-            asks.append("Split shipment or expedite window swap")
+        if signals.get("payment_terms_hint") == "tradeable" and not any(
+                _is_early_pay_ask(a) for a in asks):
+            asks.append("Which payment terms can you offer, and what discount for paying early?")
+        if signals.get("delivery_flex") == "possible":
+            lead_ask = _lead_time_ask(lead_weeks)
+            if lead_ask:
+                asks.append(lead_ask)
         decision["asks"] = list(dict.fromkeys(asks))
         decision["price_plan_locked"] = price_locked
         return decision
@@ -6232,34 +6312,21 @@ class NegotiationAgent(BaseAgent):
             sanitized.append(round(value, 2))
         price_candidates = sorted(set(sanitized))
 
-        daily_rate = COST_OF_CAPITAL_APR() / 365.0
-        term_pkgs = [
-            {"label": "Net15 with 2% disc", "apr_equiv": -0.02},
-            {"label": "Net30 std", "apr_equiv": 0.0},
-            {"label": "Net45 std", "apr_equiv": daily_rate * 15},
-            {"label": "Net60 std", "apr_equiv": daily_rate * 30},
-        ]
-
-        if lead_weeks is not None and lead_weeks > 3:
-            lead_packages = [{"label": "≤2w or split shipment", "weeks_gain": (lead_weeks - 2)}]
+        # Payment terms and volume tiers are not options here: the stock packages
+        # ("Net15 with 2% disc", tiers at 100/250/500) were figures no deal stated,
+        # and the 2% one won every time. The plan asks for an early-payment
+        # discount worked out from the supplier's own days, and for volume pricing
+        # at the quantity quoted, when the deal states them.
+        lead_ask = _lead_time_ask(lead_weeks)
+        if lead_ask:
+            lead_packages = [{"label": lead_ask, "weeks_gain": (lead_weeks - 2)}]
         else:
             lead_packages = [{"label": "as quoted", "weeks_gain": 0}]
 
-        volume_tiers = [None, 100, 250, 500]
-
         option_grid: List[Dict[str, Any]] = []
         for price_option in price_candidates[:5]:
-            for term_option in term_pkgs:
-                for lead_option in lead_packages:
-                    for tier in volume_tiers:
-                        option_grid.append(
-                            {
-                                "price": price_option,
-                                "terms": term_option,
-                                "lead": lead_option,
-                                "volume": tier,
-                            }
-                        )
+            for lead_option in lead_packages:
+                option_grid.append({"price": price_option, "lead": lead_option})
 
         best_option = None
         best_score = -1e9
@@ -6269,7 +6336,7 @@ class NegotiationAgent(BaseAgent):
             if target and counter_price:
                 price_score = (target - counter_price) / max(target, 1e-9)
 
-            terms_score = -float(option["terms"]["apr_equiv"])
+            terms_score = 0.0
 
             delivery_score = 0.0
             weeks_gain = float(option["lead"].get("weeks_gain") or 0)
@@ -6284,7 +6351,7 @@ class NegotiationAgent(BaseAgent):
             )
             if on_time is not None and on_time < 0.9:
                 risk_score += 0.02
-            if signals.get("capacity_tight") and "split" in option["lead"]["label"].lower():
+            if signals.get("capacity_tight") and option["lead"]["label"] != "as quoted":
                 risk_score += 0.02
 
             total_score = (
@@ -6303,20 +6370,16 @@ class NegotiationAgent(BaseAgent):
         if best_option:
             decision_overrides["counter_price"] = round(best_option["price"], 2)
             asks = decision_overrides.get("asks", [])
-            if "≤2w" in best_option["lead"]["label"]:
-                asks.append("≤ 2 weeks or split shipment (20–30% now, balance later)")
-            if "2% disc" in best_option["terms"]["label"]:
-                asks.append("2% discount for Net15 / early payment")
-            if best_option["volume"]:
-                asks.append(f"Tiers @ {best_option['volume']}/250/500 for stepped pricing")
+            if best_option["lead"]["label"] != "as quoted":
+                asks.append(best_option["lead"]["label"])
             decision_overrides["asks"] = list(dict.fromkeys(asks))
             counter_options.append(
                 {
                     "price": round(best_option["price"], 2),
-                    "terms": best_option["terms"]["label"],
+                    "terms": None,
                     "bundle": {
                         "lead_time": best_option["lead"]["label"],
-                        "volume_tier": best_option["volume"],
+                        "volume_tier": None,
                     },
                 }
             )
@@ -7260,13 +7323,16 @@ class NegotiationAgent(BaseAgent):
         # A bucket the caller did supply still wins; the deal's evidence grounds
         # the plays either way. No deal, no lookup, nothing assumed.
         posture = self._deal_posture(context)
+        # Suppliers bidding on this deal, as the Advisor counted them. The email
+        # mentions other proposals only when there are some; None is not "many".
+        bidders = ((posture or {}).get("signals") or {}).get("quote_supplier_count")
         if posture and not supplier_type:
             supplier_type = self._normalise_supplier_type(posture.get("quadrant"))
             if not negotiation_style:
                 negotiation_style = self._normalise_negotiation_style(posture.get("style"))
 
         if not supplier_type or supplier_type not in playbook:
-            return {"plays": [], "lever_priorities": []}
+            return {"plays": [], "lever_priorities": [], "bidder_count": bidders}
 
         # Everything above reads the AgentContext, which is why it stays here. The
         # scoring below is pure and now lives in negotiation_advice.ranking, so the
@@ -7305,6 +7371,7 @@ class NegotiationAgent(BaseAgent):
             evidence = {**(posture.get("signals") or {}), **(posture.get("stated_facts") or {})}
             ranked["plays"] = apply_states(ranked.get("plays") or [], evidence)
             ranked["deal_id"] = posture.get("deal_id")
+        ranked["bidder_count"] = bidders
         return ranked
 
     def _deal_posture(self, context: AgentContext) -> Optional[Dict[str, Any]]:

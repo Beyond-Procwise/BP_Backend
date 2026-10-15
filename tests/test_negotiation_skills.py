@@ -440,19 +440,20 @@ class TestMultiRoundProgression:
             )
 
     def test_round1_asks_are_volume_focused(self):
-        """Round 1 with large gap should include volume/spec asks."""
+        """Round 1 with a large gap asks about volume at the quantity quoted."""
         ctx = NegotiationContext(
             current_offer=1500.0,
             target_price=1000.0,
             round_index=1,
+            volume_units=500,
         )
         signals = SupplierSignals()
         result = plan_counter(ctx, signals)
         asks_text = " ".join(result["asks"]).lower()
-        assert "volume" in asks_text or "alternative" in asks_text or "payment" in asks_text
+        assert "500 units" in asks_text
 
-    def test_round3_reinforces_validation_asks(self):
-        """Round 3+ should include packaging/warranty/compliance validation."""
+    def test_round3_adds_no_stock_validation_asks(self):
+        """Round 3+ used to ask about packaging/warranty/compliance on every deal."""
         ctx = NegotiationContext(
             current_offer=1200.0,
             target_price=1000.0,
@@ -461,7 +462,7 @@ class TestMultiRoundProgression:
         signals = SupplierSignals()
         result = plan_counter(ctx, signals)
         asks_text = " ".join(result["asks"]).lower()
-        assert "packaging" in asks_text or "warranty" in asks_text or "compliance" in asks_text
+        assert "packaging" not in asks_text and "warranty" not in asks_text
 
     def test_strategy_message_contains_round_info(self):
         """Strategy message should reference the current round."""
@@ -790,13 +791,16 @@ class TestAsksAndLevers:
             current_offer=2000.0,
             target_price=1000.0,
             round_index=1,
+            volume_units=120,
+            term_days=30,
+            ask_early_pay_disc=0.01,
         )
         signals = SupplierSignals()
         result = plan_counter(ctx, signals)
         asks = result["asks"]
         assert len(asks) >= 2
         asks_text = " ".join(asks).lower()
-        assert "volume" in asks_text or "tier" in asks_text
+        assert "120 units" in asks_text and "30 days" in asks_text
 
     def test_round1_small_gap_includes_price_hold(self):
         ctx = NegotiationContext(

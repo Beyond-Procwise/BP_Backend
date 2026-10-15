@@ -75,3 +75,14 @@ def test_each_lever_listed_once_in_order_of_first_mention():
 def test_empty_or_missing_text():
     assert read_levers(None) == []
     assert read_levers("") == []
+
+
+def test_payment_days_come_from_the_suppliers_own_figure():
+    from src.services.negotiation.deal_levers import payment_days, read_levers
+
+    assert payment_days(read_levers("Net 45 payment is fine.")) == 45
+    assert payment_days(read_levers("Payment terms are 60 days from invoice.")) == 60
+    # No figure, or a discount they already offered: nothing to work from.
+    assert payment_days(read_levers("Payment terms as agreed.")) is None
+    assert payment_days(read_levers("We offer 2% 10 net 30.")) is None
+    assert payment_days([]) is None

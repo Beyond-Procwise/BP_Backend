@@ -123,3 +123,25 @@ def read_levers(text: Optional[str]) -> List[dict]:
                                 "phrase": sentence, "figure": figure}
                 order.append((s_index, c_index * 1000 + hit.start(), lever))
     return [found[lever] for _, _, lever in sorted(order)]
+
+
+_DAYS = re.compile(r"\bnet\s*(\d{1,3})\b|\b(\d{1,3})\s*days?\b", _I)
+
+
+def payment_days(levers: Optional[List[dict]]) -> Optional[int]:
+    """The payment days the supplier stated, from their payment-terms lever.
+
+    "Net 45" and "60 days from invoice" give 45 and 60. None when no figure was
+    stated, when two different day counts were, or when the supplier already
+    offered a discount in those words ("2% 10 net 30"): their own offer stands,
+    and a figure worked out against it would ask for less than they gave.
+    """
+    for lever in levers or []:
+        if not isinstance(lever, dict) or lever.get("lever") != "payment_terms":
+            continue
+        figure = lever.get("figure")
+        if not figure or "%" in str(lever.get("phrase") or ""):
+            return None
+        days = {int(a or b) for a, b in _DAYS.findall(str(figure))}
+        return days.pop() if len(days) == 1 and next(iter(days), 1) > 0 else None
+    return None

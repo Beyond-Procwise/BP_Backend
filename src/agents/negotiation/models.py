@@ -53,6 +53,10 @@ class NegotiationContext:
     walkaway_price: Optional[float] = None
     ask_early_pay_disc: Optional[float] = None
     ask_lead_time_keep: bool = True
+    # What the deal itself stated: the quantity quoted and the supplier's payment
+    # days. None when unstated; the asks that would need them are then left out.
+    volume_units: Optional[float] = None
+    term_days: Optional[float] = None
 
 
 @dataclass

@@ -69,3 +69,12 @@ def test_a_failed_lookup_is_no_plays_not_a_crash(monkeypatch):
     monkeypatch.setattr(advisor, "read_posture", boom)
     out = _agent()._resolve_playbook_context(_ctx(deal_id="D-1"), {})
     assert out["plays"] == []
+
+
+def test_the_deals_bidder_count_reaches_the_agent(calls):
+    """The email may mention other proposals only on this count (lever audit rec. 5)."""
+    assert _agent()._resolve_playbook_context(_ctx(deal_id="D-1"), {})["bidder_count"] == 1
+
+
+def test_no_deal_no_bidder_count(calls):
+    assert _agent()._resolve_playbook_context(_ctx(supplier="S1"), {}).get("bidder_count") is None

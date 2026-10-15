@@ -40,7 +40,7 @@ _PB = {
 
 @formula(
     "negotiation.counter_plan",
-    version="1.0.0",
+    version="1.1.0",
     owner=_OWNER,
     purpose="What to counter at, and whether to counter at all, given the round and the gap",
     effective_from=_FROM,
@@ -57,14 +57,20 @@ _PB = {
         Term("supplier_message_text", TEXT,
              "the supplier's reply, scanned for final-offer language", required=False),
         Term("offer_prev", MONEY, "their previous offer", minimum=0.0, required=False),
+        Term("term_days", DAYS, "the supplier's payment days, as stated", minimum=0.0,
+             required=False),
+        Term("volume_units", COUNT, "the quantity quoted, as stated", minimum=0.0,
+             required=False),
     ],
     output=Output("dict", MONEY,
                   "decision, counter_price, asks, lead_time_request, message, log"),
     notes=(
-        "`compute_decision` hardwires aggressiveness 0.75, leverage 0.6, urgency 0.3, "
-        "risk_buffer_pct 0.06, min_abs_buffer 3.0, step_pct_of_gap 0.12 and "
-        "ask_early_pay_disc 0.02, overriding the dataclass defaults. They are not "
-        "governed and not configurable at the call site (gap report F22). Round "
+        "`compute_decision` hardwires aggressiveness 0.75, leverage 0.6 and urgency 0.3, "
+        "overriding the dataclass defaults. They are not governed and not "
+        "configurable at the call site (gap report F22). Since 1.1.0 no ask carries a "
+        "figure the deal did not state: the early-payment discount is cost of capital "
+        "x term_days / 365 (none without term_days, unless the caller gives one), and "
+        "the volume ask names volume_units (none without it). Round "
         "behaviour: R1 anchors at x0.88 above a 10% gap else midpoint; R2 captures "
         "60% of the gap; R3+ enforces target + max(3.0, target x 6%)."
     ),
@@ -138,7 +144,8 @@ _PB = {
 )
 def counter_plan(current_offer, target_price, round=None, max_rounds=None,
                  walkaway_price=None, currency=None, ask_early_pay_disc=None,
-                 ask_lead_time_keep=None, supplier_message_text=None, offer_prev=None):
+                 ask_lead_time_keep=None, supplier_message_text=None, offer_prev=None,
+                 term_days=None, volume_units=None):
     payload: Dict[str, Any] = {
         "current_offer": current_offer,
         "target_price": target_price,
@@ -155,6 +162,10 @@ def counter_plan(current_offer, target_price, round=None, max_rounds=None,
         payload["ask_early_pay_disc"] = ask_early_pay_disc
     if ask_lead_time_keep is not None:
         payload["ask_lead_time_keep"] = bool(ask_lead_time_keep)
+    if term_days is not None:
+        payload["term_days"] = term_days
+    if volume_units is not None:
+        payload["volume_units"] = volume_units
     return _compute_decision(payload, supplier_message_text or "", offer_prev)
 
 
