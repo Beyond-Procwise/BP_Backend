@@ -484,3 +484,60 @@ def test_in_scope_a_failed_lookup_leaves_the_message_unread():
     assert receiving.in_scope(item, policy=SimpleNamespace(read_scope="replies_and_suppliers"),
                               client=Boom(), mailbox="m@x", is_supplier=lambda a: False,
                               sent_ids=lambda ids: True) is False
+
+
+# ---- round 1: a failed check is retried, never remembered as a no ----------------------
+
+class _Flaky(ScopedClient):
+    def __init__(self, fail_headers=False):
+        super().__init__()
+        self.fail_headers = fail_headers
+
+    def list_inbox(self, mailbox, since):
+        return [{"id": "rep", "receivedDateTime": "2026-10-15T09:00:00Z", "from": "sup@supplier.com"}]
+
+    def get_headers(self, mailbox, mid):
+        self.header_calls.append(mid)
+        if self.fail_headers:
+            raise RuntimeError("graph hiccup")
+        return {"in-reply-to": "<unrelated@elsewhere>"}
+
+
+class _Repo:
+    def list_org(self): return [_binding(1, "procurement@cust.com")]
+
+
+def test_a_failed_supplier_lookup_is_retried_next_pass(monkeypatch):
+    monkeypatch.setattr(receiving, "_read_scope", lambda: "replies_and_suppliers")
+    state = {"db_down": True}
+
+    def is_supplier(addr):
+        if state["db_down"]:
+            raise RuntimeError("db down")
+        return addr == "sup@supplier.com"
+    monkeypatch.setattr(receiving, "_default_checks", lambda: (is_supplier, lambda ids: False))
+    c = _Flaky(fail_headers=True)
+    assert receiving.fetch_replies(SINCE, repo=_Repo(), client_for=lambda: c) == [] and c.fetched == []
+    state["db_down"] = False
+    assert len(receiving.fetch_replies(SINCE, repo=_Repo(), client_for=lambda: c)) == 1
+    assert c.fetched == ["rep"]
+
+
+def test_a_failed_header_fetch_is_retried_next_pass(monkeypatch):
+    monkeypatch.setattr(receiving, "_read_scope", lambda: "replies_and_suppliers")
+    monkeypatch.setattr(receiving, "_default_checks", lambda: (
+        lambda a: False, lambda ids: "ours-1@cust.com" in ids))
+    c = _Flaky(fail_headers=True)
+    assert receiving.fetch_replies(SINCE, repo=_Repo(), client_for=lambda: c) == [] and c.fetched == []
+    c.fail_headers = False
+    c.get_headers = lambda m, i: {"in-reply-to": "<ours-1@cust.com>"}
+    assert len(receiving.fetch_replies(SINCE, repo=_Repo(), client_for=lambda: c)) == 1
+
+
+def test_a_definite_no_is_still_remembered(monkeypatch):
+    monkeypatch.setattr(receiving, "_read_scope", lambda: "replies_and_suppliers")
+    monkeypatch.setattr(receiving, "_default_checks", lambda: (lambda a: False, lambda ids: False))
+    c = _Flaky()
+    for _ in range(3):
+        assert receiving.fetch_replies(SINCE, repo=_Repo(), client_for=lambda: c) == []
+    assert c.header_calls == ["rep"] and c.fetched == []

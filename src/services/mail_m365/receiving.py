@@ -43,53 +43,64 @@ def _read_scope() -> str:
 
 
 def _default_checks() -> tuple:
-    """(is_supplier, sent_ids) backed by the database. A failed lookup answers False, so
-    the message stays unread rather than being downloaded on a guess."""
+    """(is_supplier, sent_ids) backed by the database. A failed lookup RAISES: the caller
+    must be able to tell "could not check" from "no"."""
     from services.db import get_conn
 
     def is_supplier(address: str) -> bool:
-        try:
-            from services.supplier_contact import is_known_supplier_email
-            with get_conn() as c:
-                return bool(address) and is_known_supplier_email(c, address)
-        except Exception:
-            log.warning("supplier lookup failed; treating %r as not a supplier", address, exc_info=True)
-            return False
+        from services.supplier_contact import is_known_supplier_email
+        with get_conn() as c:
+            return bool(address) and is_known_supplier_email(c, address)
 
     def sent_ids(ids: List[str]) -> bool:
-        try:
-            with get_conn() as c:
-                cur = c.cursor()
-                cur.execute("SELECT 1 FROM proc.email_thread_map WHERE message_id = ANY(%s) LIMIT 1",
-                            (ids,))
-                return cur.fetchone() is not None
-        except Exception:
-            log.warning("sent-mail lookup failed; treating message as not a reply", exc_info=True)
-            return False
+        with get_conn() as c:
+            cur = c.cursor()
+            cur.execute("SELECT 1 FROM proc.email_thread_map WHERE message_id = ANY(%s) LIMIT 1",
+                        (ids,))
+            return cur.fetchone() is not None
 
     return is_supplier, sent_ids
 
 
-def in_scope(item: Mapping[str, Any], *, policy: Any, client: Any, mailbox: str,
-             is_supplier: Callable[[str], bool], sent_ids: Callable[[List[str]], bool]) -> bool:
-    """May this Inbox message be downloaded? Decided from the sender and two headers only;
-    an out-of-scope message is never passed to get_mime."""
+def scope_state(item: Mapping[str, Any], *, policy: Any, client: Any, mailbox: str,
+                is_supplier: Callable[[str], bool], sent_ids: Callable[[List[str]], bool]
+                ) -> Optional[bool]:
+    """True = download; False = definitely out of scope; None = could not check (retry
+    next pass). Either way a non-True message is never passed to get_mime."""
     if policy.read_scope == "whole_inbox":
         return True
-    if is_supplier(item.get("from") or ""):
-        return True
+    unknown = False
+    try:
+        if is_supplier(item.get("from") or ""):
+            return True
+    except Throttled:
+        raise
+    except Exception:
+        log.warning("supplier lookup failed for %s; will retry", item.get("id"), exc_info=True)
+        unknown = True
     try:
         headers = client.get_headers(mailbox, item["id"])
         found = _MSGID.findall(headers.get("in-reply-to", "") + " " + headers.get("references", ""))
         ids: List[str] = []
         for m in found:
             ids += [m, m.strip("<>")]
-        return bool(ids) and bool(sent_ids(ids))
+        if ids and sent_ids(ids):
+            return True
     except Throttled:
         raise
     except Exception:
-        log.warning("m365 header check failed for %s; message left unread", item.get("id"), exc_info=True)
-        return False
+        log.warning("m365 scope check failed for %s; message left unread, will retry",
+                    item.get("id"), exc_info=True)
+        return None
+    return None if unknown else False
+
+
+def in_scope(item: Mapping[str, Any], *, policy: Any, client: Any, mailbox: str,
+             is_supplier: Callable[[str], bool], sent_ids: Callable[[List[str]], bool]) -> bool:
+    """May this Inbox message be downloaded? Decided from the sender and two headers only;
+    an out-of-scope or unchecked message is never passed to get_mime."""
+    return scope_state(item, policy=policy, client=client, mailbox=mailbox,
+                       is_supplier=is_supplier, sent_ids=sent_ids) is True
 
 
 class GraphMailSource:
@@ -175,12 +186,14 @@ def _replies_from(mailbox: str, client: Any, since: datetime, parse: Callable[[b
         if cached is None and skipped and policy.read_scope != "whole_inbox":
             continue
         if cached is None:
-            if not in_scope(item, policy=policy, client=client, mailbox=mailbox,
-                            is_supplier=is_supplier, sent_ids=sent_ids):
-                with _lock:
-                    _skipped[key] = True
-                    while len(_skipped) > SEEN_LIMIT:
-                        _skipped.popitem(last=False)
+            state = scope_state(item, policy=policy, client=client, mailbox=mailbox,
+                                is_supplier=is_supplier, sent_ids=sent_ids)
+            if state is not True:
+                if state is False:      # only a definite no is remembered; "unknown" is retried
+                    with _lock:
+                        _skipped[key] = True
+                        while len(_skipped) > SEEN_LIMIT:
+                            _skipped.popitem(last=False)
                 continue
             cached = parse(client.get_mime(mailbox, item["id"]))
             with _lock:

@@ -17,9 +17,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 import jwt
-
 from services.mail_rules import bare_address
-
 from services.style.graph_source import (GRAPH_BASE, GRAPH_SCOPE, TOKEN_URL,
                                          MailboxAccessDenied, MailboxUnreachable,
                                          RequestsTransport)
