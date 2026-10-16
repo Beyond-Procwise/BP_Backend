@@ -162,6 +162,81 @@ the stage and that code, never the query text; the raw cause is in the server lo
 - A REVOKED mailbox stays on the admin's list labelled "Access withdrawn in Microsoft 365"
   (with Remove only) until an admin removes it; the panel shows why email is held.
 
+## 2b. Email policy (Settings -> Integrations -> Email)
+
+One policy row per company (`proc.bp_policy`, name `email_policy`) says how the mailbox may
+be used. Read: Admin and Security reviewer (`GET /admin/integrations/mail/policy`). Change:
+Admin only (`PATCH` the same path with `{"version": <the version you read>, "changes": {...}}`;
+a stale version gets 409 and nothing is overwritten). Every applied change writes one history
+entry per changed field (who, when, before, after) and an audit row in the same transaction;
+if either cannot be written the change is not applied. If the policy row is missing or has
+an invalid value the routes answer 503 `policy_unavailable` and mail that depends on it is
+**held**: there are no defaults in code, so an outage never looks like "nothing is
+restricted". The defaults below come only from the seed migration
+`scripts/migrations/2026-10-16-email-settings.sql`.
+
+| Setting | In plain words | Default |
+|---|---|---|
+| `internal_send` | Emails to colleagues (forwards, internal replies). `off`, or `with_user_approval`: they wait until the person who wrote them approves. | `with_user_approval` |
+| `company_domains` | Which addresses count as "inside the company" (lower-cased, no `@`). | none (empty) |
+| `external_recipients` | Emails outside the company. `known_suppliers_only` (anything else is held with the reason) or `any`. | `known_suppliers_only` |
+| `read_scope` | Which incoming mail is opened. `replies_and_suppliers` (replies to emails Procwise sent, and mail from known suppliers) or `whole_inbox`. | `replies_and_suppliers` |
+| `on_disconnect` | If the connection breaks. `hold` (emails wait) or `procwise_address` (send from the Procwise address). A temporary outage or unreadable policy always holds. | `hold` |
+| `access_level` | What your IT has granted in Microsoft: `read_send` or `read_send_change`. This is a statement shown on the Email page and in the evidence report, and it fills the PowerShell script; it does not change Microsoft's grant. | `read_send` |
+| `notices_from_mailbox` | Procwise's own notices (digests, product notices) sent from the mailbox. `off` or `with_user_approval`. | `off` |
+| `poll_seconds` | How often the inbox is checked. A whole number, 60 to 3600 (send a JSON integer). | `120` |
+| `restriction_group` | Name of the mail-enabled security group that limits Procwise (letters, numbers, spaces, `. _ -`, max 64). | `Procwise Mailboxes` |
+
+**Seed state refuses every save until a company domain exists.** With `internal_send` on (or
+notices on) and no `company_domains`, any save is refused ("Add at least one company domain
+before allowing emails to colleagues"). The first step for a new customer is therefore to
+add the company domain(s) (or switch `internal_send` off in the same save).
+
+Emails to colleagues (`/mail/internal`): the author is the email on their own sign-in token,
+never a field in the request. Only the author can approve, edit or decline; an Admin or
+another buyer who calls approve gets 403 `not_author`. The policy is re-checked at approve
+time: if `internal_send` has been switched off since, the approval is refused (422
+`policy_off`). Each address is classified by its lower-cased bare address, so
+`" Finance <FINANCE@YourCompany.com>"` is internal when `yourcompany.com` is listed.
+
+`GET /admin/integrations/mail/restrictions` lists every restriction and how it is guaranteed
+(Microsoft enforces and we prove it; our own code enforces; or the policy says so), each
+`in_force`, `failed` or `not_proven`. `GET /admin/integrations/mail/evidence.pdf` is the same
+list, the policy and its history as a dated PDF (the download is audited). **Provider answers
+are cached for 120 seconds per company (a failed or unknown check for 5 seconds)**, so after
+changing a permission in Entra wait up to two minutes, or restart the service, before
+expecting a line to change.
+
+Digest and product notices are queued for approval only when `VALUE_DIGEST_SENT_AS` is a real
+user's sign-in email (they approve it like any email to a colleague). If it is anything else
+the notice is sent from the Procwise address as before. Alerts about the email connection
+itself always come from the Procwise address.
+
+## 2c. Security reviewer
+
+Add people to the Cognito group **`PROCWISE_SECURITY_REVIEWER`**. It maps to the role
+`SecurityReviewer` (rank 1, allowed action class `inspect` only, i.e. `mailbox.view`).
+
+A reviewer **can**: see the Email page's read-only view, read the policy and its history,
+read the restrictions list, and download the evidence PDF.
+
+A reviewer **cannot**: change the policy, connect, add or remove a mailbox, send or approve
+anything, or read any commercial screen. Because `inspect` is the only class they hold, even
+"read" is not granted: this is deliberate (spec section 8). Every write route answers 403 to
+a reviewer, the refusal is audited, and the gateway's agent-policy endpoints also refuse
+reviewers.
+
+Things the administrator must know:
+
+- **Keep reviewers only in the reviewer group.** Someone in two groups acts as the
+  higher-ranked role; on a tie the role that is not the fallback (Viewer) wins. So
+  Viewer + Reviewer acts only as a Reviewer (they lose read access), and
+  Buyer + Reviewer acts as a Buyer (they lose the security view).
+- **The UI's route-access configuration (outside this repo) must include
+  `PROCWISE_SECURITY_REVIEWER`**, or reviewers cannot reach Home at all.
+- The migration also adds `inspect` to Admin and to the guardrail's reversible classes so
+  the read is decided by role alone.
+
 ## 3. Live-tenant runbook (the release gate)
 
 Nothing here can be proven without a real tenant. Use a Microsoft 365 **developer tenant**.
@@ -221,6 +296,48 @@ Prerequisites: step 1 done on a server with an https `PUBLIC_BASE_URL`; one shar
   Disconnect, then connect the second tenant.
 - **(m) Disconnect.** `DELETE /admin/integrations/mail`: mailboxes deactivated; supplier email
   is held (not SES) because the company had test-sent.
+
+Email settings part 1 additions (same tenant, same record-keeping):
+
+- **(n0) `wids` arrives.** Complete (a) as a real tenant administrator. If it ends in
+  `mail_error=not_admin` for a Global Administrator, the id token carries no `wids`: fix the
+  manifest (`"groupMembershipClaims": "DirectoryRole"`) or add `wids` as an optional id-token
+  claim, and repeat. Record which of the two worked. **Unverified until this passes.**
+- **(n) Certificate sign-in.** (a) succeeds using `M365_CLIENT_CERT_ARN`, and Entra ->
+  Certificates and secrets shows one certificate and **no client secret**.
+- **(o) Non-administrator refused.** A tenant user without an admin role completes Connect
+  -> redirected with `mail_error=not_admin`; nothing is connected.
+- **(p) Restrictions turn red and green.** Grant `Mail.Read` (application, admin-consented)
+  in Entra, then wait **up to 2 minutes (answers are cached 120 s; or restart the service)**
+  and open the Email page / `GET /restrictions`: the "no mail permissions" line is red
+  (`failed`). Revoke it, wait again: green. Record both times.
+- **(q) Read scope.** With `read_scope` = `replies_and_suppliers`, send an unrelated internal
+  email to the shared mailbox. It is never downloaded; the poll log shows it skipped.
+- **(r) Forward needs approval.** Forward a supplier email to a colleague: it waits in
+  approvals; approve it as its author; it arrives from the shared mailbox. A second user (an
+  Admin too) calling approve gets 403 and nothing is sent.
+- **(s) Policy beats a pending approval.** With one pending, set `internal_send` to `off`;
+  approving it is refused (422 `policy_off`).
+- **(t) Security reviewer.** An account only in `PROCWISE_SECURITY_REVIEWER` reaches Home,
+  sees the Security view, cannot change anything (every write 403), and downloads the
+  evidence PDF; the PDF matches what the screen shows.
+
+### Open item (not built): a failed permissions check does not hold mail
+
+Spec section 7 says a failed provider check should also hold mail from the affected mailbox
+and alert the admin. **That is not built.** Today a failed `no_mail_permissions` check only
+turns its line red. (A REVOKED or unhealthy mailbox is already held by the `on_disconnect`
+rule.) Until it is built, step (p) shows red while mail keeps flowing; do not treat the red
+line as a block.
+
+### Known limits
+
+- A queued internal email can stay `approved` if the process dies between the claim and the
+  send/hold (there is no sweeper), and also if recording a hold fails during a database outage.
+  Look for old `approved` rows in `proc.bp_internal_email`.
+- A permission change can show stale for up to 120 seconds; there is no force-refresh.
+- Several minor items are deferred in the build ledger (for example the evidence PDF's
+  `access_level` wording needs the product owner's sign-off).
 
 ## 4. Rotation
 
