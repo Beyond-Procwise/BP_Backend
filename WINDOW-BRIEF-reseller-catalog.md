@@ -10,7 +10,7 @@
 - Migrations applied on BOTH `bp_testdb` and `bp_sqldb`. Rollback files exist and have never been run.
 
 ## Still open
-1. **Pricing values (needs Nick).** In policy `sales_quote_pricing`, `validity_days`, `payment_terms_default` and the discount corridor are still null. Tax (20%) and margin floor (15%) are set on both DBs.
+1. **Pricing values (needs Nick).** In policy `sales_quote_pricing`, the discount corridor is still null on both DBs. Set 2026-10-16: `validity_days` = 30 on both DBs; `payment_terms_default` = "30 days from invoice" on bp_testdb only (bp_sqldb pending Nick's yes). Tax (20%) and margin floor (15%) are set on both DBs.
 2. **UI Sales mode.** Not wired. The quote builder screen's cost display is broken until the UI reads costs from `/internal`. Owner: the UI session (beyond-procwise-ui-89), waiting on its user.
 3. **Cost-tier and relation-feed importers.** Not built, because no feed shape exists. Get a sample feed from Nick before designing.
 4. **Opportunity detector.** Not built.
@@ -18,7 +18,7 @@
 6. **Permits.** `sales_quote.approve` and `sales_quote.issue` need role Approver (a governance default Nick may change).
 
 ## Do
-1. Ask Nick for the three pricing values and a sample cost/relation feed.
+1. Ask Nick for the discount corridor (one maximum %, or a % per category with a default), whether to apply payment terms to bp_sqldb, and a sample cost/relation feed.
 2. Check the state of origin/Development against `243ed5b` and `71fe390a` before starting.
 3. Use `superpowers:brainstorming`, then `superpowers:writing-plans`, for the importers and the detector. Keep the design to one proposal, not option matrices.
 
