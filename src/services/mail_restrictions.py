@@ -21,6 +21,9 @@ from typing import Any, Dict, Iterable, List, Optional
 logger = logging.getLogger(__name__)
 
 IN_FORCE, FAILED, NOT_PROVEN = "in_force", "failed", "not_proven"
+# Only an admin's Add or "Check again" re-runs the control read and stamps verified_at; the
+# hourly health check reads the mailbox itself but not the control, so it proves reach, not
+# scope, and does not renew this.
 PROOF_MAX_AGE = timedelta(hours=2)
 POLICY_UNREADABLE = "Email policy could not be read"
 
@@ -72,7 +75,8 @@ _NOT_IN_FORCE_TEXT = {
         "access was withdrawn or must be checked again; see the mailboxes below.",
     ("mailbox_scope", NOT_PROVEN):
         "We could not confirm this: a mailbox has no recent proof (older than 2 hours), is "
-        "temporarily unavailable, or no mailbox is connected yet.",
+        "temporarily unavailable, or no mailbox is connected yet. The proof is not renewed "
+        "automatically: an admin uses “Check again” on the mailbox to prove it again.",
     ("actions_limited", FAILED):
         "Procwise’s code allows an action that is not described here, so this could not be "
         "confirmed.",

@@ -518,3 +518,12 @@ def test_evidence_report_names_the_wider_choices():
 def test_evidence_report_without_wider_choices_says_all_in_force():
     html = mr.evidence_html(_build(), _policy(), [], [], generated_at=NOW, generated_by="a@cust.com")
     assert "8 of 8 restrictions in force." in html and "wider" not in html
+
+
+def test_stale_scope_proof_says_how_to_renew_it():
+    """F5: the hourly health check reads the mailbox but never re-runs the control read,
+    so the proof is not renewed automatically; the line says so and names the button."""
+    stale = _scope([_mailbox(age=timedelta(hours=3))])
+    assert stale["status"] == "not_proven"
+    assert "not renewed automatically" in stale["explanation"]
+    assert "Check again" in stale["explanation"]
