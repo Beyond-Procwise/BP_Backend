@@ -24,6 +24,7 @@ class M365Settings:
     cert_arn: str
     public_base_url: str
     state_key_arn: str
+    # M365_POLL_SECONDS: used only when the email policy (whose poll_seconds rules) cannot be read.
     poll_seconds: int
     # The screen's own address, when it is not the server's (the UI and the API run on
     # different origins). The admin's browser lands here after Microsoft's pages.

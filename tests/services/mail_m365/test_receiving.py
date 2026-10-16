@@ -374,14 +374,66 @@ def test_scheduler_skips_m365_job_without_settings(monkeypatch):
     assert registered == []
 
 
-def test_scheduler_registers_m365_job_with_poll_seconds(monkeypatch):
+def test_scheduler_registers_m365_job_on_a_short_tick(monkeypatch):
+    """F3: the job ticks every minute and decides on each tick, from the email policy,
+    whether a poll is due -- so a changed poll_seconds applies without a restart."""
     import src.services.mail_m365.config as config
     s, registered = _scheduler(monkeypatch)
     monkeypatch.delenv("M365_POLL", raising=False)
     monkeypatch.setattr(config, "load_settings", lambda: config.M365Settings(
         "cid", "arn:aws:secretsmanager:s", "https://x", "arn:k", 90))
     s._register_m365_poll_job()
-    assert registered[0][0] == "mail-m365-poll" and registered[0][1]["interval"].total_seconds() == 90
+    assert registered[0][0] == "mail-m365-poll"
+    assert registered[0][1]["interval"].total_seconds() == s.M365_POLL_TICK_SECONDS == 60
+
+
+def _interval_world(monkeypatch, policy_seconds, env_seconds=90):
+    import services.mail_policy as mp
+    import src.services.mail_m365.config as config
+    s, _ = _scheduler(monkeypatch)
+    w = SimpleNamespace(policy=policy_seconds, polls=[], clock=1000.0)
+
+    def load(conn=None):
+        if isinstance(w.policy, Exception):
+            raise w.policy
+        return SimpleNamespace(poll_seconds=w.policy)
+    monkeypatch.setattr(mp, "load", load)
+    monkeypatch.setattr(config, "load_settings", lambda: config.M365Settings(
+        "cid", "arn:aws:secretsmanager:s", "https://x", "arn:k", env_seconds))
+    monkeypatch.setattr(type(s), "_m365_poll_now", lambda self: w.polls.append(w.clock))
+    from services import backend_scheduler as bs
+    monkeypatch.setattr(bs.time, "monotonic", lambda: w.clock)
+    return s, w
+
+
+def test_m365_poll_interval_comes_from_the_email_policy(monkeypatch):
+    s, w = _interval_world(monkeypatch, policy_seconds=300)
+    s._run_m365_poll()                     # first tick always polls
+    w.clock += 60; s._run_m365_poll()
+    w.clock += 200; s._run_m365_poll()      # 260 s since the poll: not yet
+    assert w.polls == [1000.0]
+    w.clock += 40; s._run_m365_poll()       # 300 s: due
+    assert w.polls == [1000.0, 1300.0]
+
+
+def test_a_changed_poll_seconds_applies_on_the_next_tick(monkeypatch):
+    s, w = _interval_world(monkeypatch, policy_seconds=3600, env_seconds=3000)
+    s._run_m365_poll()
+    w.clock += 60; s._run_m365_poll()
+    assert w.polls == [1000.0]
+    w.policy = 60                           # the admin shortens it; no restart
+    w.clock += 60; s._run_m365_poll()
+    assert w.polls == [1000.0, 1120.0]
+
+
+def test_unreadable_policy_falls_back_to_the_environment_interval(monkeypatch):
+    from services.mail_policy import PolicyUnavailable
+    s, w = _interval_world(monkeypatch, policy_seconds=PolicyUnavailable("down"), env_seconds=90)
+    assert s._m365_poll_interval() == 90
+    s._run_m365_poll()
+    w.clock += 60; s._run_m365_poll()
+    w.clock += 30; s._run_m365_poll()
+    assert w.polls == [1000.0, 1090.0]
 
 
 def test_m365_job_runs_the_shared_handover_steps(monkeypatch):
@@ -395,6 +447,7 @@ def test_m365_job_runs_the_shared_handover_steps(monkeypatch):
     import config.settings as cs
     s, _ = _scheduler(monkeypatch)
     calls = []
+    monkeypatch.setattr(bs.BackendScheduler, "_m365_poll_interval", lambda self: 120)
     monkeypatch.setattr(bs.BackendScheduler, "_run_mail_handover_steps",
                         staticmethod(lambda store: calls.append(("handover", store))))
     monkeypatch.setattr(rcv, "poll_m365", lambda conn, pipeline: calls.append("poll") or {"bindings": 0})

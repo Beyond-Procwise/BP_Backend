@@ -2,6 +2,7 @@ import logging
 from src.services.governed_limits import LimitUnavailable
 from src.services.governed_limits import limit as _governed_limit
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional
 
@@ -421,6 +422,9 @@ class BackendScheduler:
     MAIL_INTAKE_SWEEP_JOB_NAME = "mail-intake-sweep"
     MAIL_INTAKE_POLL_JOB_NAME = "mail-intake-poll"
     M365_POLL_JOB_NAME = "mail-m365-poll"
+    # The M365 job wakes this often and polls only when the email policy's poll_seconds
+    # has passed since the last poll, so an admin's change applies without a restart.
+    M365_POLL_TICK_SECONDS = 60
     # Its own lane: reading a document's type runs the L0 parser (OCR on a scan),
     # which must not hold up the shared lane.
     MAIL_INTAKE_POLL_LANE = "mail-intake"
@@ -1505,12 +1509,35 @@ class BackendScheduler:
         self.register_job(
             self.M365_POLL_JOB_NAME,
             self._run_m365_poll,
-            interval=timedelta(seconds=settings.poll_seconds),
+            interval=timedelta(seconds=self.M365_POLL_TICK_SECONDS),
             initial_delay=timedelta(seconds=60),
             lane=self.MAIL_INTAKE_POLL_LANE,
         )
 
+    def _m365_poll_interval(self) -> int:
+        """Seconds between polls: the email policy's poll_seconds, read on every tick.
+        Only when the policy cannot be read does the server setting M365_POLL_SECONDS
+        (default 120) apply."""
+        try:
+            from services import mail_policy
+            return int(mail_policy.load().poll_seconds)
+        except Exception:
+            logger.warning("email policy unreadable; m365 poll uses M365_POLL_SECONDS", exc_info=True)
+        from src.services.mail_m365.config import load_settings
+        settings = load_settings()
+        return settings.poll_seconds if settings is not None else 120
+
     def _run_m365_poll(self) -> None:
+        """One tick: poll now if poll_seconds have passed since the last poll began."""
+        interval = self._m365_poll_interval()
+        last = getattr(self, "_m365_last_poll", None)
+        now = time.monotonic()
+        if last is not None and now - last < interval:
+            return
+        self._m365_last_poll = now
+        self._m365_poll_now()
+
+    def _m365_poll_now(self) -> None:
         import os
 
         from config.settings import Settings
