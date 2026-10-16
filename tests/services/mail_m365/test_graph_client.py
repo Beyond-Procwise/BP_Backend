@@ -186,8 +186,9 @@ def test_send_throttled_and_other_failures():
         client({("POST", "/sendMail"): (500, {})}).send_mime("m@x", b"x")
 
 
-@pytest.mark.parametrize("path", ["/users/m@x/messages/1/move", "/users/m@x/messages/1",
+@pytest.mark.parametrize("path", ["/users/m@x/messages/1/move",
                                   "/me/messages", "/users/m@x/mailFolders/inbox/messages/1/forward",
+                                  "/users/m@x/messages/1/attachments",
                                   "/users/m@x/messages/1/../move"])
 def test_paths_outside_the_allowlist_are_refused(path):
     c = client({})
@@ -260,3 +261,36 @@ def test_egress_permits_the_microsoft_hosts(monkeypatch, host):
     ok, why = egress.check_destination(f"https://{host}/x")
     assert ok, why
     assert egress._evaluate(egress.Purpose.MAILBOX, host)[0] is True
+
+
+def test_list_inbox_selects_the_sender_and_returns_a_bare_address():
+    c = client({("GET", "/mailFolders/inbox/messages"): (200, {"value": [
+        {"id": "a", "receivedDateTime": "2026-10-15T09:00:00Z",
+         "from": {"emailAddress": {"address": " Sup@Supplier.COM ", "name": "Sup"}}},
+        {"id": "b", "receivedDateTime": "2026-10-15T09:01:00Z"}]})})
+    got = c.list_inbox("m@x", datetime(2026, 10, 15, tzinfo=timezone.utc))
+    assert "$select=id,receivedDateTime,from" in c.transport.calls[0][1]
+    assert got[0]["from"] == "sup@supplier.com" and got[1]["from"] == ""
+
+
+def test_get_headers_lowercases_names_and_quotes_a_hostile_id():
+    hdrs = {"internetMessageHeaders": [{"name": "In-Reply-To", "value": "<a@x>"},
+                                       {"name": "References", "value": "<b@x> <a@x>"}]}
+    c = client({("GET", "internetMessageHeaders"): (200, hdrs)})
+    got = c.get_headers("m@x", "AAA/users/other@x/messages?x=1#")
+    with pytest.raises(ValueError):          # a dot-dot id is refused outright by the allowlist
+        c.get_headers("m@x", "AAA/../../users/other@x")
+    assert got == {"in-reply-to": "<a@x>", "references": "<b@x> <a@x>"}
+    url = c.transport.calls[0][1]
+    assert url.startswith("https://graph.microsoft.com/v1.0/users/m@x/messages/AAA%2Fusers%2Fother%40x%2Fmessages%3Fx%3D1%23?")
+    assert url.endswith("?$select=internetMessageHeaders") and "other@x/messages" not in url and "x=1" not in url.split("?")[0]
+
+
+def test_get_headers_maps_errors_and_missing_headers():
+    assert client({("GET", "internetMessageHeaders"): (200, {})}).get_headers("m@x", "1") == {}
+    with pytest.raises(Throttled):
+        client({("GET", "internetMessageHeaders"): (429, {})}).get_headers("m@x", "1")
+    with pytest.raises(MailboxAccessDenied):
+        client({("GET", "internetMessageHeaders"): (403, {})}).get_headers("m@x", "1")
+    with pytest.raises(MailboxUnreachable):
+        client({("GET", "internetMessageHeaders"): (500, {})}).get_headers("m@x", "1")

@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import re
 import threading
 import time
 from collections import OrderedDict
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional
 
 from services.mail_intake.sources.base import RawMessage
@@ -26,6 +28,70 @@ def _parse_dt(s: Optional[str]) -> Optional[datetime]:
     return datetime.fromisoformat(s.replace("Z", "+00:00"))
 
 
+_MSGID = re.compile(r"<[^<>\s]+>")
+NARROW_SCOPE = "replies_and_suppliers"
+
+
+def _read_scope() -> str:
+    """The policy's read scope; an unreadable policy reads the narrower scope."""
+    try:
+        from services.mail_policy import load
+        return load().read_scope
+    except Exception:
+        log.warning("email policy unreadable; reading only replies and supplier mail", exc_info=True)
+        return NARROW_SCOPE
+
+
+def _default_checks() -> tuple:
+    """(is_supplier, sent_ids) backed by the database. A failed lookup answers False, so
+    the message stays unread rather than being downloaded on a guess."""
+    from services.db import get_conn
+
+    def is_supplier(address: str) -> bool:
+        try:
+            from services.supplier_contact import is_known_supplier_email
+            with get_conn() as c:
+                return bool(address) and is_known_supplier_email(c, address)
+        except Exception:
+            log.warning("supplier lookup failed; treating %r as not a supplier", address, exc_info=True)
+            return False
+
+    def sent_ids(ids: List[str]) -> bool:
+        try:
+            with get_conn() as c:
+                cur = c.cursor()
+                cur.execute("SELECT 1 FROM proc.email_thread_map WHERE message_id = ANY(%s) LIMIT 1",
+                            (ids,))
+                return cur.fetchone() is not None
+        except Exception:
+            log.warning("sent-mail lookup failed; treating message as not a reply", exc_info=True)
+            return False
+
+    return is_supplier, sent_ids
+
+
+def in_scope(item: Mapping[str, Any], *, policy: Any, client: Any, mailbox: str,
+             is_supplier: Callable[[str], bool], sent_ids: Callable[[List[str]], bool]) -> bool:
+    """May this Inbox message be downloaded? Decided from the sender and two headers only;
+    an out-of-scope message is never passed to get_mime."""
+    if policy.read_scope == "whole_inbox":
+        return True
+    if is_supplier(item.get("from") or ""):
+        return True
+    try:
+        headers = client.get_headers(mailbox, item["id"])
+        found = _MSGID.findall(headers.get("in-reply-to", "") + " " + headers.get("references", ""))
+        ids: List[str] = []
+        for m in found:
+            ids += [m, m.strip("<>")]
+        return bool(ids) and bool(sent_ids(ids))
+    except Throttled:
+        raise
+    except Exception:
+        log.warning("m365 header check failed for %s; message left unread", item.get("id"), exc_info=True)
+        return False
+
+
 class GraphMailSource:
     def __init__(self, client_for: Callable[[], M365Client]) -> None:
         self._client_for = client_for
@@ -33,7 +99,12 @@ class GraphMailSource:
     def iter_messages(self, binding: Mapping[str, Any], since: datetime) -> Iterator[RawMessage]:
         mailbox = binding["mailbox_address"]
         client = self._client_for()
+        policy = SimpleNamespace(read_scope=_read_scope())
+        is_supplier, sent_ids = _default_checks()
         for item in client.list_inbox(mailbox, since):
+            if not in_scope(item, policy=policy, client=client, mailbox=mailbox,
+                            is_supplier=is_supplier, sent_ids=sent_ids):
+                continue
             yield RawMessage(raw=client.get_mime(mailbox, item["id"]),
                              provider_message_id=item["id"],
                              received_at=_parse_dt(item.get("receivedDateTime")),
@@ -49,12 +120,15 @@ _client_cache: Dict[str, Any] = {}
 # workflow; a message already downloaded is not downloaded again, and is handed to every
 # workflow's pass (not just the first) so none of them misses a reply that belongs to it.
 _parsed: "OrderedDict[tuple, Any]" = OrderedDict()
+# Messages judged out of scope: not looked at again every pass.
+_skipped: "OrderedDict[tuple, bool]" = OrderedDict()
 
 
 def _reset_caches() -> None:
     with _lock:
         _client_cache.clear()
         _parsed.clear()
+        _skipped.clear()
 
 
 def _default_client_for() -> Optional[Callable[[], M365Client]]:
@@ -89,13 +163,25 @@ def _default_client_for() -> Optional[Callable[[], M365Client]]:
 
 def _replies_from(mailbox: str, client: Any, since: datetime, parse: Callable[[bytes], Any]) -> List[Any]:
     out: List[Any] = []
+    policy = SimpleNamespace(read_scope=_read_scope())
+    is_supplier, sent_ids = _default_checks()
     for item in client.list_inbox(mailbox, since):
         key = (mailbox, item["id"])
         with _lock:
             cached = _parsed.get(key)
             if cached is not None:
                 _parsed.move_to_end(key)
+            skipped = key in _skipped
+        if cached is None and skipped and policy.read_scope != "whole_inbox":
+            continue
         if cached is None:
+            if not in_scope(item, policy=policy, client=client, mailbox=mailbox,
+                            is_supplier=is_supplier, sent_ids=sent_ids):
+                with _lock:
+                    _skipped[key] = True
+                    while len(_skipped) > SEEN_LIMIT:
+                        _skipped.popitem(last=False)
+                continue
             cached = parse(client.get_mime(mailbox, item["id"]))
             with _lock:
                 _parsed[key] = cached

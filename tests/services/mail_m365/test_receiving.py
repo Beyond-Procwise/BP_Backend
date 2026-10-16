@@ -1,12 +1,20 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from services.mail_m365 import receiving
 from services.mail_m365.graph_client import Throttled
 
 SINCE = datetime(2026, 10, 15, 8, tzinfo=timezone.utc)
 MIME = (b"From: sup@supplier.com\r\nTo: procurement@cust.com\r\nSubject: Re: RFQ-1\r\n"
         b"Message-ID: <a@supplier.com>\r\nIn-Reply-To: <rfq1@cust.com>\r\n\r\nOur price is 455.")
+
+
+@pytest.fixture(autouse=True)
+def _whole_inbox_by_default(monkeypatch):
+    """The older tests here are about plumbing, not scope: read the whole inbox."""
+    monkeypatch.setattr(receiving, "_read_scope", lambda: "whole_inbox")
 
 
 class Client:
@@ -396,3 +404,83 @@ def test_m365_job_runs_the_shared_handover_steps(monkeypatch):
     monkeypatch.setattr(cs, "Settings", lambda: SimpleNamespace(s3_bucket_name="b"))
     s._run_m365_poll()
     assert calls == ["poll", ("handover", ("store", "b"))]
+
+
+# ---- Task 8: read scope -------------------------------------------------------------------
+
+class ScopedClient:
+    """supplier, a reply to a mail we sent, and an unrelated colleague."""
+    def __init__(self):
+        self.fetched, self.header_calls = [], []
+
+    def list_inbox(self, mailbox, since):
+        return [{"id": "sup", "receivedDateTime": "2026-10-15T09:00:00Z", "from": "sup@supplier.com"},
+                {"id": "rep", "receivedDateTime": "2026-10-15T09:01:00Z", "from": "someone@gmail.com"},
+                {"id": "col", "receivedDateTime": "2026-10-15T09:02:00Z", "from": "colleague@cust.com"}]
+
+    def get_headers(self, mailbox, mid):
+        self.header_calls.append(mid)
+        if mid == "rep":
+            return {"in-reply-to": "<ours-1@cust.com>", "references": "<old@x> <ours-1@cust.com>"}
+        return {"in-reply-to": "<unrelated@elsewhere>"}
+
+    def get_mime(self, mailbox, mid):
+        self.fetched.append(mid)
+        return MIME
+
+
+def _scope(monkeypatch, scope):
+    monkeypatch.setattr(receiving, "_read_scope", scope if callable(scope) else (lambda: scope))
+    monkeypatch.setattr(receiving, "_default_checks", lambda: (
+        lambda addr: addr == "sup@supplier.com",
+        lambda ids: any(i in ("<ours-1@cust.com>", "ours-1@cust.com") for i in ids)))
+
+
+def _ids(src_client):
+    src = receiving.GraphMailSource(lambda: src_client)
+    list(src.iter_messages({"mailbox_address": "procurement@cust.com"}, SINCE))
+    return src_client.fetched
+
+
+def test_replies_and_suppliers_never_downloads_an_unrelated_colleague(monkeypatch):
+    _scope(monkeypatch, "replies_and_suppliers")
+    c = ScopedClient()
+    assert _ids(c) == ["sup", "rep"]
+    assert "sup" not in c.header_calls, "a known supplier needs no header lookup"
+
+
+def test_whole_inbox_downloads_everything_without_looking_at_headers(monkeypatch):
+    _scope(monkeypatch, "whole_inbox")
+    c = ScopedClient()
+    assert _ids(c) == ["sup", "rep", "col"] and c.header_calls == []
+
+
+def test_unreadable_policy_reads_the_narrower_scope(monkeypatch):
+    from services.mail_policy import PolicyUnavailable
+    monkeypatch.undo()
+    monkeypatch.setattr("services.mail_policy.load",
+                        lambda conn=None: (_ for _ in ()).throw(PolicyUnavailable("down")))
+    assert receiving._read_scope() == "replies_and_suppliers"
+    _scope(monkeypatch, receiving._read_scope)
+    assert _ids(ScopedClient()) == ["sup", "rep"]
+
+
+def test_the_watcher_path_applies_the_same_scope(monkeypatch):
+    _scope(monkeypatch, "replies_and_suppliers")
+    c = ScopedClient()
+
+    class Repo:
+        def list_org(self): return [_binding(1, "procurement@cust.com")]
+    got = receiving.fetch_replies(SINCE, repo=Repo(), client_for=lambda: c)
+    assert c.fetched == ["sup", "rep"] and len(got) == 2
+    receiving.fetch_replies(SINCE, repo=Repo(), client_for=lambda: c)
+    assert c.header_calls.count("col") == 1, "an out-of-scope message is judged once, not every 30 s"
+
+
+def test_in_scope_a_failed_lookup_leaves_the_message_unread():
+    class Boom(ScopedClient):
+        def get_headers(self, mailbox, mid): raise RuntimeError("graph down")
+    item = {"id": "x", "from": "a@b.com"}
+    assert receiving.in_scope(item, policy=SimpleNamespace(read_scope="replies_and_suppliers"),
+                              client=Boom(), mailbox="m@x", is_supplier=lambda a: False,
+                              sent_ids=lambda ids: True) is False

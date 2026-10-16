@@ -18,6 +18,8 @@ from urllib.parse import quote
 
 import jwt
 
+from services.mail_rules import bare_address
+
 from services.style.graph_source import (GRAPH_BASE, GRAPH_SCOPE, TOKEN_URL,
                                          MailboxAccessDenied, MailboxUnreachable,
                                          RequestsTransport)
@@ -97,6 +99,7 @@ ALLOWED_PATH_PATTERNS = {
         rf"^{_MBX}/mailFolders/inbox/messages$",
         rf"^{_MBX}/messages$",
         rf"^{_MBX}/messages/[^/]+/\$value$",
+        rf"^{_MBX}/messages/[^/]+$",
     )],
     "POST": [re.compile(rf"^{_MBX}/sendMail$")],
 }
@@ -215,7 +218,7 @@ class M365Client:
         out: List[Dict[str, Any]] = []
         skip = 0
         while True:
-            url = (base + f"?$top={page_size}&$skip={skip}&$select=id,receivedDateTime"
+            url = (base + f"?$top={page_size}&$skip={skip}&$select=id,receivedDateTime,from"
                    f"&$filter=receivedDateTime ge {stamp}&$orderby=receivedDateTime asc")
             status, payload = self.transport.get(url, self._headers())
             if status == 429:
@@ -225,6 +228,9 @@ class M365Client:
             if not 200 <= status < 300:
                 raise MailboxUnreachable(f"Inbox listing returned HTTP {status}")
             page = (payload or {}).get("value", []) or []
+            for m in page:
+                sender = ((m.get("from") or {}).get("emailAddress") or {}).get("address") or ""
+                m["from"] = bare_address(sender)
             out.extend(page)
             if len(page) < page_size:
                 break
@@ -242,6 +248,24 @@ class M365Client:
         if not 200 <= status < 300:
             raise MailboxUnreachable(f"message fetch returned HTTP {status}")
         return body
+
+    def get_headers(self, mailbox: str, message_id: str) -> Dict[str, str]:
+        """The message's transport headers only (no body), names lower-cased."""
+        status, payload = self.transport.get(
+            self._url(f"{self._mbx(mailbox)}/messages/{quote(message_id, safe='')}",
+                      method="GET") + "?$select=internetMessageHeaders", self._headers())
+        if status == 429:
+            raise Throttled(self._retry_after(payload))
+        if status in (401, 403, 404):
+            raise MailboxAccessDenied(f"header fetch denied with HTTP {status}")
+        if not 200 <= status < 300:
+            raise MailboxUnreachable(f"header fetch returned HTTP {status}")
+        out: Dict[str, str] = {}
+        for h in (payload or {}).get("internetMessageHeaders") or []:
+            name = str((h or {}).get("name") or "").strip().lower()
+            if name:
+                out[name] = str(h.get("value") or "")
+        return out
 
     def send_mime(self, mailbox: str, mime: bytes) -> None:
         status, payload = self.transport.post_body(
