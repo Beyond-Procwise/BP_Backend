@@ -86,4 +86,5 @@ ddgs
 # something a fresh pip install should make silently.
 langextract==1.2.1
 pyjwt[crypto]
+python-magic==0.4.27
 babel>=2.10

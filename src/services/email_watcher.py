@@ -612,6 +612,14 @@ class ImapEmailFetcher:
 # ---------------------------------------------------------------------------
 
 
+def _m365_has_bindings() -> bool:
+    try:
+        from services.mail_m365.receiving import has_bindings
+        return has_bindings()
+    except Exception:
+        return False
+
+
 @dataclass(slots=True)
 class EmailWatcherConfig:
     imap_host: Optional[str] = None
@@ -1017,21 +1025,31 @@ class EmailWatcher:
                 login=self.config.imap_login,
                 limit=self.config.max_fetch,
             )
+        responses: List[EmailResponse] = []
         if fetcher is None:
-            logger.warning("Email fetcher not configured; returning no responses")
-            return []
+            pass
+        elif isinstance(fetcher, ImapEmailFetcher):
+            responses = await fetcher.fetch(since=since)
+        elif asyncio.iscoroutinefunction(fetcher):
+            responses = await fetcher(since=since)
+        elif callable(fetcher):
+            responses = await asyncio.to_thread(fetcher, since=since)
+        else:
+            # Fallback for awaitable instances
+            result = fetcher(since=since)  # type: ignore[operator]
+            responses = (await result) if asyncio.iscoroutine(result) else result
 
-        if isinstance(fetcher, ImapEmailFetcher):
-            return await fetcher.fetch(since=since)
-        if asyncio.iscoroutinefunction(fetcher):
-            return await fetcher(since=since)
-        if callable(fetcher):
-            return await asyncio.to_thread(fetcher, since=since)
-        # Fallback for awaitable instances
-        result = fetcher(since=since)  # type: ignore[operator]
-        if asyncio.iscoroutine(result):
-            return await result
-        return result
+        responses = list(responses or [])
+        graph_replies: List[EmailResponse] = []
+        try:
+            from services.mail_m365.receiving import fetch_replies
+            graph_replies = await asyncio.to_thread(fetch_replies, since)
+            responses.extend(graph_replies)
+        except Exception:
+            logger.warning("Microsoft 365 reply fetch failed; IMAP results kept", exc_info=True)
+        if fetcher is None and not graph_replies and not _m365_has_bindings():
+            logger.warning("Email fetcher not configured; returning no responses")
+        return responses
 
     def _match_responses(self, tracker: WorkflowTracker, responses: Sequence[EmailResponse]) -> List[SupplierResponseRow]:
         matched_rows: List[SupplierResponseRow] = []
@@ -2292,7 +2310,10 @@ def run_email_watcher_for_workflow(
         or "INBOX"
     )
 
-    if not imap_host or not imap_password or not (imap_username or imap_login):
+    imap_configured = bool(imap_host and imap_password and (imap_username or imap_login))
+    # Replies to email sent from a company Microsoft 365 mailbox arrive there, not over
+    # IMAP; _fetch_emails reads them. Skip only when neither source exists.
+    if not imap_configured and not _m365_has_bindings():
         logger.warning(
             "IMAP credentials are not configured; skipping EmailWatcher (host=%s user=%s)",
             imap_host,

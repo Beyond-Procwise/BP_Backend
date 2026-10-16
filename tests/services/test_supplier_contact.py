@@ -100,3 +100,28 @@ def test_a_database_failure_resolves_to_nothing_rather_than_raising():
 
     assert contact.emails == []
     assert contact.name is None
+
+
+# ---- the by-address lookup, against the real supplier master ----
+import os
+import uuid
+
+live = pytest.mark.skipif(os.environ.get("PROCWISE_TEST_LIVE_DB") != "1", reason="needs the live test DB")
+
+
+@live
+def test_known_supplier_email_matches_stored_case_and_whitespace():
+    from services.db import get_conn
+    from services.supplier_contact import is_known_supplier_email
+
+    sid = "TEST-" + uuid.uuid4().hex[:10]
+    stored = f" Quotes@Sup-{sid.lower()}.com "
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO proc.bp_supplier (supplier_id, supplier_name, contact_email_1, "
+                    "contact_email_2) VALUES (%s, %s, %s, %s)", (sid, "Test " + sid, None, stored))
+        try:
+            assert is_known_supplier_email(conn, stored.strip().lower())
+            assert not is_known_supplier_email(conn, f"other@sup-{sid.lower()}.com")
+        finally:
+            cur.execute("DELETE FROM proc.bp_supplier WHERE supplier_id = %s", (sid,))

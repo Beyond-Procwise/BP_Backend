@@ -2,6 +2,7 @@ import logging
 from src.services.governed_limits import LimitUnavailable
 from src.services.governed_limits import limit as _governed_limit
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional
 
@@ -418,6 +419,15 @@ class BackendScheduler:
     PRICE_OUTLIER_JOB_NAME = "price-outlier-scan"
     ANALYSIS_SWEEP_JOB_NAME = "analysis-sweep"
     ANALYSIS_SWEEP_LANE = "analysis"
+    MAIL_INTAKE_SWEEP_JOB_NAME = "mail-intake-sweep"
+    MAIL_INTAKE_POLL_JOB_NAME = "mail-intake-poll"
+    M365_POLL_JOB_NAME = "mail-m365-poll"
+    # The M365 job wakes this often and polls only when the email policy's poll_seconds
+    # has passed since the last poll, so an admin's change applies without a restart.
+    M365_POLL_TICK_SECONDS = 60
+    # Its own lane: reading a document's type runs the L0 parser (OCR on a scan),
+    # which must not hold up the shared lane.
+    MAIL_INTAKE_POLL_LANE = "mail-intake"
 
     def _register_default_jobs(self) -> None:
         self._sync_training_job()
@@ -440,6 +450,9 @@ class BackendScheduler:
         self._register_style_staging_sweep_job()
         self._register_mailbox_health_job()
         self._register_style_feedback_job()
+        self._register_mail_intake_sweep_job()
+        self._register_mail_intake_poll_job()
+        self._register_m365_poll_job()
         self._register_triage_job()
         self._register_playbook_sweep_job()
         self._register_contract_link_job()
@@ -1347,6 +1360,224 @@ class BackendScheduler:
                 "price outlier scan: %d findings, %d new", len(findings), written)
         except Exception:
             logger.exception("price outlier scan failed")
+
+    @staticmethod
+    def _mail_intake_tables_present() -> bool:
+        """Cheap existence probe, so an unmigrated environment stays quiet.
+
+        Registering the sweep unconditionally means that anywhere
+        2026-08-07-mail-intake.sql has not been applied — a developer
+        checkout, a staging box, anywhere the migration lags the deploy — the
+        job raises UndefinedTable and logs an exception every sixty seconds,
+        forever. That is not a broken feature so much as a broken log: the
+        noise buries whatever someone is actually trying to read.
+        """
+        try:
+            from src.services.db import get_conn
+
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute("SELECT to_regclass('proc.bp_ingest_artifact')")
+                row = cur.fetchone()
+                return bool(row and row[0])
+        except Exception:
+            return False
+
+    def _register_mail_intake_sweep_job(self) -> None:
+        """Register the mail-intake emit sweep (spec §6 stage 10).
+
+        The artifact's state row is the queue; this sweep is the backstop that
+        publishes DocumentIngested for anything sitting READY_FOR_EXTRACTION,
+        covering a process death mid-handler on the synchronous, non-durable
+        EventBus. Every 60 seconds, matching the brief.
+        """
+        if self.MAIL_INTAKE_SWEEP_JOB_NAME in self._jobs:
+            return
+        if not self._mail_intake_tables_present():
+            logger.info(
+                "mail intake sweep: proc.bp_ingest_artifact not found, "
+                "skipping registration (migration not yet applied)"
+            )
+            return
+        self.register_job(
+            self.MAIL_INTAKE_SWEEP_JOB_NAME,
+            self._run_mail_intake_sweep,
+            interval=timedelta(seconds=60),
+            initial_delay=timedelta(seconds=30),
+        )
+
+    def _register_mail_intake_poll_job(self) -> None:
+        """Fetch relay mail, ingest it, and hand cleared attachments to the upload queue.
+
+        ON unless MAIL_INTAKE_POLL=off; a no-op until a relay intake binding is
+        active. Every MAIL_INTAKE_POLL_SECONDS (default 60). Three steps, each
+        safe to repeat: mail_intake.poll (stage 0), mail_handover.hand_over
+        (READY -> process_monitor, or held when the type is not settled) and
+        mail_handover.settle (close hand-overs the watcher has finished).
+        """
+        import os
+        if os.environ.get("MAIL_INTAKE_POLL", "on").strip().lower() in ("off", "0", "false"):
+            logger.info("mail intake poll not registered (MAIL_INTAKE_POLL=off)")
+            return
+        if self.MAIL_INTAKE_POLL_JOB_NAME in self._jobs:
+            return
+        if not self._mail_intake_tables_present():
+            return
+        try:
+            seconds = int(os.environ.get("MAIL_INTAKE_POLL_SECONDS", "60"))
+        except ValueError:
+            seconds = 60
+        self.register_job(
+            self.MAIL_INTAKE_POLL_JOB_NAME,
+            self._run_mail_intake_poll,
+            interval=timedelta(seconds=max(15, seconds)),
+            initial_delay=timedelta(seconds=45),
+            lane=self.MAIL_INTAKE_POLL_LANE,
+        )
+
+    def _run_mail_intake_poll(self) -> None:
+        import os
+
+        from config.settings import Settings
+        from src.services.mail_intake import poll
+        from src.services.mail_intake.pipeline import IngestPipeline
+        from src.services.mail_intake.sources.relay import RelayMailSource
+        from src.services.mail_intake.store import ObjectStore
+        from src.services.sell_side._db import transactional_conn
+
+        bucket = Settings().s3_bucket_name
+        store = ObjectStore(bucket)
+        relay_bucket = os.environ.get("SES_INBOUND_BUCKET") or bucket
+        relay_prefix = os.environ.get("SES_INBOUND_PREFIX", "emails/")
+        # The MTA that writes the relay prefix is SES; its Authentication-Results
+        # header is the only one the relay path can trust (sender_auth, spec §4.1).
+        pipeline = IngestPipeline(
+            store, bucket,
+            trusted_asserter=os.environ.get("MAIL_INTAKE_TRUSTED_ASSERTER", "amazonses.com"),
+        )
+        try:
+            with transactional_conn() as conn:
+                result = poll.poll_all(
+                    conn, lambda b: RelayMailSource(relay_bucket, relay_prefix), pipeline)
+            if any(v for k, v in result.items() if k != "bindings"):
+                logger.info("mail intake poll: %s", result)
+        except Exception:
+            logger.exception("mail intake poll failed")
+        self._run_mail_handover_steps(store)
+
+    @staticmethod
+    def _run_mail_handover_steps(store: Any) -> None:
+        """READY attachments -> the upload queue, then close finished hand-overs.
+
+        Shared by the relay job and the Microsoft 365 job, so cleared attachments reach
+        extraction whichever source brought them and whichever job is switched on.
+        """
+        from src.services import mail_handover
+        from src.services.sell_side._db import transactional_conn
+
+        for step in ("hand_over", "settle"):
+            try:
+                with transactional_conn() as conn:
+                    if step == "hand_over":
+                        result = mail_handover.hand_over(conn, store)
+                    else:
+                        result = mail_handover.settle(conn)
+                if any(v for k, v in result.items() if k != "bindings"):
+                    logger.info("mail intake %s: %s", step, result)
+            except Exception:
+                logger.exception("mail intake %s failed", step)
+
+    def _register_m365_poll_job(self) -> None:
+        """Read the company's shared Microsoft 365 mailboxes into mail-intake.
+
+        ON unless M365_POLL=off; a no-op until Microsoft 365 is configured on this
+        server and a shared mailbox is connected. Read-only: nothing in the mailbox
+        is moved, flagged or marked read.
+        """
+        import os
+        if os.environ.get("M365_POLL", "on").strip().lower() in ("off", "0", "false"):
+            logger.info("m365 poll not registered (M365_POLL=off)")
+            return
+        if self.M365_POLL_JOB_NAME in self._jobs:
+            return
+        if not self._mail_intake_tables_present():
+            return
+        from src.services.mail_m365.config import load_settings
+        settings = load_settings()
+        if settings is None:
+            logger.info("m365 poll not registered (Microsoft 365 is not configured)")
+            return
+        self.register_job(
+            self.M365_POLL_JOB_NAME,
+            self._run_m365_poll,
+            interval=timedelta(seconds=self.M365_POLL_TICK_SECONDS),
+            initial_delay=timedelta(seconds=60),
+            lane=self.MAIL_INTAKE_POLL_LANE,
+        )
+
+    def _m365_poll_interval(self) -> int:
+        """Seconds between polls: the email policy's poll_seconds, read on every tick.
+        Only when the policy cannot be read does the server setting M365_POLL_SECONDS
+        (default 120) apply."""
+        try:
+            from services import mail_policy
+            return int(mail_policy.load().poll_seconds)
+        except Exception:
+            logger.warning("email policy unreadable; m365 poll uses M365_POLL_SECONDS", exc_info=True)
+        from src.services.mail_m365.config import load_settings
+        settings = load_settings()
+        return settings.poll_seconds if settings is not None else 120
+
+    def _run_m365_poll(self) -> None:
+        """One tick: poll now if poll_seconds have passed since the last poll began."""
+        interval = self._m365_poll_interval()
+        last = getattr(self, "_m365_last_poll", None)
+        now = time.monotonic()
+        if last is not None and now - last < interval:
+            return
+        self._m365_last_poll = now
+        self._m365_poll_now()
+
+    def _m365_poll_now(self) -> None:
+        import os
+
+        from config.settings import Settings
+        from src.services.mail_intake.pipeline import IngestPipeline
+        from src.services.mail_intake.store import ObjectStore
+        from src.services.mail_m365.receiving import poll_m365
+        from src.services.sell_side._db import transactional_conn
+
+        try:
+            bucket = Settings().s3_bucket_name
+            # Graph hands over the message as the mailbox holds it; no relay in between
+            # vouches for it, so there is no trusted Authentication-Results asserter.
+            store = ObjectStore(bucket)
+            pipeline = IngestPipeline(
+                store, bucket,
+                trusted_asserter=os.environ.get("M365_TRUSTED_ASSERTER") or None)
+            with transactional_conn() as conn:
+                result = poll_m365(conn, pipeline)
+            if any(v for k, v in result.items() if k != "bindings"):
+                logger.info("m365 poll: %s", result)
+        except Exception:
+            logger.exception("m365 poll failed")
+            return
+        # Hand-over must not depend on the relay job being switched on.
+        self._run_mail_handover_steps(store)
+
+    def _run_mail_intake_sweep(self) -> None:
+        try:
+            from src.services.db import get_conn
+            from src.services.event_bus import get_event_bus
+            from src.services.mail_intake.pipeline import sweep_ready_artifacts
+
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    published = sweep_ready_artifacts(cur, event_bus=get_event_bus())
+                conn.commit()
+            if published:
+                logger.info("mail intake sweep: published %d artifacts", published)
+        except Exception:
+            logger.exception("mail intake sweep failed")
 
     # Counts in the assign_deals() result that mean _trgt deals actually changed.
     _DEAL_CHANGE_KEYS = ("forward_linked", "backward_linked", "propagated",

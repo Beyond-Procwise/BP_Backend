@@ -50,6 +50,7 @@ def test_watcher_skips_without_credentials(monkeypatch):
     from services import email_watcher as email_watcher_service
 
     monkeypatch.setattr(email_watcher_service, "app_settings", None)
+    monkeypatch.setattr(email_watcher_service, "_m365_has_bindings", lambda: False)
     monkeypatch.setattr(email_watcher_service, "_load_dispatch_rows", lambda workflow_id: [_sample_row()])
     monkeypatch.setattr(
         email_watcher_service.draft_rfq_emails_repo,
@@ -61,6 +62,41 @@ def test_watcher_skips_without_credentials(monkeypatch):
 
     assert result["status"] == "skipped"
     assert result["reason"] == "IMAP credentials not configured"
+
+
+def test_watcher_runs_without_imap_when_a_company_m365_mailbox_is_connected(monkeypatch):
+    """I1: replies to mail sent from a Microsoft 365 shared mailbox are fetched inside the
+    watcher (_fetch_emails), so no IMAP must not stop it from starting."""
+    from services import email_watcher as email_watcher_service
+
+    started = {}
+
+    class _FakeWatcher:
+        def __init__(self, *args, config=None, **kwargs):
+            started["config"] = config
+
+        def wait_for_responses(self, workflow_id):
+            started["workflow"] = workflow_id
+            return {"status": "completed", "workflow_id": workflow_id, "rows": [],
+                    "matched_unique_ids": ["uid-123"], "expected": 1, "found": 1}
+
+    monkeypatch.setattr(email_watcher_service, "app_settings", None)
+    monkeypatch.setattr(email_watcher_service, "_env", lambda key, default=None: default)
+    monkeypatch.setattr(email_watcher_service, "_setting", lambda *args: None)
+    monkeypatch.setattr(email_watcher_service, "_m365_has_bindings", lambda: True)
+    monkeypatch.setattr(email_watcher_service, "_load_dispatch_rows", lambda workflow_id: [_sample_row()])
+    monkeypatch.setattr(
+        email_watcher_service.draft_rfq_emails_repo,
+        "expected_unique_ids_and_last_dispatch",
+        lambda workflow_id, run_id=None: ({"uid-123"}, {}, None),
+    )
+    monkeypatch.setattr(email_watcher_service, "EmailWatcher", _FakeWatcher)
+
+    result = email_watcher_service.run_email_watcher_for_workflow(workflow_id="wf-test", run_id=None)
+
+    assert result.get("reason") != "IMAP credentials not configured"
+    assert started["workflow"] == "wf-test"
+    assert started["config"].imap_host is None
 
 
 def test_watcher_waits_until_dispatch_complete(monkeypatch):

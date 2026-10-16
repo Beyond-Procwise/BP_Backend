@@ -9,7 +9,7 @@ from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formatdate, make_msgid
-from typing import Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 from botocore.exceptions import ClientError
 
@@ -24,13 +24,64 @@ from .email_credentials_manager import (
 
 @dataclass
 class EmailSendResult:
-    """Outcome of an SES SMTP send attempt."""
+    """Outcome of a send attempt (SES SMTP, or the company's Microsoft 365 mailbox)."""
 
     success: bool
     message_id: Optional[str] = None
+    held_reason: Optional[str] = None
+    transport: str = "ses"
 
 
 configure_gpu()
+
+
+def _sender_domain(sender: str) -> Optional[str]:
+    """Best-effort extraction of the sender's domain for Message-ID generation."""
+
+    if not sender or "@" not in sender:
+        return None
+    domain = sender.split("@", 1)[-1].strip()
+    return domain or None
+
+
+def build_mime(
+    subject: str,
+    body: str,
+    recipients: Union[str, Iterable[str]],
+    sender: str,
+    attachments: Optional[List[Tuple[bytes, str]]] = None,
+    *,
+    headers: Optional[Dict[str, str]] = None,
+    message_id: Optional[str] = None,
+) -> Tuple[MIMEMultipart, str]:
+    """The message every Procwise send builds: HTML body, attachments, Message-ID, Date.
+
+    Returns ``(message, message_id)``. Shared by supplier email and emails to colleagues,
+    so both leave in the same shape."""
+
+    msg = MIMEMultipart()
+    msg["Subject"] = subject
+    msg["From"] = sender
+    recipient_list = [recipients] if isinstance(recipients, str) else list(recipients)
+    msg["To"] = ", ".join(recipient_list)
+    msg.attach(MIMEText(body, "html"))
+
+    generated_message_id = message_id or make_msgid(domain=_sender_domain(sender))
+    msg["Message-ID"] = generated_message_id
+    msg["Date"] = formatdate(localtime=True)
+
+    if headers:
+        for key, value in headers.items():
+            if key and value is not None:
+                msg[str(key)] = str(value)
+
+    for content, filename in attachments or []:
+        part = MIMEBase("application", "octet-stream")
+        part.set_payload(content)
+        encoders.encode_base64(part)
+        part.add_header("Content-Disposition", f"attachment; filename=\"{filename}\"")
+        msg.attach(part)
+    return msg, generated_message_id
 
 
 class EmailService:
@@ -62,44 +113,48 @@ class EmailService:
         *,
         headers: Optional[Dict[str, str]] = None,
         message_id: Optional[str] = None,
+        company_mailbox: bool = False,
+        decision: Any = None,
     ) -> EmailSendResult:
         """Send an email using SMTP credentials configured in settings.
 
         Attachments should be provided as a list of ``(content, filename)`` tuples.
         ``headers`` allows callers to inject additional RFC-2822 headers such as
         ``X-Procwise-RFQ-ID`` while ``message_id`` can be provided to guarantee a
-        stable value across retries.
+        stable value across retries. ``company_mailbox=True`` (supplier email from the
+        dispatch service only) sends via the company's Microsoft 365 mailbox, or holds.
         """
 
-        msg = MIMEMultipart()
-        msg["Subject"] = subject
-        msg["From"] = sender
-        if isinstance(recipients, str):
-            recipient_list = [recipients]
-        else:
-            recipient_list = list(recipients)
-        msg["To"] = ", ".join(recipient_list)
-        msg.attach(MIMEText(body, "html"))
+        recipient_list = [recipients] if isinstance(recipients, str) else list(recipients)
+        msg, generated_message_id = build_mime(
+            subject, body, recipient_list, sender, attachments,
+            headers=headers, message_id=message_id,
+        )
 
-        generated_message_id = message_id or make_msgid(domain=self._infer_domain(sender))
-        msg["Message-ID"] = generated_message_id
-        msg["Date"] = formatdate(localtime=True)
-
-        if headers:
-            for key, value in headers.items():
-                if key and value is not None:
-                    msg[str(key)] = str(value)
-
-        if attachments:
-            for content, filename in attachments:
-                part = MIMEBase("application", "octet-stream")
-                part.set_payload(content)
-                encoders.encode_base64(part)
-                part.add_header(
-                    "Content-Disposition",
-                    f"attachment; filename=\"{filename}\"",
-                )
-                msg.attach(part)
+        if company_mailbox:
+            from services.mail_m365 import sending as _m365
+            try:
+                # The caller may already have decided (the dispatch rules need the same
+                # answer this send acts on); otherwise decide here.
+                decision = decision if decision is not None else _m365.decide()
+            except Exception as exc:  # cannot tell whether a company mailbox applies: hold, never guess
+                self.logger.error("Could not decide the mail transport: %s", exc)
+                return EmailSendResult(False, generated_message_id,
+                                       held_reason=_m365.HELD_UNCHECKED)
+            if decision.kind == "held":
+                return EmailSendResult(False, generated_message_id, held_reason=decision.reason)
+            if decision.kind == "graph":
+                del msg["From"]
+                msg["From"] = decision.binding.mailbox_address
+                try:
+                    _m365.send_via_graph(decision.binding, msg.as_bytes())
+                except Exception as exc:
+                    # The raw cause is for us; the buyer gets a sentence they can act on.
+                    self.logger.error("Microsoft 365 send from %s failed: %s",
+                                      decision.binding.mailbox_address, exc)
+                    return EmailSendResult(False, generated_message_id, transport="graph",
+                                           held_reason=_m365.held_reason_for(exc))
+                return EmailSendResult(True, generated_message_id, transport="graph")
 
         try:
             smtp_username, smtp_password = self._fetch_smtp_credentials()
@@ -355,12 +410,7 @@ class EmailService:
     def _infer_domain(sender: str) -> Optional[str]:
         """Best-effort extraction of the sender's domain for Message-ID generation."""
 
-        if not sender:
-            return None
-        if "@" not in sender:
-            return None
-        domain = sender.split("@", 1)[-1].strip()
-        return domain or None
+        return _sender_domain(sender)
 
     def _secrets_manager_client(self, region: str):
         """Create a Secrets Manager client, assuming a role when configured."""

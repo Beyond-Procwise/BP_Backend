@@ -31,7 +31,7 @@ from .email_dispatch_chain_store import (
 from src.services import email_dispatch_guard
 from src.services.agent_actions import record_action_or_fail
 from src.services.draft_hydration import DRAFT_COLUMNS, hydrate_draft, resolve_effective_content
-from .email_service import EmailService
+from .email_service import EmailSendResult, EmailService
 from .email_thread_store import (
     DEFAULT_THREAD_TABLE,
     ensure_thread_table,
@@ -472,17 +472,36 @@ class EmailDispatchService:
                     )
                 headers[key] = str(value)
 
-            send_result = self.email_service.send_email(
-                subject,
-                body,
-                recipient_list,
-                sender_email,
-                attachments,
-                headers=headers,
-            )
+            policy_refusal, mail_decision = self._email_policy_refusal(recipient_list, body, attachments)
+            if policy_refusal:
+                send_result = EmailSendResult(False, None, held_reason=policy_refusal)
+            else:
+                send_result = self.email_service.send_email(
+                    subject,
+                    body,
+                    recipient_list,
+                    sender_email,
+                    attachments,
+                    headers=headers,
+                    company_mailbox=True,
+                    **({"decision": mail_decision} if mail_decision is not None else {}),
+                )
 
             sent = send_result.success
             message_id = send_result.message_id
+
+            held_reason = getattr(send_result, "held_reason", None)
+            if sent:
+                dispatch_payload.pop("held_reason", None)
+            if held_reason:
+                dispatch_payload["held_reason"] = held_reason
+                try:
+                    from src.services.agent_actions import record_action
+                    record_action(phase="dispatch", action_type="send_held", agent="EmailDispatch",
+                                  status="error", summary=held_reason,
+                                  details={"draft_id": draft_row[0] if draft_row else None})
+                except Exception:  # audit never breaks dispatch
+                    logger.debug("send_held audit failed", exc_info=True)
 
             self._update_draft_status(
                 conn,
@@ -1101,6 +1120,50 @@ class EmailDispatchService:
             Body=data,
             ContentType=content_type or "application/octet-stream",
         )
+
+    def _email_policy_refusal(self, recipients: Sequence[str], body: str,
+                              attachments: Optional[List[Tuple[bytes, str]]]
+                              ) -> Tuple[Optional[str], Any]:
+        """(why the company's email policy stops this supplier email or None, the mail route).
+
+        The route is decided once here and handed to send_email, so the rules and the send
+        always act on the same answer. Customers that never connected Microsoft 365 get no
+        rules and no policy read. Sending through the company mailbox gets the recipient and
+        size rules; the Procwise-address fallback (``on_disconnect``) gets the recipient
+        rules. Held routes are left to send_email, which holds with its own reason.
+        The supplier lookup uses its own short-lived connection, never the dispatch
+        transaction, so a failed lookup cannot abort the draft update that records the hold."""
+        from services import mail_policy, mail_rules, supplier_contact
+        from services.mail_m365 import sending
+
+        try:
+            decision = sending.decide()
+        except Exception:  # noqa: BLE001 - cannot tell the route: hold, never guess
+            self.logger.exception("could not decide the mail transport")
+            return sending.HELD_UNCHECKED, None
+        if decision.kind == "graph":
+            check_size = True
+        elif decision.kind == "ses" and decision.fallback:
+            check_size = False
+        else:
+            return None, decision
+        try:
+            from services.db import get_conn
+
+            policy = mail_policy.load()
+            size = 0
+            if check_size:
+                raw_bytes = len((body or "").encode("utf-8")) + sum(len(a[0]) for a in attachments or [])
+                size = raw_bytes * 4 // 3 + 10_000  # Graph's limit is on the base64 MIME
+            with get_conn() as lookup_conn:
+                verdict = mail_rules.check_supplier_email(
+                    list(recipients), size, policy,
+                    is_supplier=lambda a: supplier_contact.is_known_supplier_email(lookup_conn, a),
+                    size_limit=sending.MAX_MIME_BYTES)
+        except Exception:  # noqa: BLE001 - an outage must never look like "no rules"
+            self.logger.exception("email policy could not be applied")
+            return "Your email policy could not be read; nothing was sent", decision
+        return (None if verdict.allowed else verdict.reason), decision
 
     def _load_attachments(self, draft: Dict[str, Any]) -> List[Tuple[bytes, str]]:
         """Stored attachments as (bytes, filename), ready for the MIME path.

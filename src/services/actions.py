@@ -153,6 +153,11 @@ ACTIONS: Dict[str, str] = {
     "style_pack.approve": "configure",
     "model.train": "configure",
     "mailbox.bind": "configure",
+    # Viewing how mail is configured and what was read is its own class, `inspect`, held only
+    # by Admin and Security reviewer. `read` is granted to every role, so it would not do.
+    "mailbox.view": "inspect",
+    "mail.internal.create": "write",
+    "mail.internal.approve": "write",
     # --- delegating ------------------------------------------------------
     "agent.create": "delegate",
     "agent.update": "delegate",

@@ -1,0 +1,548 @@
+# tests/services/mail_intake/test_safety.py
+"""The gate. Everything here fails closed: an unsure verdict quarantines.
+
+Nothing in this module may open, execute or expand its input. The macro test
+in particular must pass without the workbook ever being handed to openpyxl.
+"""
+import pathlib
+
+import pytest
+
+from src.services.mail_intake import safety, typing_
+from src.services.mail_intake.states import QuarantineReason
+
+FIXTURES = pathlib.Path("tests/fixtures/mail_intake")
+
+
+def _verdict(name, declared, filename=None, ceiling=safety.DEFAULT_SIZE_CEILING_BYTES):
+    content = (FIXTURES / name).read_bytes()
+    return safety.evaluate(
+        content,
+        declared_mime=declared,
+        detected_mime=typing_.detect(content),
+        filename=filename or name,
+        size_ceiling_bytes=ceiling,
+    )
+
+
+def test_clean_pdf_passes():
+    assert _verdict("clean.pdf", "application/pdf").ok
+
+
+def test_password_protected_pdf_quarantines():
+    verdict = _verdict("encrypted.pdf", "application/pdf")
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.ENCRYPTED
+
+
+def test_macro_workbook_quarantines():
+    verdict = _verdict(
+        "macro_workbook.xlsm",
+        "application/vnd.ms-excel.sheet.macroEnabled.12",
+    )
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.MACRO
+
+
+def test_password_protected_workbook_quarantines():
+    verdict = _verdict(
+        "encrypted_workbook.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.ENCRYPTED
+
+
+def test_document_skeleton_wrapped_around_a_payload_quarantines():
+    """Type detection alone is foolable, and this is the case that fools it.
+
+    The container holds a genuine minimal Word document AND an executable, so
+    it types as a Word document rather than an archive — passing a gate that
+    would have quarantined the identical payload arriving as a plain .zip.
+    """
+    verdict = _verdict(
+        "smuggling_document.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+    assert not verdict.ok
+    # EXECUTABLE, not ARCHIVE: a reviewer in the action centre needs to see
+    # what was found, not merely that something was.
+    assert verdict.reason is QuarantineReason.EXECUTABLE
+    assert verdict.detail["executable_kinds"], "the reviewer must learn what was found"
+
+
+def test_detail_names_the_content_kind_but_never_the_senders_filename():
+    """The audit record has to be useful AND safe.
+
+    A bare count tells a reviewer nothing actionable. The member's NAME is
+    sender-controlled text and would carry attacker-chosen strings into the
+    record a human reads. Byte-derived content kinds are both.
+    """
+    verdict = _verdict(
+        "smuggling_document.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+    blob = repr(verdict.detail)
+    assert "payload.exe" not in blob
+    assert "payload" not in blob
+    assert any("exec" in k or "dosexec" in k for k in verdict.detail["executable_kinds"])
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(b"#!/bin/sh\nrm -rf /\n", id="shell"),
+        pytest.param(b"#!/usr/bin/env python3\nimport os\n", id="python"),
+        pytest.param(b"@echo off\r\ndel /f /q C:\\*\r\n", id="batch"),
+        pytest.param(b"#!/usr/bin/perl\nprint 1;\n", id="perl"),
+        pytest.param(b"<?php system($_GET['c']); ?>\n", id="php"),
+        pytest.param(b"MZ\x90\x00" + b"\x00" * 256, id="pe-binary"),
+    ],
+)
+def test_smuggled_script_types_are_caught(payload):
+    """The executable MIME set must match what libmagic actually emits.
+
+    An earlier version listed `text/x-python` and `application/x-bat`. Neither
+    is a string libmagic produces, so a Python script and a batch file both
+    passed while the set looked complete. Each case here is one libmagic
+    verdict, pinned.
+    """
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("_rels/.rels", "<Relationships/>")
+        zf.writestr("word/document.xml", "<document/>")
+        zf.writestr("extra/thing", payload)
+    content = buf.getvalue()
+
+    verdict = safety.evaluate(
+        content,
+        declared_mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        detected_mime=typing_.detect(content),
+        filename="quote.docx",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.EXECUTABLE
+    assert verdict.detail["executable_kinds"]
+
+
+def test_real_elf_binary_is_caught():
+    """Synthetic stubs can sniff differently from real binaries, so use one."""
+    import io
+    import pathlib
+    import zipfile
+
+    elf = pathlib.Path("/bin/ls").read_bytes()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("_rels/.rels", "<Relationships/>")
+        zf.writestr("word/document.xml", "<document/>")
+        zf.writestr("extra/tool", elf)
+    content = buf.getvalue()
+
+    verdict = safety.evaluate(
+        content,
+        declared_mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        detected_mime=typing_.detect(content),
+        filename="quote.docx",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.EXECUTABLE
+
+
+def test_real_libreoffice_artifact_is_not_quarantined():
+    """Regression for a REAL false positive.
+
+    A genuine spreadsheet in this repo carries [trash]/*.dat — inert LibreOffice
+    padding. The first version of this rule quarantined it. One wrongly held
+    file in twelve is enough to make a review queue untrustworthy.
+    """
+    verdict = _verdict(
+        "libreoffice_trash.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    assert verdict.ok, f"real workbook wrongly quarantined as {verdict.reason}"
+
+
+def test_honestly_labelled_non_office_zip_reports_archive_not_deception():
+    """An EPUB sent as an EPUB is not a mismatch.
+
+    Type detection collapses every zip-family format it will not vouch for to
+    application/zip, so an honest sender would otherwise be reported as
+    TYPE_MISMATCH — which reads to a reviewer as deception that did not happen.
+    Both outcomes quarantine; only one of them is true.
+    """
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("mimetype", "application/epub+zip")
+        zf.writestr("META-INF/container.xml", "<container/>")
+        zf.writestr("OEBPS/content.opf", "<package/>")
+    content = buf.getvalue()
+
+    verdict = safety.evaluate(
+        content,
+        declared_mime="application/epub+zip",
+        detected_mime=typing_.detect(content),
+        filename="catalogue.epub",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.ARCHIVE
+
+
+def test_large_legitimate_worksheet_is_not_quarantined():
+    """A REAL false positive, reproduced.
+
+    `SpendIQ_UI_Verification_testdb.xlsx` in this repo contains worksheet parts
+    that exceed 8MB uncompressed at ordinary spreadsheet compression ratios. An
+    earlier per-member size cap quarantined it as ARCHIVE. Large is not the same
+    as hostile, and a rule that holds real spreadsheets teaches people to ignore
+    the queue.
+    """
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("_rels/.rels", "<Relationships/>")
+        zf.writestr("xl/workbook.xml", "<workbook/>")
+        # ~9MB of legitimate worksheet XML, well compressible like the real one.
+        zf.writestr(
+            "xl/worksheets/sheet1.xml",
+            b"<worksheet>" + b"<c r='A1'><v>1</v></c>" * 420000 + b"</worksheet>",
+        )
+    content = buf.getvalue()
+    verdict = safety.evaluate(
+        content,
+        declared_mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        detected_mime=typing_.detect(content),
+        filename="prices.xlsx",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert verdict.ok, f"large legitimate worksheet quarantined as {verdict.reason}"
+
+
+def test_a_member_lying_about_its_size_is_still_sniffed():
+    """Removing the size cap must not create a way to avoid inspection.
+
+    Reading is bounded by the read length, not by the member's declared size —
+    measured at 0.17ms and 53KB for a member declaring 200MB — so a payload
+    cannot dodge classification by claiming to be enormous.
+    """
+    import io
+    import pathlib
+    import zipfile
+
+    elf = pathlib.Path("/bin/ls").read_bytes()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("_rels/.rels", "<Relationships/>")
+        zf.writestr("word/document.xml", "<document/>")
+        zf.writestr("word/big.bin", elf + b"\x00" * (9 * 1024 * 1024))
+    content = buf.getvalue()
+    verdict = safety.evaluate(
+        content,
+        declared_mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        detected_mime=typing_.detect(content),
+        filename="quote.docx",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.EXECUTABLE
+
+
+def test_ordinary_workbook_is_not_falsely_flagged():
+    """The false-positive guard for both Office heuristics.
+
+    A macro or encryption detector that fires on ordinary workbooks would fill
+    the review queue with legitimate price lists, and a queue of false
+    positives is one people stop reading.
+    """
+    verdict = _verdict(
+        "clean_workbook.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    assert verdict.ok, f"clean workbook wrongly quarantined as {verdict.reason}"
+
+
+def test_zip_wearing_a_pdf_name_quarantines_on_mismatch():
+    verdict = _verdict("zip_named_quote.pdf", "application/pdf")
+    assert not verdict.ok
+    # Both readings are defensible; the gate must report the more specific one.
+    assert verdict.reason in (
+        QuarantineReason.TYPE_MISMATCH,
+        QuarantineReason.ARCHIVE,
+    )
+
+
+def test_archive_is_never_expanded():
+    content = (FIXTURES / "zip_named_quote.pdf").read_bytes()
+    verdict = safety.evaluate(
+        content,
+        declared_mime="application/zip",
+        detected_mime="application/zip",
+        filename="quotes.zip",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.ARCHIVE
+
+
+def test_oversize_quarantines():
+    verdict = _verdict("clean.pdf", "application/pdf", ceiling=10)
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.OVERSIZE
+
+
+def test_executable_quarantines_regardless_of_extension():
+    verdict = safety.evaluate(
+        b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 64,
+        declared_mime="application/pdf",
+        detected_mime="application/x-executable",
+        filename="quote.pdf",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.EXECUTABLE
+
+
+def test_shell_script_quarantines():
+    verdict = safety.evaluate(
+        b"#!/bin/sh\necho hi\n",
+        declared_mime="text/plain",
+        detected_mime="text/x-shellscript",
+        filename="notes.txt",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.EXECUTABLE
+
+
+def test_unknown_type_quarantines():
+    verdict = safety.evaluate(
+        b"\x00\x01\x02\x03",
+        declared_mime="application/pdf",
+        detected_mime="application/octet-stream",
+        filename="mystery.pdf",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.UNKNOWN_TYPE
+
+
+def test_benign_mislabel_passes():
+    content = (FIXTURES / "clean.pdf").read_bytes()
+    verdict = safety.evaluate(
+        content,
+        declared_mime="application/octet-stream",
+        detected_mime="application/pdf",
+        filename="quote.pdf",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert verdict.ok
+
+
+def test_detail_never_carries_sender_controlled_text():
+    """Aimed at a DATA-DEPENDENT detail path, deliberately.
+
+    An earlier version of this test asserted against the encrypted-PDF path,
+    whose detail is the hardcoded literal {"container": "pdf"} — an assertion
+    that could never fail whatever the gate did, and which therefore missed a
+    real leak. The detail is persisted to quarantine_detail and interpolated
+    into a log line, so anything sender-controlled reaching it lands in the
+    record a human reads.
+    """
+    content = (FIXTURES / "clean.pdf").read_bytes()
+    marker = "MARKER-INJECTED-BY-SENDER"
+    verdict = safety.evaluate(
+        content,
+        declared_mime=f'application/{marker}"><img src=x onerror=y>',
+        detected_mime=typing_.detect(content),
+        filename=f"{marker}.pdf",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok  # declared/detected disagree, so this quarantines
+    assert marker not in repr(verdict.detail)
+    assert "onerror" not in repr(verdict.detail)
+
+
+def test_payload_under_an_office_prefix_is_still_caught():
+    """The Critical finding: naming decided whether classification happened.
+
+    An earlier version selected candidates by top-level path segment, so a
+    payload placed under `word/` or `xl/` was never sniffed at all — renaming
+    one path segment defeated the whole control.
+    """
+    import io
+    import pathlib
+    import zipfile
+
+    elf = pathlib.Path("/bin/ls").read_bytes()
+    for location in ("word/payload.exe", "xl/media/payload.exe", "docProps/x.exe"):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("[Content_Types].xml", "<Types/>")
+            zf.writestr("_rels/.rels", "<Relationships/>")
+            zf.writestr("word/document.xml", "<document/>")
+            zf.writestr(location, elf)
+        content = buf.getvalue()
+        verdict = safety.evaluate(
+            content,
+            declared_mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            detected_mime=typing_.detect(content),
+            filename="quote.docx",
+            size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+        )
+        assert not verdict.ok, location
+        assert verdict.reason is QuarantineReason.EXECUTABLE, location
+
+
+def test_padding_past_the_inspection_limit_fails_closed():
+    """Exceeding the inspection limit must quarantine, not report silence.
+
+    An earlier version truncated the member list and recorded nothing, so
+    padding a container with decoys and putting the payload last produced a
+    clean verdict.
+    """
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("_rels/.rels", "<Relationships/>")
+        zf.writestr("word/document.xml", "<document/>")
+        for i in range(safety._MEMBER_SNIFF_LIMIT + 1):
+            zf.writestr(f"pad/{i:04d}.dat", b"inert")
+    content = buf.getvalue()
+    verdict = safety.evaluate(
+        content,
+        declared_mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        detected_mime=typing_.detect(content),
+        filename="quote.docx",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.ARCHIVE
+    assert verdict.detail["truncated"] is True
+
+
+def test_archive_nested_inside_a_document_is_caught():
+    """"Archives go to a human" must not be defeated by wrapping."""
+    import io
+    import zipfile
+
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, "w") as zf:
+        zf.writestr("evil.txt", "payload")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("_rels/.rels", "<Relationships/>")
+        zf.writestr("word/document.xml", "<document/>")
+        zf.writestr("word/inner.zip", inner.getvalue())
+    content = buf.getvalue()
+    verdict = safety.evaluate(
+        content,
+        declared_mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        detected_mime=typing_.detect(content),
+        filename="quote.docx",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.ARCHIVE
+    assert verdict.detail["archive_kinds"]
+
+
+@pytest.mark.parametrize(
+    "mime",
+    [
+        "application/x-msi",
+        "application/vnd.ms-cab-compressed",
+        "application/x-ms-shortcut",
+        "application/x-iso9660-image",
+    ],
+)
+def test_named_but_unexpected_types_do_not_clear(mime):
+    """The tail allow-lists. Dodging every named hazard is not being a document.
+
+    An MSI is an installer and a .lnk is a command launcher; both were cleared
+    by the previous default-allow tail whenever the sender declared the true
+    type, because neither appears in the hazard lists.
+    """
+    verdict = safety.evaluate(
+        b"arbitrary bytes",
+        declared_mime=mime,
+        detected_mime=mime,
+        filename="quote.docx",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.UNKNOWN_TYPE
+
+
+# -- real-corpus sweep ---------------------------------------------------
+#
+# Fixtures test what the author imagined; real files test what exists. This
+# sweep has now caught three false positives that the fixture suite could not
+# see — a LibreOffice [trash] artifact, an 8MB worksheet part, and a 19%
+# misdetection rate on real Word documents. It belongs in the suite, not in a
+# scratch script.
+import glob
+
+
+def _repo_office_files():
+    root = "/home/muthu/PycharmProjects/BP_Backend"
+    found = []
+    for pattern in ("**/*.xlsx", "**/*.docx"):
+        found.extend(glob.glob(f"{root}/{pattern}", recursive=True))
+    # Exclude the virtualenv and any worktree copies of this repo.
+    return sorted(
+        f for f in set(found) if "/venv/" not in f and "/.claude/worktrees/" not in f
+    )
+
+
+@pytest.mark.integration
+def test_real_office_corpus_passes_the_gate():
+    """Every genuine Office file in this repo must clear the gate.
+
+    Marked `integration` because it depends on files outside the test tree; it
+    is skipped with `-m "not integration"`. Run it whenever the gate changes —
+    a false-positive rate here is the difference between a review queue people
+    use and one they learn to ignore.
+    """
+    files = _repo_office_files()
+    if not files:
+        pytest.skip("no real Office files available in this checkout")
+
+    declared = {
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }
+    held = []
+    for path in files:
+        content = pathlib.Path(path).read_bytes()
+        suffix = pathlib.Path(path).suffix.lower()
+        verdict = safety.evaluate(
+            content,
+            declared_mime=declared[suffix],
+            detected_mime=typing_.detect(content),
+            filename=pathlib.Path(path).name,
+            size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+        )
+        if not verdict.ok:
+            held.append(f"{pathlib.Path(path).name}: {verdict.reason} {verdict.detail}")
+
+    assert not held, "real Office files wrongly quarantined:\n" + "\n".join(held)

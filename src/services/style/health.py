@@ -32,13 +32,37 @@ from services.style.mailbox import (
     MailboxBinding,
     MailboxBindingRepository,
     PROVIDER_GRAPH,
+    ROLE_SEND_RECEIVE,
 )
 
 logger = logging.getLogger(__name__)
 
 
-def _default_probe(binding: MailboxBinding) -> str:
+def _probe_m365(binding: MailboxBinding) -> Optional[str]:
+    """Probe a company send_receive mailbox through the Microsoft 365 client.
+
+    Returns None (state left unchanged) when Microsoft 365 is not configured or connected:
+    that is our setup being absent, not the customer withdrawing access.
+    """
+
+    from services.mail_m365.receiving import _default_client_for
+
+    client_for = _default_client_for()
+    if client_for is None:
+        return None
+    try:
+        readable, _detail = client_for().can_read(binding.mailbox_address)
+    except MailboxUnreachable:
+        # Includes Throttled. A 429 or an outage is never grounds to deactivate.
+        return HEALTH_DEGRADED
+    return HEALTH_OK if readable else HEALTH_REVOKED
+
+
+def _default_probe(binding: MailboxBinding) -> Optional[str]:
     """Read one message from the bound mailbox and report the outcome."""
+
+    if binding.role == ROLE_SEND_RECEIVE:
+        return _probe_m365(binding)
 
     if binding.provider != PROVIDER_GRAPH:
         # IMAP and Gmail bindings have no reader yet. Reporting DEGRADED rather than OK is
@@ -67,7 +91,7 @@ def check_binding(
     binding: MailboxBinding,
     *,
     repo: Optional[MailboxBindingRepository] = None,
-    probe: Optional[Callable[[MailboxBinding], str]] = None,
+    probe: Optional[Callable[[MailboxBinding], Optional[str]]] = None,
 ) -> str:
     """Probe one binding and record the result. Returns the new health state."""
 
@@ -80,6 +104,10 @@ def check_binding(
         logger.exception("Health probe raised for binding %s", binding.binding_id)
         state = HEALTH_DEGRADED
 
+    if state is None:
+        # The probe could not run at all (Microsoft 365 not connected); change nothing.
+        return binding.health_state
+
     repo.record_health(binding.binding_id, state)
     if state == HEALTH_REVOKED:
         logger.warning(
@@ -87,13 +115,18 @@ def check_binding(
             "platform baseline with a visible flag",
             binding.binding_id, binding.mailbox_address, binding.user_ref,
         )
+        if binding.role == ROLE_SEND_RECEIVE:
+            # record_health already set is_active FALSE and audited, but it leaves
+            # is_default set. deactivate clears it, so sending holds mail instead of
+            # picking this mailbox as the default sender.
+            repo.deactivate(binding.binding_id, reason="access withdrawn in Microsoft 365")
     return state
 
 
 def check_all_bindings(
     *,
     repo: Optional[MailboxBindingRepository] = None,
-    probe: Optional[Callable[[MailboxBinding], str]] = None,
+    probe: Optional[Callable[[MailboxBinding], Optional[str]]] = None,
 ) -> Dict[str, int]:
     """Probe every active binding. Returns a tally by state."""
 
@@ -103,7 +136,8 @@ def check_all_bindings(
     tally = {HEALTH_OK: 0, HEALTH_DEGRADED: 0, HEALTH_REVOKED: 0}
     for binding in bindings:
         state = check_binding(binding, repo=repo, probe=probe)
-        tally[state] = tally.get(state, 0) + 1
+        if state is not None:
+            tally[state] = tally.get(state, 0) + 1
 
     if bindings:
         logger.info("Mailbox health check: %s", tally)

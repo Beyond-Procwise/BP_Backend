@@ -252,18 +252,28 @@ def _load_summary() -> dict:
     return summary
 
 
-def _send_email(*, to: list[str], subject: str, body: str, agent_nick=None) -> bool:
-    """The SES boundary, isolated so the digest is testable without a mail server.
+def _send_email(*, to: list[str], subject: str, body: str, agent_nick=None,
+                for_user: str = "") -> bool:
+    """The mail boundary, isolated so the digest is testable without a mail server.
 
     One message to all recipients rather than one each: this is a shared weekly summary,
     not a personalised notice, and N separate sends is N chances to half-deliver it.
+
+    ``mail_notices.notify`` decides the route: the Procwise address as before, or -- only
+    when the email policy allows it and every recipient is a colleague -- a pending email
+    for ``for_user`` to approve before it leaves the shared mailbox.
     """
+    from src.services.db import get_conn
     from src.services.email_service import EmailService
+    from services import mail_notices
     sender = getattr(getattr(agent_nick, "settings", None), "ses_default_sender", None) \
         or "noreply@procwise.co.uk"
-    result = EmailService(agent_nick).send_email(subject=subject, body=body,
-                                                 recipients=to, sender=sender)
-    return bool(getattr(result, "success", result))
+    out = mail_notices.notify(None, conn_factory=get_conn, for_user=for_user, recipients=to,
+                              subject=subject, body=body, source_ref="value_digest",
+                              email_service=EmailService(agent_nick), sender=sender)
+    if out["route"] == "pending_approval":
+        return "queued"  # truthy: accepted, but waiting for the user to approve
+    return bool(out.get("accepted"))
 
 
 def run_weekly_digest(agent_nick=None) -> int:
@@ -331,12 +341,18 @@ def run_weekly_digest(agent_nick=None) -> int:
         logger.info("value digest: nothing found or saved this week — not sending")
         return 0
     try:
-        if not _send_email(to=to, subject=digest["subject"], body=digest["body"],
-                           agent_nick=agent_nick):
+        for_user = principal.subject
+        sent = _send_email(to=to, subject=digest["subject"], body=digest["body"],
+                           agent_nick=agent_nick, for_user=for_user)
+        if not sent:
             logger.warning("value digest: not accepted for delivery")
             return 0
     except Exception:
         logger.exception("value digest: send failed")
         return 0
-    logger.info("value digest sent to %s: %s", ", ".join(to), digest["subject"])
+    if sent == "queued":
+        logger.info("value digest queued for approval (not yet sent) for %s: %s",
+                    for_user, digest["subject"])
+    else:
+        logger.info("value digest sent to %s: %s", ", ".join(to), digest["subject"])
     return 1

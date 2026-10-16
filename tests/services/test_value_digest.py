@@ -257,3 +257,47 @@ def test_a_dead_backend_never_escapes(monkeypatch):
         raise RuntimeError("DB unreachable")
     monkeypatch.setattr(vd, "_load_summary", _boom)
     assert vd.run_weekly_digest() == 0
+
+
+def _digest_env(monkeypatch):
+    from types import SimpleNamespace
+    from datetime import datetime as _dt, timezone as _tz
+    monkeypatch.setenv("VALUE_DIGEST_ENABLED", "1")
+    monkeypatch.setenv("VALUE_DIGEST_RECIPIENTS", "ap@example.com")
+    monkeypatch.setenv("VALUE_DIGEST_SENT_AS", "ann@example.com")
+    monkeypatch.setenv("SES_DEFAULT_SENDER", "noreply@example.com")
+    monkeypatch.setattr(vd.guardrail, "authorize",
+                        lambda *a, **kw: SimpleNamespace(allowed=True, reason=""))
+    fresh = _finding(found_at=_dt.now(_tz.utc).isoformat())
+    monkeypatch.setattr(vd, "_load_summary", lambda: _summary([fresh]))
+
+
+def test_log_says_queued_not_sent_when_awaiting_approval(monkeypatch, caplog):
+    import logging
+    _digest_env(monkeypatch)
+    monkeypatch.setattr(vd, "_send_email", lambda **kw: "queued")
+    with caplog.at_level(logging.INFO, logger=vd.logger.name):
+        assert vd.run_weekly_digest() == 1
+    text = " ".join(r.getMessage() for r in caplog.records)
+    assert "queued for approval" in text and "digest sent to" not in text
+
+
+def test_a_database_outage_does_not_stop_the_digest(monkeypatch):
+    from types import SimpleNamespace
+    import src.services.db as db
+    import src.services.email_service as es
+    _digest_env(monkeypatch)
+    sent = []
+
+    class FakeES:
+        def __init__(self, *a, **k): pass
+        def send_email(self, **kw):
+            sent.append(kw)
+            return SimpleNamespace(success=True)
+
+    def down():
+        raise RuntimeError("db down")
+    monkeypatch.setattr(db, "get_conn", down)
+    monkeypatch.setattr(es, "EmailService", FakeES)
+    assert vd.run_weekly_digest() == 1
+    assert len(sent) == 1 and sent[0]["recipients"] == ["ap@example.com"]

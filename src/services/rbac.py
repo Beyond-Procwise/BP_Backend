@@ -254,8 +254,15 @@ def effective_role(
         return fallback
 
     if str(rules.get("multiple_groups") or "highest_rank") == "highest_rank":
-        best = max(roles, key=lambda r: role_rank(r, policy_engine=policy_engine))
-        return best if role_rank(best, policy_engine=policy_engine) else fallback
+        ranks = {r: role_rank(r, policy_engine=policy_engine) for r in roles}
+        top = max(ranks.values())
+        if not top:
+            return fallback
+        # Roles can share a rank (SecurityReviewer ties Viewer). Group order on the token must
+        # not decide: prefer a role that is not the policy's fallback, then the lowest name.
+        fallbacks = {fallback, str(rules.get("unmapped_group_role") or ROLE_UNKNOWN)}
+        tied = sorted(r for r, k in ranks.items() if k == top)
+        return next((r for r in tied if r not in fallbacks), tied[0])
     candidate = roles[0]
     return candidate if role_rank(candidate, policy_engine=policy_engine) else fallback
 

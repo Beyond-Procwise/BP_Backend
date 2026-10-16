@@ -79,12 +79,16 @@ class GraphCredentials:
     client_secret: str
 
 
-def resolve_credentials(credential_ref: str, *, client=None) -> GraphCredentials:
+def resolve_credentials(credential_ref: str, *, client=None,
+                        tenant_id: Optional[str] = None) -> GraphCredentials:
     """Fetch client credentials from Secrets Manager.
 
     ``credential_ref`` is an ARN. It is never a token: the database refuses anything that
     does not look like a Secrets Manager ARN, so a secret cannot end up in an application
     table even by mistake.
+
+    ``tenant_id`` overrides the secret's own: with it, the secret need only hold
+    ``client_id`` and ``client_secret`` (the tenant comes from a customer's consent).
     """
 
     if not str(credential_ref or "").startswith("arn:aws:secretsmanager:"):
@@ -103,7 +107,7 @@ def resolve_credentials(credential_ref: str, *, client=None) -> GraphCredentials
     data = json.loads(raw) if isinstance(raw, str) else raw
     try:
         return GraphCredentials(
-            tenant_id=data["tenant_id"],
+            tenant_id=tenant_id or data["tenant_id"],
             client_id=data["client_id"],
             client_secret=data["client_secret"],
         )
@@ -146,6 +150,24 @@ class RequestsTransport:
         except Exception as exc:
             raise MailboxUnreachable(str(exc)) from exc
         return response.status_code, _safe_json(response)
+
+    def get_bytes(self, url: str, headers: Dict[str, str]) -> Tuple[int, bytes]:
+        """A raw (non-JSON) body, e.g. a message's MIME. A refused call is unreachable."""
+        try:
+            response = egress.get(url, purpose=egress.Purpose.MAILBOX,
+                                  headers=headers, timeout=self.timeout)
+            return response.status_code, response.content
+        except Exception as exc:
+            raise MailboxUnreachable(str(exc)) from exc
+
+    def post_body(self, url: str, headers: Dict[str, str], body: bytes) -> Tuple[int, Any]:
+        """POST a raw body (not form, not JSON)."""
+        try:
+            response = egress.post(url, purpose=egress.Purpose.MAILBOX,
+                                   headers=headers, data=body, timeout=self.timeout)
+            return response.status_code, _safe_json(response)
+        except Exception as exc:
+            raise MailboxUnreachable(str(exc)) from exc
 
 
 def _safe_json(response) -> Any:  # pragma: no cover - trivial
