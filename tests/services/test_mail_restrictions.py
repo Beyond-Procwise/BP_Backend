@@ -96,8 +96,9 @@ def test_titles_and_explanations_are_the_mock_up_words():
         "Replies to emails Procwise sent, and mail from known suppliers. Other mail in the "
         "shared inbox is not opened.")
     assert r["on_disconnect"]["title"] == "If the connection breaks, emails are held"
-    assert r["on_disconnect"]["explanation"] == \
-        "They never go out from the Procwise address instead. You are alerted."
+    # F4: nothing alerts anyone; a held email is recorded in the activity log.
+    assert "alerted" not in r["on_disconnect"]["explanation"]
+    assert "activity log" in r["on_disconnect"]["explanation"]
 
 
 def test_the_group_name_comes_from_the_policy():
@@ -475,3 +476,45 @@ def test_build_with_unreadable_mailboxes_is_not_proven():
     items = mr.build(None, provider=FakeProvider(), policy=_policy(), now=NOW, mailboxes=None,
                      proof=FakeProvider().proof)
     assert _by_id(items)["mailbox_scope"]["status"] == "not_proven"
+
+
+# ---- final review F4: a wider choice is named in the title, and counted ------------------
+
+@pytest.mark.parametrize("field,value,item,title,wider", [
+    ("read_scope", "whole_inbox", "read_scope", "Every message in the shared inbox is read", True),
+    ("on_disconnect", "procwise_address", "on_disconnect",
+     "If the connection breaks, emails go from the Procwise address", True),
+    ("external_recipients", "any", "external_suppliers_only",
+     "Emails outside the company can go to any address", True),
+    ("access_level", "read_send_change", "access_level",
+     "Access your IT grants: read, send and change", True),
+    ("internal_send", "off", "internal_approval", "Emails to colleagues are switched off", False),
+])
+def test_the_title_says_what_the_chosen_option_does(field, value, item, title, wider):
+    items = _build(policy=_policy(**{field: value}))
+    r = _by_id(items)
+    assert r[item]["title"] == title
+    assert r[item]["status"] == "in_force"
+    assert r[item]["evidence"][0]["result"] == "chosen"
+    narrow_titles = {i["title"] for i in _build()}
+    assert r[item]["title"] not in narrow_titles
+    s = mr.summary(items)
+    assert s["total"] == 8 and s["wider"] == (1 if wider else 0)
+
+
+def test_the_narrow_choices_count_no_wider_lines():
+    assert mr.summary(_build()) == {"in_force": 8, "total": 8, "wider": 0}
+
+
+def test_evidence_report_names_the_wider_choices():
+    items = _build(policy=_policy(read_scope="whole_inbox", on_disconnect="procwise_address"))
+    html = mr.evidence_html(items, _policy(read_scope="whole_inbox"), [], [],
+                            generated_at=NOW, generated_by="a@cust.com")
+    assert "2 of them are set wider than the strictest option" in html
+    assert "Every message in the shared inbox is read" in html
+    assert "Only replies and supplier mail are read" not in html
+
+
+def test_evidence_report_without_wider_choices_says_all_in_force():
+    html = mr.evidence_html(_build(), _policy(), [], [], generated_at=NOW, generated_by="a@cust.com")
+    assert "8 of 8 restrictions in force." in html and "wider" not in html

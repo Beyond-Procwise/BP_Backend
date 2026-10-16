@@ -39,7 +39,8 @@ _TEXT = {
         "Procwise’s own code refuses every other action."),
     "access_level": (
         "Access your IT grants: read and send only",
-        "Granted by your IT as read-only + send."),
+        "Your policy has the setup script grant read (Mail.Read) and send only. Procwise does "
+        "not check what your IT actually ran."),
     "internal_approval": (
         "Emails to colleagues need the user’s approval",
         "Forwards, internal replies and Procwise’s own notices wait until the person who wrote "
@@ -53,7 +54,9 @@ _TEXT = {
         "shared inbox is not opened."),
     "on_disconnect": (
         "If the connection breaks, emails are held",
-        "They never go out from the Procwise address instead. You are alerted."),
+        "Once your company has a mailbox set up, emails wait while it cannot be used; they do "
+        "not go out from the Procwise address instead. Each held email is recorded in the "
+        "activity log with the reason; no separate alert is sent."),
 }
 
 # When a provider or code check is not in force, the success sentence above would be
@@ -75,18 +78,31 @@ _NOT_IN_FORCE_TEXT = {
         "confirmed.",
 }
 
-# (id, policy field, the narrow value, what the screen says when the admin chose otherwise)
+# (id, policy field, the narrow value, wider?, title and explanation when the admin chose
+# otherwise). The title then says what the chosen option does, never the narrow guarantee.
+# "wider?" is False where the other choice is stricter (emails to colleagues switched off).
 _POLICY_ITEMS = [
-    ("access_level", "access_level", "read_send",
-     "Your policy lets your IT grant read, send and change."),
-    ("internal_approval", "internal_send", "with_user_approval",
-     "Your policy switches emails to colleagues off, so none are sent."),
-    ("external_suppliers_only", "external_recipients", "known_suppliers_only",
-     "Your policy allows any outside address."),
-    ("read_scope", "read_scope", "replies_and_suppliers",
-     "Your policy lets Procwise read the whole shared inbox."),
-    ("on_disconnect", "on_disconnect", "hold",
-     "Your policy sends from the Procwise address if the connection breaks."),
+    ("access_level", "access_level", "read_send", True,
+     "Access your IT grants: read, send and change",
+     "Your policy lets your IT grant read, send and change (Mail.ReadWrite), so Microsoft "
+     "would let Procwise change mail in the chosen mailboxes. Procwise’s own code still only "
+     "reads and sends. Procwise does not check what your IT actually ran."),
+    ("internal_approval", "internal_send", "with_user_approval", False,
+     "Emails to colleagues are switched off",
+     "Your policy switches emails to colleagues off, so none are sent from the company "
+     "mailbox. Procwise’s own notices go from the Procwise address."),
+    ("external_suppliers_only", "external_recipients", "known_suppliers_only", True,
+     "Emails outside the company can go to any address",
+     "Your policy allows any outside address, not only known suppliers."),
+    ("read_scope", "read_scope", "replies_and_suppliers", True,
+     "Every message in the shared inbox is read",
+     "Your policy lets Procwise read the whole shared inbox, not only replies and supplier "
+     "mail."),
+    ("on_disconnect", "on_disconnect", "hold", True,
+     "If the connection breaks, emails go from the Procwise address",
+     "Your policy sends from the Procwise address if the connection breaks, the mailbox is "
+     "switched off or its access is withdrawn. While a mailbox is only temporarily "
+     "unavailable, emails are still held."),
 ]
 
 SETTING_LABELS = {
@@ -257,7 +273,7 @@ def _actions_limited(now: datetime) -> Dict[str, Any]:
 
 def _policy_items(policy: Any, now: datetime) -> List[Dict[str, Any]]:
     out = []
-    for rid, field, narrow, wider in _POLICY_ITEMS:
+    for rid, field, narrow, is_wider, other_title, other_text in _POLICY_ITEMS:
         if policy is None:
             ev = [{"check": "Email policy", "answer": "could not be read", "result": "unknown",
                    "at": now.isoformat()}]
@@ -270,8 +286,18 @@ def _policy_items(policy: Any, now: datetime) -> List[Dict[str, Any]]:
                "answer": setting_words(field, value), "result": "pass" if on else "chosen",
                "at": now.isoformat()}]
         out.append(_item(rid, "policy", IN_FORCE, ev, last_checked_at=now,
-                         explanation=None if on else wider))
+                         title=None if on else other_title,
+                         explanation=None if on else other_text))
     return out
+
+
+_WIDER_WHEN_CHOSEN = {item[0] for item in _POLICY_ITEMS if item[3]}
+
+
+def _is_wider(item: dict) -> bool:
+    """A policy line where the admin chose the wider option (its evidence says "chosen")."""
+    return (item.get("id") in _WIDER_WHEN_CHOSEN
+            and any(e.get("result") == "chosen" for e in item.get("evidence") or []))
 
 
 _ASK = object()   # "not given: ask the provider"
@@ -301,8 +327,11 @@ def build(conn: Any, *, provider: Any, policy: Any, now: datetime,
 
 
 def summary(restrictions: Iterable[dict]) -> Dict[str, int]:
+    """``in_force`` counts lines applied as set; ``wider`` how many of those are policy
+    lines where the admin chose the wider option (their titles say what they allow)."""
     items = list(restrictions)
-    return {"in_force": sum(1 for i in items if i["status"] == IN_FORCE), "total": len(items)}
+    return {"in_force": sum(1 for i in items if i["status"] == IN_FORCE), "total": len(items),
+            "wider": sum(1 for i in items if _is_wider(i))}
 
 
 # ---- the evidence report ----
@@ -348,7 +377,9 @@ def evidence_html(restrictions: List[dict], policy: Any, mailboxes: List[dict],
         f"<title>Email restrictions — evidence report</title><style>{_CSS}</style></head><body>",
         "<h1>Email restrictions — evidence report</h1>",
         f"<p class='meta'>Generated {_e(_date(generated_at))} by {_e(generated_by)}. "
-        f"{s['in_force']} of {s['total']} restrictions in force.</p>",
+        f"{s['in_force']} of {s['total']} restrictions in force"
+        + (f" as set; {s['wider']} of them are set wider than the strictest option, and "
+           f"their titles below say what they allow.</p>" if s["wider"] else ".</p>"),
         "<h2>Restrictions</h2>",
     ]
     for r in restrictions:
