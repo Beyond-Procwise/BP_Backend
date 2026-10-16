@@ -94,7 +94,8 @@ class FakeStore:
 
 @pytest.fixture
 def policy(monkeypatch):
-    p = SimpleNamespace(internal_send="with_user_approval", company_domains=("yourcompany.com",))
+    p = SimpleNamespace(internal_send="with_user_approval", notices_from_mailbox="with_user_approval",
+                        company_domains=("yourcompany.com",))
     loads = []
 
     def load(conn=None):
@@ -271,6 +272,22 @@ def test_policy_is_read_again_at_approval(svc, policy):
     before = len(policy.loads)
     svc.approve_and_send(e["internal_email_id"], approver="b@yourcompany.com")
     assert len(policy.loads) == before + 1
+
+
+def test_a_notice_is_rechecked_against_the_notices_switch_at_approval(svc, policy):
+    """F2: a queued notice needs notices_from_mailbox on at approval, not only internal_send."""
+    e = _new(svc, kind="notice")
+    policy.notices_from_mailbox = "off"
+    r = _refused(svc.approve_and_send, e["internal_email_id"], approver="b@yourcompany.com")
+    assert r.code == "policy_off"
+    assert r.message == "Notices from the company mailbox are switched off in your email policy"
+    assert svc.provider.sent == [] and svc.store.rows[e["internal_email_id"]]["status"] == "pending"
+
+
+def test_the_notices_switch_does_not_govern_other_colleague_emails(svc, policy):
+    e = _new(svc, kind="forward")
+    policy.notices_from_mailbox = "off"
+    assert svc.approve_and_send(e["internal_email_id"], approver="b@yourcompany.com")["status"] == "sent"
 
 
 def test_recipient_no_longer_inside_the_company_at_approval(svc, policy):

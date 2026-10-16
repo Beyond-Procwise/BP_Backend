@@ -15,8 +15,9 @@ class FakeSES:
         return SimpleNamespace(success=True)
 
 
-def _policy(mode="with_user_approval"):
-    return SimpleNamespace(notices_from_mailbox=mode, company_domains=["yourcompany.com"])
+def _policy(mode="with_user_approval", internal_send="with_user_approval"):
+    return SimpleNamespace(notices_from_mailbox=mode, internal_send=internal_send,
+                           company_domains=["yourcompany.com"])
 
 
 @pytest.fixture
@@ -111,3 +112,15 @@ def test_database_down_still_sends_from_procwise(world):
                               recipients=["ann@yourcompany.com"], subject="s", body="b",
                               source_ref="d", email_service=ses)
     assert out["route"] == "procwise_address" and len(ses.calls) == 1
+
+
+def test_colleague_emails_off_sends_notices_from_procwise(world, caplog):
+    """F2: notices queue as emails to colleagues, which internal_send=off refuses; the
+    notice must go from the Procwise address, decided up front, not lost or queued."""
+    import logging
+    world.policy = _policy("with_user_approval", internal_send="off")
+    ses = FakeSES()
+    with caplog.at_level(logging.INFO, logger=mail_notices.logger.name):
+        out = _go(ses)
+    assert out["route"] == "procwise_address" and len(ses.calls) == 1 and not world.created
+    assert any("emails to colleagues are switched off" in r.getMessage() for r in caplog.records)

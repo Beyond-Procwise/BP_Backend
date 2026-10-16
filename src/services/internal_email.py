@@ -4,8 +4,9 @@ person who wrote them approves.
 Nothing here sends on creation. ``approve_and_send`` is the only way out, and it checks,
 at that moment and in this order: the email exists and is still pending, the approver is
 its author (by the email on their sign-in, any case), the stored content is the content
-that was hashed, the email policy still allows emails to colleagues and every recipient is
-still inside the company, and the company's default shared mailbox can send. Only then is
+that was hashed, the email policy still allows emails to colleagues (and, for a queued
+product notice, notices from the company mailbox) and every recipient is still inside the
+company, and the company's default shared mailbox can send. Only then is
 the row claimed -- a conditional ``pending -> approved`` update, so two approvals at once
 cannot both send -- and the email leaves from the default shared mailbox.
 
@@ -31,6 +32,7 @@ KINDS = ("forward", "reply", "notice")
 
 _NOT_AUTHOR = "Only the person who wrote this email can approve it"
 _POLICY_OFF = "Emails to colleagues are switched off in your email policy"
+_NOTICES_OFF = "Notices from the company mailbox are switched off in your email policy"
 _POLICY_UNREADABLE = "Your email policy could not be read, so nothing was sent"
 _OUTSIDE = "{addr} is outside your company. Use the normal supplier email instead."
 _NOT_ADDRESS = "'{raw}' is not a single email address"
@@ -285,6 +287,9 @@ def approve_and_send(conn, internal_email_id: int, *, approver: str, provider=No
     policy = _load_policy()
     if policy.internal_send != "with_user_approval":
         raise InternalEmailRefused("policy_off", _POLICY_OFF)
+    # A queued product notice also needs its own switch to still be on.
+    if row.get("kind") == "notice" and policy.notices_from_mailbox != "with_user_approval":
+        raise InternalEmailRefused("policy_off", _NOTICES_OFF)
     _colleagues(policy, row["recipients"])
 
     provider, binding, reason = _sending_mailbox(conn, provider)

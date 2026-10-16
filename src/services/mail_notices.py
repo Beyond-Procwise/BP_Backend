@@ -1,10 +1,11 @@
 """Product notices (the weekly value digest and similar): which address do they leave from?
 
 Today every notice leaves from the Procwise address. When the company's email policy says
-``notices_from_mailbox = with_user_approval``, the company mailbox is connected with a
+``notices_from_mailbox = with_user_approval`` and emails to colleagues are on
+(``internal_send = with_user_approval``), the company mailbox is connected with a
 default mailbox, and every recipient is a colleague, the notice is stored as a pending
 internal email for the user it is for, and goes out from the shared mailbox only once that
-user approves it. In every other case -- policy off, not connected, policy unreadable,
+user approves it. In every other case -- either switch off, not connected, policy unreadable,
 anyone outside the company, or anything going wrong while storing it -- the notice goes
 from the Procwise address exactly as before. A notice is never lost for want of a policy.
 
@@ -52,6 +53,12 @@ def _via_mailbox(conn, for_user, recipients, subject, body, source_ref):
     try:
         policy = mail_policy.load()
         if policy.notices_from_mailbox != "with_user_approval":
+            return None
+        # A queued notice is an email to a colleague; with those switched off it could
+        # never be stored or approved, so it goes from the Procwise address instead.
+        if policy.internal_send != "with_user_approval":
+            logger.info("notices from the company mailbox are on but emails to colleagues are "
+                        "switched off; this notice goes from the Procwise address")
             return None
         if not _all_internal(policy, recipients) or not _mailbox_ready(conn):
             return None
