@@ -57,7 +57,7 @@ def sent(monkeypatch):
     """Records every send that reached the transport."""
     calls: list[dict] = []
 
-    def _send(*, to, subject, body, agent_nick=None):
+    def _send(*, to, subject, body, agent_nick=None, for_user=None):
         calls.append({"to": to, "subject": subject, "body": body})
         return True
 
