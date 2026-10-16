@@ -25,6 +25,23 @@ def test_supplier_email_to_a_colleague_is_held():
     assert not v.allowed and "colleagues" in v.reason
 
 
+def test_colleague_on_supplier_email_with_colleague_emails_on_points_to_approval():
+    v = mail_rules.check_supplier_email(["finance@yourcompany.com"], 10,
+                                        P(internal_send="with_user_approval"),
+                                        is_supplier=sup, size_limit=LIM)
+    assert not v.allowed and "need your approval" in v.reason
+
+
+def test_colleague_on_supplier_email_with_colleague_emails_off_says_so():
+    """The reason must be the true one: with emails to colleagues switched off there is no
+    approval route, so 'needs your approval' would mislead."""
+    v = mail_rules.check_supplier_email(["finance@yourcompany.com"], 10, P(internal_send="off"),
+                                        is_supplier=sup, size_limit=LIM)
+    assert not v.allowed and "approval" not in v.reason
+    assert v.reason == ("Emails to colleagues are switched off in your email policy, so "
+                        "finance@yourcompany.com cannot be on this email")
+
+
 def test_unknown_external_is_held_when_suppliers_only():
     v = mail_rules.check_supplier_email(["someone@gmail.com"], 10, P(), is_supplier=sup, size_limit=LIM)
     assert not v.allowed and v.reason == "someone@gmail.com is not a known supplier"

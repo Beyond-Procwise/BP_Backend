@@ -38,7 +38,11 @@ def check_supplier_email(recipients: List[str], size_bytes: int, policy, *,
         if "@" not in addr or addr.startswith("@") or addr.endswith("@"):
             return Verdict(False, f"'{raw}' is not a single email address", False)
     kinds = [(bare_address(r), classify(r, policy, is_supplier=is_supplier)) for r in recipients]
-    if any(k == "internal" for _, k in kinds):
+    colleagues = [a for a, k in kinds if k == "internal"]
+    if colleagues:
+        if getattr(policy, "internal_send", "with_user_approval") != "with_user_approval":
+            return Verdict(False, f"Emails to colleagues are switched off in your email "
+                                  f"policy, so {colleagues[0]} cannot be on this email", False)
         return Verdict(False, "Emails to colleagues go through 'Send to a colleague' "
                               "and need your approval", False)
     if policy.external_recipients == "known_suppliers_only":
