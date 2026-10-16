@@ -18,7 +18,7 @@ the customer's mailbox. Graph paths used: `/users/{m}/mailFolders...`, `/users/{
 | `PUBLIC_BASE_URL` | The server's public **https** address. Microsoft returns the admin to `PUBLIC_BASE_URL/admin/integrations/mail/m365/callback` (after the approval page and again after the sign-in); a non-https value makes Connect fail. |
 | `APP_BASE_URL` | Optional. The screen's own address when the UI runs on a different origin from the API (the usual case). After Microsoft, the admin's browser lands on `APP_BASE_URL/?view=settings&mail=...`. Unset = `PUBLIC_BASE_URL`. |
 | `MAIL_STATE_SIGNING_KEY_ARN` | ARN of a secret holding 48 random bytes (at least 32) that signs the single-use consent and sign-in `state` (and derives the sign-in nonce). |
-| `M365_POLL_SECONDS` | Poll interval for connected mailboxes (default 120, minimum 30). |
+| `M365_POLL_SECONDS` | Fallback poll interval (default 120, minimum 30), used **only when the email policy cannot be read**. Normally the policy's `poll_seconds` (section 2b) decides. |
 | `M365_POLL` | `on` (default) or `off`; `off` stops the poll job being registered. The job is a no-op until Microsoft 365 is configured and a mailbox is connected. |
 | `M365_TRUSTED_ASSERTER` | Optional. Host whose `Authentication-Results` the poll job trusts for sender-auth verdicts. Unset (default) = verdict unknown; Graph delivers the message as the mailbox holds it and nothing vouches for it. |
 | `STYLE_MAILBOX_HEALTH_INTERVAL_MINUTES` | Existing health-check interval (default 60). Revocation is noticed within one interval. |
@@ -57,7 +57,9 @@ the other routes answer 503 "Microsoft 365 is not configured on this server."
 
 ## 2. Customer admin steps (Settings -> Integrations -> Email)
 
-Only users who may `mailbox.bind` (Admin) can use these routes.
+Only users who may `mailbox.bind` (Admin) can change anything here. Reading the status,
+the policy, the restrictions and the evidence PDF needs `mailbox.view` (Admin and Security
+reviewer).
 
 1. **Connect Microsoft 365.** The admin is sent to Microsoft's admin-approval page for
    "Procwise Mail". It lists *no* mail permissions (that is expected and is what to point a
@@ -72,28 +74,33 @@ Only users who may `mailbox.bind` (Admin) can use these routes.
    to the approval return is ignored as evidence: it is a URL parameter anyone can edit, and
    trusting it would let one customer's admin connect their Procwise to another customer's
    tenant. The admin then lands on `APP_BASE_URL/?view=settings&mail=connected`. Until a
-   default mailbox is chosen, supplier email is **held** (it does not go out from Procwise).
-2. In Exchange admin, create a **mail-enabled security group** called "Procwise Mailboxes" and
-   add each shared mailbox Procwise may use. Adding or removing a mailbox later = changing
-   this group.
+   default mailbox is chosen, supplier email is **held** when the policy's `on_disconnect` is
+   `hold` (the default); with `procwise_address` it goes from the Procwise address.
+2. In Exchange admin, create a **mail-enabled security group** with the name in the email
+   policy's `restriction_group` (default "Procwise Mailboxes") and add each shared mailbox
+   Procwise may use. Adding or removing a mailbox later = changing this group.
 3. Copy the script from the panel (`GET /admin/integrations/mail/m365/setup-script`, optional
    `?service_principal_object_id=<Object ID>`). Before running, set the two variables at the
    top: `$ServicePrincipalId` (Entra -> Enterprise applications -> Procwise Mail -> Object ID)
    and `$TestMailbox` (a shared mailbox in the group). It registers the service principal,
-   creates a management scope limited to the group, grants `Application Mail.Send` and
-   `Application Mail.ReadWrite` within that scope only, and ends with
-   `Test-ServicePrincipalAuthorization`.
+   creates a management scope limited to the group named in the policy's
+   `restriction_group`, grants `Application Mail.Send` plus, by the policy's `access_level`,
+   `Application Mail.Read` (`read_send`, the default) or `Application Mail.ReadWrite`
+   (`read_send_change`) within that scope only, and ends with
+   `Test-ServicePrincipalAuthorization`. Change the policy before copying the script, not
+   after running it: the script is made from the policy as it is when you copy it.
 4. **Wait up to 30 minutes** for Exchange to apply it.
 5. Add the shared mailbox in the panel with a **control mailbox** (normally the admin's own,
    not in the group). Procwise reads the shared mailbox, then tries the control mailbox and
    must be refused.
 6. Test-send (sends to the signed-in admin), then Make default.
 
-Routes (all under `/admin/integrations/mail`, all `mailbox.bind` except the callback):
+Routes (all under `/admin/integrations/mail`; reads are `mailbox.view`, everything else
+`mailbox.bind`, and the callback has no bearer token):
 
 | Route | Purpose |
 |---|---|
-| `GET ` | status (`canConfigure`) |
+| `GET ` | status (`canConfigure`); `mailbox.view` |
 | `POST /m365/connect` | returns `authorization_url` (login.microsoftonline.com/organizations/v2.0/adminconsent) |
 | `GET /m365/callback` | Microsoft's two redirects (approval, then sign-in `code`); no bearer token; trusts only the signed single-use `state` and the id_token it verifies itself |
 | `GET /m365/setup-script` | the PowerShell (plain text) |
@@ -126,7 +133,8 @@ Callback failures redirect to `?view=settings&mail_error=<code>` with a code fro
 set: `malformed`, `bad_signature`, `expired`, `reused` (state problems), `not_granted`,
 `bad_tenant`, `tenant_mismatch`, `access_denied`, `wrong_account` (the admin signed in to a
 different organisation from the one named on the approval return), `signin_failed` (the
-code could not be redeemed or the id_token failed verification), or `consent_failed` for
+code could not be redeemed or the id_token failed verification), `not_admin` (the person
+who signed in holds none of the four administrator roles in `wids`), or `consent_failed` for
 anything else. **`tenant_mismatch`**: a verified tenant different from the one already
 connected is refused; the admin must Disconnect first. A repeated callback with the same
 state (either step) is `reused`. Every refusal writes an audit row
@@ -135,11 +143,20 @@ the stage and that code, never the query text; the raw cause is in the server lo
 
 ### Sending behaviour (important to tell customers)
 
-- Only **supplier dispatch** uses the company mailbox. Procwise's own alerts, digests and
-  support mail stay on SES.
-- Once the company has test-sent from its mailbox, Procwise **never silently falls back to
-  SES**. If the mailbox is disconnected, removed, revoked or unhealthy, supplier email is
-  **held** (with the reason) until fixed. This was confirmed by the product owner.
+- **Supplier dispatch** uses the company mailbox. Emails to colleagues (section 2b) also
+  leave from it, after the author approves. Digests and product notices go from the
+  Procwise address (SES) unless the policy's `notices_from_mailbox` **and** `internal_send`
+  are both `with_user_approval`; then a notice to colleagues waits for the user's approval
+  and leaves from the mailbox (section 2b). Alerts about the email connection and support
+  mail always stay on SES.
+- What happens when the mailbox cannot be used is the policy's `on_disconnect`. With
+  `hold` (the default), while Microsoft 365 is connected or once the company has test-sent
+  from one of its mailboxes, supplier email is **held** (with the reason) while the mailbox
+  is disconnected, removed, revoked or without a default; it does not go out from SES
+  instead. (Connected once, then disconnected before any test send: SES, as before.) With `procwise_address`, those cases send from the
+  Procwise address (SES) instead. A **temporarily** unavailable (DEGRADED) mailbox, and an
+  unreadable policy, always hold. A held email is recorded in the activity log
+  (`action_type=send_held`); no separate alert is sent.
 - `GET /mail/sender` returns `{mode, address, can_send, reason, max_attachment_bytes}`: `ses`
   (never connected, or never test-sent), `m365` (sending from `address`), or `held`
   (`can_send: false`, with `reason`). Reasons are plain sentences for buyers (for example
@@ -153,11 +170,12 @@ the stage and that code, never the query text; the raw cause is in the server lo
   emails via upload sessions are a follow-up.
 - A customer that never connected Microsoft 365 is sent via SES **without the binding table's
   new columns being read**, so this feature cannot hold email on a database the migration
-  has not reached. The migrations (mail-intake x2, then `2026-10-15-m365-mailbox.sql`) are
-  still a hard deploy gate.
+  has not reached. The migrations (mail-intake x2, then `2026-10-15-m365-mailbox.sql`, then
+  `2026-10-16-email-settings.sql`) are still a hard deploy gate: without the email policy row
+  every connected customer's supplier email is held.
 - Health: `can_read` of the Inbox: 2xx -> OK; **403/404 -> REVOKED** (mailbox deactivated, drafts
   held); **401 (Microsoft rejected our token) -> DEGRADED, never REVOKED**; 429/5xx/network ->
-  DEGRADED. A successful Inbox poll (every `M365_POLL_SECONDS`) lifts an active DEGRADED
+  DEGRADED. A successful Inbox poll (every `poll_seconds` of the email policy) lifts an active DEGRADED
   mailbox back to OK, so one blip does not hold email for an hour; REVOKED is never lifted.
 - A REVOKED mailbox stays on the admin's list labelled "Access withdrawn in Microsoft 365"
   (with Remove only) until an admin removes it; the panel shows why email is held.
@@ -182,9 +200,9 @@ restricted". The defaults below come only from the seed migration
 | `external_recipients` | Emails outside the company. `known_suppliers_only` (anything else is held with the reason) or `any`. | `known_suppliers_only` |
 | `read_scope` | Which incoming mail is opened. `replies_and_suppliers` (replies to emails Procwise sent, and mail from known suppliers) or `whole_inbox`. | `replies_and_suppliers` |
 | `on_disconnect` | If the connection breaks. `hold` (emails wait) or `procwise_address` (send from the Procwise address). A temporary outage or unreadable policy always holds. | `hold` |
-| `access_level` | What your IT has granted in Microsoft: `read_send` or `read_send_change`. This is a statement shown on the Email page and in the evidence report, and it fills the PowerShell script; it does not change Microsoft's grant. | `read_send` |
+| `access_level` | What the setup script grants in Microsoft: `read_send` (Mail.Read + Mail.Send) or `read_send_change` (Mail.ReadWrite + Mail.Send). It fills the PowerShell script and is shown on the Email page and in the evidence report; it does not change a grant already made, and Procwise does not check what your IT actually ran. | `read_send` |
 | `notices_from_mailbox` | Procwise's own notices (digests, product notices) sent from the mailbox. `off` or `with_user_approval`. | `off` |
-| `poll_seconds` | How often the inbox is checked. A whole number, 60 to 3600 (send a JSON integer). | `120` |
+| `poll_seconds` | How often the inbox is checked. A whole number, 60 to 3600 (send a JSON integer). The poll job wakes every 60 s and reads this value each time, so a change applies within about a minute, no restart needed; the actual gap between polls is this value plus up to about a minute. `M365_POLL_SECONDS` is used only while the policy cannot be read. | `120` |
 | `restriction_group` | Name of the mail-enabled security group that limits Procwise (letters, numbers, spaces, `. _ -`, max 64). | `Procwise Mailboxes` |
 
 **Seed state refuses every save until a company domain exists.** With `internal_send` on (or
@@ -196,20 +214,29 @@ Emails to colleagues (`/mail/internal`): the author is the email on their own si
 never a field in the request. Only the author can approve, edit or decline; an Admin or
 another buyer who calls approve gets 403 `not_author`. The policy is re-checked at approve
 time: if `internal_send` has been switched off since, the approval is refused (422
-`policy_off`). Each address is classified by its lower-cased bare address, so
+`policy_off`); a queued notice is also refused (422 `policy_off`) if `notices_from_mailbox`
+has been switched off since. Each address is classified by its lower-cased bare address, so
 `" Finance <FINANCE@YourCompany.com>"` is internal when `yourcompany.com` is listed.
 
 `GET /admin/integrations/mail/restrictions` lists every restriction and how it is guaranteed
 (Microsoft enforces and we prove it; our own code enforces; or the policy says so), each
-`in_force`, `failed` or `not_proven`. `GET /admin/integrations/mail/evidence.pdf` is the same
+`in_force`, `failed` or `not_proven`. A policy line is `in_force` when the policy is applied
+as chosen; where the admin chose the wider option (for example `whole_inbox`) the line's
+title says what it allows ("Every message in the shared inbox is read"), and the summary's
+`wider` count and the PDF say how many lines are set wider. The mailbox-scope line needs a
+proof under 2 hours old; only Add or **Check again** on the mailbox renews it (the hourly
+health check reads the mailbox but not the control mailbox, so it does not), so the line
+turns `not_proven` two hours after the last check. `GET /admin/integrations/mail/evidence.pdf` is the same
 list, the policy and its history as a dated PDF (the download is audited). **Provider answers
 are cached for 120 seconds per company (a failed or unknown check for 5 seconds)**, so after
 changing a permission in Entra wait up to two minutes, or restart the service, before
 expecting a line to change.
 
-Digest and product notices are queued for approval only when `VALUE_DIGEST_SENT_AS` is a real
-user's sign-in email (they approve it like any email to a colleague). If it is anything else
-the notice is sent from the Procwise address as before. Alerts about the email connection
+Digest and product notices are queued for approval only when `notices_from_mailbox` and
+`internal_send` are both `with_user_approval`, the mailbox is connected with a default, every
+recipient is a colleague, and `VALUE_DIGEST_SENT_AS` is a real user's sign-in email (they
+approve it like any email to a colleague). In every other case the notice is sent from the
+Procwise address as before. Alerts about the email connection
 itself always come from the Procwise address.
 
 ## 2c. Security reviewer
@@ -286,16 +313,18 @@ Prerequisites: step 1 done on a server with an https `PUBLIC_BASE_URL`; one shar
   reason and nothing reaches Graph. Record the largest attachment that does send.
 - **(j) Revocation.** Remove Procwise Mail in Entra (or remove S from the group). Within one
   health interval (`STYLE_MAILBOX_HEALTH_INTERVAL_MINUTES`, default 60) the mailbox goes
-  REVOKED (403/404). A queued draft is **held**, not sent via SES. `GET /mail/sender` shows
-  `mode: held` with a reason.
+  REVOKED (403/404). With `on_disconnect` = `hold`, a queued draft is **held**, not sent via
+  SES, and `GET /mail/sender` shows `mode: held` with a reason. (With `procwise_address` it
+  goes from the Procwise address; check that too if the customer chose it.)
 - **(k) 401 vs revocation.** Temporarily break `M365_CLIENT_CERT_ARN`'s secret (a key whose
   certificate is not uploaded to the app); the next health check must give DEGRADED, **not**
   REVOKED, and the mailbox stays active. Restore the secret.
 - **(l) Tenant mismatch.** While connected, complete consent and sign-in from a second tenant
   -> redirect with `mail_error=tenant_mismatch`; the first connection is untouched.
   Disconnect, then connect the second tenant.
-- **(m) Disconnect.** `DELETE /admin/integrations/mail`: mailboxes deactivated; supplier email
-  is held (not SES) because the company had test-sent.
+- **(m) Disconnect.** `DELETE /admin/integrations/mail`: mailboxes deactivated; with
+  `on_disconnect` = `hold`, supplier email is held (not SES) because the company had
+  test-sent.
 
 Email settings part 1 additions (same tenant, same record-keeping):
 
@@ -312,7 +341,9 @@ Email settings part 1 additions (same tenant, same record-keeping):
   and open the Email page / `GET /restrictions`: the "no mail permissions" line is red
   (`failed`). Revoke it, wait again: green. Record both times.
 - **(q) Read scope.** With `read_scope` = `replies_and_suppliers`, send an unrelated internal
-  email to the shared mailbox. It is never downloaded; the poll log shows it skipped.
+  email to the shared mailbox. It is never downloaded; the server log (INFO) shows
+  `m365 intake skipped out-of-scope message <graph id> (binding <id>)` for it (no sender or
+  subject is logged).
 - **(r) Forward needs approval.** Forward a supplier email to a colleague: it waits in
   approvals; approve it as its author; it arrives from the shared mailbox. A second user (an
   Admin too) calling approve gets 403 and nothing is sent.
@@ -336,6 +367,11 @@ line as a block.
   send/hold (there is no sweeper), and also if recording a hold fails during a database outage.
   Look for old `approved` rows in `proc.bp_internal_email`.
 - A permission change can show stale for up to 120 seconds; there is no force-refresh.
+- The mailbox-scope restriction is not re-proven automatically; it shows `not_proven` two
+  hours after the last Add or Check again.
+- A message whose read-scope check fails (database or Microsoft hiccup) stops that pass of the
+  intake poll before it, and is retried every pass; there is no back-off, so one message that
+  can never be checked holds later mail in that mailbox and logs a warning every pass.
 - Several minor items are deferred in the build ledger (for example the evidence PDF's
   `access_level` wording needs the product owner's sign-off).
 

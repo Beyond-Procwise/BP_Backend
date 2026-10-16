@@ -57,9 +57,10 @@ _TEXT = {
         "shared inbox is not opened."),
     "on_disconnect": (
         "If the connection breaks, emails are held",
-        "Once your company has a mailbox set up, emails wait while it cannot be used; they do "
-        "not go out from the Procwise address instead. Each held email is recorded in the "
-        "activity log with the reason; no separate alert is sent."),
+        "While Microsoft 365 is connected, or once your company has sent a test email from its "
+        "mailbox, emails wait when the mailbox cannot be used; they do not go out from the "
+        "Procwise address instead. Each held email is recorded in the activity log with the "
+        "reason; no separate alert is sent."),
 }
 
 # When a provider or code check is not in force, the success sentence above would be
