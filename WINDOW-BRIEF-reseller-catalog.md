@@ -30,3 +30,30 @@
 - `2026-09-09_stated_permits.sql` has no re-run guard. Never run it twice.
 - Failing tests already present, not ours: governed_limits x2, policy_action_vocabulary x2, send_path_gate check_3.
 - Never bare `git stash`. Never push to `main`. Remove only worktrees you created.
+
+## Stage 3 candidates: what a reseller needs that is not built (review 2026-10-16)
+Judgement from the spec, the table list and a keyword search of the sell-side code, not a line-by-line audit. Re-check each item before designing it.
+
+**Quote correctness (build first)**
+1. Customer-specific and contract pricing: price lists, agreed prices, per-customer discounts. Nothing found; quotes price from list and cost with one company-wide corridor.
+2. Special bids and distributor deal registration: deal-specific, time-limited cost. No cost tier is tied to a deal or an expiry.
+3. Live stock and lead-time check when a quote is issued. Availability is stored but not re-checked.
+4. Bundles, kits and required add-ons. `requires` is distributor-asserted only and nothing enforces it on a quote.
+5. Recurring and licence items: terms, seats, renewals, co-terming. Check whether the code only mentions them or models them.
+6. Freight, installation and services as quote lines. Almost no handling found.
+
+**After a quote is won**
+7. Customer order, then purchase order to the distributor. The loop stops at the outcome. Build this after 1 and 2.
+8. Delivery, customer invoicing, credit notes and returns.
+9. Back-end rebates. A spec non-goal, so margin is front-end only and understated. Seam: `cost_basis` and the bitemporal shape.
+
+**Customer side**
+10. Customer credit check and per-customer payment terms. The 30-day default applies to everyone.
+11. Quote lifecycle: automatic expiry and re-quote, chasing quotes with no answer.
+
+**Data feeding it**
+12. Cost-tier and relation feed importers (also open item 3 above).
+13. Category classification: 0 of 4,845 history items resolve to a category, so per-category rules have nothing to work with.
+14. Matching yield (also open item 5 above).
+
+**Order proposed:** 1 and 2, then 7, then 3 and 10. Items 12 to 14 wait on real data from Nick.
