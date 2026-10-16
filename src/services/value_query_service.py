@@ -278,14 +278,21 @@ def _iso(value) -> Optional[str]:
 # The send
 # ---------------------------------------------------------------------------
 
-def _send_email(*, to: str, subject: str, body: str, agent_nick) -> bool:
-    """The SES boundary, isolated so the send path is testable without a mail server."""
+def _send_email(*, to: str, subject: str, body: str, agent_nick, for_user: str = "",
+                conn=None) -> bool:
+    """The mail boundary, isolated so the send path is testable without a mail server.
+
+    Routed through ``mail_notices.notify``: a query to a supplier is outside the company, so
+    it always leaves from the Procwise address; the shared-mailbox route only applies to
+    colleagues."""
     from src.services.email_service import EmailService
+    from services import mail_notices
     sender = getattr(getattr(agent_nick, "settings", None), "ses_default_sender", None) \
         or "noreply@procwise.co.uk"
-    result = EmailService(agent_nick).send_email(subject=subject, body=body,
-                                                 recipients=to, sender=sender)
-    return bool(getattr(result, "success", result))
+    out = mail_notices.notify(conn, for_user=for_user, recipients=[to], subject=subject,
+                              body=body, source_ref="value_query",
+                              email_service=EmailService(agent_nick), sender=sender)
+    return out["route"] == "pending_approval" or bool(out.get("accepted"))
 
 
 _STAMP_SQL = """
@@ -406,7 +413,8 @@ def _send(conn, finding_id: str, to: str, subject: str, body: str, agent_nick,
     if not gate.allowed:
         raise email_dispatch_guard.DispatchDenied(gate)
 
-    if not _send_email(to=to, subject=subject, body=body, agent_nick=agent_nick):
+    if not _send_email(to=to, subject=subject, body=body, agent_nick=agent_nick,
+                       for_user=str(getattr(principal, "subject", None) or ""), conn=conn):
         raise RuntimeError(f"the query to {to} was not accepted for delivery")
 
     sent_at = datetime.now(timezone.utc)
