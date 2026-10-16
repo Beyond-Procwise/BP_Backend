@@ -154,3 +154,158 @@ def test_real_unavailable_from_mail_policy_gives_503(real, monkeypatch):
         def __exit__(self, *a): return False
     monkeypatch.setattr(mp, "load", lambda conn=None: mp._build(*mp._fetch(Cur())[1:]))
     assert real.get(f"{B}/policy").status_code == 503
+
+
+# ---- restrictions and the evidence report ----
+
+class _NoConn:
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+
+class _Provider:
+    def prove(self, conn):
+        return [{"restriction": "no_mail_permissions", "check": "Mail permissions",
+                 "answer": "none", "result": "pass", "at": "2026-10-16T10:00:00+00:00"}]
+
+    def status(self, conn):
+        from datetime import datetime, timezone
+        return {"connected": True, "mailboxes": [
+            {"binding_id": 1, "address": "procurement@cust.com", "active": True,
+             "is_default": True, "health_state": "OK", "verified_at": datetime.now(timezone.utc),
+             "last_test_send_at": None, "withdrawn": False}]}
+
+
+@pytest.fixture
+def wired(real, monkeypatch):
+    monkeypatch.setattr(r, "_conn", lambda: _NoConn())
+    monkeypatch.setattr(r, "get_provider", lambda conn: _Provider())
+    audit = []
+    monkeypatch.setattr(r, "record_action", lambda **k: audit.append(k))
+    real.audit = audit
+    return real
+
+
+def test_restrictions_as_admin(wired):
+    res = wired.get(f"{B}/restrictions")
+    assert res.status_code == 200, res.text
+    j = res.json()
+    assert [i["id"] for i in j["restrictions"]][:3] == ["no_mail_permissions", "mailbox_scope",
+                                                        "actions_limited"]
+    assert j["summary"]["total"] == 8
+    assert j["summary"]["in_force"] == sum(i["status"] == "in_force" for i in j["restrictions"])
+    assert j["canConfigure"] is True
+    assert wired.calls == ["mailbox.view"]
+    # the words reach the screen as written (the output scrubber leaves them alone)
+    rs = {i["id"]: i for i in j["restrictions"]}
+    assert rs["read_scope"]["explanation"].startswith("Replies to emails Procwise sent")
+
+
+def test_restrictions_with_unreadable_policy_still_answers(wired, monkeypatch):
+    def boom(*a, **k):
+        raise mp.PolicyUnavailable("missing")
+    monkeypatch.setattr(mp, "load", boom)
+    res = wired.get(f"{B}/restrictions")
+    assert res.status_code == 200
+    rs = {i["id"]: i for i in res.json()["restrictions"]}
+    assert rs["read_scope"]["status"] == "not_proven"
+
+
+def test_restrictions_reviewer_cannot_configure(wired):
+    wired.allowed.discard("mailbox.bind")
+    assert wired.get(f"{B}/restrictions").json()["canConfigure"] is False
+
+
+def test_restrictions_and_pdf_refused_without_view(wired):
+    wired.allowed.clear()
+    assert wired.get(f"{B}/restrictions").status_code == 403
+    assert wired.get(f"{B}/evidence.pdf").status_code == 403
+    assert wired.audit == []
+
+
+def test_evidence_pdf_download(wired):
+    from datetime import datetime, timezone
+    res = wired.get(f"{B}/evidence.pdf")
+    assert res.status_code == 200, res.text
+    assert res.headers["content-type"] == "application/pdf"
+    assert res.content[:4] == b"%PDF"
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    assert res.headers["content-disposition"] == \
+        f'attachment; filename="email-restrictions-{today}.pdf"'
+    assert wired.calls == ["mailbox.view"]
+    assert [a["action_type"] for a in wired.audit] == ["evidence_report_downloaded"]
+    assert wired.audit[0]["details"]["generated_by"] == "admin@cust.com"
+
+
+# ---- Security reviewer, through the REAL gate and the role policy in bp_testdb ----
+
+_live = pytest.mark.skipif(__import__("os").getenv("PROCWISE_TEST_LIVE_DB") != "1",
+                           reason="live DB")
+
+WRITES = [
+    ("post", "/m365/connect", None, "connect"),
+    ("post", "/mailboxes", {"address": "a@cust.com", "control_mailbox": "b@cust.com"}, "add"),
+    ("post", "/mailboxes/1/verify", {"control_mailbox": "b@cust.com"}, "verify"),
+    ("post", "/mailboxes/1/test-send", None, "test_send"),
+    ("patch", "/mailboxes/1", {"is_default": True}, "default"),
+    ("delete", "/mailboxes/1", None, "remove"),
+    ("delete", "", None, "disconnect"),
+    ("patch", "/policy", {"changes": {"poll_seconds": 90}, "version": 1}, "policy_save"),
+]
+
+
+@pytest.fixture
+def reviewer(monkeypatch):
+    import uuid
+    from api.main import app
+    from src.services import rbac
+
+    class Reviewer:
+        subject = f"test-secrev-{uuid.uuid4().hex[:12]}"
+        email = "reviewer@cust.com"
+        username = "reviewer"
+        claims = {"cognito:groups": ["PROCWISE_SECURITY_REVIEWER"]}
+
+    rbac.reset_policy_cache()
+    app.dependency_overrides[r.require_user] = lambda: Reviewer()
+    monkeypatch.setattr(r, "get_provider", lambda conn: _Provider())
+    c = TestClient(app, raise_server_exceptions=False)
+    c.subject = Reviewer.subject
+    yield c
+    app.dependency_overrides.pop(r.require_user, None)
+    rbac.reset_policy_cache()
+
+
+def _denied_rows(subject):
+    from services.db import get_conn
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""SELECT details->>'op' FROM proc.bp_agent_actions
+                        WHERE phase = 'authorize' AND action_type = 'mailbox.bind'
+                          AND status = 'denied' AND details->>'principal' = %s""", (subject,))
+        return sorted(row[0] if not isinstance(row, dict) else row["?column?"]
+                      for row in cur.fetchall())
+
+
+@_live
+def test_security_reviewer_is_refused_every_write_and_each_refusal_is_audited(reviewer, monkeypatch):
+    from services.mail_m365 import admin
+    for fn in ("add_mailbox", "verify_mailbox", "test_send", "make_default", "remove_mailbox",
+               "disconnect"):
+        monkeypatch.setattr(admin, fn, lambda *a, **k: pytest.fail("a write ran past the gate"))
+    monkeypatch.setattr(mp, "save", lambda *a, **k: pytest.fail("policy saved past the gate"))
+    for method, path, body, _op in WRITES:
+        kw = {"json": body} if body is not None else {}
+        res = getattr(reviewer, method)(f"{B}{path}", **kw)
+        assert res.status_code == 403, (method, path, res.status_code, res.text)
+    assert _denied_rows(reviewer.subject) == sorted(op for *_x, op in WRITES)
+
+
+@_live
+def test_security_reviewer_may_read_restrictions_and_the_evidence_report(reviewer):
+    res = reviewer.get(f"{B}/restrictions")
+    assert res.status_code == 200, res.text
+    assert res.json()["canConfigure"] is False
+    pdf = reviewer.get(f"{B}/evidence.pdf")
+    assert pdf.status_code == 200, pdf.text
+    assert pdf.content[:4] == b"%PDF"

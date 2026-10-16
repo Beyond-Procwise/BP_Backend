@@ -22,4 +22,9 @@ def test_m365_provider_wraps_existing_code(monkeypatch):
     monkeypatch.setattr(sending, "send_via_graph", lambda b, m: seen.append((b, m)))
     p.send("binding", b"mime")
     assert seen == [("binding", b"mime")]
-    assert p.prove(object()) == []
+
+    # never connected: one row that proves nothing, never an exception
+    from services.mail_providers import m365 as m365_mod
+    monkeypatch.setattr(m365_mod, "read_integration", lambda conn: {})
+    rows = p.prove(object())
+    assert [(x["restriction"], x["result"]) for x in rows] == [("no_mail_permissions", "unknown")]

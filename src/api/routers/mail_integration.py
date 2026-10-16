@@ -10,16 +10,19 @@ sent into the redirect except a code from a fixed set.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
 from api.auth import require_user
 from api.endpoint_gate import require as gate
 from services.db import get_conn
-from services import mail_policy, rbac
+from services import mail_policy, mail_restrictions, rbac
+from services.agent_actions import record_action
+from services.mail_providers import get_provider
 from services.actions import action_class
 from services.mail_m365 import admin, consent, sending
 from services.mail_m365.config import load_settings, read_integration, settings_page_url
@@ -147,6 +150,66 @@ def patch_policy(body: PolicyBody, principal: Any = Depends(require_user)) -> An
         return _detail(503, "policy_unavailable",
                        "The email settings cannot be saved right now. Nothing has been changed.")
     return _policy_view(policy)
+
+
+def _policy_or_none() -> Any:
+    try:
+        return mail_policy.load()
+    except mail_policy.PolicyUnavailable:
+        logger.exception("email policy unavailable for the restrictions view")
+        return None
+
+
+def _restrictions(conn: Any, policy: Any, now: datetime) -> tuple:
+    """The restrictions and the mailboxes they were worked out from."""
+    provider = get_provider(conn)
+    items = mail_restrictions.build(conn, provider=provider, policy=policy, now=now)
+    mailboxes = []
+    if provider is not None:
+        try:
+            mailboxes = list(provider.status(conn).get("mailboxes") or [])
+        except Exception:  # noqa: BLE001 - the restriction line already says not proven
+            logger.exception("mailbox list unavailable for the evidence report")
+    return items, mailboxes
+
+
+@router.get("/restrictions", summary="Every email restriction and how it is guaranteed")
+def get_restrictions(principal: Any = Depends(require_user)) -> dict:
+    gate("mailbox.view", principal, agent=_AGENT, context={"op": "restrictions_read"})
+    now = datetime.now(timezone.utc)
+    policy = _policy_or_none()
+    with _conn() as conn:
+        items, _ = _restrictions(conn, policy, now)
+    return {"restrictions": items, "summary": mail_restrictions.summary(items),
+            "canConfigure": _can_configure(principal)}
+
+
+@router.get("/evidence.pdf", summary="A dated PDF of the restrictions, policy and history")
+def get_evidence(principal: Any = Depends(require_user)) -> Any:
+    gate("mailbox.view", principal, agent=_AGENT, context={"op": "evidence_report"})
+    from services.report_export import render_pdf
+    now = datetime.now(timezone.utc)
+    policy = _policy_or_none()
+    with _conn() as conn:
+        items, mailboxes = _restrictions(conn, policy, now)
+    by = _actor(principal)
+    html = mail_restrictions.evidence_html(
+        items, policy, mailboxes, list(policy.history) if policy is not None else [],
+        generated_at=now, generated_by=by)
+    try:
+        pdf = render_pdf(html)
+    except Exception:  # noqa: BLE001
+        logger.exception("evidence report could not be rendered")
+        return _detail(503, "report_failed",
+                       "The evidence report could not be made right now. Try again shortly.")
+    record_action(phase="inspect", action_type="evidence_report_downloaded", agent=_AGENT,
+                  summary=f"email evidence report downloaded by {by}",
+                  details={"generated_by": by, "generated_at": now.isoformat(),
+                           "policy_version": getattr(policy, "version", None),
+                           **mail_restrictions.summary(items)})
+    name = f"email-restrictions-{now.strftime('%Y-%m-%d')}.pdf"
+    return Response(content=pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 @router.post("/m365/connect", summary="Start Microsoft's admin approval")
