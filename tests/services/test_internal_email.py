@@ -335,6 +335,45 @@ def test_too_large_for_the_provider_is_held(svc):
                                   "(limit 0 MB including attachments)")
 
 
+def _approve_failing(svc, monkeypatch, audit):
+    e = _new(svc)
+    out = svc.approve_and_send(e["internal_email_id"], approver="b@yourcompany.com")
+    assert _refused(svc.approve_and_send, e["internal_email_id"],
+                    approver="b@yourcompany.com").code == "already_done"
+    assert svc.store.rows[e["internal_email_id"]]["status"] == "held"
+    return out
+
+
+def test_build_mime_failure_after_the_claim_holds_it(svc, monkeypatch, audit):
+    import services.email_service as es
+
+    def boom(*a, **k):
+        raise RuntimeError("db blip")
+    monkeypatch.setattr(es, "build_mime", boom)
+    out = _approve_failing(svc, monkeypatch, audit)
+    assert out["status"] == "held" and out["held_reason"] == internal_email.HELD_FAILED
+    assert svc.provider.sent == []
+
+
+def test_size_limit_failure_after_the_claim_holds_it(svc, monkeypatch, audit):
+    def boom():
+        raise RuntimeError("limit lookup failed")
+    monkeypatch.setattr(svc.provider, "size_limit", boom)
+    out = _approve_failing(svc, monkeypatch, audit)
+    assert out["status"] == "held" and out["held_reason"] == internal_email.HELD_FAILED
+    assert svc.provider.sent == []
+
+
+def test_mark_sent_failure_after_send_holds_it_and_sends_once(svc, monkeypatch, audit):
+    def boom(*a, **k):
+        raise RuntimeError("db blip")
+    monkeypatch.setattr(svc.store, "mark_sent", boom)
+    out = _approve_failing(svc, monkeypatch, audit)
+    assert out["status"] == "held" and len(svc.provider.sent) == 1
+    assert "could not be marked as sent" in out["held_reason"] and "<" in out["held_reason"]
+    assert "db blip" not in out["held_reason"]
+
+
 # ---- edit / decline / list ----
 
 def test_only_the_author_can_edit_or_decline(svc):

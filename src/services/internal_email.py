@@ -46,6 +46,9 @@ HELD_MAILBOX_UNAVAILABLE = "The company mailbox {address} is not available right
 HELD_TOO_LARGE = "This email is too large to send from your company mailbox (limit {mb} MB including attachments)"
 HELD_REJECTED = "Your company mailbox did not accept the email, so it is held; your admin has been told"
 HELD_CHANGED = "This email changed while it was being sent, so it is held"
+HELD_FAILED = "Something went wrong while sending this email, so it is held and was not sent"
+HELD_SENT_NOT_RECORDED = ("This email was sent (message id {message_id}) but could not be marked "
+                          "as sent, so it is held; do not send it again")
 
 
 class InternalEmailRefused(Exception):
@@ -308,23 +311,32 @@ def approve_and_send(conn, internal_email_id: int, *, approver: str, provider=No
     if _hash_of(row["recipients"], row["subject"], row["body"], row["attachments"]) != pinned:
         return held(HELD_CHANGED)
 
-    from services.email_service import build_mime
-
-    msg, message_id = build_mime(row["subject"], row["body"], row["recipients"],
-                                 binding.mailbox_address)
-    mime = msg.as_bytes()
-    limit = provider.size_limit()
-    if len(mime) > limit:
-        return held(HELD_TOO_LARGE.format(mb=limit // 1_000_000), size=len(mime))
+    provider_accepted = False
     try:
-        provider.send(binding, mime)
-    except Exception as exc:  # noqa: BLE001 - the raw cause is for the log; the author gets a sentence
-        logger.error("Email to colleagues %s from %s failed: %s",
-                     internal_email_id, binding.mailbox_address, exc)
-        return held(HELD_REJECTED)
-    sent = store.mark_sent(internal_email_id, message_id=message_id)
-    if sent is None:  # cannot happen while this call holds the claim; never report a false state
-        sent = _get(store, internal_email_id)
+        from services.email_service import build_mime
+
+        msg, message_id = build_mime(row["subject"], row["body"], row["recipients"],
+                                     binding.mailbox_address)
+        mime = msg.as_bytes()
+        limit = provider.size_limit()
+        if len(mime) > limit:
+            return held(HELD_TOO_LARGE.format(mb=limit // 1_000_000), size=len(mime))
+        try:
+            provider.send(binding, mime)
+        except Exception as exc:  # noqa: BLE001 - the raw cause is for the log; the author gets a sentence
+            logger.error("Email to colleagues %s from %s failed: %s",
+                         internal_email_id, binding.mailbox_address, exc)
+            return held(HELD_REJECTED)
+        provider_accepted = True
+        sent = store.mark_sent(internal_email_id, message_id=message_id)
+        if sent is None:  # cannot happen while this call holds the claim; never report a false state
+            sent = _get(store, internal_email_id)
+    except Exception as exc:  # noqa: BLE001 - any failure after the claim holds the row, never leaves it approved
+        logger.error("Email to colleagues %s failed after it was claimed: %s",
+                     internal_email_id, exc)
+        if provider_accepted:  # the mail has gone; never send it again
+            return held(HELD_SENT_NOT_RECORDED.format(message_id=message_id))
+        return held(HELD_FAILED)
     _audit("internal_email_sent", sent, status="sent",
            summary=f"email to colleagues sent from {binding.mailbox_address}",
            approved_by=sent["approved_by"], message_id=message_id)
