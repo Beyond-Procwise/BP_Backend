@@ -108,13 +108,30 @@ class GraphMailSource:
         self._client_for = client_for
 
     def iter_messages(self, binding: Mapping[str, Any], since: datetime) -> Iterator[RawMessage]:
+        """In-scope Inbox messages, oldest first (list_inbox orders by arrival).
+
+        A message whose scope check could not be completed ends the listing there: the
+        caller moves the binding's cursor to the newest message it commits, so yielding
+        anything after an unchecked message would carry the cursor past it and it would
+        never be read. The unchecked one is not downloaded and is checked again next pass.
+        A definite "out of scope" is skipped as before.
+        """
         mailbox = binding["mailbox_address"]
         client = self._client_for()
         policy = SimpleNamespace(read_scope=_read_scope())
         is_supplier, sent_ids = _default_checks()
         for item in client.list_inbox(mailbox, since):
-            if not in_scope(item, policy=policy, client=client, mailbox=mailbox,
-                            is_supplier=is_supplier, sent_ids=sent_ids):
+            state = scope_state(item, policy=policy, client=client, mailbox=mailbox,
+                                is_supplier=is_supplier, sent_ids=sent_ids)
+            if state is None:
+                log.warning("m365 intake for %s stops before message %s: its scope could not "
+                            "be checked; the cursor stays before it and it is retried next pass",
+                            mailbox, item.get("id"))
+                return
+            if state is False:
+                # Graph id and binding only: no sender, subject or content in the log.
+                log.info("m365 intake skipped out-of-scope message %s (binding %s)",
+                         item.get("id"), binding.get("binding_id"))
                 continue
             yield RawMessage(raw=client.get_mime(mailbox, item["id"]),
                              provider_message_id=item["id"],

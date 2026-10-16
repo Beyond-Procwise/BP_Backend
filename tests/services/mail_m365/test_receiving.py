@@ -541,3 +541,55 @@ def test_a_definite_no_is_still_remembered(monkeypatch):
     for _ in range(3):
         assert receiving.fetch_replies(SINCE, repo=_Repo(), client_for=lambda: c) == []
     assert c.header_calls == ["rep"] and c.fetched == []
+
+
+# ---- final review F1: an unchecked message holds the intake cursor --------------------------
+
+class _IntakeFlaky(ScopedClient):
+    """09:00 unrelated colleague (definite no), 09:01 a supplier whose lookup may fail,
+    09:02 a reply to mail we sent (always checkable)."""
+    def __init__(self):
+        super().__init__()
+
+    def list_inbox(self, mailbox, since):
+        items = [{"id": "col", "receivedDateTime": "2026-10-15T09:00:00Z", "from": "colleague@cust.com"},
+                 {"id": "sup", "receivedDateTime": "2026-10-15T09:01:00Z", "from": "sup@supplier.com"},
+                 {"id": "rep", "receivedDateTime": "2026-10-15T09:02:00Z", "from": "someone@gmail.com"}]
+        stamp = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+        return [i for i in items if i["receivedDateTime"] >= stamp]
+
+
+def test_an_unchecked_message_is_not_lost_by_the_intake_cursor(monkeypatch):
+    monkeypatch.setattr(receiving, "_read_scope", lambda: "replies_and_suppliers")
+    state = {"db_down": True}
+
+    def is_supplier(addr):
+        if state["db_down"] and addr == "sup@supplier.com":
+            raise RuntimeError("db hiccup")
+        return addr == "sup@supplier.com"
+    monkeypatch.setattr(receiving, "_default_checks", lambda: (
+        is_supplier, lambda ids: any(i in ("<ours-1@cust.com>", "ours-1@cust.com") for i in ids)))
+    c = _IntakeFlaky()
+    binding = {"binding_id": 1, "mailbox_address": "procurement@cust.com", "last_sync_at": SINCE}
+    pipeline, conn = Pipeline(), FakeConn()
+
+    receiving.poll_one(conn, binding, receiving.GraphMailSource(lambda: c), pipeline)
+    assert "sup" not in c.fetched, "an unchecked message is never downloaded"
+    assert "rep" not in c.fetched and pipeline.calls == [], \
+        "nothing after the unchecked message is taken, so the cursor cannot pass it"
+    assert not [s for s, _ in conn.sql if "SET last_sync_at" in s]
+
+    state["db_down"] = False                   # the lookup works again on the next pass
+    receiving.poll_one(conn, binding, receiving.GraphMailSource(lambda: c), pipeline)
+    assert [m.provider_message_id for m in pipeline.calls] == ["sup", "rep"]
+    assert c.fetched == ["sup", "rep"]
+
+
+def test_a_skipped_message_is_logged_without_sender_or_subject(monkeypatch, caplog):
+    import logging
+    _scope(monkeypatch, "replies_and_suppliers")
+    with caplog.at_level(logging.INFO, logger=receiving.log.name):
+        _ids(ScopedClient())
+    lines = [r.getMessage() for r in caplog.records if "skipped out-of-scope message" in r.getMessage()]
+    assert lines == ["m365 intake skipped out-of-scope message col (binding None)"]
+    assert "colleague@cust.com" not in lines[0]
