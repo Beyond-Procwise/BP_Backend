@@ -17,7 +17,7 @@ from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from src.services import agent_actions
-from src.services.sell_side import numbering, pricing_checks
+from src.services.sell_side import agreed_pricing, numbering, pricing_checks, special_bids
 from src.services.sell_side._db import NotFound, StateConflict, dict_cursor
 from src.services.sell_side.costing import cost_at
 from src.services.sell_side.ladder import QUOTE_RUNG
@@ -50,7 +50,8 @@ _DOCUMENT_COLS = ("scope_html", "assumptions_html", "terms", "sections", "tax_ra
 
 # The internal record.
 _INTERNAL_QUOTE_COLS = ("total_cost", "total_margin", "margin_pct")
-_INTERNAL_LINE_COLS = ("unit_cost", "cost_tier_applied", "line_margin", "line_margin_pct")
+_INTERNAL_LINE_COLS = ("unit_cost", "cost_tier_applied", "line_margin", "line_margin_pct",
+                       "price_source", "account_price_id", "cost_source", "special_bid_id")
 
 _AGENT = "SellSide"
 # Approving, issuing, sending and closing a quote cannot be taken back, so each is recorded or it
@@ -95,6 +96,8 @@ def create_draft(conn: Any, *, account_id: str, currency: str, valid_until: dt.d
     if not lines:
         raise ValueError("a quote needs at least one line")
     for n, line in enumerate(lines, start=1):
+        if line.get("unit_price") is None:   # priced from an agreement below
+            continue
         exponent = Decimal(line["unit_price"]).as_tuple().exponent
         if isinstance(exponent, int) and exponent < -4:
             raise ValueError(f"line {n}: unit_price has more than 4 decimal places")
@@ -107,10 +110,11 @@ def create_draft(conn: Any, *, account_id: str, currency: str, valid_until: dt.d
 
         snapshots, priced = [], []
         for n, line in enumerate(lines, start=1):
-            qty, price = Decimal(line["quantity"]), Decimal(line["unit_price"])
+            qty = Decimal(line["quantity"])
             if qty <= 0:
                 raise ValueError(f"line {n}: quantity must be greater than zero")
-            if price < 0:
+            entered = line.get("unit_price")
+            if entered is not None and Decimal(entered) < 0:
                 raise ValueError(f"line {n}: unit_price cannot be negative")
 
             opp_id = line.get("sales_opportunity_id")
@@ -140,20 +144,37 @@ def create_draft(conn: Any, *, account_id: str, currency: str, valid_until: dt.d
                     raise ValueError(f"line {n}: justification {just_id} belongs to a "
                                      "different opportunity than the line's")
 
-            c = cost_at(cur, int(line["catalog_item_id"]), qty)
+            c = cost_at(cur, int(line["catalog_item_id"]), qty, account_id=account_id,
+                        on_date=quote_date)
             if not c.is_current:
                 raise ValueError(f"line {n}: catalog item {c.catalog_item_id} is a closed "
                                  "version; quote the current one")
             if c.currency != currency:
                 raise ValueError(f"line {n}: catalog item is priced in {c.currency}, the "
                                  f"quote is in {currency}; no FX conversion is performed")
+            agreed = None
+            if entered is None:
+                # no price was given: take the customer's agreed price, or refuse. A price is
+                # never guessed from list or cost.
+                agreed = agreed_pricing.resolve(
+                    cur, account_id=account_id, distributor_id=c.distributor_id,
+                    distributor_sku=c.distributor_sku, currency=currency, quantity=qty,
+                    list_price=c.list_price, on_date=quote_date)
+                if agreed is None:
+                    raise ValueError(f"line {n}: no unit_price given and no agreed price "
+                                     "applies to this customer, item and quantity")
+                price = agreed.unit_price
+            else:
+                price = Decimal(entered)
+            if price < 0:
+                raise ValueError(f"line {n}: unit_price cannot be negative")
             p = price_line(qty, price, c.unit_cost, c.list_price)
             for pct_name, pct_val in (("discount_pct", p.discount_pct),
                                       ("line_margin_pct", p.line_margin_pct)):
                 if pct_val is not None and abs(pct_val) >= 1000:
                     raise ValueError(f"line {n}: {pct_name} {pct_val} is out of range")
             priced.append(p)
-            snapshots.append((line, n, qty, price, c, p))
+            snapshots.append((line, n, qty, price, c, p, agreed))
         totals = total_quote(priced)
         superseded = None
 
@@ -193,7 +214,7 @@ def create_draft(conn: Any, *, account_id: str, currency: str, valid_until: dt.d
             "INSERT INTO proc.bp_sales_quote_internal (sales_quote_id, total_cost, "
             "total_margin, margin_pct) VALUES (%s, %s, %s, %s)",
             (quote_id, totals.total_cost, totals.total_margin, totals.margin_pct))
-        for line, n, qty, price, c, p in snapshots:
+        for line, n, qty, price, c, p, agreed in snapshots:
             cur.execute(
                 f"INSERT INTO proc.bp_sales_quote_line ({', '.join(_LINE_COLS)}) "
                 f"VALUES ({', '.join(['%s'] * len(_LINE_COLS))}) RETURNING sales_quote_line_id",
@@ -203,10 +224,14 @@ def create_draft(conn: Any, *, account_id: str, currency: str, valid_until: dt.d
                  line.get("justification_id")))
             cur.execute(
                 "INSERT INTO proc.bp_sales_quote_line_internal (sales_quote_line_id, "
-                "sales_quote_id, unit_cost, cost_tier_applied, line_margin, line_margin_pct) "
-                "VALUES (%s, %s, %s, %s, %s, %s)",
+                "sales_quote_id, unit_cost, cost_tier_applied, line_margin, line_margin_pct, "
+                "price_source, account_price_id, cost_source, special_bid_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (cur.fetchone()["sales_quote_line_id"], quote_id, c.unit_cost,
-                 c.cost_tier_applied, p.line_margin, p.line_margin_pct))
+                 c.cost_tier_applied, p.line_margin, p.line_margin_pct,
+                 "agreed_price" if agreed else "entered",
+                 agreed.account_price_id if agreed else None,
+                 c.cost_source, c.special_bid_id))
         new = {"sales_quote_id": quote_id, "quote_ref": quote_ref}
         if superseded is not None:
             record_event(conn, "sales_quote.superseded", superseded, actor=created_by,
@@ -361,6 +386,18 @@ class MarginBelowFloor(StateConflict):
                          f"the margin floor approves it ({block['code']})")
 
 
+def _refuse_ended_bids(cur: Any, sales_quote_id: int) -> None:
+    """A line costed on a special bid is only as good as the bid: once it has expired or
+    been withdrawn the margin the quote was approved on no longer holds. The message names
+    the line and the bid reference, never the cost."""
+    stale = special_bids.stale_lines(cur, sales_quote_id)
+    if stale:
+        raise StateConflict(
+            f"quote {sales_quote_id} rests on a special bid that has ended: "
+            + "; ".join(f"line {s['line_no']} (bid {s['bid_reference']})" for s in stale)
+            + ". Re-cost the quote before it goes further.")
+
+
 def approve(conn: Any, sales_quote_id: int, *, approver: Optional[str],
             conditions: Optional[Sequence[str]] = None,
             may_override_floor: Optional[Callable[[Dict[str, Any]], bool]] = None
@@ -389,6 +426,7 @@ def approve(conn: Any, sales_quote_id: int, *, approver: Optional[str],
                 f"quote {sales_quote_id} is priced below cost (margin "
                 f"{margin}); it needs a deal-desk exception, "
                 "not a routine approval")
+        _refuse_ended_bids(cur, sales_quote_id)
         cur.execute("SELECT EXISTS (SELECT 1 FROM proc.bp_sales_quote_line WHERE "
                     "sales_quote_id = %s AND catalog_item_id IS NOT NULL) AS catalog",
                     (sales_quote_id,))
@@ -444,6 +482,7 @@ def issue(conn: Any, sales_quote_id: int, *, actor: Optional[str],
             raise StateConflict(f"quote {sales_quote_id} cannot be issued: "
                                 + " ".join(b["message"] for b in blocks)
                                 + f" ({', '.join(b['code'] for b in blocks)})")
+        _refuse_ended_bids(cur, sales_quote_id)
         number = numbering.formatted(NUMBER_PREFIX, *numbering.allocate(cur, NUMBER_SERIES))
         cur.execute("UPDATE proc.bp_sales_quote SET quote_number = %s "
                     "WHERE sales_quote_id = %s", (number, sales_quote_id))

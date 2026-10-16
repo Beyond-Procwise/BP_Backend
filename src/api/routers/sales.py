@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 # Not src.services.db.get_conn: that opens autocommit connections, under which the
 # sell-side services' rollback-before-raise is a no-op and FOR UPDATE locks don't hold.
 from src.services.sell_side._db import transactional_conn as get_conn
-from src.services.sell_side import (accounts, calibration, opportunities, outcomes,
+from src.services.sell_side import (accounts, agreed_pricing, special_bids, calibration, opportunities, outcomes,
                                     quote_render, quote_send, quotes)
 
 from src.services import agent_actions
@@ -125,10 +125,37 @@ class StageBody(BaseModel):
     subprocess_id: Optional[str] = None
 
 
+class AgreedPriceBody(BaseModel):
+    distributor_id: str
+    distributor_sku: str
+    price_kind: str                      # fixed | discount_pct
+    currency: str
+    valid_from: dt.date
+    unit_price: Optional[Decimal] = None
+    discount_pct: Optional[Decimal] = None
+    min_quantity: Decimal = Field(default=Decimal(0), ge=0)
+    valid_to: Optional[dt.date] = None
+    reference: Optional[str] = None
+
+
+class SpecialBidBody(BaseModel):
+    account_id: str
+    distributor_id: str
+    distributor_sku: str
+    bid_reference: str
+    cost_price: Decimal = Field(ge=0)
+    currency: str
+    valid_from: dt.date
+    valid_to: Optional[dt.date] = None   # required, but refused by the service with a reason
+    min_quantity: Decimal = Field(default=Decimal(0), ge=0)
+    max_quantity: Optional[Decimal] = None
+
+
 class QuoteLine(BaseModel):
     catalog_item_id: int
     quantity: Decimal = Field(gt=0)
-    unit_price: Decimal = Field(ge=0)
+    # left out, the line takes the customer's agreed price; with none, the quote is refused
+    unit_price: Optional[Decimal] = Field(default=None, ge=0)
     sales_opportunity_id: Optional[int] = None
     justification_id: Optional[int] = None
 
@@ -185,6 +212,57 @@ def set_scope(account_id: str, source_kind: str, body: ScopeBody, principal=Depe
     gate("account.write", principal, agent=_AGENT, context={"account_id": account_id})
     with http_errors(), get_conn() as c:
         return money_json(accounts.set_history_scope(c, account_id, source_kind=source_kind, **body.model_dump()))
+
+
+# --- agreed prices and special bids -------------------------------------------
+
+@router.post("/accounts/{account_id}/prices")
+def register_agreed_price(account_id: str, body: AgreedPriceBody, principal=Depends(require_user)):
+    gate("account.write", principal, agent=_AGENT, context={"account_id": account_id})
+    with http_errors(), get_conn() as c:
+        return money_json(agreed_pricing.register(
+            c, account_id=account_id, created_by=_subject(principal), **body.model_dump()))
+
+
+@router.get("/accounts/{account_id}/prices")
+def list_agreed_prices(account_id: str, principal=Depends(require_user)):
+    gate("account.read", principal, agent=_AGENT, context={"account_id": account_id})
+    with http_errors(), get_conn() as c:
+        return money_json({"prices": agreed_pricing.list_for_account(c, account_id)})
+
+
+@router.post("/prices/{account_price_id}/withdraw")
+def withdraw_agreed_price(account_price_id: int, principal=Depends(require_user)):
+    gate("account.write", principal, agent=_AGENT, context={"account_price_id": account_price_id})
+    with http_errors(), get_conn() as c:
+        return money_json(agreed_pricing.withdraw(c, account_price_id, actor=_subject(principal)))
+
+
+# A special bid is our COST for one customer's deal, so reading or changing one needs the
+# same stated margin permit as reading a quote's cost.
+
+@router.post("/special-bids")
+def register_special_bid(body: SpecialBidBody, principal=Depends(require_user)):
+    gate("sales.write", principal, agent=_AGENT, context={"account_id": body.account_id})
+    _require_margin_permit(principal, {"account_id": body.account_id})
+    with http_errors(), get_conn() as c:
+        return money_json(special_bids.register(
+            c, created_by=_subject(principal), **body.model_dump()))
+
+
+@router.get("/accounts/{account_id}/special-bids")
+def list_special_bids(account_id: str, principal=Depends(require_user)):
+    _require_margin_permit(principal, {"account_id": account_id})
+    with http_errors(), get_conn() as c:
+        return money_json({"special_bids": special_bids.list_for_account(c, account_id)})
+
+
+@router.post("/special-bids/{special_bid_id}/withdraw")
+def withdraw_special_bid(special_bid_id: int, principal=Depends(require_user)):
+    gate("sales.write", principal, agent=_AGENT, context={"special_bid_id": special_bid_id})
+    _require_margin_permit(principal, {"special_bid_id": special_bid_id})
+    with http_errors(), get_conn() as c:
+        return money_json(special_bids.withdraw(c, special_bid_id, actor=_subject(principal)))
 
 
 # --- opportunities ----------------------------------------------------------
