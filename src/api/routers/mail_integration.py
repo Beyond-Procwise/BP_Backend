@@ -160,17 +160,24 @@ def _policy_or_none() -> Any:
         return None
 
 
-def _restrictions(conn: Any, policy: Any, now: datetime) -> tuple:
-    """The restrictions and the mailboxes they were worked out from."""
-    provider = get_provider(conn)
-    items = mail_restrictions.build(conn, provider=provider, policy=policy, now=now)
-    mailboxes = []
+def _restrictions(policy: Any, now: datetime) -> tuple:
+    """The restrictions and the mailboxes they were worked out from (one read feeds both).
+
+    The database is read and its connection released BEFORE the provider asks Microsoft,
+    so a slow Microsoft never holds a database connection."""
+    with _conn() as conn:
+        provider = get_provider(conn)
+        mailboxes = mail_restrictions.read_mailboxes(provider, conn)
+    proof = []
     if provider is not None:
         try:
-            mailboxes = list(provider.status(conn).get("mailboxes") or [])
-        except Exception:  # noqa: BLE001 - the restriction line already says not proven
-            logger.exception("mailbox list unavailable for the evidence report")
-    return items, mailboxes
+            proof = provider.prove(None)
+        except Exception:  # noqa: BLE001 - the line shows "not proven"
+            logger.exception("provider proof failed")
+            proof = []
+    items = mail_restrictions.build(None, provider=provider, policy=policy, now=now,
+                                    mailboxes=mailboxes, proof=proof)
+    return items, mailboxes or []
 
 
 @router.get("/restrictions", summary="Every email restriction and how it is guaranteed")
@@ -178,8 +185,7 @@ def get_restrictions(principal: Any = Depends(require_user)) -> dict:
     gate("mailbox.view", principal, agent=_AGENT, context={"op": "restrictions_read"})
     now = datetime.now(timezone.utc)
     policy = _policy_or_none()
-    with _conn() as conn:
-        items, _ = _restrictions(conn, policy, now)
+    items, _ = _restrictions(policy, now)
     return {"restrictions": items, "summary": mail_restrictions.summary(items),
             "canConfigure": _can_configure(principal)}
 
@@ -190,8 +196,7 @@ def get_evidence(principal: Any = Depends(require_user)) -> Any:
     from services.report_export import render_pdf
     now = datetime.now(timezone.utc)
     policy = _policy_or_none()
-    with _conn() as conn:
-        items, mailboxes = _restrictions(conn, policy, now)
+    items, mailboxes = _restrictions(policy, now)
     by = _actor(principal)
     html = mail_restrictions.evidence_html(
         items, policy, mailboxes, list(policy.history) if policy is not None else [],

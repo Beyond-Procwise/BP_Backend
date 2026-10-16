@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable, List, Optional
 
@@ -13,6 +15,20 @@ from services.mail_m365.config import load_settings, read_integration
 logger = logging.getLogger(__name__)
 
 _PERMISSIONS_CHECK = "Mail permissions Microsoft has granted Procwise’s app"
+
+# Microsoft's answer is kept briefly so reading the Email page does not ask Microsoft's
+# sign-in every time. A check that could not run is kept only a few seconds, so a passing
+# slow spell is not shown as "not proven" for long. The rows keep the time of the actual
+# check, so the screen always says when Microsoft was really asked.
+PROOF_TTL_SECONDS = 120
+UNKNOWN_TTL_SECONDS = 5
+_proof_lock = threading.Lock()
+_proof_cache: dict = {}   # tenant id -> (expires at, rows)
+
+
+def _reset_proof_cache() -> None:
+    with _proof_lock:
+        _proof_cache.clear()
 
 
 def mail_roles(token: str) -> List[str]:
@@ -32,8 +48,10 @@ class M365Provider:
     label = "Microsoft 365"
     method = "Your IT team approves Procwise once in Microsoft 365 and limits it to chosen shared mailboxes."
 
-    def __init__(self, client_factory: Optional[Callable[[str], Any]] = None) -> None:
+    def __init__(self, client_factory: Optional[Callable[[str], Any]] = None,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         self._client_factory = client_factory
+        self._clock = clock
 
     def size_limit(self) -> int:
         return sending.MAX_MIME_BYTES
@@ -43,7 +61,10 @@ class M365Provider:
 
     def prove(self, conn: Any) -> List[dict]:
         """Ask Microsoft what our app holds. Never raises: anything that stops the check
-        is a row with result ``unknown``, so nothing is shown as proven that was not."""
+        is a row with result ``unknown``, so nothing is shown as proven that was not.
+
+        With ``conn=None`` a short connection of its own is used only to read the
+        integration, and is closed before Microsoft is asked."""
         at = datetime.now(timezone.utc).isoformat()
 
         def row(answer: str, result: str) -> dict:
@@ -51,13 +72,40 @@ class M365Provider:
                     "answer": answer, "result": result, "at": at}
 
         try:
-            integration = read_integration(conn)
+            integration = self._integration(conn)
             tenant = integration.get("tenant_id")
             if integration.get("status") != "connected" or not tenant:
                 return [row("Microsoft 365 is not connected", "unknown")]
             settings = load_settings()
             if settings is None and self._client_factory is None:
                 return [row("Microsoft 365 is not set up on this server", "unknown")]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Microsoft 365 connection could not be read: %s", type(exc).__name__)
+            return [row("The connection details could not be read", "unknown")]
+
+        key = str(tenant)
+        now = self._clock()
+        with _proof_lock:
+            hit = _proof_cache.get(key)
+        if hit is not None and now < hit[0]:
+            return [dict(r) for r in hit[1]]
+        rows = self._ask_microsoft(tenant, settings, row)
+        ttl = UNKNOWN_TTL_SECONDS if any(r["result"] == "unknown" for r in rows) else PROOF_TTL_SECONDS
+        with _proof_lock:
+            _proof_cache[key] = (now + ttl, [dict(r) for r in rows])
+        return rows
+
+    @staticmethod
+    def _integration(conn: Any) -> dict:
+        if conn is not None:
+            return read_integration(conn)
+        from services.db import get_conn
+        with get_conn() as own:
+            return read_integration(own)
+
+    def _ask_microsoft(self, tenant: str, settings: Any, row: Callable[[str, str], dict]
+                       ) -> List[dict]:
+        try:
             client = (self._client_factory or admin._default_factory(settings))(tenant)
             token = client.token()
         except Exception as exc:  # noqa: BLE001 - an unanswered check is "not proven"

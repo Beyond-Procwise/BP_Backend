@@ -124,6 +124,13 @@ class FakeClient:
         return self._token
 
 
+@pytest.fixture(autouse=True)
+def _fresh_cache():
+    m365_mod._reset_proof_cache()
+    yield
+    m365_mod._reset_proof_cache()
+
+
 @pytest.fixture
 def connected(monkeypatch):
     monkeypatch.setattr(m365_mod, "read_integration",
@@ -133,7 +140,7 @@ def connected(monkeypatch):
 
 
 def _provider_with(client):
-    return FakeProvider(proof=M365Provider(client_factory=lambda tenant: client).prove(None))
+    return FakeProvider(proof=M365Provider(client_factory=lambda tenant: client).prove(object()))
 
 
 def test_mail_read_granted_is_failed(connected):
@@ -163,7 +170,7 @@ def test_unreadable_token_is_not_proven(connected):
 def test_not_connected_is_not_proven(monkeypatch):
     monkeypatch.setattr(m365_mod, "read_integration", lambda conn: {"status": "disconnected"})
     monkeypatch.setattr(m365_mod, "load_settings", lambda: object())
-    rows = M365Provider(client_factory=lambda t: pytest.fail("no client when not connected")).prove(None)
+    rows = M365Provider(client_factory=lambda t: pytest.fail("no client when not connected")).prove(object())
     r = _by_id(_build(FakeProvider(proof=rows)))
     assert r["no_mail_permissions"]["status"] == "not_proven"
 
@@ -326,3 +333,145 @@ def test_evidence_pdf_bytes():
     from services.report_export import render_pdf
     pdf = render_pdf(_html())
     assert pdf[:4] == b"%PDF"
+
+
+# ---- the Microsoft check is cached briefly, failures only very briefly ----
+
+class CountingClient:
+    def __init__(self, token=None, raises=None):
+        self.calls, self._token, self._raises = 0, token, raises
+
+    def token(self):
+        self.calls += 1
+        if self._raises:
+            raise self._raises
+        return self._token
+
+
+class Clock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+def test_two_reads_within_the_window_ask_microsoft_once(connected):
+    client, clock = CountingClient(_token([])), Clock()
+    first = M365Provider(client_factory=lambda t: client, clock=clock).prove(object())
+    clock.t += m365_mod.PROOF_TTL_SECONDS - 1
+    # a fresh provider, as each request builds one: the cache must outlive it
+    second = M365Provider(client_factory=lambda t: client, clock=clock).prove(object())
+    assert client.calls == 1
+    assert second == first          # the true time of the actual check, not "now"
+
+
+def test_after_the_window_microsoft_is_asked_again(connected):
+    client, clock = CountingClient(_token([])), Clock()
+    M365Provider(client_factory=lambda t: client, clock=clock).prove(object())
+    clock.t += m365_mod.PROOF_TTL_SECONDS + 1
+    M365Provider(client_factory=lambda t: client, clock=clock).prove(object())
+    assert client.calls == 2
+
+
+def test_a_failed_check_is_not_cached_long(connected):
+    client, clock = CountingClient(raises=MailboxUnreachable("slow")), Clock()
+    rows = M365Provider(client_factory=lambda t: client, clock=clock).prove(object())
+    assert rows[0]["result"] == "unknown"
+    clock.t += m365_mod.UNKNOWN_TTL_SECONDS + 1
+    M365Provider(client_factory=lambda t: client, clock=clock).prove(object())
+    assert client.calls == 2
+    assert m365_mod.UNKNOWN_TTL_SECONDS <= 10
+
+
+def test_the_cache_is_per_tenant(monkeypatch):
+    tenant = {"id": "tenant-1"}
+    monkeypatch.setattr(m365_mod, "read_integration",
+                        lambda conn: {"status": "connected", "tenant_id": tenant["id"]})
+    monkeypatch.setattr(m365_mod, "load_settings", lambda: object())
+    client, clock = CountingClient(_token([])), Clock()
+    M365Provider(client_factory=lambda t: client, clock=clock).prove(object())
+    tenant["id"] = "tenant-2"
+    M365Provider(client_factory=lambda t: client, clock=clock).prove(object())
+    assert client.calls == 2
+
+
+def test_prove_without_a_connection_reads_the_integration_on_its_own(monkeypatch):
+    """The router calls prove(None) after releasing its connection; the provider opens a
+    short one only to read the integration, and has closed it before Microsoft is asked."""
+    events = []
+
+    class Own:
+        def __enter__(self):
+            events.append("open"); return self
+        def __exit__(self, *a):
+            events.append("close"); return False
+
+    import services.db as db
+    monkeypatch.setattr(db, "get_conn", lambda: Own())
+    monkeypatch.setattr(m365_mod, "read_integration",
+                        lambda conn: {"status": "connected", "tenant_id": "t"})
+    monkeypatch.setattr(m365_mod, "load_settings", lambda: object())
+
+    class C:
+        def token(self):
+            events.append("microsoft"); return _token([])
+    M365Provider(client_factory=lambda t: C()).prove(None)
+    assert events == ["open", "close", "microsoft"]
+
+
+# ---- the words match the status ----
+
+def test_permissions_explanation_follows_the_status(connected):
+    ok = _by_id(_build(_provider_with(FakeClient(_token([])))))["no_mail_permissions"]
+    assert "sign-in only" in ok["explanation"]
+    m365_mod._reset_proof_cache()   # each case is a fresh answer from Microsoft
+    bad = _by_id(_build(_provider_with(FakeClient(_token(["Mail.Read"])))))["no_mail_permissions"]
+    assert bad["status"] == "failed"
+    assert "sign-in only" not in bad["explanation"]
+    assert "Microsoft reports" in bad["explanation"] and "mail permissions" in bad["explanation"]
+    m365_mod._reset_proof_cache()
+    unk = _by_id(_build(_provider_with(FakeClient(raises=MailboxUnreachable("x")))))["no_mail_permissions"]
+    assert unk["status"] == "not_proven"
+    assert "sign-in only" not in unk["explanation"]
+    assert "could not confirm" in unk["explanation"]
+
+
+def test_scope_explanation_follows_the_status():
+    ok = _scope([_mailbox()])
+    assert "succeeded" in ok["explanation"]
+    bad = _scope([_mailbox(state="REVOKED", withdrawn=True)])
+    assert bad["status"] == "failed"
+    assert "succeeded" not in bad["explanation"] and "refused by Microsoft" not in bad["explanation"]
+    assert "Microsoft reports" in bad["explanation"]
+    stale = _scope([_mailbox(age=timedelta(hours=3))])
+    assert stale["status"] == "not_proven"
+    assert "succeeded" not in stale["explanation"] and "could not confirm" in stale["explanation"]
+    none = _scope([])
+    assert "succeeded" not in none["explanation"] and "could not confirm" in none["explanation"]
+
+
+def test_actions_explanation_follows_the_status(monkeypatch):
+    patterns = {k: list(v) for k, v in graph_client.ALLOWED_PATH_PATTERNS.items()}
+    patterns["DELETE"] = [re.compile(r"^/users/[^/]+/messages/[^/]+$")]
+    monkeypatch.setattr(graph_client, "ALLOWED_PATH_PATTERNS", patterns)
+    a = _by_id(_build())["actions_limited"]
+    assert a["status"] == "failed" and "refuses every other action" not in a["explanation"]
+
+
+# ---- one read of the mailboxes feeds both the line and the table ----
+
+def test_build_uses_the_mailboxes_it_is_given():
+    class P(FakeProvider):
+        def status(self, conn):
+            pytest.fail("mailboxes were given; they must not be read again")
+    items = mr.build(None, provider=P(), policy=_policy(), now=NOW,
+                     mailboxes=[_mailbox("given@cust.com")], proof=FakeProvider().proof)
+    s = _by_id(items)["mailbox_scope"]
+    assert "given@cust.com" in s["evidence"][0]["check"]
+
+
+def test_build_with_unreadable_mailboxes_is_not_proven():
+    items = mr.build(None, provider=FakeProvider(), policy=_policy(), now=NOW, mailboxes=None,
+                     proof=FakeProvider().proof)
+    assert _by_id(items)["mailbox_scope"]["status"] == "not_proven"

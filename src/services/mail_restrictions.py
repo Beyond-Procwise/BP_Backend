@@ -56,6 +56,25 @@ _TEXT = {
         "They never go out from the Procwise address instead. You are alerted."),
 }
 
+# When a provider or code check is not in force, the success sentence above would be
+# untrue in an evidence document; these say what is actually known.
+_NOT_IN_FORCE_TEXT = {
+    ("no_mail_permissions", FAILED):
+        "Microsoft reports that Procwise’s app holds mail permissions. Ask your IT to remove "
+        "them in Microsoft Entra.",
+    ("no_mail_permissions", NOT_PROVEN):
+        "We could not confirm this with Microsoft just now.",
+    ("mailbox_scope", FAILED):
+        "Microsoft reports that at least one mailbox no longer responds as limited. Its "
+        "access was withdrawn or must be checked again; see the mailboxes below.",
+    ("mailbox_scope", NOT_PROVEN):
+        "We could not confirm this: a mailbox has no recent proof (older than 2 hours), is "
+        "temporarily unavailable, or no mailbox is connected yet.",
+    ("actions_limited", FAILED):
+        "Procwise’s code allows an action that is not described here, so this could not be "
+        "confirmed.",
+}
+
 # (id, policy field, the narrow value, what the screen says when the admin chose otherwise)
 _POLICY_ITEMS = [
     ("access_level", "access_level", "read_send",
@@ -142,18 +161,20 @@ def _item(rid: str, guarantee: str, status: str, evidence: List[dict], *,
           last_checked_at: Any, title: Optional[str] = None,
           explanation: Optional[str] = None) -> Dict[str, Any]:
     t, e = _TEXT[rid]
+    e = _NOT_IN_FORCE_TEXT.get((rid, status), e)
     return {"id": rid, "title": title or t, "explanation": explanation or e,
             "guarantee": guarantee, "status": status, "last_checked_at": _iso(last_checked_at),
             "evidence": evidence}
 
 
-def _no_mail_permissions(conn: Any, provider: Any, now: datetime) -> Dict[str, Any]:
+def _no_mail_permissions(conn: Any, provider: Any, now: datetime, proof: Any) -> Dict[str, Any]:
     if provider is None:
         ev = [{"check": "Email connection", "answer": "Email is not connected",
                "result": "unknown", "at": now.isoformat()}]
         return _item("no_mail_permissions", "provider", NOT_PROVEN, ev, last_checked_at=None)
     try:
-        rows = [r for r in provider.prove(conn) if r.get("restriction") == "no_mail_permissions"]
+        rows = proof if proof is not _ASK else provider.prove(conn)
+        rows = [r for r in (rows or []) if r.get("restriction") == "no_mail_permissions"]
     except Exception:  # noqa: BLE001 - a check that cannot run proves nothing
         logger.exception("provider proof failed")
         rows = []
@@ -168,7 +189,8 @@ def _no_mail_permissions(conn: Any, provider: Any, now: datetime) -> Dict[str, A
                  last_checked_at=max((r["at"] for r in ev if r.get("at")), default=None))
 
 
-def _mailbox_scope(conn: Any, provider: Any, policy: Any, now: datetime) -> Dict[str, Any]:
+def _mailbox_scope(conn: Any, provider: Any, policy: Any, now: datetime,
+                   given: Any) -> Dict[str, Any]:
     group = getattr(policy, "restriction_group", None)
     title = (_TEXT["mailbox_scope"][0].format(group=group) if group
              else "Only the mailboxes in your restriction group can be reached")
@@ -179,12 +201,12 @@ def _mailbox_scope(conn: Any, provider: Any, policy: Any, now: datetime) -> Dict
     if provider is None:
         return done(NOT_PROVEN, [{"check": "Email connection", "answer": "Email is not connected",
                                   "result": "unknown", "at": now.isoformat()}], None)
-    try:
-        mailboxes = list(provider.status(conn).get("mailboxes") or [])
-    except Exception:  # noqa: BLE001
-        logger.exception("mailbox status could not be read")
+    if given is _ASK:
+        given = read_mailboxes(provider, conn)
+    if given is None:
         return done(NOT_PROVEN, [{"check": "Mailboxes", "answer": "Could not be read",
                                   "result": "unknown", "at": now.isoformat()}], None)
+    mailboxes = list(given)
     if not mailboxes:
         return done(NOT_PROVEN, [{"check": "Mailboxes", "answer": "No mailbox is connected yet",
                                   "result": "unknown", "at": now.isoformat()}], None)
@@ -252,11 +274,28 @@ def _policy_items(policy: Any, now: datetime) -> List[Dict[str, Any]]:
     return out
 
 
-def build(conn: Any, *, provider: Any, policy: Any, now: datetime) -> List[Dict[str, Any]]:
+_ASK = object()   # "not given: ask the provider"
+
+
+def read_mailboxes(provider: Any, conn: Any) -> Optional[List[dict]]:
+    """The provider's mailboxes, or None when they could not be read."""
+    if provider is None:
+        return []
+    try:
+        return list(provider.status(conn).get("mailboxes") or [])
+    except Exception:  # noqa: BLE001 - the restriction line says not proven
+        logger.exception("mailbox status could not be read")
+        return None
+
+
+def build(conn: Any, *, provider: Any, policy: Any, now: datetime,
+          mailboxes: Any = _ASK, proof: Any = _ASK) -> List[Dict[str, Any]]:
     """The eight restrictions, in the screen's order. ``policy`` is None when it could not
-    be read; ``provider`` is None when email was never connected."""
-    return [_no_mail_permissions(conn, provider, now),
-            _mailbox_scope(conn, provider, policy, now),
+    be read; ``provider`` is None when email was never connected. ``mailboxes`` (None =
+    could not be read) and ``proof`` may be given so one read feeds the screen and the
+    report, and so the provider's check can run after the caller's connection is closed."""
+    return [_no_mail_permissions(conn, provider, now, proof),
+            _mailbox_scope(conn, provider, policy, now, mailboxes),
             _actions_limited(now),
             *_policy_items(policy, now)]
 

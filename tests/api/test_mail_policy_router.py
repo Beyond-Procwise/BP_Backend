@@ -309,3 +309,40 @@ def test_security_reviewer_may_read_restrictions_and_the_evidence_report(reviewe
     pdf = reviewer.get(f"{B}/evidence.pdf")
     assert pdf.status_code == 200, pdf.text
     assert pdf.content[:4] == b"%PDF"
+
+
+# ---- the Microsoft check runs after the database connection is released ----
+
+def test_restrictions_prove_runs_outside_the_connection(wired, monkeypatch):
+    events = []
+
+    class Conn:
+        def __enter__(self):
+            events.append("open"); return self
+        def __exit__(self, *a):
+            events.append("close"); return False
+
+    class Prov(_Provider):
+        def status(self, conn):
+            events.append("status"); return super().status(conn)
+        def prove(self, conn):
+            assert conn is None, "prove must not be handed the request's connection"
+            events.append("prove"); return super().prove(conn)
+
+    monkeypatch.setattr(r, "_conn", lambda: Conn())
+    monkeypatch.setattr(r, "get_provider", lambda conn: Prov())
+    for url in (f"{B}/restrictions", f"{B}/evidence.pdf"):
+        events.clear()
+        assert wired.get(url).status_code == 200
+        assert events == ["open", "status", "close", "prove"], events
+
+
+def test_evidence_reads_the_mailboxes_once(wired, monkeypatch):
+    reads = []
+
+    class Prov(_Provider):
+        def status(self, conn):
+            reads.append(1); return super().status(conn)
+    monkeypatch.setattr(r, "get_provider", lambda conn: Prov())
+    assert wired.get(f"{B}/evidence.pdf").status_code == 200
+    assert len(reads) == 1
