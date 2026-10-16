@@ -43,3 +43,45 @@ def test_security_reviewer_role_defined_and_mapped():
     assert "inspect" in roles["Admin"]["allow"]
     assert "inspect" in rd["rules"]["reversible_classes"]
     assert ra["rules"]["group_to_role"]["PROCWISE_SECURITY_REVIEWER"] == "SecurityReviewer"
+
+
+def _role_update_sql(name="2026-10-16-email-settings.sql"):
+    """The role_definition UPDATE in the migration (or its rollback), as written in the file."""
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "migrations", name)
+    text = open(path).read()
+    stmts = [s for s in text.split(";") if "UPDATE proc.bp_policy" in s
+             and "{rules,roles,SecurityReviewer}'" in s]
+    assert len(stmts) == 1
+    return stmts[0][stmts[0].index("UPDATE"):]
+
+
+@pytest.mark.parametrize("details", [
+    {"policy_identifier": "role_definition", "rules": {"roles": {"Admin": {"rank": 4}}}},
+    {"policy_identifier": "role_definition", "rules": {"roles": {}}},
+])
+def test_role_update_never_nulls_a_row_missing_admin_allow(details):
+    """Migration guard: a role_definition without Admin.allow must not be wiped to NULL."""
+    with get_conn() as c:
+        c.autocommit = False
+        try:
+            with c.cursor() as cur:
+                cur.execute("CREATE TEMP TABLE bp_policy_probe (policy_details jsonb, version int, "
+                            "last_modified_by text, last_modified_date timestamptz, "
+                            "policy_status int) ON COMMIT DROP")
+                cur.execute("INSERT INTO bp_policy_probe VALUES (%s::jsonb, 1, 'x', now(), 1)",
+                            (json.dumps(details),))
+                cur.execute(_role_update_sql().replace("proc.bp_policy", "bp_policy_probe"))
+                cur.execute("SELECT policy_details FROM bp_policy_probe")
+                out = _j(cur.fetchone()[0])
+            assert out is not None and out["policy_identifier"] == "role_definition"
+            if "Admin" in details["rules"]["roles"]:
+                assert out["rules"]["roles"]["Admin"]["allow"] == ["inspect"]
+            with c.cursor() as cur:   # and the rollback takes it back out, still not NULL
+                cur.execute(_role_update_sql("2026-10-16-email-settings_rollback.sql")
+                            .replace("proc.bp_policy", "bp_policy_probe"))
+                cur.execute("SELECT policy_details FROM bp_policy_probe")
+                back = _j(cur.fetchone()[0])
+            assert back is not None and "SecurityReviewer" not in back["rules"]["roles"]
+            assert "inspect" not in back["rules"]["roles"].get("Admin", {}).get("allow", [])
+        finally:
+            c.rollback()

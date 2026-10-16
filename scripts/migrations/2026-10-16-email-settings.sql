@@ -54,9 +54,10 @@ UPDATE proc.bp_policy
            jsonb_set(policy_details, '{rules,roles,SecurityReviewer}',
                      '{"rank":1,"allow":["inspect"]}'::jsonb, true),
            '{rules,roles,Admin,allow}',
-           CASE WHEN policy_details #> '{rules,roles,Admin,allow}' ? 'inspect'
-                THEN policy_details #> '{rules,roles,Admin,allow}'
-                ELSE (policy_details #> '{rules,roles,Admin,allow}') || '["inspect"]'::jsonb END,
+           -- COALESCE: a missing Admin.allow must never make jsonb_set (strict) NULL the row.
+           CASE WHEN COALESCE(policy_details #> '{rules,roles,Admin,allow}', '[]'::jsonb) ? 'inspect'
+                THEN COALESCE(policy_details #> '{rules,roles,Admin,allow}', '[]'::jsonb)
+                ELSE COALESCE(policy_details #> '{rules,roles,Admin,allow}', '[]'::jsonb) || '["inspect"]'::jsonb END,
            true),
          '{rules,reversible_classes}',
          CASE WHEN COALESCE(policy_details #> '{rules,reversible_classes}', '[]'::jsonb) ? 'inspect'
@@ -69,7 +70,7 @@ UPDATE proc.bp_policy
  WHERE policy_status = 1
    AND policy_details->>'policy_identifier' = 'role_definition'
    AND NOT (policy_details #> '{rules,roles,SecurityReviewer}' = '{"rank":1,"allow":["inspect"]}'::jsonb
-            AND policy_details #> '{rules,roles,Admin,allow}' ? 'inspect'
+            AND COALESCE(policy_details #> '{rules,roles,Admin,allow}', '[]'::jsonb) ? 'inspect'
             AND COALESCE(policy_details #> '{rules,reversible_classes}', '[]'::jsonb) ? 'inspect');
 
 UPDATE proc.bp_policy
