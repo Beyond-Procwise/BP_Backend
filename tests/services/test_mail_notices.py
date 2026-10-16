@@ -86,3 +86,28 @@ def test_failure_storing_does_not_lose_the_notice(world, monkeypatch):
     ses = FakeSES()
     assert _go(ses)["route"] == "procwise_address"
     assert len(ses.calls) == 1
+
+
+def test_service_subject_without_at_sends_from_procwise(world):
+    ses = FakeSES()
+    out = mail_notices.notify(object(), for_user="digest-service", recipients=["ann@yourcompany.com"],
+                              subject="s", body="b", source_ref="d", email_service=ses)
+    assert out["route"] == "procwise_address" and len(ses.calls) == 1 and not world.created
+
+
+@pytest.mark.parametrize("who", ["@yourcompany.com", "ann@", "", None])
+def test_half_addresses_are_not_sign_in_emails(world, who):
+    ses = FakeSES()
+    out = mail_notices.notify(object(), for_user=who, recipients=["ann@yourcompany.com"],
+                              subject="s", body="b", source_ref="d", email_service=ses)
+    assert out["route"] == "procwise_address" and not world.created
+
+
+def test_database_down_still_sends_from_procwise(world):
+    def down():
+        raise RuntimeError("db down")
+    ses = FakeSES()
+    out = mail_notices.notify(None, conn_factory=down, for_user="ann@yourcompany.com",
+                              recipients=["ann@yourcompany.com"], subject="s", body="b",
+                              source_ref="d", email_service=ses)
+    assert out["route"] == "procwise_address" and len(ses.calls) == 1

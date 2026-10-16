@@ -40,8 +40,14 @@ def _all_internal(policy, recipients: List[str]) -> bool:
     return True
 
 
+def _looks_like_email(value) -> bool:
+    local, at, domain = str(value or "").strip().partition("@")
+    return bool(at and local and domain and "@" not in domain)
+
+
 def _via_mailbox(conn, for_user, recipients, subject, body, source_ref):
-    if not str(for_user or "").strip():
+    # Only a real sign-in address can ever see and approve a queued notice.
+    if not _looks_like_email(for_user):
         return None
     try:
         policy = mail_policy.load()
@@ -60,8 +66,20 @@ def _via_mailbox(conn, for_user, recipients, subject, body, source_ref):
 
 
 def notify(conn, *, for_user: str, recipients: List[str], subject: str, body: str,
-           source_ref: str, email_service, sender: str = None) -> Dict[str, Any]:
-    queued = _via_mailbox(conn, for_user, recipients, subject, body, source_ref) if conn is not None else None
+           source_ref: str, email_service, sender: str = None, conn_factory=None) -> Dict[str, Any]:
+    """``conn`` may be given, or ``conn_factory`` (e.g. ``get_conn``) to open one only here.
+    A connection that cannot be opened means the Procwise-address send, never no send."""
+    queued = None
+    try:
+        if conn is not None:
+            queued = _via_mailbox(conn, for_user, recipients, subject, body, source_ref)
+        elif conn_factory is not None:
+            with conn_factory() as own:
+                queued = _via_mailbox(own, for_user, recipients, subject, body, source_ref)
+    except Exception:
+        logger.warning("could not reach the database for a notice; sending from the Procwise address",
+                       exc_info=True)
+        queued = None
     if queued is not None:
         return queued
     kwargs = {"subject": subject, "body": body, "recipients": recipients}
