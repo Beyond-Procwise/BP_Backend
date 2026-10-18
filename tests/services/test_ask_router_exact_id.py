@@ -117,13 +117,14 @@ def test_a_database_failure_falls_back_to_nothing():
 
 # --- router ----------------------------------------------------------------------------------------------------------------------
 
-@pytest.mark.parametrize("text", ["Hello", "hi", "Hi there", "Good morning!", "Good afternoon team", "hey, how are you today?", "Thanks", "thank you!"])
+@pytest.mark.parametrize("text", ["Hello", "hi", "Hi there", "Good morning!", "Good afternoon team", "hey, how are you today?"])
 def test_greetings_route_to_greeting(text):
     assert ask_router.decide(text).route == ask_router.GREETING
 
 
 @pytest.mark.parametrize("text", [
     "Hello, can you show me our contracts?", "Good morning - which POs are late?", "Thanks, now list the suppliers",
+    "Thanks", "thank you!", "ok", "great",
     "How are you going to approve this?", "hi", ])
 def test_only_a_bare_greeting_skips_retrieval(text):
     expected = ask_router.GREETING if text == "hi" else ask_router.RAG

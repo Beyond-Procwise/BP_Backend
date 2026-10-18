@@ -30,7 +30,7 @@ from services.redis_client import get_redis_client
 from . import corpus_facts
 from .analytics import ask as analytics_ask
 from . import ask_routing
-from . import ask_exact_id, ask_flags, ask_input_guard, ask_output_check, ask_router, ask_trace
+from . import ask_condense, ask_exact_id, ask_flags, ask_input_guard, ask_output_check, ask_router, ask_trace
 from .agent_actions import record_action
 from .json_field_stream import JsonFieldStreamer
 from .response_style import enforce_response_style
@@ -2736,6 +2736,36 @@ class RAGPipeline:
         logger.info("ask exact-id lookup: ids=%s found=%d missing=%s", ids, len(found["records"]), found["missing"])
         return text
 
+    def _condense_question(self, query: str, history: List[Dict[str, Any]], model: str,
+                           emit: Callable[..., None]) -> str:
+        """The question to search with: standalone if there is history to resolve it against, else unchanged.
+
+        One short model call, through ``_generate_response`` so it uses exactly the options every other
+        caller does (a different set makes Ollama load a second copy of the model). Any failure, or a rewrite
+        ``ask_condense.accept`` does not trust, leaves the question as the user typed it.
+        """
+        tr = ask_trace.current()
+        tr.set_queries(original=query)
+        if not history or not ask_flags.enabled(ask_flags.CONDENSE):
+            return query
+        emit("stage", stage="condensing")
+        try:
+            with tr.span("condense"):
+                raw = self._generate_response(
+                    ask_condense.build_prompt(query, [
+                        {"query": h.get("query", ""), "answer": self._history_answer_as_text(str(h.get("answer", "")))}
+                        for h in history[-ask_condense.MAX_TURNS:]]),
+                    model, system=ask_condense.SYSTEM, temperature=0.0)
+        except Exception:
+            logger.exception("history condensing failed; searching with the question as typed")
+            return query
+        standalone = ask_condense.accept(raw, query)
+        if standalone is None:
+            return query
+        tr.set_queries(standalone=standalone)
+        logger.info("ask condensed a follow-up into a standalone question")
+        return standalone
+
     def _agent_context(self, history: List[Dict[str, Any]],
                        screen_context: Optional[str]) -> Optional[str]:
         """What the agent is told besides the question: the screen, and the last three turns."""
@@ -2880,6 +2910,8 @@ class RAGPipeline:
         routed = self._route_before_retrieval(query, user_id, history, _emit)
         if routed is not None:
             return routed
+        original_query = query            # what the user typed: kept in the history and the cache key
+        query = self._condense_question(original_query, history, model_name or llm_to_use, _emit)
         exact_text = self._exact_id_facts(query)
 
         _emit("stage", stage="retrieving", **({"lookup": "records"} if exact_text else {}))
@@ -2922,7 +2954,7 @@ class RAGPipeline:
         if not files:
             try:
                 cache_key = self._build_cache_key(
-                    query,
+                    original_query,
                     user_id,
                     session_id,
                     model_name or llm_to_use,
@@ -2965,7 +2997,7 @@ class RAGPipeline:
             or (user_id.strip() if isinstance(user_id, str) else str(user_id))
         )
         static_response = self._try_static_answer(
-            query,
+            original_query,
             user_id,
             session_id=static_session_token,
         )
@@ -3227,13 +3259,13 @@ class RAGPipeline:
             )
             fallback = self._remove_placeholders(fallback)
             html_fallback = self._normalise_answer_html(fallback)
-            history.append({"query": self._redact_identifiers(query), "answer": fallback})
+            history.append({"query": self._redact_identifiers(original_query), "answer": fallback})
             self.history_manager.save_history(user_id, history)
             history_fingerprint = self._build_history_fingerprint(history)
             if cache_key:
                 try:
                     cache_key = self._build_cache_key(
-                        query,
+                        original_query,
                         user_id,
                         session_id,
                         model_name or llm_to_use,
@@ -3317,13 +3349,13 @@ class RAGPipeline:
         )
 
         html_answer = self._normalise_answer_html(answer)
-        history.append({"query": self._redact_identifiers(query), "answer": html_answer})
+        history.append({"query": self._redact_identifiers(original_query), "answer": html_answer})
         self.history_manager.save_history(user_id, history)
         history_fingerprint = self._build_history_fingerprint(history)
         if cache_key:
             try:
                 cache_key = self._build_cache_key(
-                    query,
+                    original_query,
                     user_id,
                     session_id,
                     model_name or llm_to_use,

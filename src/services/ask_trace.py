@@ -47,9 +47,12 @@ class Trace:
     def set_route(self, *, route: str, score: Optional[float] = None, threshold: Optional[float] = None) -> None:
         self.route = {"route": route, "score": score, "threshold": threshold}
 
-    def set_queries(self, *, original: Optional[str] = None, rewritten: Optional[str] = None) -> None:
+    def set_queries(self, *, original: Optional[str] = None, rewritten: Optional[str] = None,
+                    standalone: Optional[str] = None) -> None:
         if original is not None:
-            self.queries["original"] = original
+            self.queries.setdefault("original", original)
+        if standalone is not None:
+            self.queries["standalone"] = standalone
         if rewritten is not None:
             self.queries["rewritten"] = rewritten
 

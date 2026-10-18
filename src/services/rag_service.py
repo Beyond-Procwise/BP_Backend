@@ -54,6 +54,15 @@ configure_gpu()
 logger = logging.getLogger(__name__)
 
 
+# Question words that used to become a HARD filter (``source_type == 'Contract'`` and so on).
+# The main collection holds only a lowercase ``document_type`` (quote / purchase_order / invoice /
+# contract) and no ``source_type``, so for every contract, PO, invoice or quote question that filter
+# matched nothing and retrieval returned no documents. Worse, the typing in the index is not reliable:
+# the Ironbridge master services agreement is indexed as a 'quote'. So these four are a PREFERENCE
+# (the focus-term bonus in ``search``) rather than an exclusion. "Policy" stays a hard filter: the
+# policy collection does carry ``source_type == 'Policy'`` and relies on it.
+SOFT_TYPE_WORDS = frozenset({"PO", "Invoice", "Quote", "Contract"})
+
 FAST_RERANK_MODEL = "BAAI/bge-reranker-base"
 FAST_RERANK_LIMIT = 6          # candidates scored by the cross-encoder
 FAST_RERANK_MAX_CHARS = 600    # characters of each candidate shown to it
@@ -1813,7 +1822,19 @@ class RAGService:
             unique = " ".join(sorted(set(expansions)))
             normalised = f"{normalised} {unique}".strip()
 
+        if ask_flags.enabled(ask_flags.TYPE_FILTER_FIX):
+            conditions = self._fold_type_conditions(conditions)
         return normalised, conditions, focus_tokens
+
+    @staticmethod
+    def _fold_type_conditions(conditions: List[Any]) -> List[Any]:
+        """Drop the hard document-type conditions (see SOFT_TYPE_WORDS); the focus tokens still rank them first."""
+        return [
+            c for c in conditions
+            if not (getattr(c, "key", None) == "source_type"
+                    and isinstance(getattr(c, "match", None), models.MatchValue)
+                    and c.match.value in SOFT_TYPE_WORDS)
+        ]
 
     def _compose_hint_text(
         self,
