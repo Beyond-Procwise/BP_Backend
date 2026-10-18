@@ -23,7 +23,7 @@ from qdrant_client import models
 from qdrant_client.http.exceptions import UnexpectedResponse
 from utils.gpu import configure_gpu, load_cross_encoder
 from services.semantic_cache import SemanticCacheManager
-from . import ask_trace
+from . import ask_flags, ask_trace
 from services.document_extractor import LayoutAwareParser
 from services.semantic_chunker import SemanticChunker, SemanticChunk
 
@@ -52,6 +52,11 @@ configure_gpu()
 
 
 logger = logging.getLogger(__name__)
+
+
+FAST_RERANK_MODEL = "BAAI/bge-reranker-base"
+FAST_RERANK_LIMIT = 6          # candidates scored by the cross-encoder
+FAST_RERANK_MAX_CHARS = 600    # characters of each candidate shown to it
 
 
 class RAGService:
@@ -100,6 +105,12 @@ class RAGService:
             "reranker_model",
             "BAAI/bge-reranker-large",
         )
+        # The large reranker does not fit the GPU next to the live LLM and runs on the CPU
+        # (~21-27 s for 12 candidates on this host). The fast setting trades it for the base
+        # model on fewer, shorter candidates; see FAST_RERANK_* below. Read once, at start-up.
+        self._fast_rerank = ask_flags.enabled(ask_flags.FAST_RERANK)
+        if self._fast_rerank:
+            model_name = FAST_RERANK_MODEL
         self._reranker = load_cross_encoder(
             model_name, cross_encoder_cls, getattr(self.agent_nick, "device", None)
         )
@@ -132,6 +143,9 @@ class RAGService:
         self._reranker_score_floor = float(
             getattr(self.settings, "rag_reranker_score_floor", 0.35) or 0.0
         )
+        if self._fast_rerank:
+            self._reranker_limit = min(self._reranker_limit, FAST_RERANK_LIMIT)
+            self._reranker_max_chars = min(self._reranker_max_chars, FAST_RERANK_MAX_CHARS)
         self._rerank_cache_size = max(
             int(getattr(self.settings, "rag_reranker_cache_size", 384) or 0), 0
         )
@@ -1232,7 +1246,8 @@ class RAGService:
             if query_matrix is not None and query_vector is not None:
                 return query_matrix, query_vector
 
-            encoded = self.embedder.encode(search_text, normalize_embeddings=True)
+            with ask_trace.current().span("embed_query"):
+                encoded = self.embedder.encode(search_text, normalize_embeddings=True)
             arr = (
                 encoded
                 if isinstance(encoded, np.ndarray)
@@ -1470,11 +1485,12 @@ class RAGService:
 
         if collections_to_query and self.client is not None:
             _, vector = _ensure_query_vectors()
-            batched_hits = self._search_collections_parallel(
-                collections_to_query,
-                vector,
-                limit=prefetch,
-            )
+            with ask_trace.current().span("qdrant_search"):
+                batched_hits = self._search_collections_parallel(
+                    collections_to_query,
+                    vector,
+                    limit=prefetch,
+                )
             for name, _ in collections_to_query:
                 hits = batched_hits.get(name, [])
                 for rank, hit in enumerate(hits[:prefetch], 1):
@@ -1519,7 +1535,8 @@ class RAGService:
                 pairs.append((pair_query, doc_text))
 
             try:
-                target_scores = self._batched_reranker_predict(pairs)
+                with ask_trace.current().span("rerank"):
+                    target_scores = self._batched_reranker_predict(pairs)
             except Exception:  # pragma: no cover - defensive logging only
                 logger.warning(
                     "Cross-encoder reranking failed; using aggregated scores for fallback",
