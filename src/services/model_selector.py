@@ -30,7 +30,7 @@ from services.redis_client import get_redis_client
 from . import corpus_facts
 from .analytics import ask as analytics_ask
 from . import ask_routing
-from . import ask_condense, ask_exact_id, ask_flags, ask_input_guard, ask_output_check, ask_router, ask_trace
+from . import ask_compare, ask_condense, ask_exact_id, ask_flags, ask_grade, ask_input_guard, ask_output_check, ask_router, ask_trace
 from .agent_actions import record_action
 from .json_field_stream import JsonFieldStreamer
 from .response_style import enforce_response_style
@@ -1639,9 +1639,12 @@ class RAGPipeline:
         nltk_features: Optional[Dict[str, Any]],
         ad_hoc_context: str,
         corpus_context: str = "",
+        comparison_note: str = "",
     ) -> str:
         redacted_query = self._redact_identifiers(query)
         lines: List[str] = [f"User question: {redacted_query}"]
+        if comparison_note:
+            lines.append(comparison_note)
 
         # Counted rows from our own tables. These go in verbatim and ahead of everything else,
         # and they deliberately bypass the draft builder: that builder reshapes retrieved text
@@ -2690,6 +2693,79 @@ class RAGPipeline:
                         "score": _score(h)} for h in (hits or [])],
             seconds=seconds)
 
+    def _timed_search(self, query: str, search_kwargs: Dict[str, Any], tr: "ask_trace.Trace") -> List[Any]:
+        """One vector retrieval, recorded in the trace."""
+        started = time.perf_counter()
+        with tr.span("retrieval"):
+            hits = self.rag.search(query, **search_kwargs)
+        self._trace_retrieval(tr, hits, time.perf_counter() - started)
+        return hits
+
+    def _search_graded(self, query: str, search_kwargs: Dict[str, Any], tr: "ask_trace.Trace",
+                       emit: Callable[..., None]) -> Tuple[List[Any], Optional["ask_grade.Grade"]]:
+        """Retrieve, and if the best document is not relevant enough retry with reworded queries (at most two).
+
+        Returns the best attempt's documents and its grade. Ungraded (flag off, or no calibrated threshold for
+        the reranker in use) is returned as no grade at all, so the caller behaves exactly as before.
+        """
+        started = time.perf_counter()
+        hits = self._timed_search(query, search_kwargs, tr)
+        if not ask_flags.enabled(ask_flags.GRADE):
+            return hits, None
+        model = getattr(self.rag, "reranker_model_name", None)
+        best_hits, best = hits, ask_grade.grade(hits, model)
+        tr.add_grade(query=query, grade=best.as_dict(), attempt=0)
+        if best.graded and not best.relevant:
+            for attempt, reworded in enumerate(ask_grade.retry_queries(query), 1):
+                if time.perf_counter() - started > ask_grade.RETRY_BUDGET_S:
+                    break
+                emit("stage", stage="retrying", attempt=attempt)
+                again = self._timed_search(reworded, search_kwargs, tr)
+                g = ask_grade.grade(again, model)
+                tr.add_grade(query=reworded, grade=g.as_dict(), attempt=attempt)
+                if (g.score if g.score is not None else float("-inf")) > (best.score if best.score is not None else float("-inf")):
+                    best_hits, best = again, g
+                if g.relevant:
+                    break
+        return best_hits, best
+
+    def _search_comparison(self, comparison: "ask_compare.Comparison", search_kwargs: Dict[str, Any],
+                           tr: "ask_trace.Trace") -> Tuple[List[Any], List[str]]:
+        """One retrieval per side of a comparison. Returns (documents tagged with their side, sides with nothing relevant)."""
+        per_side = {**search_kwargs, "top_k": 4}
+        hits_all: List[Any] = []
+        missing: List[str] = []
+        found: Dict[str, int] = {}
+        for entity, side_query in zip(comparison.entities, comparison.search_queries()):
+            # A document counts for this side only if it names it: "Meridia payment terms" can fetch a generic
+            # payment-terms policy, and labelling that as Meridia's data would answer with another document's text.
+            about = [h for h in self._timed_search(side_query, per_side, tr)
+                     if ask_compare.mentions(entity, getattr(h, "payload", {}) or {})]
+            if not about and side_query != entity:
+                about = [h for h in self._timed_search(entity, per_side, tr)
+                         if ask_compare.mentions(entity, getattr(h, "payload", {}) or {})]
+            found[entity] = len(about)
+            if not about:
+                missing.append(entity)
+                continue
+            for hit in about:
+                payload = dict(getattr(hit, "payload", {}) or {})
+                payload["comparison_entity"] = entity
+                hit.payload = payload
+            hits_all.extend(about)
+        tr.set_comparison(entities=list(comparison.entities), found=found)
+        return hits_all, missing
+
+    def _not_found_answer(self, original_query: str, user_id: str, history: List[Dict[str, Any]],
+                          emit: Callable[..., None], *, searched: int) -> Dict:
+        """An explicit "not found" - what the documents did not contain is said, never filled in."""
+        text = ask_grade.not_found_text(searched)
+        emit("delta", text=text)
+        emit("stage", stage="answer_complete")
+        history.append({"query": self._redact_identifiers(original_query), "answer": text})
+        self.history_manager.save_history(user_id, history)
+        return {"answer": text, "follow_ups": [], "retrieved_documents": [], "next_steps": []}
+
     def _route_before_retrieval(self, query: str, user_id: str, history: List[Dict[str, Any]],
                                 emit: Callable[..., None]) -> Optional[Dict]:
         """The router: a greeting or an inventory question is answered here, without retrieval or a model call.
@@ -3139,16 +3215,26 @@ class RAGPipeline:
         _tr = ask_trace.current()
         _tr.set_queries(original=query)
         _search_started = time.perf_counter()
+        comparison: Optional[ask_compare.Comparison] = None
+        comparison_missing: List[str] = []
+        grade_outcome: Optional[ask_grade.Grade] = None
         if exact_text and not restrict_to_uploaded:
             reranked = []       # the question names an identifier: answered from the records, no vector search
             _tr.set_route(route="exact_id", score=None, threshold=None)
         else:
             exact_text = ""
-            with _tr.span("retrieval"):
-                reranked = self.rag.search(query, **search_kwargs)
-        if not exact_text:
-            self._trace_retrieval(_tr, reranked, time.perf_counter() - _search_started)
+            if ask_flags.enabled(ask_flags.COMPARE) and not restrict_to_uploaded:
+                comparison = ask_compare.detect(query)
+            if comparison is not None:
+                reranked, comparison_missing = self._search_comparison(comparison, search_kwargs, _tr)
+            else:
+                reranked, grade_outcome = self._search_graded(query, search_kwargs, _tr, _emit)
         knowledge_items = self._prepare_knowledge_items(reranked)
+        if comparison is not None:
+            for item in knowledge_items:
+                entity = (item.get("payload") or {}).get("comparison_entity")
+                if entity:
+                    item["document"] = f"{entity}: {item.get('document') or 'record'}"
 
         # Questions about our own corpus ("which suppliers do we buy from", "what did we
         # spend", "what is still open") have exact answers, and they live in Postgres, not in
@@ -3250,6 +3336,11 @@ class RAGPipeline:
                             }
                         )
 
+        if (grade_outcome is not None and grade_outcome.graded and not grade_outcome.relevant
+                and not corpus_context and not exact_text and not ad_hoc_context and not restrict_to_uploaded
+                and not any(i.get("collection") == "static_procurement_qa" for i in knowledge_items)):
+            return self._not_found_answer(original_query, user_id, history, _emit, searched=len(reranked or []))
+
         if not knowledge_items and not ad_hoc_context:
             fallback = self._citation_guidelines.get(
                 "fallback",
@@ -3318,6 +3409,9 @@ class RAGPipeline:
         )
         _emit("stage", stage="generating", model=llm_to_use)
 
+        compose_extra: Dict[str, Any] = {}
+        if comparison is not None:
+            compose_extra["comparison_note"] = ask_compare.instruction(comparison, comparison_missing)
         prompt = self._compose_llm_prompt(
             query,
             context_body,
@@ -3325,6 +3419,7 @@ class RAGPipeline:
             raw_nltk_features,
             ad_hoc_context,
             corpus_context=corpus_context,
+            **compose_extra,
         )
         llm_payload = self._generate_response(
             prompt,

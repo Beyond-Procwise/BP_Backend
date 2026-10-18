@@ -25,6 +25,8 @@ class Trace:
         self.queries: Dict[str, Any] = {}
         self.retrievals: List[Dict[str, Any]] = []
         self.output_filter: Dict[str, Any] = {}
+        self.grading: List[Dict[str, Any]] = []
+        self.comparison: Dict[str, Any] = {}
         self.stages: Dict[str, float] = {}      # stage name -> seconds since start when it began
         self.timings: Dict[str, float] = {}     # sub-stage name -> seconds spent
 
@@ -59,6 +61,12 @@ class Trace:
     def add_retrieval(self, *, documents: List[Dict[str, Any]], seconds: float) -> None:
         self.retrievals.append({"count": len(documents), "documents": documents, "seconds": round(seconds, 3)})
 
+    def add_grade(self, *, query: str, grade: Dict[str, Any], attempt: int) -> None:
+        self.grading.append({"attempt": attempt, "query": query, **grade})
+
+    def set_comparison(self, *, entities: List[str], found: Dict[str, int]) -> None:
+        self.comparison = {"entities": entities, "documents_found": found}
+
     def set_output_filter(self, *, decision: str, rule: Optional[str] = None, reason: Optional[str] = None) -> None:
         self.output_filter = {"decision": decision, "rule": rule, "reason": reason}
 
@@ -70,6 +78,8 @@ class Trace:
             "retrieval_count": len(self.retrievals),
             "retrievals": self.retrievals,
             "output_filter": self.output_filter,
+            "grading": self.grading,
+            "comparison": self.comparison,
             "stage_starts_s": self.stages,
             "sub_stage_s": self.timings,
             "total_s": round(time.perf_counter() - self._t0, 3),
