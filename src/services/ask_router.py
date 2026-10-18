@@ -40,9 +40,11 @@ class RouteDecision:
                 "threshold": self.threshold, "best_route": self.best_route, "reason": self.reason}
 
 
+# Greetings only. "Thanks" is NOT one: it is an acknowledgement, answered "you're welcome" by the existing
+# feedback-acknowledgement path, and a "Hello!" in reply to it would be wrong.
 _GREETING = re.compile(
     r"^\s*(?:(?:hi|hello|hey|hiya|howdy|good\s+(?:morning|afternoon|evening)|greetings)(?:\s+(?:there|team|all|everyone|joshi))?"
-    r"|thanks|thank\s+you|cheers|ok(?:ay)?|great|cool)"
+    r")"
     r"(?:\s*[,.!-]*\s*(?:how\s+are\s+you(?:\s+today)?|how(?:'|’)?s\s+it\s+going|hope\s+you(?:'|’)?re\s+well))?\s*[.!?]*\s*$", re.I)
 GREETING_REPLY = "Hello! I can answer questions about your suppliers, purchase orders, contracts, spend and procurement policies. What would you like to know?"
 
