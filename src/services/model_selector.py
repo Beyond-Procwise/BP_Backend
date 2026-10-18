@@ -30,7 +30,7 @@ from services.redis_client import get_redis_client
 from . import corpus_facts
 from .analytics import ask as analytics_ask
 from . import ask_routing
-from . import ask_flags, ask_input_guard, ask_output_check, ask_trace
+from . import ask_exact_id, ask_flags, ask_input_guard, ask_output_check, ask_router, ask_trace
 from .agent_actions import record_action
 from .json_field_stream import JsonFieldStreamer
 from .response_style import enforce_response_style
@@ -2675,6 +2675,67 @@ class RAGPipeline:
                 "answered_by": routing["answered_by"],
                 "guard": {"category": decision.category, "rule": decision.rule}}
 
+    @staticmethod
+    def _trace_retrieval(tr: "ask_trace.Trace", hits: Any, seconds: float) -> None:
+        """Record one vector retrieval in the trace: how many documents, which, with what score."""
+        def _score(h: Any) -> float:
+            for name in ("combined_score", "aggregated", "score"):
+                value = getattr(h, name, None)
+                if isinstance(value, (int, float)):
+                    return round(float(value), 4)
+            return 0.0
+
+        tr.add_retrieval(
+            documents=[{"id": str(getattr(h, "id", None) or (getattr(h, "payload", None) or {}).get("document_id") or ""),
+                        "score": _score(h)} for h in (hits or [])],
+            seconds=seconds)
+
+    def _route_before_retrieval(self, query: str, user_id: str, history: List[Dict[str, Any]],
+                                emit: Callable[..., None]) -> Optional[Dict]:
+        """The router: a greeting or an inventory question is answered here, without retrieval or a model call.
+
+        A calculation is recognised and traced, but there is no registered formula for the calculations people
+        ask in chat (no landed-cost formula exists in the register), so it carries on to retrieval; nothing is
+        computed by the model that a formula should compute. Every decision logs its score and threshold.
+        """
+        tr = ask_trace.current()
+        if not ask_flags.enabled(ask_flags.ROUTER):
+            return None
+        decision = ask_router.decide(
+            query, embedder=getattr(getattr(self, "rag", None), "embedder", None),
+            use_embedding=ask_flags.enabled(ask_flags.ROUTER_EMBED))
+        tr.set_route(route=decision.route, score=decision.score, threshold=decision.threshold)
+        logger.info("ask route: %s", decision.log_fields())
+        if decision.route == ask_router.GREETING:
+            return self._canned_answer(ask_router.GREETING_REPLY, query, user_id, history, emit, "greeting")
+        if decision.route == ask_router.INVENTORY and not ask_router.inventory_data_exists(
+                getattr(getattr(self, "agent_nick", None), "get_db_connection", lambda: None)):
+            return self._canned_answer(ask_router.INVENTORY_CLARIFY, query, user_id, history, emit, "inventory")
+        return None
+
+    def _canned_answer(self, text: str, query: str, user_id: str, history: List[Dict[str, Any]],
+                       emit: Callable[..., None], route: str) -> Dict:
+        emit("stage", stage="route", route=route)
+        emit("delta", text=text)
+        emit("stage", stage="answer_complete")
+        history.append({"query": self._redact_identifiers(query), "answer": text})
+        self.history_manager.save_history(user_id, history)
+        return {"answer": text, "follow_ups": [], "retrieved_documents": [], "next_steps": []}
+
+    def _exact_id_facts(self, query: str) -> str:
+        """Rows for any PO, part or supplier id in the question, as prompt text; empty if none or not found."""
+        if not ask_flags.enabled(ask_flags.EXACT_ID):
+            return ""
+        ids = ask_exact_id.extract(query)
+        if not ids:
+            return ""
+        tr = ask_trace.current()
+        with tr.span("exact_id_lookup"):
+            found = ask_exact_id.fetch(getattr(getattr(self, "agent_nick", None), "get_db_connection", None), ids)
+        text = ask_exact_id.render(found)
+        logger.info("ask exact-id lookup: ids=%s found=%d missing=%s", ids, len(found["records"]), found["missing"])
+        return text
+
     def _agent_context(self, history: List[Dict[str, Any]],
                        screen_context: Optional[str]) -> Optional[str]:
         """What the agent is told besides the question: the screen, and the last three turns."""
@@ -2814,7 +2875,12 @@ class RAGPipeline:
                 f"The {ask_routing.agent_label(responder.slug)} could not answer, "
                 "so this was answered generally.").answered_by()
 
-        _emit("stage", stage="retrieving")
+        routed = self._route_before_retrieval(query, user_id, history, _emit)
+        if routed is not None:
+            return routed
+        exact_text = self._exact_id_facts(query)
+
+        _emit("stage", stage="retrieving", **({"lookup": "records"} if exact_text else {}))
 
         candidate_keys: List[str] = []
         cleaned_session = (
@@ -3041,15 +3107,15 @@ class RAGPipeline:
         _tr = ask_trace.current()
         _tr.set_queries(original=query)
         _search_started = time.perf_counter()
-        with _tr.span("retrieval"):
-            reranked = self.rag.search(query, **search_kwargs)
-        _tr.add_retrieval(
-            documents=[
-                {"id": str(getattr(h, "id", None) or (getattr(h, "payload", None) or {}).get("document_id") or ""),
-                 "score": round(float(next((v for v in (getattr(h, "combined_score", None), getattr(h, "aggregated", None),
-                                                        getattr(h, "score", None)) if isinstance(v, (int, float))), 0.0)), 4)}
-                for h in (reranked or [])],
-            seconds=time.perf_counter() - _search_started)
+        if exact_text and not restrict_to_uploaded:
+            reranked = []       # the question names an identifier: answered from the records, no vector search
+            _tr.set_route(route="exact_id", score=None, threshold=None)
+        else:
+            exact_text = ""
+            with _tr.span("retrieval"):
+                reranked = self.rag.search(query, **search_kwargs)
+        if not exact_text:
+            self._trace_retrieval(_tr, reranked, time.perf_counter() - _search_started)
         knowledge_items = self._prepare_knowledge_items(reranked)
 
         # Questions about our own corpus ("which suppliers do we buy from", "what did we
@@ -3081,6 +3147,15 @@ class RAGPipeline:
                         "document": "Extracted documents (live)",
                         "summary": rendered,
                     })
+
+        if exact_text:
+            corpus_context = exact_text + ("\n\n" + corpus_context if corpus_context else "")
+            knowledge_items.insert(0, {
+                "payload": {"source": "exact_id_lookup", "answer": exact_text, "collection_name": "records_lookup",
+                            "source_label": "Your records"},
+                "collection": "records_lookup", "source_label": "Your records",
+                "document": "Records (exact match)", "summary": exact_text,
+            })
 
         # The second leak path for the canned demo answers, and the worse of the two: this one
         # had no confidence gate whatsoever — only a SUCCESS check, and RAGAgent._select_topic
