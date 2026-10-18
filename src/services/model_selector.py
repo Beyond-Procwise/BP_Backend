@@ -2979,8 +2979,6 @@ class RAGPipeline:
             display_currency=display_currency,
             persona=persona or "default",
             action_id=action_id,
-            emit=_emit,
-            user_id=user_id,
         )
         if analytic is not None:
             history.append({"query": self._redact_identifiers(query),
