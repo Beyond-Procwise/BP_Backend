@@ -120,6 +120,7 @@ class RAGService:
         self._fast_rerank = ask_flags.enabled(ask_flags.FAST_RERANK)
         if self._fast_rerank:
             model_name = FAST_RERANK_MODEL
+        self.reranker_model_name = model_name      # which scale the rerank scores are on (ask_grade thresholds are per model)
         self._reranker = load_cross_encoder(
             model_name, cross_encoder_cls, getattr(self.agent_nick, "device", None)
         )
@@ -1631,6 +1632,9 @@ class RAGService:
                 + _priority_bonus(hit)
             )
             hit.rerank_score = base_score
+            # True only when the cross-encoder actually scored this hit. Otherwise ``rerank_score`` holds the
+            # tiny retrieval-fusion score, which is on a different scale and must not be read as relevance.
+            hit.reranked = idx in rerank_scores
             hit.combined_score = combined
             hit.context_score = aggregated_score
             scored_hits.append((hit, combined, base_score))
