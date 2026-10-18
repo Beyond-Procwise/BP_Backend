@@ -23,6 +23,7 @@ from qdrant_client import models
 from qdrant_client.http.exceptions import UnexpectedResponse
 from utils.gpu import configure_gpu, load_cross_encoder
 from services.semantic_cache import SemanticCacheManager
+from . import ask_trace
 from services.document_extractor import LayoutAwareParser
 from services.semantic_chunker import SemanticChunker, SemanticChunk
 
@@ -1193,6 +1194,7 @@ class RAGService:
             auto_conditions,
             focus_document_types,
         ) = self._rewrite_query(base_query)
+        ask_trace.current().set_queries(rewritten=rewritten_query)
         combined_filter = self._merge_filters(filters, auto_conditions)
         combined_filter, session_key = self._separate_session_scope(
             combined_filter, session_id

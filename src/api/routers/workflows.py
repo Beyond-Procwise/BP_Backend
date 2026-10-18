@@ -19,6 +19,7 @@ from orchestration.orchestrator import Orchestrator
 from api.auth import require_user
 from api.endpoint_gate import require as gate
 from services.model_selector import RAGPipeline
+from services import ask_trace
 from services.opportunity_service import record_opportunity_feedback
 from services.email_dispatch_service import EmailDispatchService
 from services.backend_scheduler import BackendScheduler
@@ -926,8 +927,10 @@ async def ask_question(
     header_session = _clean(request.headers.get("x-session-id"))
     resolved_session = _clean(req.session_id) or header_session or _clean(asker)
 
+    show_trace = ask_trace.visible_to(principal, request.headers.get("x-ask-trace"))
     result = await run_in_threadpool(
         pipeline.answer_question,
+        trace=show_trace,
         query=req.query,
         user_id=asker,
         session_id=resolved_session,
@@ -979,6 +982,7 @@ async def ask_question_stream(
     header_session = (request.headers.get("x-session-id") or "").strip() or None
     asker = _asker(principal, req.user_id)
     resolved_session = req.session_id or header_session or asker
+    show_trace = ask_trace.visible_to(principal, request.headers.get("x-ask-trace"))
 
     def _on_event(kind: str, payload: Dict[str, Any]) -> None:
         events.put({"type": kind, **payload})
@@ -999,6 +1003,7 @@ async def ask_question_stream(
                 agent=req.agent,
                 screen=req.screen,
                 on_event=_on_event,
+                trace=show_trace,
             )
             events.put(
                 {
@@ -1012,6 +1017,10 @@ async def ask_question_stream(
                     # Who answered: the screen's agent, the one the person chose,
                     # the records, or General (with a note when it stood in).
                     "answered_by": result.get("answered_by"),
+                    # Additive: present only when the guardrail blocked the question,
+                    # and (admins only) the pipeline trace.
+                    **({"guard": result["guard"]} if result.get("guard") else {}),
+                    **({"trace": result["trace"]} if result.get("trace") else {}),
                 }
             )
         except Exception as exc:  # noqa: BLE001

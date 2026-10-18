@@ -30,6 +30,7 @@ from services.redis_client import get_redis_client
 from . import corpus_facts
 from .analytics import ask as analytics_ask
 from . import ask_routing
+from . import ask_flags, ask_input_guard, ask_output_check, ask_trace
 from .agent_actions import record_action
 from .json_field_stream import JsonFieldStreamer
 from .response_style import enforce_response_style
@@ -2443,7 +2444,10 @@ class RAGPipeline:
         # rules: the persona tells the model to prefer a list and to keep formatting
         # minimal, and a system message outranks the user turn — so a request for a
         # table came back as prose on two runs in three.
-        system = system or self._ask_persona()
+        if not system:
+            system = self._ask_persona()
+            if ask_flags.enabled(ask_flags.SAFETY_PROMPT):
+                system += ask_input_guard.SYSTEM_BOUNDARIES
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": prompt},
@@ -2553,6 +2557,7 @@ class RAGPipeline:
         agent: Optional[str] = None,
         screen: Optional[str] = None,
         on_event: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        trace: bool = False,
         **kwargs: Any,
     ) -> Dict:
         """Answer a question: the agent the person chose, else the screen's agent, else General.
@@ -2561,23 +2566,114 @@ class RAGPipeline:
         and it still answers first when the question has one exact answer.
         Every result says who answered in ``answered_by``. Spec:
         specs/2026-10-15-ask-agent-routing-design.md.
+
+        Before anything is retrieved the question goes through the input guardrail
+        (``ask_input_guard``); a blocked question is answered with a fixed reply and
+        never reaches retrieval. After the answer, one narrow check keeps the
+        assistant from approving or waiving anything (``ask_output_check``). Each is
+        behind its own flag in ``ask_flags``. ``trace=True`` adds the request's
+        debug trace to the result; the caller decides who may ask for it.
         """
+        tr = ask_trace.start()
+        try:
+            gate = (ask_output_check.StreamGate()
+                    if on_event is not None and ask_flags.enabled(ask_flags.OUTPUT_CHECK) else None)
+
+            def _forward(kind: str, payload: Dict[str, Any]) -> None:
+                if kind == "stage":
+                    tr.stage(str(payload.get("stage")))
+                if kind == "delta" and payload.get("fixed"):
+                    payload = {k: v for k, v in payload.items() if k != "fixed"}   # our own fixed reply: not screened, not split
+                elif gate is not None and kind == "delta":
+                    text = gate.feed(str(payload.get("text") or ""))
+                    if text:
+                        on_event("delta", {**payload, "text": text})
+                    return
+                if gate is not None and kind == "stage" and payload.get("stage") == "answer_complete":
+                    tail = gate.flush()
+                    if tail:
+                        on_event("delta", {"text": tail})
+                    if gate.tripped:
+                        on_event("stage", {"stage": "output_replaced", "rule": gate.rule})
+                        on_event("delta", {"text": ask_output_check.REPLY})
+                if on_event is not None:
+                    on_event(kind, payload)
+
+            emit_to = _forward if on_event is not None else None
+            result = self._answer_checked(query, user_id, agent=agent, screen=screen, on_event=emit_to, tr=tr, kwargs=kwargs)
+            if isinstance(result, dict):
+                result = dict(result)            # a cached answer is shared; never write the trace or a replacement into it
+                if "guard" not in result and ask_flags.enabled(ask_flags.OUTPUT_CHECK):
+                    rule = ask_output_check.find_violation(result.get("answer"))
+                    if rule:
+                        result["answer"] = ask_output_check.REPLY
+                        tr.set_output_filter(decision="replaced", rule=rule, reason="first-person approval or waiver language")
+                        logger.warning("ask output check replaced an answer (rule=%s)", rule)
+                    else:
+                        tr.set_output_filter(decision="allowed")
+                if trace:
+                    result["trace"] = tr.to_dict()
+            return result
+        finally:
+            ask_trace.end()
+
+    def _answer_checked(self, query: str, user_id: str, *, agent: Optional[str], screen: Optional[str],
+                        on_event: Optional[Callable[[str, Dict[str, Any]], None]], tr: "ask_trace.Trace",
+                        kwargs: Dict[str, Any]) -> Dict:
         registry = getattr(getattr(self, "agent_nick", None), "agents", None) or {}
         responder = ask_routing.choose_responder(
             agent, screen, ask_routing.askable_agents(registry, user_id),
             ask_routing.screen_agent_map() if screen and not agent else {})
         routing = {"responder": responder, "answered_by": responder.answered_by()}
+        # No semantic router exists yet, so there is no similarity score or threshold to record.
+        tr.set_route(route=responder.slug or "general")
         if on_event is not None:
             try:
                 on_event("stage", {"stage": "routed", "answered_by": routing["answered_by"]})
             except Exception:  # pragma: no cover - a broken consumer must not stop the answer
                 logger.debug("ask on_event consumer raised", exc_info=True)
+
+        blocked = self._input_guard(query, tr)
+        if blocked is not None:
+            return self._blocked_answer(blocked, routing, user_id=user_id, screen=screen, on_event=on_event)
+
         result = self._answer_general(query=query, user_id=user_id, on_event=on_event,
                                       routing=routing, **kwargs)
         if isinstance(result, dict):
             result.setdefault("answered_by", routing["answered_by"])
             record_ask_route(user_id=user_id, screen=screen, answered_by=result["answered_by"])
         return result
+
+    def _input_guard(self, query: str, tr: "ask_trace.Trace") -> Optional["ask_input_guard.Decision"]:
+        """Run the input guardrail; the decision if the question is blocked, else None. Never raises."""
+        if not ask_flags.enabled(ask_flags.INPUT_GUARD):
+            tr.set_guardrail(decision="skipped", rule="flag off")
+            return None
+        use_embedding = ask_flags.enabled(ask_flags.INPUT_GUARD_EMBED)
+        with tr.span("input_guard"):
+            decision = ask_input_guard.screen(
+                query, embedder=getattr(getattr(self, "rag", None), "embedder", None), use_embedding=use_embedding)
+        tr.set_guardrail(decision="blocked" if decision.blocked else "allowed", rule=decision.rule,
+                         category=decision.category, layer=decision.layer, score=decision.score)
+        return decision if decision.blocked else None
+
+    def _blocked_answer(self, decision: "ask_input_guard.Decision", routing: Dict[str, Any], *, user_id: str,
+                        screen: Optional[str], on_event: Optional[Callable[[str, Dict[str, Any]], None]]) -> Dict:
+        """The reply for a blocked question. Nothing is retrieved, and the question is neither kept in the
+        history nor logged: it may carry an injected instruction or account details."""
+        logger.warning("ask input guard blocked a question: %s", decision.log_fields())
+        try:
+            record_action(phase="ask", action_type="ask_input_blocked", agent="general", status="blocked",
+                          summary=decision.category, details={**decision.log_fields(), "screen": screen, "user_id": user_id})
+        except Exception:  # pragma: no cover - the audit row is best-effort, like ask_routed
+            logger.debug("could not record the guard decision", exc_info=True)
+        if on_event is not None:
+            on_event("stage", {"stage": "guarded", "category": decision.category})
+            on_event("delta", {"text": decision.reply, "fixed": True})
+            on_event("stage", {"stage": "answer_complete"})
+        return {"answer": decision.reply, "follow_ups": [], "retrieved_documents": [], "next_steps": [],
+                "answered_by": routing["answered_by"],
+                "guard": {"category": decision.category, "rule": decision.rule}}
 
     def _agent_context(self, history: List[Dict[str, Any]],
                        screen_context: Optional[str]) -> Optional[str]:
@@ -2682,6 +2778,8 @@ class RAGPipeline:
             display_currency=display_currency,
             persona=persona or "default",
             action_id=action_id,
+            emit=_emit,
+            user_id=user_id,
         )
         if analytic is not None:
             history.append({"query": self._redact_identifiers(query),
@@ -2942,7 +3040,18 @@ class RAGPipeline:
         search_kwargs.update(self._supported_search_kwargs(hint_kwargs))
         if restrict_to_uploaded:
             search_kwargs["collections"] = (self.rag.uploaded_collection,)
-        reranked = self.rag.search(query, **search_kwargs)
+        _tr = ask_trace.current()
+        _tr.set_queries(original=query)
+        _search_started = time.perf_counter()
+        with _tr.span("retrieval"):
+            reranked = self.rag.search(query, **search_kwargs)
+        _tr.add_retrieval(
+            documents=[
+                {"id": str(getattr(h, "id", None) or (getattr(h, "payload", None) or {}).get("document_id") or ""),
+                 "score": round(float(next((v for v in (getattr(h, "combined_score", None), getattr(h, "aggregated", None),
+                                                        getattr(h, "score", None)) if isinstance(v, (int, float))), 0.0)), 4)}
+                for h in (reranked or [])],
+            seconds=time.perf_counter() - _search_started)
         knowledge_items = self._prepare_knowledge_items(reranked)
 
         # Questions about our own corpus ("which suppliers do we buy from", "what did we
