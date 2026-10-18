@@ -174,3 +174,11 @@ def test_the_system_prompt_carries_the_boundaries(monkeypatch):
     monkeypatch.setenv(ask_flags.SAFETY_PROMPT, "0")
     p._generate_response("prompt", "m")
     assert seen["messages"][0]["content"] == "PERSONA"
+
+
+def test_the_fast_reranker_is_opt_in_everywhere(monkeypatch):
+    """It changes which documents come back (top-1 differed on 10 of 12 questions), so it never defaults on."""
+    monkeypatch.delenv(ask_flags.FAST_RERANK, raising=False)
+    assert not ask_flags.enabled(ask_flags.FAST_RERANK)
+    monkeypatch.setenv(ask_flags.FAST_RERANK, "1")
+    assert ask_flags.enabled(ask_flags.FAST_RERANK)

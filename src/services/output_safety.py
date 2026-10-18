@@ -74,6 +74,7 @@ RETRY_INSTRUCTION = (
 class Violation:
     kind: str
     match: str  # For the LOG only. Never returned to a user — that is the whole point.
+    rule: str = ""  # Which rule fired, for the log: "<kind>:<what distinguished it>". Also never shown.
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<Violation {self.kind}: {self.match!r}>"
@@ -244,29 +245,51 @@ _MECHANISM = re.compile(
     r"|schema\s+(?:migration|change)|foreign\s+key|primary\s+key|index\s+on"
     r"|endpoint|API\s+call|REST\b|payload|request\s+body|response\s+body"
     r"|microservice|backend\s+service|the\s+backend\b|server[\s-]side"
-    r"|codebase|source\s+code|repository|deployment|container|docker"
+    # A bare "repository" is ordinary procurement English (the policy repository, the contract
+    # repository) and replaced a harmless answer about approvals (test D5). Only a code
+    # repository is mechanism; a class named SomethingRepository is caught by code_identifier.
+    r"|codebase|source\s+code|(?:git|code|source|software)\s+repository|deployment|container|docker"
     r")\b",
     re.I,
 )
 
 
-def _looks_like_route(fragment: str) -> bool:
-    """Distinguish an internal API route from ordinary prose that happens to hold a slash.
+def _route_rule(fragment: str, preceded_by: str = "") -> Optional[str]:
+    """Why this fragment is an internal API route, or None if it is not one.
 
     "and/or", "24/7", "km/h" are not routes. A route is registered, or it is a path with at
     least two segments that is not just two words joined by a slash.
+
+    The unregistered, shape-only test below is deliberately loose (a model once invented
+    "/spendiq/invoices"), but it must not read the tail of a DATE or a DOCUMENT REFERENCE as a
+    route: "03/14/2026" holds "/14/2026" and "SUP/2024/PS/0847" holds "/2024/PS/0847", and
+    either replaced a harmless answer with the apology sentence (test F2). A route does not
+    start in the middle of a word or number, and its first segment is a name, not a number.
     """
-    path = re.sub(r"^(?:GET|POST|PUT|PATCH|DELETE)\s+", "", fragment, flags=re.I).strip()
+    verb = re.match(r"^(?:GET|POST|PUT|PATCH|DELETE)\s+", fragment, flags=re.I)
+    path = fragment[verb.end():].strip() if verb else fragment.strip()
     if path in _route_paths:
-        return True
+        return "route:registered"
     if any(path.startswith(known.split("{")[0].rstrip("/")) for known in _route_paths if known):
-        return True
+        return "route:registered-prefix"
     # Not in the live table — it may be the gateway's route, or one the model invented (it
     # once volunteered "there is NO /spendiq/invoices endpoint", which is a leak that also
     # happens to be a map). The leading slash plus two segments is already the tell: prose
     # writes "and/or" and "24/7", never "/spendiq/invoices".
     segments = [s for s in path.split("/") if s]
-    return path.startswith("/") and len(segments) >= 2
+    if not (path.startswith("/") and len(segments) >= 2):
+        return None
+    if verb:
+        return "route:verb-and-path"          # "GET /a/b" is unambiguous
+    if preceded_by.isalnum():
+        return None                            # mid-word: "03/14/2026", "SUP/2024/PS/0847"
+    if not re.search(r"[a-z]", segments[0], re.I):
+        return None                            # "/15/2024": a number, not a name
+    return "route:unregistered-shape"
+
+
+def _looks_like_route(fragment: str, preceded_by: str = "") -> bool:
+    return _route_rule(fragment, preceded_by) is not None
 
 
 # The token in an email draft's hidden tracking marker. Every stored draft ends with
@@ -290,17 +313,20 @@ def _identifier_violations(text: str) -> List[Violation]:
     for kind, pattern in _PATTERNS:
         for m in pattern.finditer(text):
             frag = m.group(0)
-            if kind == "route" and not _looks_like_route(frag):
-                continue
-            out.append(Violation(kind, frag))
+            rule = f"{kind}:{pattern.pattern[:40]}"
+            if kind == "route":
+                rule = _route_rule(frag, text[m.start() - 1] if m.start() else "")
+                if rule is None:
+                    continue
+            out.append(Violation(kind, frag, rule))
 
     # Config keys we actually ship that the pattern above misses because they only have one
     # underscore (DB_HOST, S3_BUCKET_NAME). Read from the real `.env`, so this stays true.
     for key in _named_in(text, _env_var_keys()):
-        out.append(Violation("env_var", key))
+        out.append(Violation("env_var", key, "env_var:real-.env-key"))
 
     for name in _named_in(text.lower(), _tables()):
-        out.append(Violation("db_table", name))
+        out.append(Violation("db_table", name, "db_table:live-schema-name"))
     return out
 
 
@@ -348,7 +374,7 @@ def inspect(text: str, *, prose: bool = True) -> List[Violation]:
     found = _identifier_violations(text)
     if prose:
         for m in _MECHANISM.finditer(text):
-            found.append(Violation("mechanism", m.group(0)))
+            found.append(Violation("mechanism", m.group(0), f"mechanism:{m.group(0).lower()}"))
     return found
 
 
@@ -367,10 +393,12 @@ def enforce(text: str, *, prose: bool = True, where: str = "") -> str:
         return text
 
     log.warning(
-        "output_safety: BLOCKED %s | kinds=%s | matched=%s",
+        "output_safety: BLOCKED %s | kinds=%s | rules=%s | matched=%s | reason=%s",
         where or "response",
         sorted({v.kind for v in violations}),
+        sorted({v.rule for v in violations if v.rule})[:8],
         [v.match for v in violations][:8],
+        "the text would reveal internals" if prose else "a data value would reveal internals",
     )
     return SAFE_REPLY
 

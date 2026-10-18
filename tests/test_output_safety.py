@@ -340,3 +340,56 @@ def test_a_leak_inside_the_marker_is_still_caught():
     body = EMAIL + "\n\n<!-- PROCWISE_MARKER:TRACKING:AWS_SECRET_ACCESS_KEY|TOKEN:C2E75A83D69C -->"
 
     assert not osafe.is_safe(body)
+
+
+# --------------------------------------------------------------------------------------
+# False positives that replaced harmless answers with the apology sentence (live QA, 2026-10-18).
+# D5: "repository" in a sentence about the policy repository. F2: the tail of a date or a
+# document reference read as an internal route. Both lists are pinned.
+# --------------------------------------------------------------------------------------
+
+HARMLESS = [
+    pytest.param("Approval limits are listed in the policy repository under Delegation of Authority.", id="d5-policy-repository"),
+    pytest.param("The contract repository shows this agreement expired on 03/14/2026.", id="f2-us-date"),
+    pytest.param("It was signed on 06/15/2024 and ran to 14/03/2026, so it has already expired.", id="f2-two-dates"),
+    pytest.param("Supplier reference SUP/2024/PS/0847 was onboarded in 2024.", id="document-reference"),
+    pytest.param("Terms apply from 1/4/2025 and renew yearly; see schedule 2/3 and the and/or clause.", id="short-slashes"),
+    pytest.param("Invoice INV/2026/0042 is due 30/09/2026.", id="invoice-reference"),
+]
+
+
+@pytest.mark.parametrize("text", HARMLESS)
+def test_ordinary_procurement_text_is_not_withheld(text):
+    assert osafe.inspect(text) == [], osafe.inspect(text)
+    assert osafe.enforce(text) == text
+
+
+STILL_LEAKS = [
+    pytest.param("Clone the git repository and read the source code.", "mechanism", id="git-repository"),
+    pytest.param("It is handled by InvoiceRepository.", "code_identifier", id="repository-class"),
+    pytest.param("Use GET /spendiq/invoices to list them.", "route", id="verb-route"),
+    pytest.param("There is no /spendiq/invoices endpoint.", "route", id="route-after-space"),
+    pytest.param("See (/data-integration/presigned-url) for details.", "route", id="route-in-brackets"),
+    pytest.param("Call 'POST /workflows/ask/stream' first.", "route", id="quoted-verb-route"),
+]
+
+
+@pytest.mark.parametrize("text,kind", STILL_LEAKS)
+def test_the_narrowed_rules_still_catch_real_leaks(text, kind):
+    assert kind in {v.kind for v in osafe.inspect(text)}
+
+
+def test_every_block_names_the_rule_that_fired(caplog):
+    import logging
+    with caplog.at_level(logging.WARNING, logger=osafe.log.name):
+        osafe.enforce("Call POST /data-integration/presigned-url now.", where="unit")
+    line = next(r.getMessage() for r in caplog.records if "BLOCKED" in r.getMessage())
+    assert "rules=" in line and "route:" in line and "reason=" in line and "unit" in line
+    assert all(v.rule for v in osafe.inspect("Call POST /data-integration/presigned-url now. See src/api/main.py"))
+
+
+def test_the_ask_guard_replies_pass_the_output_filter():
+    """The fixed replies the input guardrail sends must not themselves be withheld."""
+    from src.services import ask_input_guard, ask_output_check
+    for reply in list(ask_input_guard.REPLIES.values()) + [ask_output_check.REPLY]:
+        assert osafe.inspect(reply) == [], reply
