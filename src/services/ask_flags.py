@@ -17,6 +17,9 @@ INPUT_GUARD = "ASK_INPUT_GUARD"            # deterministic input check before re
 INPUT_GUARD_EMBED = "ASK_INPUT_GUARD_EMBED"  # embedding-similarity second pass of that check
 OUTPUT_CHECK = "ASK_OUTPUT_APPROVAL_CHECK"   # narrow "I approve / I waive" output check
 SAFETY_PROMPT = "ASK_SAFETY_PROMPT"        # boundaries appended to the system prompt
+EXACT_ID = "ASK_EXACT_ID"                  # PO / part / supplier ids answered from the database, not vector search
+ROUTER = "ASK_ROUTER"                      # greeting / calculation / inventory routes ahead of retrieval
+ROUTER_EMBED = "ASK_ROUTER_EMBED"          # embedding second opinion for the router
 FAST_RERANK = "ASK_FAST_RERANK"            # smaller reranker, fewer and shorter candidates (read once, at start-up)
 TRACE = "ASK_TRACE"                        # debug trace, shown to admins only
 

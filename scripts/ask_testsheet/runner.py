@@ -8,7 +8,7 @@ Cognito; it only sends the token you give it. Output: Test ID | Result | Reason 
 
 Stage latency comes from the arrival time of the stream's stage events (routed, retrieving, grounded,
 generating, answer_complete, done), measured by the client. A buyer cannot see the server trace, so
-"no retrieval" is judged from the absence of a ``retrieving`` stage event. With ``--admin-token`` the
+"no retrieval" is judged from the absence of a ``retrieving`` stage event (one carrying ``lookup`` is a database lookup by exact id, not a vector search). With ``--admin-token`` the
 runner also sends the ``x-ask-trace`` header and reports the retrieval count from the real trace.
 
 Sheet format (JSON list): {"id", "question" | "turns": [..], "expect": {...}} where expect may hold
@@ -56,12 +56,15 @@ def ask(base_url: str, token: str, question: str, *, trace: bool = False, sessio
 
 def collect(started: float, events: Iterable[Tuple[float, Dict[str, Any]]]) -> Dict[str, Any]:
     stage_at: Dict[str, float] = {}
-    out: Dict[str, Any] = {"answer": "", "stages": [], "done": None, "error": None}
+    out: Dict[str, Any] = {"answer": "", "stages": [], "done": None, "error": None, "vector_retrieval": False}
     for at, ev in events:
         kind = ev.get("type")
         if kind == "stage":
             name = str(ev.get("stage"))
             out["stages"].append(name)
+            # A "retrieving" stage with a ``lookup`` key is a database lookup by exact id, not a vector search.
+            if name == "retrieving" and not ev.get("lookup"):
+                out["vector_retrieval"] = True
             stage_at.setdefault(name, at - started)
         elif kind == "done":
             out["done"] = ev
@@ -96,7 +99,7 @@ def grade(expect: Optional[Dict[str, Any]], run: Dict[str, Any]) -> Tuple[str, s
     if expect.get("category") and guard.get("category") != expect["category"]:
         problems.append(f"category {guard.get('category')!r}")
     if expect.get("no_retrieval"):
-        retrieved = trace.get("retrieval_count") if trace else (1 if "retrieving" in run["stages"] else 0)
+        retrieved = trace.get("retrieval_count") if trace else (1 if run.get("vector_retrieval") else 0)
         if retrieved:
             problems.append("retrieval ran")
     for needle in expect.get("contains", []):

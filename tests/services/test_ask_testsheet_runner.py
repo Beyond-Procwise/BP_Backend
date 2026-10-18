@@ -50,3 +50,10 @@ def test_the_shipped_example_sheet_is_valid():
 def test_the_runner_refuses_to_run_without_a_token(monkeypatch, capsys):
     monkeypatch.delenv("ASK_TOKEN", raising=False)
     assert runner.main(["--sheet", "scripts/ask_testsheet/sheet_e.example.json"]) == 2
+
+
+def test_an_exact_id_lookup_is_not_counted_as_vector_retrieval():
+    run = runner.collect(0.0, _stream([{"type": "stage", "stage": "retrieving", "lookup": "records"}, {"type": "done", "answer": "x"}]))
+    assert runner.grade({"no_retrieval": True}, run)[0] == "PASS"
+    run = runner.collect(0.0, _stream([{"type": "stage", "stage": "retrieving"}, {"type": "done", "answer": "x"}]))
+    assert runner.grade({"no_retrieval": True}, run)[0] == "FAIL"
