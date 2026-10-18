@@ -30,7 +30,7 @@ from services.redis_client import get_redis_client
 from . import corpus_facts
 from .analytics import ask as analytics_ask
 from . import ask_routing
-from . import ask_compare, ask_condense, ask_exact_id, ask_flags, ask_grade, ask_input_guard, ask_output_check, ask_router, ask_trace
+from . import ask_compare, ask_condense, ask_dates, ask_exact_id, ask_flags, ask_grade, ask_input_guard, ask_output_check, ask_po_status, ask_router, ask_trace
 from .agent_actions import record_action
 from .json_field_stream import JsonFieldStreamer
 from .response_style import enforce_response_style
@@ -2799,18 +2799,52 @@ class RAGPipeline:
         return {"answer": text, "follow_ups": [], "retrieved_documents": [], "next_steps": []}
 
     def _exact_id_facts(self, query: str) -> str:
-        """Rows for any PO, part or supplier id in the question, as prompt text; empty if none or not found."""
+        """Rows for any PO, part, supplier or contract id in the question, as prompt text; empty if none or not found.
+
+        A PO asked about by status is read from every source that knows about it at once (``ask_po_status``); a
+        contract record also gets its expiry worked out in code (``ask_dates``).
+        """
         if not ask_flags.enabled(ask_flags.EXACT_ID):
             return ""
         ids = ask_exact_id.extract(query)
         if not ids:
             return ""
         tr = ask_trace.current()
-        with tr.span("exact_id_lookup"):
-            found = ask_exact_id.fetch(getattr(getattr(self, "agent_nick", None), "get_db_connection", None), ids)
-        text = ask_exact_id.render(found)
-        logger.info("ask exact-id lookup: ids=%s found=%d missing=%s", ids, len(found["records"]), found["missing"])
-        return text
+        connect = getattr(getattr(self, "agent_nick", None), "get_db_connection", None)
+        parts: List[str] = []
+        fan_out_po = (ask_flags.enabled(ask_flags.PO_STATUS) and ask_po_status.is_status_question(query, ids.get("po", [])))
+        rest = {k: v for k, v in ids.items() if not (fan_out_po and k == "po")}
+        if fan_out_po:
+            po_id = ids["po"][0]
+            with tr.span("po_status_fanout"):
+                results = ask_po_status.gather(connect, po_id)
+            if results["Purchase order record"]["state"] == "ok":
+                parts.append(ask_po_status.render(po_id, results))
+            elif results["Purchase order record"]["state"] == "empty" and not any(r["state"] == "ok" for r in results.values()):
+                rest = ids                              # not a known PO: let the plain lookup report it missing
+            else:
+                parts.append(ask_po_status.render(po_id, results))
+        found: Dict[str, Any] = {"records": [], "missing": []}
+        if rest:
+            with tr.span("exact_id_lookup"):
+                found = ask_exact_id.fetch(connect, rest)
+            text = ask_exact_id.render(found)
+            if text:
+                parts.append(text)
+        if ask_flags.enabled(ask_flags.DATE_FACTS):
+            for rec in found["records"]:
+                if rec["kind"] == "contract" and rec["rows"]:
+                    computed = ask_dates.render(ask_dates.from_contract_row(rec["rows"][0]))
+                    if computed:
+                        parts.append(computed)
+        logger.info("ask exact-id lookup: ids=%s found=%d missing=%s po_fanout=%s", ids, len(found["records"]), found["missing"], fan_out_po)
+        return "\n\n".join(parts)
+
+    def _computed_date_facts(self, query: str) -> str:
+        """Expiry worked out in code from a start date and term written in the question; empty if there are not both."""
+        if not ask_flags.enabled(ask_flags.DATE_FACTS):
+            return ""
+        return ask_dates.render(ask_dates.from_question(query))
 
     def _condense_question(self, query: str, history: List[Dict[str, Any]], model: str,
                            emit: Callable[..., None]) -> str:
@@ -2989,6 +3023,7 @@ class RAGPipeline:
         original_query = query            # what the user typed: kept in the history and the cache key
         query = self._condense_question(original_query, history, model_name or llm_to_use, _emit)
         exact_text = self._exact_id_facts(query)
+        computed_text = self._computed_date_facts(query)
 
         _emit("stage", stage="retrieving", **({"lookup": "records"} if exact_text else {}))
 
@@ -3268,13 +3303,14 @@ class RAGPipeline:
                         "summary": rendered,
                     })
 
-        if exact_text:
-            corpus_context = exact_text + ("\n\n" + corpus_context if corpus_context else "")
+        verified_text = "\n\n".join(t for t in (exact_text, computed_text) if t)
+        if verified_text:
+            corpus_context = verified_text + ("\n\n" + corpus_context if corpus_context else "")
             knowledge_items.insert(0, {
-                "payload": {"source": "exact_id_lookup", "answer": exact_text, "collection_name": "records_lookup",
+                "payload": {"source": "exact_id_lookup", "answer": verified_text, "collection_name": "records_lookup",
                             "source_label": "Your records"},
                 "collection": "records_lookup", "source_label": "Your records",
-                "document": "Records (exact match)", "summary": exact_text,
+                "document": "Records (exact match)", "summary": verified_text,
             })
 
         # The second leak path for the canned demo answers, and the worse of the two: this one

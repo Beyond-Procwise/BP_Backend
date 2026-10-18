@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 _PO = re.compile(r"\bPO[-\s]?(\d{4})[-\s](\d{3,5})\b|\bPO[-\s]?(\d{5,8})\b", re.I)
 _PART = re.compile(r"\bITM[-\s]?(\d{5,8})\b", re.I)
 _SUPPLIER = re.compile(r"\bSUP-[A-Za-z0-9]{3,60}\b")
+# Contract ids as held in bp_contracts / bp_contract_master: OF-2026-0117, FA-2026-0077, SA-2026-0310, C00003.
+_CONTRACT = re.compile(r"\b(?:(?:OF|FA|SA|MSA|NDA|SOW)-\d{4}-\d{3,5}|C\d{5})\b")
 
 MAX_PER_KIND = 3
 MAX_LINES = 12
@@ -39,7 +41,8 @@ def extract(query: str) -> Dict[str, List[str]]:
             po.append(ident)
     part = list(dict.fromkeys(f"ITM{m.group(1)}" for m in _PART.finditer(text)))
     supplier = list(dict.fromkeys(m.group(0) for m in _SUPPLIER.finditer(text)))
-    found = {"po": po[:MAX_PER_KIND], "part": part[:MAX_PER_KIND], "supplier": supplier[:MAX_PER_KIND]}
+    contract = list(dict.fromkeys(m.group(0) for m in _CONTRACT.finditer(text)))
+    found = {"po": po[:MAX_PER_KIND], "part": part[:MAX_PER_KIND], "supplier": supplier[:MAX_PER_KIND], "contract": contract[:MAX_PER_KIND]}
     return {k: v for k, v in found.items() if v}
 
 
@@ -54,6 +57,10 @@ _PO_COLS = ("po_id, supplier_id, supplier_name, po_status, approval_status, orde
 _LINE_COLS = "po_id, line_number, item_id, item_description, quantity, unit_of_measure, unit_price, line_total, currency"
 _SUPPLIER_COLS = ("supplier_id, supplier_name, trading_name, supplier_type, registered_country, country, is_preferred_supplier, "
                   "risk_score, default_currency, incoterms, delivery_lead_time_days")
+
+
+_CONTRACT_COLS = ("contract_id, contract_title, contract_type, supplier_id, contract_start_date, contract_end_date, term_months, currency, "
+                  "total_contract_value, payment_terms, contract_lifecycle_status, auto_renew_flag, renewal_term")
 
 
 def fetch(conn_factory: Callable[[], Any], ids: Dict[str, List[str]]) -> Dict[str, Any]:
@@ -83,6 +90,16 @@ def fetch(conn_factory: Callable[[], Any], ids: Dict[str, List[str]]) -> Dict[st
                         out["missing"].append(item_id)
                         continue
                     out["records"].append({"kind": "part", "id": item_id, "rows": [], "lines": lines})
+                for contract_id in ids.get("contract", []):
+                    rows = _rows(cur, f"SELECT {_CONTRACT_COLS} FROM proc.bp_contracts WHERE upper(contract_id) = upper(%s)", (contract_id,))
+                    if not rows:
+                        rows = _rows(cur, "SELECT contract_id, contract_title, contract_type, supplier_id, contract_start_date, contract_end_date, "
+                                          "currency, total_contract_value, payment_terms, contract_lifecycle_status, auto_renew_flag, renewal_term "
+                                          "FROM proc.bp_contract_master WHERE upper(contract_id) = upper(%s)", (contract_id,))
+                    if not rows:
+                        out["missing"].append(contract_id)
+                        continue
+                    out["records"].append({"kind": "contract", "id": contract_id, "rows": rows, "lines": []})
                 for sup_id in ids.get("supplier", []):
                     rows = _rows(cur, f"SELECT {_SUPPLIER_COLS} FROM proc.bp_supplier WHERE supplier_id = %s", (sup_id,))
                     if not rows:

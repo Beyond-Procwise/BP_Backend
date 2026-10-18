@@ -273,6 +273,7 @@ def test_flags_turn_the_router_off(monkeypatch):
 
 
 def test_f1_a_po_number_skips_vector_search_and_reaches_the_prompt(monkeypatch):
+    monkeypatch.setenv(ask_flags.PO_STATUS, "0")       # the plain single-table lookup; the parallel version is tested in test_ask_dates_po_status
     cur, factory = _db()
     p = _pipeline(factory)
 
