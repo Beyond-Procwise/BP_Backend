@@ -6491,6 +6491,42 @@ class DataExtractionAgent(BaseAgent):
 
         return collection
 
+    def _vectorize_document_pgvector(self, full_text: str, pk_value: str | None, doc_type: Any, product_type: Any, object_key: str) -> None:
+        """One SOURCE row per chunk, with the payload the old point carried (minus the s3 key, which is never indexed); the worker embeds."""
+        from src.services.vector_store import DEFAULT_TENANT, sources
+        try:
+            chunks = self._chunk_text(full_text, doc_type=doc_type)
+        except TypeError:
+            chunks = self._chunk_text(full_text)  # type: ignore[misc]
+        record_id = pk_value or object_key
+        for idx, chunk in enumerate(chunks or []):
+            if not str(chunk).strip():
+                continue
+            payload = {"record_id": record_id, "document_type": _normalize_label(doc_type), "product_type": _normalize_label(product_type),
+                       "chunk_id": idx, "summary": chunk.strip()[:240]}
+            sources.put_source(DEFAULT_TENANT, "documents", f"{record_id}_{idx}", chunk, payload)
+
+    def _vectorize_structured_data_pgvector(self, header: Dict[str, Any], line_items: List[Dict[str, Any]], doc_type: str, pk_value: str,
+                                            product_type: Any) -> None:
+        """A header source and one source per line item (same text and payload as the old points); the worker embeds them."""
+        from src.services.vector_store import DEFAULT_TENANT, sources
+        base = {"record_id": pk_value, "document_type": _normalize_label(doc_type), "product_type": _normalize_label(product_type)}
+        header_text = _dict_to_text(header)
+        if header_text:
+            sources.put_source(DEFAULT_TENANT, "documents", f"{pk_value}_header", header_text, {**base, "data_type": "header"})
+        for idx, item in enumerate(line_items, start=1):
+            if isinstance(item, str):
+                try:
+                    item = json.loads(item)
+                except Exception:
+                    continue
+            if not isinstance(item, dict):
+                continue
+            item_text = _dict_to_text(item)
+            if item_text:
+                sources.put_source(DEFAULT_TENANT, "documents", f"{pk_value}_line_{idx}", item_text,
+                                   {**base, "data_type": "line_item", "line_number": idx})
+
     def _vectorize_document(
             self,
             full_text: str,
@@ -6501,6 +6537,11 @@ class DataExtractionAgent(BaseAgent):
     ) -> None:
         """Store document chunks and metadata in the vector database."""
         if not full_text:
+            return
+
+        from src.services.vector_store.backend import use_pgvector
+        if use_pgvector():
+            self._vectorize_document_pgvector(full_text, pk_value, doc_type, product_type, object_key)
             return
 
         try:
@@ -6577,6 +6618,11 @@ class DataExtractionAgent(BaseAgent):
     ) -> None:
         """Embed header and line-item content for retrieval."""
         if not pk_value:
+            return
+
+        from src.services.vector_store.backend import use_pgvector
+        if use_pgvector():
+            self._vectorize_structured_data_pgvector(header, line_items, doc_type, pk_value, product_type)
             return
 
         try:

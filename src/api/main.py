@@ -930,6 +930,14 @@ def _vector_store_status():
     there is no client to ask. The collection sat empty for five weeks once;
     a zero here is the signal that was missing then."""
     collection = health_signals.collection_name(_settings)
+    from src.services.vector_store.backend import use_pgvector
+    if use_pgvector():
+        try:
+            from src.services.vector_store import get_vector_store
+            return {"collection": "documents", "points": health_signals.vector_store_points_pg(get_vector_store())}
+        except Exception as exc:  # noqa: BLE001
+            logger.error("health: vector store count unavailable: %s", exc)
+            return {"collection": "documents", "points": "unavailable"}
     client = getattr(getattr(app.state, "agent_nick", None), "qdrant_client", None)
     if client is None:
         return {"collection": collection, "points": "unavailable"}

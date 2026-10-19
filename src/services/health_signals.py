@@ -30,6 +30,11 @@ def vector_store_points(client: Any, collection: str) -> int:
     return int(client.count(collection_name=collection, exact=True).count)
 
 
+def vector_store_points_pg(store: Any) -> int:
+    """Exact number of document vectors the pgvector store holds (the one tenant there is today)."""
+    return int(store.count("default", collection="documents"))
+
+
 def collection_name(settings: Any) -> str:
     """The document collection's name, sanitised the same way the extraction
     agent sanitises it before writing, so /health counts the collection the
