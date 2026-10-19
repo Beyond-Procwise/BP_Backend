@@ -113,17 +113,120 @@ def test_the_same_item_on_two_won_quotes_gives_one_opportunity(live_db):
     acct, a, b = _world(conn, dist)
     _quote(conn, acct, a, qty="2")
     _quote(conn, acct, a, qty="5")
-    assert len(detector.detect(conn, account_id=acct)) == 1
+    (o,) = detector.detect(conn, account_id=acct)
+    assert o["expected_quantity"] == D("5")
+    assert (o["phase_id"], o["subprocess_id"]) == ("sales.opportunity", "sales.opportunity.qualified")
+    assert all(j["customer_safe"] is True for j in o["justifications"])
 
 
-def test_a_target_missing_or_unpriced_is_skipped_without_error(live_db):
+def _close(conn, item_id):
+    with conn.cursor() as cur:
+        cur.execute("UPDATE proc.bp_catalog_item SET valid_to=now() WHERE catalog_item_id=%s", (item_id,))
+    conn.commit()
+
+
+def test_a_target_sku_missing_from_the_catalog_is_skipped(live_db):
+    conn, dist = live_db
+    acct = _acct(conn)
+    a = seed_item(conn, dist, "LIVETEST-A")
+    _relate(conn, dist, "LIVETEST-A", "LIVETEST-NOWHERE", "refill_of")
+    _quote(conn, acct, a)
+    assert detector.detect(conn, account_id=acct) == []
+
+
+def test_an_unpriced_target_is_skipped(live_db):
     conn, dist = live_db
     acct, a, b = _world(conn, dist)
-    _relate(conn, dist, "LIVETEST-A", "LIVETEST-NOWHERE", "refill_of")
     with conn.cursor() as cur:
         cur.execute("UPDATE proc.bp_catalog_item SET list_price=NULL WHERE catalog_item_id=%s", (b,))
     conn.commit()
     _quote(conn, acct, a)
+    assert detector.detect(conn, account_id=acct) == []
+
+
+def test_a_target_with_only_a_closed_version_is_skipped(live_db):
+    conn, dist = live_db
+    acct, a, b = _world(conn, dist)
+    _close(conn, b)
+    _quote(conn, acct, a)
+    assert detector.detect(conn, account_id=acct) == []
+
+
+def test_a_current_version_that_is_active_overrides_an_old_end_of_life_date(live_db):
+    conn, dist = live_db
+    acct, a, b = _world(conn, dist)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE proc.bp_catalog_item SET lifecycle_status='end_of_life', "
+                    "end_of_life_date=%s WHERE catalog_item_id=%s", (PAST, a))
+    conn.commit()
+    _quote(conn, acct, a)
+    _close(conn, a)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE proc.bp_catalog_item SET lifecycle_status='active' "
+                    "WHERE catalog_item_id=%s", (seed_item(conn, dist, "LIVETEST-A"),))
+    conn.commit()
+    (o,) = detector.detect(conn, account_id=acct)
+    assert o["reason_codes"] == ["replaced_by"]
+    assert [j["kind"] for j in o["justifications"]] == ["coverage_gap"]
+
+
+def test_evidence_ref_names_the_bought_version_when_no_current_one_exists(live_db):
+    conn, dist = live_db
+    acct, a, b = _world(conn, dist)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE proc.bp_catalog_item SET lifecycle_status='end_of_life' "
+                    "WHERE catalog_item_id=%s", (a,))
+    conn.commit()
+    _quote(conn, acct, a)
+    _close(conn, a)
+    (o,) = detector.detect(conn, account_id=acct)
+    eol = [j for j in o["justifications"] if j["kind"] == "end_of_life"]
+    assert [j["evidence_ref"] for j in eol] == [f"catalog_item:{a}"]
+
+
+@pytest.mark.parametrize("status, words", [("end_of_life", "reached end of life"),
+                                           ("end_of_sale", "reached end of sale")])
+def test_the_claim_says_which_end_was_reached(live_db, status, words):
+    conn, dist = live_db
+    acct, a, b = _world(conn, dist)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE proc.bp_catalog_item SET lifecycle_status=%s WHERE catalog_item_id=%s",
+                    (status, a))
+    conn.commit()
+    _quote(conn, acct, a)
+    (o,) = detector.detect(conn, account_id=acct)
+    (j,) = [j for j in o["justifications"] if j["kind"] == "end_of_life"]
+    assert words in j["claim"]
+
+
+def test_a_failed_justification_withdraws_the_opportunity_and_a_rerun_recovers(live_db, monkeypatch):
+    from src.services.sell_side import opportunities
+    conn, dist = live_db
+    acct, a, b = _world(conn, dist)
+    _quote(conn, acct, a)
+    real = opportunities.add_justification
+
+    def boom(*args, **kw):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(opportunities, "add_justification", boom)
+    assert detector.detect(conn, account_id=acct) == []
+    with conn.cursor() as cur:
+        cur.execute("SELECT outcome FROM proc.bp_sales_opportunity WHERE account_id=%s", (acct,))
+        assert [r[0] for r in cur.fetchall()] == ["withdrawn"]
+    monkeypatch.setattr(opportunities, "add_justification", real)
+    (o,) = detector.detect(conn, account_id=acct)
+    assert o["justifications"]
+
+
+def test_a_won_opportunity_blocks_a_rerun(live_db):
+    conn, dist = live_db
+    acct, a, b = _world(conn, dist)
+    _quote(conn, acct, a)
+    (first,) = detector.detect(conn, account_id=acct)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE proc.bp_sales_opportunity SET outcome='won' "
+                    "WHERE sales_opportunity_id=%s", (first["sales_opportunity_id"],))
+    conn.commit()
     assert detector.detect(conn, account_id=acct) == []
 
 

@@ -30,9 +30,11 @@ _SQL = """
 SELECT q.account_id, bought.distributor_id, bought.distributor_sku, l.quantity,
        r.relation_id, r.relation_type, r.to_sku,
        t.catalog_item_id AS target_id,
-       cur.catalog_item_id AS bought_id,
-       COALESCE(cur.lifecycle_status, bought.lifecycle_status) AS lifecycle_status,
-       COALESCE(cur.end_of_life_date, bought.end_of_life_date) AS end_of_life_date
+       COALESCE(cur.catalog_item_id, bought.catalog_item_id) AS bought_id,
+       CASE WHEN cur.catalog_item_id IS NOT NULL THEN cur.lifecycle_status
+            ELSE bought.lifecycle_status END AS lifecycle_status,
+       CASE WHEN cur.catalog_item_id IS NOT NULL THEN cur.end_of_life_date
+            ELSE bought.end_of_life_date END AS end_of_life_date
   FROM proc.bp_sales_quote q
   JOIN proc.bp_sales_quote_outcome o ON o.sales_quote_id = q.sales_quote_id AND o.outcome = 'won'
   JOIN proc.bp_sales_quote_line l ON l.sales_quote_id = q.sales_quote_id
@@ -60,7 +62,6 @@ def detect(conn: Any, *, account_id: Optional[str] = None) -> List[Dict[str, Any
     cur.execute(_SQL, {"acct": account_id})
     rows = [dict(r) for r in cur.fetchall()]
 
-    bought: Set[Tuple[str, str, str]] = set()
     cur.execute("SELECT q.account_id, i.distributor_id, i.distributor_sku "
                 "FROM proc.bp_sales_quote q "
                 "JOIN proc.bp_sales_quote_outcome o ON o.sales_quote_id = q.sales_quote_id "
@@ -68,7 +69,7 @@ def detect(conn: Any, *, account_id: Optional[str] = None) -> List[Dict[str, Any
                 "JOIN proc.bp_sales_quote_line l ON l.sales_quote_id = q.sales_quote_id "
                 "JOIN proc.bp_catalog_item i ON i.catalog_item_id = l.catalog_item_id "
                 "WHERE (%(a)s::text IS NULL OR q.account_id = %(a)s)", {"a": account_id})
-    bought = {(r["account_id"], r["distributor_id"], r["distributor_sku"]) for r in cur.fetchall()}
+    bought: Set[Tuple[str, str, str]] = {(r["account_id"], r["distributor_id"], r["distributor_sku"]) for r in cur.fetchall()}
 
     cur.execute("SELECT o.account_id, o.opportunity_type, i.distributor_id, i.distributor_sku "
                 "FROM proc.bp_sales_opportunity o "
@@ -105,18 +106,30 @@ def detect(conn: Any, *, account_id: Optional[str] = None) -> List[Dict[str, Any
         except ValueError as exc:      # e.g. a target the catalog cannot price
             logger.warning("opportunity for %s / %s skipped: %s", acct, r["to_sku"], exc)
             continue
-        for g in c["gaps"].values():
-            opportunities.add_justification(
-                conn, o["sales_opportunity_id"], kind="coverage_gap",
-                claim=f"Bought {g['distributor_sku']}; the distributor states it is "
-                      f"{_WORDS[g['relation_type']]} {g['to_sku']}.",
-                evidence_ref=f"relation:{g['relation_id']}")
-        if c["ended"]:
-            e = c["ended"]
-            when = f"on {e['end_of_life_date']}" if e["end_of_life_date"] else "(no date given)"
-            opportunities.add_justification(
-                conn, o["sales_opportunity_id"], kind="end_of_life",
-                claim=f"{e['distributor_sku']} reached end of life {when}.",
-                evidence_ref=f"catalog_item:{e['bought_id']}")
+        try:
+            for g in c["gaps"].values():
+                opportunities.add_justification(
+                    conn, o["sales_opportunity_id"], kind="coverage_gap",
+                    claim=f"Bought {g['distributor_sku']}; the distributor states it is "
+                          f"{_WORDS[g['relation_type']]} {g['to_sku']}.",
+                    evidence_ref=f"relation:{g['relation_id']}")
+            if c["ended"]:
+                e = c["ended"]
+                what = "end of sale" if e["lifecycle_status"] == "end_of_sale" else "end of life"
+                when = f"on {e['end_of_life_date']}" if e["end_of_life_date"] else "(no date given)"
+                opportunities.add_justification(
+                    conn, o["sales_opportunity_id"], kind="end_of_life",
+                    claim=f"{e['distributor_sku']} reached {what} {when}.",
+                    evidence_ref=f"catalog_item:{e['bought_id']}")
+        except Exception:
+            # an opportunity without its evidence must not stand (the 'open' dedup would keep it)
+            logger.exception("justification failed for opportunity %s; withdrawing it",
+                             o["sales_opportunity_id"])
+            with conn.cursor() as wc:
+                wc.execute("UPDATE proc.bp_sales_opportunity SET outcome='withdrawn', "
+                           "last_modified_date=now() WHERE sales_opportunity_id=%s",
+                           (o["sales_opportunity_id"],))
+            conn.commit()
+            continue
         made.append(opportunities.get_opportunity(conn, o["sales_opportunity_id"]))
     return made
