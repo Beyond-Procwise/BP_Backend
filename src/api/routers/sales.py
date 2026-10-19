@@ -255,7 +255,7 @@ def floor_override(principal, quote_id: int):
         try:
             gate("sales_quote.override_margin_floor", principal, agent=_AGENT,
                  context={"sales_quote_id": quote_id, "code": block["code"],
-                          "floor_pct": block["floorPct"]})
+                          "floor_pct": block.get("floorPct", block.get("corridorPct"))})
         except NotPermitted:
             return False
         return True
@@ -265,7 +265,7 @@ def floor_override(principal, quote_id: int):
 def margin_floor_refused(exc: "quotes.MarginBelowFloor") -> HTTPException:
     return HTTPException(status_code=409, detail={
         "message": str(exc), "codes": exc.codes,
-        "floorPct": exc.block["floorPct"]})
+        "floorPct": exc.block.get("floorPct"), "corridorPct": exc.block.get("corridorPct")})
 
 
 @router.post("/quotes/{quote_id}/approve")
@@ -275,7 +275,7 @@ def approve(quote_id: int, principal=Depends(require_user)):
         try:
             return money_json(quotes.approve(c, quote_id, approver=_subject(principal),
                                              may_override_floor=floor_override(principal, quote_id)))
-        except quotes.MarginBelowFloor as exc:   # before http_errors flattens it to text
+        except (quotes.MarginBelowFloor, quotes.DiscountAboveCorridor) as exc:   # before http_errors flattens it to text
             raise margin_floor_refused(exc) from None
 
 

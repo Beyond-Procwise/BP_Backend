@@ -58,7 +58,8 @@ def clean(cur):
 STATED_PRICING = {"margin_floor_pct": 20, "discount_corridor_max_pct": None,
                   "tax_rate_pct": 20, "validity_days": 30, "payment_terms_default": "Net 30",
                   "margin_floor_action": "override", "margin_floor_untested": "refuse",
-                  "margin_floor_applies_to_catalog": False}
+                  "margin_floor_applies_to_catalog": False,
+                  "discount_corridor_action": "refuse"}
 
 
 def state_pricing(monkeypatch, rules):

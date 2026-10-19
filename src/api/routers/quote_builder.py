@@ -338,7 +338,7 @@ def approve(quote_id: int, body: Optional[ApproveBody] = None, principal=Depends
             quotes.approve(c, quote_id, approver=_subject(principal),
                            conditions=(body.conditions if body else None),
                            may_override_floor=floor_override(principal, quote_id))
-        except quotes.MarginBelowFloor as exc:   # before http_errors flattens it to text
+        except (quotes.MarginBelowFloor, quotes.DiscountAboveCorridor) as exc:   # before http_errors flattens it to text
             raise margin_floor_refused(exc) from None
         return money_json(_with_checks(builder.get(c, quote_id)))
 

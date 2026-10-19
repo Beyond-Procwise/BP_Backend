@@ -67,7 +67,8 @@ def test_a_floor_of_zero_is_a_stated_zero_not_unset(monkeypatch):
 _ALL_UNSET = {"margin_floor_pct": None, "discount_corridor_max_pct": None,
               "tax_rate_pct": None, "validity_days": None, "payment_terms_default": None,
               "margin_floor_action": None, "margin_floor_untested": None,
-              "margin_floor_applies_to_catalog": None}
+              "margin_floor_applies_to_catalog": None,
+              "discount_corridor_action": None}
 
 
 def test_settings_nobody_has_set_are_null_and_say_so(monkeypatch):
@@ -77,7 +78,8 @@ def test_settings_nobody_has_set_are_null_and_say_so(monkeypatch):
         for key in ("quote.tax.rate_pct", "quote.validity.days",
                     "quote.terms.payment_default", "quote.margin.floor_pct",
                     "quote.margin.floor_action", "quote.margin.untested",
-                    "quote.margin.applies_to_catalog")}
+                    "quote.margin.applies_to_catalog",
+                    "quote.discount.corridor_max_pct", "quote.discount.corridor_action")}
 
 
 def test_how_the_floor_is_enforced_is_a_setting_too(monkeypatch):
@@ -123,3 +125,47 @@ def test_a_quote_is_blocked_while_its_floor_or_its_tax_rate_is_unset(monkeypatch
                                                          "TAX_POLICY_UNSET"]
     _stated(monkeypatch, {**_ALL_UNSET, "margin_floor_pct": 0})
     assert [b["code"] for b in pc.unset_blocks(0)] == []     # a stated zero is a rate
+
+
+# --- the discount corridor is enforced, as policy (Nick, 2026-10-19: 15%, policy + config) --
+
+def test_the_corridor_and_how_it_is_enforced_are_settings(monkeypatch):
+    _stated(monkeypatch, {**_ALL_UNSET, "discount_corridor_max_pct": 15,
+                          "discount_corridor_action": "record"})
+    s = pc.settings()
+    assert s["quote.discount.corridor_max_pct"] == {"value": 15.0, "source": "policy",
+                                                    "locked": True}
+    assert s["quote.discount.corridor_action"]["value"] == "record"
+    _stated(monkeypatch, {**_ALL_UNSET, "discount_corridor_max_pct": {"hw": 10, "default": 15}})
+    assert pc.settings()["quote.discount.corridor_max_pct"]["value"] == {"hw": 10.0, "default": 15.0}
+
+
+def test_a_discount_inside_the_corridor_holds_it(monkeypatch):
+    _stated(monkeypatch, {**_ALL_UNSET, "discount_corridor_max_pct": 15})
+    assert pc.corridor_test(15, None) is None            # exactly at the corridor holds
+    assert pc.corridor_test(0, None) is None
+    assert pc.corridor_test(None, None) is None          # no discount typed
+
+
+def test_a_discount_outside_the_corridor_is_blocked_with_the_policy_action(monkeypatch):
+    _stated(monkeypatch, {**_ALL_UNSET, "discount_corridor_max_pct": 15})
+    block = pc.corridor_test(15.5, None)
+    assert block["code"] == "DISCOUNT_ABOVE_CORRIDOR"
+    assert (block["corridorPct"], block["discountPct"]) == (15.0, 15.5)
+    assert block["action"] == "refuse"                   # nobody stated an action: strict
+    _stated(monkeypatch, {**_ALL_UNSET, "discount_corridor_max_pct": 15,
+                          "discount_corridor_action": "override"})
+    assert pc.corridor_test(40, None)["action"] == "override"
+
+
+def test_an_unset_corridor_tests_nothing_and_never_means_zero(monkeypatch):
+    _stated(monkeypatch, _ALL_UNSET)
+    assert pc.corridor_test(99, None) is None
+    _stated(monkeypatch, {**_ALL_UNSET, "discount_corridor_max_pct": 0})
+    assert pc.corridor_test(1, None)["corridorPct"] == 0.0   # a stated zero IS a corridor
+
+
+def test_a_corridor_by_category_is_tested_per_category(monkeypatch):
+    _stated(monkeypatch, {**_ALL_UNSET, "discount_corridor_max_pct": {"hw": 5, "default": 15}})
+    assert pc.corridor_test(10, "hw")["corridorPct"] == 5.0
+    assert pc.corridor_test(10, "sw") is None
