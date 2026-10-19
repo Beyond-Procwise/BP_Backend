@@ -263,7 +263,15 @@ def _evaluate(
                         action=action,
                         role=role,
                     )
-                if rbac.role_rank(role, policy_engine=engine) < required_rank:
+                # `also_allowed_roles` names roles BELOW the required rank that this one
+                # policy nonetheless permits. Rank is the wrong tool when the roles that must
+                # be let in share a rank with roles that must stay out (Sales and Viewer are
+                # both rank 1). Absent, or not a list, it admits no one: the rank rule
+                # stands exactly as before.
+                also = details.get("also_allowed_roles")
+                admitted = isinstance(also, list) and role in also
+                if (rbac.role_rank(role, policy_engine=engine) < required_rank
+                        and not admitted):
                     return deny_from_policy(
                         f"{policy.get('policyName')} requires role "
                         f"{required_role}; caller is {role}",
