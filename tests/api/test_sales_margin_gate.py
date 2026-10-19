@@ -119,3 +119,52 @@ def test_the_customer_view_stays_open_and_is_audited(serve, path):
     assert r.status_code == 200, r.text
     assert "16.00" not in r.text
     assert [(a["action_type"], a["status"]) for a in client.audit] == [("quote.read", "allowed")]
+
+
+# --- Sales ------------------------------------------------------------------
+# Sales is rank 1, the same rank as Viewer. The permit names Sales; it does not lower the bar.
+
+SALES_PERMIT = {**MARGIN_PERMIT, "details": {**MARGIN_PERMIT["details"], "also_allowed_roles": ["Sales"]}}
+
+
+def sales():
+    return FakePrincipal("sub-sales", {"cognito:groups": ["bp-sales"]})
+
+
+@pytest.fixture
+def sales_world(monkeypatch):
+    import copy
+    from tests.guardrails import test_guardrail_gate as g
+    saved = copy.deepcopy(g.ROLE_DEFINITION), copy.deepcopy(g.ROLE_ASSIGNMENT)
+    g.ROLE_DEFINITION["details"]["rules"]["roles"]["Sales"] = {"rank": 1, "allow": ["read", "compute"]}
+    g.ROLE_ASSIGNMENT["details"]["rules"]["group_to_role"]["bp-sales"] = "Sales"
+    yield
+    g.ROLE_DEFINITION.clear(); g.ROLE_DEFINITION.update(saved[0])
+    g.ROLE_ASSIGNMENT.clear(); g.ROLE_ASSIGNMENT.update(saved[1])
+
+
+@pytest.mark.parametrize("path", MARGIN_PATHS)
+def test_sales_gets_margin_when_the_permit_names_it(serve, sales_world, path):
+    client = serve(sales(), SALES_PERMIT)
+    assert client.get(path).status_code == 200
+
+
+@pytest.mark.parametrize("path", MARGIN_PATHS)
+def test_sales_is_still_refused_when_the_permit_does_not_name_it(serve, sales_world, path):
+    client = serve(sales(), MARGIN_PERMIT)
+    assert client.get(path).status_code == 403
+    assert client.fetched == []
+
+
+@pytest.mark.parametrize("path", MARGIN_PATHS)
+def test_naming_sales_does_not_let_a_viewer_in(serve, sales_world, path):
+    """Same rank as Sales, different role: the whole reason the permit names a role."""
+    client = serve(viewer(), SALES_PERMIT)
+    assert client.get(path).status_code == 403
+    assert client.fetched == []
+
+
+@pytest.mark.parametrize("junk", ["Sales", None, {"Sales": 1}, 5])
+def test_a_malformed_list_admits_no_one(serve, sales_world, junk):
+    bad = {**MARGIN_PERMIT, "details": {**MARGIN_PERMIT["details"], "also_allowed_roles": junk}}
+    assert serve(sales(), bad).get("/sales/opportunities").status_code == 403
