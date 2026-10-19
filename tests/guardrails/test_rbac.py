@@ -100,6 +100,16 @@ def test_multiple_groups_take_the_highest_rank(engine):
     assert rbac.effective_role(principal, policy_engine=engine) == "Admin"
 
 
+def test_group_names_match_whatever_the_case(engine):
+    """A sign-in carrying `BP-Admins` is the same group as the policy's `bp-admins`.
+
+    Before this, `procwise_Admin` on a token missed the policy's `PROCWISE_ADMIN` and an
+    Admin was read as Viewer (and then refused by the backend while the UI showed Admin)."""
+    for spelling in ("BP-Admins", "bp-ADMINS", "Bp-admins"):
+        principal = FakePrincipal("sub-c", {"cognito:groups": [spelling]})
+        assert rbac.effective_role(principal, policy_engine=engine) == "Admin", spelling
+
+
 def test_unmapped_group_falls_back_to_viewer(engine):
     principal = FakePrincipal("sub-3", {"cognito:groups": ["some-other-group"]})
     assert rbac.effective_role(principal, policy_engine=engine) == "Viewer"

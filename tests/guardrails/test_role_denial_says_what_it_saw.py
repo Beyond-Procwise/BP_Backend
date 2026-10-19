@@ -51,9 +51,16 @@ def test_a_sign_in_with_no_groups_says_so():
 
 
 def test_groups_the_mapping_does_not_know_are_named():
-    decision = _decide({"cognito:groups": ["procwise_admin", "Everyone"]})
+    # Not `procwise_admin`: group names match whatever the case, so that one IS known.
+    decision = _decide({"cognito:groups": ["procwise_auditors", "Everyone"]})
     assert decision.allowed is False
-    assert decision.evidence["role_from"]["groups"] == ["procwise_admin", "Everyone"]
+    assert decision.evidence["role_from"]["groups"] == ["procwise_auditors", "Everyone"]
+
+
+def test_a_group_in_another_case_is_known_not_refused():
+    decision = _decide({"cognito:groups": ["procwise_admin"]})
+    assert decision.evidence.get("role_from") is None
+    assert "role Viewer may not perform" not in decision.reason
 
 
 def test_a_known_low_group_is_named_too():

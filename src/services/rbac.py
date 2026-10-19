@@ -207,8 +207,11 @@ def resolve_roles(
     mapping = mapping if isinstance(mapping, dict) else {}
     unmapped = str(rules.get("unmapped_group_role") or ROLE_UNKNOWN)
 
+    # Exact spelling wins; otherwise match ignoring case, as the UI does -- a token saying
+    # `procwise_Admin` must not read as unmapped because the policy spells `PROCWISE_ADMIN`.
+    folded = {str(k).casefold(): v for k, v in mapping.items()}
     for group in groups:
-        resolved.append(str(mapping.get(group) or unmapped))
+        resolved.append(str(mapping.get(group) or folded.get(group.casefold()) or unmapped))
     return resolved
 
 
