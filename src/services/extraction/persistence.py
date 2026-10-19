@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
@@ -162,6 +163,29 @@ def build_line_items(
     return out
 
 
+def _enqueue_embedding(cur, doc_type: str, doc_pk, parser_snapshot: Mapping[str, Any]) -> None:
+    """Queue this document for embedding on the CALLER'S cursor: the job commits or rolls back with the raw row (the outbox pattern).
+
+    Off unless VECTOR_OUTBOX is set. Inside a savepoint, so a missing outbox table (or any failure here) can never fail the extraction: the
+    document is then simply picked up by the next ``rebuild``.
+    """
+    if os.environ.get("VECTOR_OUTBOX", "").strip().lower() not in ("1", "true", "yes", "on"):
+        return
+    if not doc_pk or not str((parser_snapshot or {}).get("full_text") or "").strip():
+        return
+    try:
+        from src.services.vector_store import DEFAULT_TENANT, outbox
+        cur.execute("SAVEPOINT vector_outbox")
+        try:
+            outbox.enqueue(cur, DEFAULT_TENANT, "documents", f"{doc_type}:{doc_pk}")
+            cur.execute("RELEASE SAVEPOINT vector_outbox")
+        except Exception:  # noqa: BLE001
+            cur.execute("ROLLBACK TO SAVEPOINT vector_outbox")
+            log.warning("could not queue %s %s for embedding; the next rebuild will pick it up", doc_type, doc_pk, exc_info=True)
+    except Exception:  # noqa: BLE001 - never fail an extraction over the vector index
+        log.warning("embedding outbox unavailable for %s %s", doc_type, doc_pk, exc_info=True)
+
+
 def write_raw(
     *,
     doc_type: str,
@@ -227,6 +251,7 @@ def write_raw(
         try:
             cur.execute(sql, all_vals)
             raw_id = cur.fetchone()[0]
+            _enqueue_embedding(cur, doc_type, doc_pk_candidate, parser_snapshot)
             conn.commit()
             return raw_id
         except Exception:
