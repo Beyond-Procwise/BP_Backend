@@ -19,7 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        # The official image through AWS's public mirror, not Docker Hub: Hub's anonymous pull limit failed this job twice on
+        # 2026-10-09 ("toomanyrequests") before any test ran. Same image, no credentials needed.
+        image: public.ecr.aws/docker/library/postgres:16-alpine
         env:
           POSTGRES_PASSWORD: eval
         ports:
