@@ -61,19 +61,24 @@ class PgVectorStore(VectorStore):
         from src.services.db import get_conn
         return get_conn()
 
-    def _base_where(self, tenant_id: str, collection: Optional[str], filters: Optional[Mapping[str, Any]]) -> Tuple[str, List[Any]]:
-        """The WHERE clause. Tenant and model version are always present; every value is a bound parameter."""
-        parts = ["tenant_id = %s", "embedding_model = %s", "embedding_version = %s"]
-        params: List[Any] = [tenant_id, self.profile.model, self.profile.version]
-        if collection is not None:
-            parts.append("collection = %s")
-            params.append(collection)
-        for key, value in (filters or {}).items():
+    def _conditions(self, filters: Mapping[str, Any]) -> Tuple[str, List[Any]]:
+        """AND-ed conditions for a filter mapping. The whitelist lives here, once; tenant_id is not on it."""
+        parts: List[str] = []
+        params: List[Any] = []
+        for key, value in filters.items():
             if key == "metadata":
                 if not isinstance(value, Mapping):
                     raise ValueError("metadata filter must be a mapping")
                 parts.append("metadata @> %s::jsonb")
                 params.append(json.dumps(dict(value), sort_keys=True, default=str))
+            elif key == "metadata_in":
+                if not isinstance(value, Mapping) or not value:
+                    raise ValueError("metadata_in must be a non-empty mapping of key -> list of values")
+                for mkey, mvals in value.items():
+                    if not isinstance(mkey, str) or not mkey or not isinstance(mvals, (list, tuple, set, frozenset)) or not mvals:
+                        raise ValueError("metadata_in values must be non-empty lists")
+                    parts.append("metadata ->> %s = ANY(%s)")
+                    params.extend([mkey, [str(v) for v in mvals]])
             elif key in FILTER_COLUMNS:
                 if value is None:
                     raise ValueError(f"filter {key!r} has no value")
@@ -84,7 +89,36 @@ class PgVectorStore(VectorStore):
                     parts.append(f"{key} = %s")
                     params.append(value)
             else:
-                raise ValueError(f"unknown filter {key!r}; allowed: {list(FILTER_COLUMNS) + ['metadata']}")
+                raise ValueError(f"unknown filter {key!r}; allowed: {list(FILTER_COLUMNS) + ['metadata', 'metadata_in', 'any_of']}")
+        return " AND ".join(parts), params
+
+    def _base_where(self, tenant_id: str, collection: Optional[str], filters: Optional[Mapping[str, Any]]) -> Tuple[str, List[Any]]:
+        """The WHERE clause. Tenant and model version are always present; every value is a bound parameter.
+
+        ``any_of`` is a list of alternative filter mappings, OR-ed together and AND-ed with everything else, so no alternative can leave the tenant.
+        """
+        parts = ["tenant_id = %s", "embedding_model = %s", "embedding_version = %s"]
+        params: List[Any] = [tenant_id, self.profile.model, self.profile.version]
+        if collection is not None:
+            parts.append("collection = %s")
+            params.append(collection)
+        plain = {k: v for k, v in (filters or {}).items() if k != "any_of"}
+        if plain:
+            clause, plain_params = self._conditions(plain)
+            parts.append(clause)
+            params.extend(plain_params)
+        if filters and "any_of" in filters:
+            value = filters["any_of"]
+            if not isinstance(value, (list, tuple)) or not value:
+                raise ValueError("any_of must be a non-empty list of filter mappings")
+            alternatives = []
+            for alt in value:
+                if not isinstance(alt, Mapping) or not alt or "any_of" in alt:
+                    raise ValueError("each any_of alternative must be a non-empty plain filter mapping")
+                clause, alt_params = self._conditions(alt)
+                alternatives.append(f"({clause})" if " AND " in clause else clause)
+                params.extend(alt_params)
+            parts.append("(" + " OR ".join(alternatives) + ")")
         return " AND ".join(parts), params
 
     def _enable_iterative(self, cur: Any, k: int) -> None:

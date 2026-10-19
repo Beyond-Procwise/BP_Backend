@@ -603,6 +603,37 @@ class RAGService:
 
         return fields
 
+    def _pg_active(self) -> bool:
+        from src.services.vector_store.backend import use_pgvector
+        return use_pgvector()
+
+    def _logical_collection(self, name: Optional[str]) -> Optional[str]:
+        """The vector store's name for one of the configured Qdrant collections (None if it is not one of ours)."""
+        return {self.primary_collection: "documents", self.uploaded_collection: "uploaded",
+                self.static_policy_collection: "policy", self.learning_collection: "learning"}.get(name)
+
+    def _query_pgvector_collection(
+        self, collection_name: str, vector: Sequence[float], *, query_filter: Optional[models.Filter], limit: int
+    ) -> List[SimpleNamespace]:
+        """One collection through the VectorStore, as the one tenant there is today. A failure is no hits, as a Qdrant failure was."""
+        logical = self._logical_collection(collection_name)
+        if logical is None:
+            return []
+        try:
+            from src.services.vector_store import DEFAULT_TENANT, get_vector_store
+            from src.services.vector_store.filters import from_qdrant_filter
+            store = getattr(self, "_vector_store", None) or get_vector_store()
+            hits = store.search(DEFAULT_TENANT, list(vector), from_qdrant_filter(query_filter), int(limit), collection=logical)
+        except Exception:
+            logger.warning("Vector search failed for collection %s", collection_name, exc_info=True)
+            return []
+        wrapped: List[SimpleNamespace] = []
+        for hit in hits:
+            payload = dict(hit.payload or {})
+            payload.setdefault("collection_name", collection_name)
+            wrapped.append(SimpleNamespace(id=str(hit.id), payload=payload, score=float(hit.score or 0.0)))
+        return wrapped
+
     def _query_qdrant_collection(
         self,
         collection_name: str,
@@ -611,6 +642,8 @@ class RAGService:
         query_filter: Optional[models.Filter],
         limit: int,
     ) -> List[SimpleNamespace]:
+        if collection_name and self._pg_active():
+            return self._query_pgvector_collection(collection_name, vector, query_filter=query_filter, limit=limit)
         if not collection_name or self.client is None:
             return []
 
@@ -721,7 +754,7 @@ class RAGService:
         *,
         limit: int,
     ) -> Dict[str, List[SimpleNamespace]]:
-        if not requests or self.client is None:
+        if not requests or (self.client is None and not self._pg_active()):
             return {}
 
         tasks: List[Tuple[str, Optional[models.Filter]]] = [
@@ -1493,7 +1526,7 @@ class RAGService:
 
         collections_to_query = tuple(base_collections)
 
-        if collections_to_query and self.client is not None:
+        if collections_to_query and (self.client is not None or self._pg_active()):
             _, vector = _ensure_query_vectors()
             with ask_trace.current().span("qdrant_search"):
                 batched_hits = self._search_collections_parallel(
