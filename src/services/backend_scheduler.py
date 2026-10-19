@@ -472,6 +472,7 @@ class BackendScheduler:
         self._register_capture_retention_job()
         self._register_prompt_render_retention_job()
         self._register_sales_calibration_job()
+        self._register_sales_detection_job()
         self._register_style_staging_sweep_job()
         self._register_mailbox_health_job()
         self._register_style_feedback_job()
@@ -1357,6 +1358,28 @@ class BackendScheduler:
                     f"{c.opportunity_type}={c.rate} ({c.won}/{c.won + c.lost})" for c in applied))
         except Exception:
             logger.exception("sales win-probability calibration failed")
+
+    SALES_DETECTION_JOB_NAME = "sales_opportunity_detection"
+
+    def _register_sales_detection_job(self) -> None:
+        """Daily: detect sales opportunities from distributor-stated relations."""
+        if self.SALES_DETECTION_JOB_NAME in self._jobs:
+            return
+        self.register_job(
+            self.SALES_DETECTION_JOB_NAME,
+            self._run_sales_detection,
+            interval=timedelta(days=1),
+        )
+
+    def _run_sales_detection(self) -> None:
+        try:
+            from src.services.sell_side._db import transactional_conn
+            from src.services.sell_side.detector import detect
+            with transactional_conn() as conn:
+                found = detect(conn)
+            logger.info("sales opportunity detection: %s", len(found) if hasattr(found, "__len__") else found)
+        except Exception:
+            logger.exception("sales opportunity detection failed")
 
     def _register_price_outlier_job(self) -> None:
         """Scan for extreme prices and raise them for review."""
