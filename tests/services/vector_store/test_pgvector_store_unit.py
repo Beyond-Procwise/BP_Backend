@@ -199,3 +199,48 @@ def test_an_unknown_profile_is_refused(monkeypatch):
     monkeypatch.setenv("VECTOR_PROFILE", "nope@9")
     with pytest.raises(ValueError):
         active_profile()
+
+
+# --- OR groups (the quote-evaluation agent matches a supplier by name OR id) ------------------------------------------------------
+
+def test_any_of_builds_a_parenthesised_or_group_inside_the_tenant_scope():
+    s, rec = store()
+    s.search("t", VEC, {"document_type": "quote", "any_of": [{"supplier_id": "S1"}, {"supplier_id": ["S2", "S3"], "product_type": "it"}]}, 5,
+             collection="documents")
+    sql, params = sql_of(rec, "from proc.bp_vector_chunk")
+    low = " ".join(sql.lower().split())
+    assert "tenant_id = %s" in low and "document_type = %s" in low
+    assert "(supplier_id = %s or (supplier_id = any(%s) and product_type = %s))" in low
+    assert "S1" in params and ["S2", "S3"] in params and "it" in params
+
+
+@pytest.mark.parametrize("bad", [[], "x", [{}], [{"tenant_id": "other"}], [{"embedding": 1}], [{"supplier_id": "S1", "any_of": []}], [["not", "a", "dict"]]])
+def test_any_of_is_validated_with_the_same_whitelist_and_cannot_name_the_tenant(bad):
+    s, rec = store()
+    with pytest.raises(ValueError):
+        s.search("t", VEC, {"any_of": bad}, 5, collection="documents")
+    assert rec.executed == []
+
+
+def test_an_or_group_cannot_escape_the_tenant_condition():
+    """The OR group is ANDed with tenant_id, so no alternative can reach another tenant's rows."""
+    s, rec = store()
+    s.search("tenant-a", VEC, {"any_of": [{"supplier_id": "S1"}, {"supplier_id": "S2"}]}, 5, collection="documents")
+    sql, _ = sql_of(rec, "from proc.bp_vector_chunk")
+    low = " ".join(sql.lower().split())
+    assert low.index("tenant_id = %s") < low.index(" or ") and "tenant_id = %s and" in low
+
+
+def test_metadata_in_matches_any_of_several_values_with_bound_parameters():
+    s, rec = store()
+    s.search("t", VEC, {"metadata_in": {"region": ["uk", "us"]}}, 5, collection="documents")
+    sql, params = sql_of(rec, "from proc.bp_vector_chunk")
+    assert "metadata ->> %s = any(%s)" in sql.lower() and "region" in params and ["uk", "us"] in params and "region" not in sql
+
+
+@pytest.mark.parametrize("bad", [{}, {"region": []}, {"region": "uk"}, {"": ["x"]}])
+def test_metadata_in_is_validated(bad):
+    s, rec = store()
+    with pytest.raises(ValueError):
+        s.search("t", VEC, {"metadata_in": bad}, 5, collection="documents")
+    assert rec.executed == []
