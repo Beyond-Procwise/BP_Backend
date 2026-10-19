@@ -370,6 +370,31 @@ class BackendScheduler:
             except Exception:  # pragma: no cover - defensive logging
                 logger.exception("Failed to stop process monitor watcher")
 
+    VECTOR_WORKER_JOB_NAME = "vector_embedding_worker"
+
+    def _register_vector_worker_job(self) -> None:
+        """Embed queued sources into the vector store (every 10 s). Registered only when VECTOR_BACKEND=pgvector."""
+        from src.services.vector_store.backend import use_pgvector
+        if not use_pgvector() or self.VECTOR_WORKER_JOB_NAME in self._jobs:
+            return
+        self.register_job(self.VECTOR_WORKER_JOB_NAME, self._run_vector_worker, interval=timedelta(seconds=10),
+                          initial_delay=timedelta(seconds=20))
+
+    def _run_vector_worker(self) -> None:
+        try:
+            worker = getattr(self, "_vector_worker", None)
+            if worker is None:
+                from src.services.db import get_conn
+                from src.services.vector_store.embedder import AgentNickEmbedder
+                from src.services.vector_store.worker import VectorWorker
+                # the embedding model this process already loaded, not a second copy of it
+                worker = self._vector_worker = VectorWorker(get_conn, AgentNickEmbedder(self.agent_nick))
+            report = worker.run_once()
+            if report["claimed"]:
+                logger.info("vector embedding worker: %s", report)
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("vector embedding worker run failed")
+
     def register_job(
         self,
         name: str,
@@ -440,6 +465,7 @@ class BackendScheduler:
         self._register_style_staging_sweep_job()
         self._register_mailbox_health_job()
         self._register_style_feedback_job()
+        self._register_vector_worker_job()
         self._register_triage_job()
         self._register_playbook_sweep_job()
         self._register_contract_link_job()

@@ -92,6 +92,11 @@ def _full_text(snapshot: Any) -> str:
     return ""
 
 
+def _queue_connect():
+    from src.services.db import get_conn
+    return get_conn()
+
+
 def embed_document(agent_nick: Any, cur, *, doc_type: str, doc_pk: Any, raw_id: Any) -> int:
     """Replace this document's points with fresh ones from its _raw text.
 
@@ -107,6 +112,14 @@ def embed_document(agent_nick: Any, cur, *, doc_type: str, doc_pk: Any, raw_id: 
     chunks = chunk_text(_full_text(row[0] if row else None))
     if not chunks:
         return 0
+
+    from src.services.vector_store.backend import use_pgvector
+    if use_pgvector():
+        # Queue the document; the vector worker re-reads the text and embeds it. Nothing is embedded or written to a vector store here.
+        from src.services.vector_store import DEFAULT_TENANT, outbox
+        with _queue_connect() as qconn, qconn.cursor() as qcur:
+            outbox.enqueue(qcur, DEFAULT_TENANT, "documents", f"{doc_type}:{doc_pk}")
+        return len(chunks)
 
     settings = getattr(agent_nick, "settings", None)
     collection = collection_name(settings)

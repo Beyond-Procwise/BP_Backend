@@ -986,6 +986,49 @@ class RAGService:
                 exc_info=True,
             )
 
+    def _upsert_payloads_pgvector(
+        self, payloads: List[Dict[str, Any]], text_representation_key: str, collection_name: Optional[str]
+    ) -> None:
+        """Write each payload as a SOURCE row in Postgres; the worker chunks, embeds and indexes it.
+
+        No inline embedding and no vector write here (and no local FAISS/BM25 update: those were in-process caches of what this process had
+        upserted since it started, and an asynchronous write cannot feed them). A failure is logged and the caller carries on, as before.
+        """
+        from src.services.vector_store import DEFAULT_TENANT, sources
+
+        default_collection = collection_name or self.primary_collection
+        for payload in payloads:
+            if not isinstance(payload, dict):
+                continue
+            structured = payload.get("payload")
+            base_payload = dict(structured) if isinstance(structured, dict) else dict(payload)
+            base_payload.pop("payload", None)
+            for key in DISALLOWED_METADATA_KEYS:
+                base_payload.pop(key, None)
+            record_id = base_payload.get("record_id") or payload.get("record_id") or str(uuid.uuid4())
+            base_payload["record_id"] = record_id
+            target = self._extract_source_collection(base_payload) or default_collection
+            base_payload.pop(text_representation_key, None)
+            text = payload.get(text_representation_key)
+            if text is None and text_representation_key != "content":
+                text = base_payload.get(text_representation_key)
+            if not isinstance(text, str) or not text.strip():
+                fallback = payload.get("text_summary")
+                text = fallback if isinstance(fallback, str) and fallback.strip() else None
+            if not isinstance(text, str) or not text.strip():
+                try:
+                    text = json.dumps(base_payload, ensure_ascii=False)
+                except (TypeError, ValueError):
+                    text = ""
+            if not text.strip():
+                continue
+            base_payload.pop("content", None)
+            base_payload.pop("text_summary", None)
+            try:
+                sources.put_source(DEFAULT_TENANT, self._logical_collection(target) or str(target), str(record_id), text, base_payload)
+            except Exception:
+                logger.exception("Vector source write failed for collection %r record %r — document processing continues", target, record_id)
+
     def upsert_payloads(
         self,
         payloads: List[Dict[str, Any]],
@@ -996,6 +1039,9 @@ class RAGService:
 
         if not payloads:
             return
+
+        if self._pg_active():
+            return self._upsert_payloads_pgvector(payloads, text_representation_key, collection_name)
 
         resolved_collection = collection_name or self.primary_collection
         points: List[models.PointStruct] = []
