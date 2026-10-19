@@ -18,6 +18,11 @@ class VectorStore(ABC):
         """Insert or replace one chunk's vector. Idempotent on (tenant, collection, source, chunk)."""
 
     @abstractmethod
+    def replace(self, tenant_id: str, source_id: str, chunks: Sequence[Mapping[str, Any]], *, collection: str) -> int:
+        """Atomically make a source's stored chunks exactly ``chunks`` (each {embedding, metadata, content}): chunk i is upserted at index i and any
+        higher index is removed, so a shorter re-read leaves no stale tail. An empty list removes the source. Returns the chunks now stored."""
+
+    @abstractmethod
     def delete(self, tenant_id: str, source_id: str, *, collection: Optional[str] = None) -> int:
         """Remove every vector derived from a source row. Returns how many were removed."""
 

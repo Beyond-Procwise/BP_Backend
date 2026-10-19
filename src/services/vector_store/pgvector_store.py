@@ -113,8 +113,8 @@ class PgVectorStore(VectorStore):
                          score=None if score is None else float(score), content=content, payload=payload)
 
     # -- VectorStore -------------------------------------------------------------------------------------------------------
-    def upsert(self, tenant_id, source_id, embedding, metadata, *, collection, chunk_idx=0, content=None) -> None:
-        tenant_id = _tenant(tenant_id)
+    def _upsert_stmt(self, tenant_id: str, source_id: str, embedding: Sequence[float], metadata: Mapping[str, Any], collection: str,
+                     chunk_idx: int, content: Optional[str]) -> Tuple[str, tuple]:
         meta = {k: v for k, v in dict(metadata or {}).items() if k not in DISALLOWED_METADATA_KEYS}
         cols = {c: (str(meta.pop(c)) if meta.get(c) is not None else None) for c in FILTER_COLUMNS}
         for c in FILTER_COLUMNS:
@@ -132,8 +132,35 @@ class PgVectorStore(VectorStore):
         params = (tenant_id, collection, str(source_id), int(chunk_idx), self.profile.model, self.profile.version, vec, content,
                   cols["document_type"], cols["document_id"], cols["record_id"], cols["supplier_id"], cols["session_id"],
                   cols["product_type"], cols["source_type"], json.dumps(meta, sort_keys=True, default=str))
+        return sql, params
+
+    def upsert(self, tenant_id, source_id, embedding, metadata, *, collection, chunk_idx=0, content=None) -> None:
+        tenant_id = _tenant(tenant_id)
+        sql, params = self._upsert_stmt(tenant_id, source_id, embedding, metadata, collection, chunk_idx, content)
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(sql, params)
+
+    def replace(self, tenant_id, source_id, chunks, *, collection) -> int:
+        tenant_id = _tenant(tenant_id)
+        stmts = [self._upsert_stmt(tenant_id, source_id, c["embedding"], c.get("metadata") or {}, collection, i, c.get("content"))
+                 for i, c in enumerate(chunks)]                                   # all validated before any SQL runs
+        with self._conn() as conn:
+            own = bool(getattr(conn, "autocommit", False))                        # a connection we opened: make it one transaction
+            if own:
+                conn.autocommit = False
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(f"DELETE FROM {self.profile.table} WHERE tenant_id = %s AND collection = %s AND source_id = %s AND chunk_idx >= %s",
+                                (tenant_id, collection, str(source_id), len(stmts)))
+                    for sql, params in stmts:
+                        cur.execute(sql, params)
+                if own:
+                    conn.commit()
+            except Exception:
+                if own:
+                    conn.rollback()
+                raise
+        return len(stmts)
 
     def delete(self, tenant_id, source_id, *, collection=None) -> int:
         tenant_id = _tenant(tenant_id)
