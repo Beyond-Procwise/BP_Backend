@@ -31,11 +31,6 @@ class Settings(BaseSettings):
         default=64, env="S3_MAX_POOL_CONNECTIONS"
     )
 
-    # Qdrant is NOT used by chat, RAG, uploads, policy or learning any more (they use the application's own Postgres: src/services/vector_store).
-    # These two remain, optional, for the separate procurement_knowledge_graph package, whose hybrid query engine still keeps its supplier
-    # embeddings in Qdrant. Remove them with that package's Qdrant use.
-    qdrant_url: Optional[str] = Field(default="http://localhost:6333", env="QDRANT_URL")
-    qdrant_api_key: Optional[str] = Field(default=None, env="QDRANT_API_KEY")
     document_collection_name: str = Field(
         default="procwise_document_embeddings", env="DOCUMENT_COLLECTION_NAME"
     )

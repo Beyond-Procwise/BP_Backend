@@ -2,7 +2,7 @@
 
 This repository extends the ProcWise agents platform with a production-grade
 knowledge graph, semantic retrieval, and negotiation intelligence stack. The
-solution links Neo4j, Qdrant, and Ollama to unlock rich reasoning for sourcing
+solution links Neo4j, pgvector, and Ollama to unlock rich reasoning for sourcing
 and procurement workflows.
 
 ## Architecture Overview
@@ -10,7 +10,7 @@ and procurement workflows.
 ```
 PostgreSQL  ──► procurement_knowledge_graph/procurement_knowledge_graph.py ──► Neo4j
       │                                           │
-      └────► Qdrant embeddings ◄── Ollama ◄───────┘
+      └────► pgvector embeddings ◄── Ollama ◄─────┘
                                 │
                                 ▼
 Hybrid Query Engine ──► Strategy + Workflow APIs
@@ -18,7 +18,7 @@ Hybrid Query Engine ──► Strategy + Workflow APIs
 
 * **procurement_knowledge_graph/procurement_knowledge_graph.py** performs incremental extraction from
   Postgres, updates the Neo4j graph schema, and stores vector embeddings with
-  rich payloads in Qdrant.
+  rich payloads in the Postgres vector store (pgvector).
 * **procurement_knowledge_graph/hybrid_query_engine.py** blends graph queries, vector retrieval, and LLM
   reasoning to answer spend, supplier, and negotiation questions.
 * **procurement_knowledge_graph/procwise_kg_integration.py** exposes ProcWise-ready orchestration hooks for
@@ -34,7 +34,6 @@ A Docker Compose stack ships with managed services for:
 |----------|---------------------------------|--------------|
 | Postgres | Operational procurement source  | 5432         |
 | Neo4j    | Knowledge graph backend         | 7474 / 7687  |
-| Qdrant   | Vector store for embeddings     | 6333 / 6334  |
 | Ollama   | Local LLM + embedding provider  | 11434        |
 | App      | Executes the end-to-end demo    | N/A          |
 
@@ -99,8 +98,7 @@ orphaned tests, not failures:
   table names.
 * The retrieval stack defaults to `phi4:latest` with a semi-formal, concise
   tone tuned for procurement operations.
-* The Qdrant collection prefix may be customised per environment to support
-  multi-tenant deployments.
+* Vector collections are scoped per tenant in the Postgres vector store.
 
 ## Model Training & Evaluation
 
@@ -118,7 +116,7 @@ Key commands (run via `python -m training.pipeline <command> ...`):
 - `render-modelfile` – fill `models/Modelfile.template` with the new weight
   path, temperature, and context window. This produces the Modelfile that
   should be registered as `qwen3-30b-procwise` for the RAG agent.
-- `rag-eval` – execute the upgraded retrieval pipeline across multiple Qdrant
+- `rag-eval` – execute the upgraded retrieval pipeline across multiple vector
   collections using a JSON/JSONL list of benchmark queries. The command writes
   aggregate metrics (doc diversity, latency, refusal rate) plus optional deltas
   versus a baseline report.
