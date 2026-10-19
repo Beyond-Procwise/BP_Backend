@@ -1,7 +1,7 @@
 """Utilities for assembling fine-tuning datasets from workflow learnings.
 
 The :mod:`services.learning_repository` already captures a compact, structured
-representation of high quality workflow outcomes inside Qdrant.  This module
+representation of high quality workflow outcomes inside the vector store.  This module
 bridges those summaries with supervised fine-tuning by transforming the
 metadata and associated retrieval context into prompt/response pairs that can
 be fed directly into a LoRA/QLoRA training loop.  The helpers are intentionally

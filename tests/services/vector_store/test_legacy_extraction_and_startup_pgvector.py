@@ -1,14 +1,9 @@
-"""The legacy extraction agent's vector writers, the collection-ensure no-ops, and AgentNick/health wiring under pgvector."""
+"""The legacy extraction agent's vector writers, the collection check, and AgentNick/health wiring."""
 import types
 
 import pytest
 
 from src.services.vector_store import DEFAULT_TENANT, sources
-
-
-@pytest.fixture(autouse=True)
-def pg(monkeypatch):
-    monkeypatch.setenv("VECTOR_BACKEND", "pgvector")
 
 
 @pytest.fixture()
@@ -60,31 +55,34 @@ def test_structured_data_with_no_primary_key_writes_nothing(written):
 
 # --- RAGService.ensure_collection is a no-op: the table exists, nothing to create ---------------------------------------------------
 
-def test_ensure_collection_does_nothing_on_pgvector_and_never_touches_a_client():
+def test_ensure_collection_checks_the_name_and_creates_nothing():
     from src.services.rag_service import RAGService
     s = RAGService.__new__(RAGService)
-    s.client = object()                                   # any call on this would raise AttributeError
-    assert s.ensure_collection("procwise_document_embeddings") is None
+    s.primary_collection, s.uploaded_collection = "procwise_document_embeddings", "uploaded_documents"
+    s.static_policy_collection, s.learning_collection = "static_policy", "learning"
+    assert s.ensure_collection("procwise_document_embeddings") is None and s.ensure_collection() is None
+    with pytest.raises(ValueError):
+        s.ensure_collection("not_a_collection")
 
 
 # --- the health count --------------------------------------------------------------------------------------------------------------
 
-def test_the_health_count_reads_the_vector_store_not_a_qdrant_client(monkeypatch):
+def test_the_health_count_reads_the_vector_store(monkeypatch):
     from src.services import health_signals
     store = types.SimpleNamespace(count=lambda tenant, collection=None: 167 if (tenant, collection) == (DEFAULT_TENANT, "documents") else -1)
-    assert health_signals.vector_store_points_pg(store) == 167
+    assert health_signals.vector_store_points(store) == 167
 
 
 # --- AgentNick: no Qdrant client, no wait, a loud check that the vector table is there ---------------------------------------------
 
-def test_agent_nick_builds_no_qdrant_client_and_skips_the_wait_on_pgvector(monkeypatch):
+def test_the_startup_check_reports_the_document_count_and_does_not_need_any_client(monkeypatch, caplog):
     from src.agents.base_agent import AgentNick
     n = AgentNick.__new__(AgentNick)
     n.settings = types.SimpleNamespace()
-    monkeypatch.setattr(n, "_await_qdrant_ready", lambda: pytest.fail("waited for Qdrant"), raising=False)
     monkeypatch.setattr("src.services.vector_store.get_vector_store", lambda: types.SimpleNamespace(count=lambda t, collection=None: 5))
-    n._init_vector_backend()
-    assert n.qdrant_client is None
+    with caplog.at_level("INFO"):
+        n._check_vector_store()
+    assert not hasattr(n, "qdrant_client") and any("5 document vectors" in r.message for r in caplog.records)
 
 
 def test_a_missing_vector_table_is_logged_loudly_and_does_not_stop_the_boot(monkeypatch, caplog):
@@ -96,12 +94,5 @@ def test_a_missing_vector_table_is_logged_loudly_and_does_not_stop_the_boot(monk
         raise RuntimeError('relation "proc.bp_vector_chunk_bge_large_v1" does not exist')
     monkeypatch.setattr("src.services.vector_store.get_vector_store", lambda: types.SimpleNamespace(count=boom))
     with caplog.at_level("ERROR"):
-        n._init_vector_backend()
-    assert n.qdrant_client is None and any("vector store" in r.message.lower() for r in caplog.records if r.levelname == "ERROR")
-
-
-def test_conversation_memory_is_available_on_pgvector_without_a_qdrant_client():
-    from src.agents.base_agent import BaseAgent
-    import src.agents.base_agent as ba
-    me = types.SimpleNamespace(agent_nick=types.SimpleNamespace(qdrant_client=None, embedding_model=object()))
-    assert ba._vector_backend_ready(me.agent_nick) is True
+        n._check_vector_store()
+    assert any("vector store" in r.message.lower() for r in caplog.records if r.levelname == "ERROR")

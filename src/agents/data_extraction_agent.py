@@ -50,7 +50,6 @@ try:
 except Exception:
     LlamaParse = None  # type: ignore[misc]
 
-from qdrant_client import models
 from sentence_transformers import util
 import torch
 from datetime import datetime, timedelta, date
@@ -653,51 +652,6 @@ def _get_easyocr_reader():
         except Exception:
             _easyocr_reader = None
     return _easyocr_reader
-# === QDRANT: Idempotent collection initialization ===
-def _initialize_qdrant_collection_idempotent(
-    qdrant_client,
-    collection_name: str,
-    vector_size: int,
-    distance: str = "COSINE",
-) -> None:
-    """
-    Create the collection only if it doesn't already exist.
-    Works across qdrant-client versions. No-op if exists.
-    """
-    from qdrant_client.http.exceptions import UnexpectedResponse
-    try:
-        # Fast existence check:
-        try:
-            _ = qdrant_client.get_collection(collection_name)
-            return  # Already exists
-        except Exception:
-            # If the get_collection not available/failed, list as fallback
-            try:
-                coll_list = qdrant_client.get_collections().collections
-                if any(getattr(c, "name", None) == collection_name for c in coll_list):
-                    return
-            except Exception:
-                # proceed to attempt creation
-                pass
-
-        # Create collection with correct Distance enum (uppercase)
-        qdrant_client.create_collection(
-            collection_name=collection_name,
-            vectors_config=models.VectorParams(
-                size=int(vector_size),
-                distance=getattr(models.Distance, distance.upper()),
-            ),
-        )
-    except UnexpectedResponse as e:
-        # 409 Conflict (already exists) -> safe to ignore
-        if getattr(e, "status_code", None) == 409:
-            return
-        # Anything else: re-raise to be handled by caller
-        raise
-    except Exception:
-        # Quietly allow caller to attempt upsert (and handle 404 there)
-        logger.warning("Qdrant init skipped or failed (will handle on upsert).", exc_info=True)
-
 def _normalize_point_id(raw_id: str) -> int | str:
     if not isinstance(raw_id, str):
         raw_id = str(raw_id)
@@ -6442,57 +6396,11 @@ class DataExtractionAgent(BaseAgent):
                 )
 
     # ============================ VECTORIZING =============================
-    def _get_qdrant_collection_name(self, doc_type: Any = None) -> str:
-        """Return the Qdrant collection name for the supplied document type."""
-
-        base = getattr(self.settings, "qdrant_collection_name", "procwise_document_embeddings")
-        if not isinstance(base, str) or not base.strip():
-            base = "procwise_document_embeddings"
-        base = re.sub(r"[^A-Za-z0-9_-]", "_", base.strip()) or "procwise_document_embeddings"
-
-        return base
-
-    def _ensure_qdrant_collection(self, doc_type: Any = None) -> str:
-        """
-        Determine vector size reliably and ensure the Qdrant collection exists.
-        """
-        collection = self._get_qdrant_collection_name(doc_type)
-
-        # Determine embedding dimension safely
-        dim = None
-        emb = getattr(self.agent_nick, "embedding_model", None)
-        if emb is not None:
-            # sentence-transformers usually has this:
-            get_dim = getattr(emb, "get_sentence_embedding_dimension", None)
-            if callable(get_dim):
-                try:
-                    dim = int(get_dim())
-                except Exception:
-                    dim = None
-            if dim is None:
-                # Fallback: encode a token and inspect shape
-                try:
-                    vec = emb.encode(["__dim_probe__"], normalize_embeddings=True, show_progress_bar=False)
-                    # vec shape: (1, D)
-                    dim = int(getattr(vec, "shape", [None, None])[1]) if hasattr(vec, "shape") else int(len(vec[0]))
-                except Exception:
-                    pass
-        if not dim:
-            # Sensible default if all else fails
-            dim = 768
-
-        # Initialize idempotently
-        _initialize_qdrant_collection_idempotent(
-            self.agent_nick.qdrant_client,
-            collection_name=collection,
-            vector_size=dim,
-            distance="COSINE",
-        )
-
-        return collection
-
-    def _vectorize_document_pgvector(self, full_text: str, pk_value: str | None, doc_type: Any, product_type: Any, object_key: str) -> None:
-        """One SOURCE row per chunk, with the payload the old point carried (minus the s3 key, which is never indexed); the worker embeds."""
+    def _vectorize_document(self, full_text: str, pk_value: str | None, doc_type: Any, product_type: Any, object_key: str) -> None:
+        """Store document chunks for retrieval: one SOURCE row per chunk, with the payload the old point carried (minus the s3 key, which is never
+        indexed); the vector worker embeds them."""
+        if not full_text:
+            return
         from src.services.vector_store import DEFAULT_TENANT, sources
         try:
             chunks = self._chunk_text(full_text, doc_type=doc_type)
@@ -6506,9 +6414,11 @@ class DataExtractionAgent(BaseAgent):
                        "chunk_id": idx, "summary": chunk.strip()[:240]}
             sources.put_source(DEFAULT_TENANT, "documents", f"{record_id}_{idx}", chunk, payload)
 
-    def _vectorize_structured_data_pgvector(self, header: Dict[str, Any], line_items: List[Dict[str, Any]], doc_type: str, pk_value: str,
-                                            product_type: Any) -> None:
-        """A header source and one source per line item (same text and payload as the old points); the worker embeds them."""
+    def _vectorize_structured_data(self, header: Dict[str, Any], line_items: List[Dict[str, Any]], doc_type: str, pk_value: str,
+                                   product_type: Any) -> None:
+        """Header and line-item content for retrieval: a header source and one source per line item; the vector worker embeds them."""
+        if not pk_value:
+            return
         from src.services.vector_store import DEFAULT_TENANT, sources
         base = {"record_id": pk_value, "document_type": _normalize_label(doc_type), "product_type": _normalize_label(product_type)}
         header_text = _dict_to_text(header)
@@ -6527,192 +6437,6 @@ class DataExtractionAgent(BaseAgent):
                 sources.put_source(DEFAULT_TENANT, "documents", f"{pk_value}_line_{idx}", item_text,
                                    {**base, "data_type": "line_item", "line_number": idx})
 
-    def _vectorize_document(
-            self,
-            full_text: str,
-            pk_value: str | None,
-            doc_type: Any,
-            product_type: Any,
-            object_key: str,
-    ) -> None:
-        """Store document chunks and metadata in the vector database."""
-        if not full_text:
-            return
-
-        from src.services.vector_store.backend import use_pgvector
-        if use_pgvector():
-            self._vectorize_document_pgvector(full_text, pk_value, doc_type, product_type, object_key)
-            return
-
-        try:
-            collection_name = self._ensure_qdrant_collection(doc_type)
-        except Exception:
-            collection_name = self._get_qdrant_collection_name(doc_type)
-            logger.warning(
-                "Qdrant init skipped or failed (will attempt upsert-retry).",
-                exc_info=True,
-            )
-
-        chunk_fn = self._chunk_text
-        try:
-            chunks = chunk_fn(full_text, doc_type=doc_type)
-        except TypeError:
-            chunks = chunk_fn(full_text)  # type: ignore[misc]
-        if not chunks:
-            return
-
-        vectors = self.agent_nick.embedding_model.encode(
-            chunks, normalize_embeddings=True, show_progress_bar=False
-        )
-
-        record_id = pk_value or object_key
-
-        points: List[models.PointStruct] = []
-        for idx, (chunk, vector) in enumerate(zip(chunks, vectors)):
-            chunk_summary = chunk.strip()[:240]
-            payload = {
-                "record_id": record_id,
-                "document_type": _normalize_label(doc_type),
-                "product_type": _normalize_label(product_type),
-                "s3_key": object_key,
-                "chunk_id": idx,
-                "content": chunk,
-                "summary": chunk_summary,
-            }
-            point_id = _normalize_point_id(f"{record_id}_{idx}")
-            points.append(
-                models.PointStruct(id=point_id, vector=vector.tolist(), payload=payload)
-            )
-
-        if not points:
-            return
-
-        # Upsert with create-on-404 retry
-        try:
-            self.agent_nick.qdrant_client.upsert(
-                collection_name=collection_name,
-                points=points,
-                wait=True,
-            )
-        except Exception as e:
-            # If collection missing, create then retry once
-            msg = str(e)
-            if "doesn't exist" in msg or "does not exist" in msg or "Not found" in msg:
-                logger.info("Qdrant collection missing — creating and retrying upsert...")
-                collection_name = self._ensure_qdrant_collection(doc_type)
-                self.agent_nick.qdrant_client.upsert(
-                    collection_name=collection_name,
-                    points=points,
-                    wait=True,
-                )
-            else:
-                raise
-
-    def _vectorize_structured_data(
-            self,
-            header: Dict[str, Any],
-            line_items: List[Dict[str, Any]],
-            doc_type: str,
-            pk_value: str,
-            product_type: Any,
-    ) -> None:
-        """Embed header and line-item content for retrieval."""
-        if not pk_value:
-            return
-
-        from src.services.vector_store.backend import use_pgvector
-        if use_pgvector():
-            self._vectorize_structured_data_pgvector(header, line_items, doc_type, pk_value, product_type)
-            return
-
-        try:
-            collection_name = self._ensure_qdrant_collection(doc_type)
-        except Exception:
-            collection_name = self._get_qdrant_collection_name(doc_type)
-            logger.warning(
-                "Qdrant init skipped or failed (will attempt upsert-retry).",
-                exc_info=True,
-            )
-
-        texts: List[str] = []
-        meta: List[Tuple[str, Dict[str, Any]]] = []
-
-        # Header payload
-        header_text = _dict_to_text(header)
-        if header_text:
-            texts.append(header_text)
-            meta.append(
-                (
-                    _normalize_point_id(f"{pk_value}_header"),
-                    {
-                        "record_id": pk_value,
-                        "document_type": _normalize_label(doc_type),
-                        "product_type": _normalize_label(product_type),
-                        "data_type": "header",
-                        "content": header_text,
-                    },
-                )
-            )
-
-        # Line item payloads
-        for idx, item in enumerate(line_items, start=1):
-            if isinstance(item, str):
-                try:
-                    item = json.loads(item)
-                except Exception:
-                    continue
-            if not isinstance(item, dict):
-                continue
-            item_text = _dict_to_text(item)
-            if not item_text:
-                continue
-            texts.append(item_text)
-            meta.append(
-                (
-                    _normalize_point_id(f"{pk_value}_line_{idx}"),
-                    {
-                        "record_id": pk_value,
-                        "document_type": _normalize_label(doc_type),
-                        "product_type": _normalize_label(product_type),
-                        "data_type": "line_item",
-                        "line_number": idx,
-                        "content": item_text,
-                    },
-                )
-            )
-
-        if not texts:
-            return
-
-        vectors = self.agent_nick.embedding_model.encode(
-            texts, normalize_embeddings=True, show_progress_bar=False
-        )
-        points = [
-            models.PointStruct(id=pid, vector=vec.tolist(), payload=payload)
-            for (pid, payload), vec in zip(meta, vectors)
-        ]
-
-        # Upsert with create-on-404 retry
-        try:
-            self.agent_nick.qdrant_client.upsert(
-                collection_name=collection_name,
-                points=points,
-                wait=True,
-            )
-        except Exception as e:
-            msg = str(e)
-            if "doesn't exist" in msg or "does not exist" in msg or "Not found" in msg:
-                logger.info("Qdrant collection missing — creating and retrying upsert...")
-                collection_name = self._ensure_qdrant_collection(doc_type)
-                self.agent_nick.qdrant_client.upsert(
-                    collection_name=collection_name,
-                    points=points,
-                    wait=True,
-                )
-            else:
-                raise
-
-    # ============================ TEXT CHUNKING ===========================
     def _chunk_text(
         self,
         text: str,

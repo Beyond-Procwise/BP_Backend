@@ -2,10 +2,8 @@ import logging
 from collections import OrderedDict
 from collections.abc import Iterable, Mapping
 from datetime import datetime, time, timedelta, timezone
-from http import HTTPStatus
 from typing import Any, Dict, List, Optional, Sequence
 
-from qdrant_client import models
 
 import services.rag_service as rag_module
 
@@ -22,24 +20,15 @@ class SupplierRelationshipService:
         except Exception:
             logger.debug("SupplierRelationshipService failed to initialise RAGService", exc_info=True)
             self.rag_service = None
-        self.collection_name = getattr(self.settings, "qdrant_collection_name", None)
-        self.client = getattr(agent_nick, "qdrant_client", None)
         cache_limit = getattr(self.settings, "relationship_cache_limit", None)
         if not isinstance(cache_limit, int) or cache_limit <= 0:
             cache_limit = 512
         self._fallback_cache_limit = cache_limit
         self._fallback_cache: OrderedDict[str, Dict[str, Any]] = OrderedDict()
         self._fallback_negative_cache: OrderedDict[str, None] = OrderedDict()
-        if not self._pg():
-            self._ensure_payload_indexes()
-
-    @staticmethod
-    def _pg() -> bool:
-        from src.services.vector_store.backend import use_pgvector
-        return use_pgvector()
 
     def _list_pg(self, filters: Dict[str, Any], limit: int) -> List[Any]:
-        """Stored records through the VectorStore (what the Qdrant scroll did). Records live in the primary 'documents' collection."""
+        """Stored records through the VectorStore. Records live in the primary 'documents' collection."""
         from src.services.vector_store import DEFAULT_TENANT, get_vector_store
         return list(get_vector_store().list(DEFAULT_TENANT, collection="documents", filters=filters, limit=max(1, min(int(limit), 1000))))
 
@@ -105,29 +94,12 @@ class SupplierRelationshipService:
         supplier_name: Optional[str] = None,
         limit: int = 1,
     ) -> List[Dict[str, Any]]:
-        pg = self._pg()
-        if not pg and (not self.client or not self.collection_name or not hasattr(self.client, "scroll")):
-            return []
-
-        must: List[models.FieldCondition] = []
+        filters: Dict[str, Any] = {}
         if supplier_id:
-            must.append(
-                models.FieldCondition(
-                    key="supplier_id",
-                    match=models.MatchValue(value=str(supplier_id)),
-                )
-            )
-        if supplier_name:
-            normalised = self._normalise_key(supplier_name)
-            if normalised:
-                must.append(
-                    models.FieldCondition(
-                        key="supplier_name_normalized",
-                        match=models.MatchValue(value=normalised),
-                    )
-                )
-
-        if not must:
+            filters["supplier_id"] = str(supplier_id)
+        if supplier_name and self._normalise_key(supplier_name):
+            filters["metadata"] = {"supplier_name_normalized": self._normalise_key(supplier_name)}
+        if not filters:
             return []
 
         cached_payloads = self._lookup_cached_relationship(supplier_id, supplier_name, limit)
@@ -135,63 +107,10 @@ class SupplierRelationshipService:
             return cached_payloads
 
         try:
-            if pg:
-                pg_filters: Dict[str, Any] = {}
-                if supplier_id:
-                    pg_filters["supplier_id"] = str(supplier_id)
-                if supplier_name and self._normalise_key(supplier_name):
-                    pg_filters["metadata"] = {"supplier_name_normalized": self._normalise_key(supplier_name)}
-                results = self._list_pg(pg_filters, limit)
-            else:
-                results, _ = self.client.scroll(
-                    collection_name=self.collection_name,
-                    scroll_filter=models.Filter(must=must),
-                    with_payload=True,
-                    with_vectors=False,
-                    limit=limit,
-                )
-        except Exception as exc:
-            if pg:
-                logger.exception("Failed to load supplier relationship from the vector store")
-                return []
-            if self._is_missing_index_error(exc):
-                logger.warning(
-                    "SupplierRelationshipService: missing Qdrant index detected while loading supplier relationship. Attempting to create payload indexes before falling back.",
-                    exc_info=True,
-                )
-                # Ensure indexes exist and retry once before resorting to a full collection scan.
-                self._ensure_payload_indexes()
-                cached_payloads = self._lookup_cached_relationship(supplier_id, supplier_name, limit)
-                if cached_payloads is not None:
-                    return cached_payloads
-                try:
-                    results, _ = self.client.scroll(
-                        collection_name=self.collection_name,
-                        scroll_filter=models.Filter(must=must),
-                        with_payload=True,
-                        with_vectors=False,
-                        limit=limit,
-                    )
-                except Exception as retry_exc:
-                    if self._is_missing_index_error(retry_exc):
-                        logger.warning(
-                            "SupplierRelationshipService: payload indexes still missing after retry. Falling back to in-memory filtering.",
-                            exc_info=True,
-                        )
-                        matches = self._fetch_relationship_without_index(
-                            supplier_id=supplier_id, supplier_name=supplier_name, limit=limit
-                        )
-                        if matches:
-                            for payload in matches:
-                                self._store_fallback_payload(payload)
-                        else:
-                            self._record_fallback_miss(supplier_id, supplier_name)
-                        return matches
-                    logger.exception("Failed to load supplier relationship from Qdrant")
-                    return []
-            else:
-                logger.exception("Failed to load supplier relationship from Qdrant")
-                return []
+            results = self._list_pg(filters, limit)
+        except Exception:
+            logger.exception("Failed to load supplier relationship from the vector store")
+            return []
 
         payloads = self._filter_payloads(
             self._extract_payloads(results or []), supplier_id, supplier_name
@@ -204,30 +123,10 @@ class SupplierRelationshipService:
         return payloads
 
     def fetch_overview(self) -> Optional[Dict[str, Any]]:
-        pg = self._pg()
-        if not pg and (not self.client or not self.collection_name or not hasattr(self.client, "scroll")):
-            return None
-
         try:
-            if pg:
-                results = self._list_pg({"document_type": "supplier_relationship_overview"}, 1)
-            else:
-                results, _ = self.client.scroll(
-                    collection_name=self.collection_name,
-                    scroll_filter=models.Filter(
-                        must=[
-                            models.FieldCondition(
-                                key="document_type",
-                                match=models.MatchValue(value="supplier_relationship_overview"),
-                            )
-                        ]
-                    ),
-                    with_payload=True,
-                    with_vectors=False,
-                    limit=1,
-                )
+            results = self._list_pg({"document_type": "supplier_relationship_overview"}, 1)
         except Exception:
-            logger.exception("Failed to load supplier relationship overview from Qdrant")
+            logger.exception("Failed to load supplier relationship overview from the vector store")
             return None
 
         for point in results or []:
@@ -238,57 +137,6 @@ class SupplierRelationshipService:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-    def _ensure_payload_indexes(self) -> None:
-        if not self.client or not self.collection_name:
-            return
-
-        get_collection = getattr(self.client, "get_collection", None)
-        create_index = getattr(self.client, "create_payload_index", None)
-        if not callable(get_collection) or not callable(create_index):
-            return
-
-        required_indexes = {
-            "supplier_id": models.PayloadSchemaType.KEYWORD,
-            "supplier_name_normalized": models.PayloadSchemaType.KEYWORD,
-        }
-
-        try:
-            collection = get_collection(collection_name=self.collection_name)
-        except Exception:
-            logger.debug(
-                "SupplierRelationshipService could not fetch Qdrant collection metadata", exc_info=True
-            )
-            return
-
-        payload_schema = getattr(collection, "payload_schema", {}) or {}
-        existing = set(payload_schema.keys())
-
-        for field, schema in required_indexes.items():
-            if field in existing:
-                continue
-            try:
-                create_index(
-                    collection_name=self.collection_name,
-                    field_name=field,
-                    field_schema=schema,
-                    wait=True,
-                )
-                logger.info(
-                    "SupplierRelationshipService created missing Qdrant index for '%s'", field
-                )
-            except Exception as exc:
-                status_code = getattr(exc, "status_code", None)
-                if status_code == HTTPStatus.CONFLICT:
-                    logger.debug(
-                        "SupplierRelationshipService index '%s' already exists", field
-                    )
-                    continue
-                logger.warning(
-                    "SupplierRelationshipService failed to create Qdrant index '%s': %s",
-                    field,
-                    exc,
-                )
-
     def _summarise_flow(self, flow: Mapping[str, Any]) -> tuple[str, List[str]]:
         supplier_id = flow.get("supplier_id")
         supplier_name = str(flow.get("supplier_name") or "").strip()
@@ -524,104 +372,6 @@ class SupplierRelationshipService:
             return float(value)
         except (TypeError, ValueError):
             return 0.0
-
-    def _fetch_relationship_without_index(
-        self,
-        supplier_id: Optional[str],
-        supplier_name: Optional[str],
-        limit: int,
-    ) -> List[Dict[str, Any]]:
-        if not self.client or not self.collection_name:
-            return []
-
-        page_size = max(limit, 50)
-        max_points_to_scan = max(2000, page_size * 40)
-        next_offset = None
-        scanned = 0
-        matches: List[Dict[str, Any]] = []
-
-        while True:
-            try:
-                results, next_offset = self.client.scroll(
-                    collection_name=self.collection_name,
-                    scroll_filter=None,
-                    with_payload=True,
-                    with_vectors=False,
-                    limit=page_size,
-                    offset=next_offset,
-                )
-            except Exception:
-                logger.exception(
-                    "SupplierRelationshipService fallback scroll failed while loading supplier relationship"
-                )
-                break
-
-                if not results:
-                    break
-
-            scanned += len(results)
-            for payload in self._extract_payloads(results):
-                document_type = payload.get("document_type")
-                if document_type and document_type != "supplier_relationship":
-                    continue
-
-                filtered = self._filter_payloads([payload], supplier_id, supplier_name)
-                if not filtered:
-                    continue
-
-                match = filtered[0]
-                self._store_fallback_payload(match)
-                matches.append(match)
-                if len(matches) >= limit:
-                    return matches
-
-            cache = cache_builder
-            self._fallback_cache = cache
-
-        matches: List[Dict[str, Any]] = []
-        if target_id:
-            matches.extend(cache.get("id", {}).get(target_id, []))
-        if target_name:
-            matches.extend(cache.get("name", {}).get(target_name, []))
-
-        if not matches:
-            return []
-
-        deduped: List[Dict[str, Any]] = []
-        seen: set[Any] = set()
-        for payload in matches:
-            record_id = payload.get("record_id") or (
-                str(payload.get("supplier_id") or ""),
-                payload.get("supplier_name_normalized") or self._normalise_key(payload.get("supplier_name")),
-            )
-            if record_id in seen:
-                continue
-            seen.add(record_id)
-            deduped.append(payload)
-
-            if scanned >= max_points_to_scan:
-                logger.warning(
-                    "SupplierRelationshipService fallback scan aborted after inspecting %s records without finding enough"
-                    " matches", scanned
-                )
-                break
-
-            if scanned >= max_points_to_scan:
-                logger.warning(
-                    "SupplierRelationshipService fallback scan aborted after inspecting %s records without finding enough"
-                    " matches", scanned
-                )
-                break
-
-        if not matches:
-            self._record_fallback_miss(supplier_id, supplier_name)
-        return matches
-
-    @staticmethod
-    def _is_missing_index_error(exc: Exception) -> bool:
-        message = str(getattr(exc, "message", "") or exc)
-        message = message.lower()
-        return "index required but not found" in message
 
     @staticmethod
     def _extract_payloads(points: Sequence[Any]) -> List[Dict[str, Any]]:

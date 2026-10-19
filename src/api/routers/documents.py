@@ -554,7 +554,7 @@ async def embed_documents(
     except HTTPException:
         raise
     except Exception as exc:  # pragma: no cover - defensive
-        logger.exception("Failed to initialise Qdrant collection for uploads")
+        logger.exception("Failed to check the vector store collection for uploads")
         raise HTTPException(
             status_code=500,
             detail="Failed to initialise vector collection for uploaded documents.",

@@ -19,8 +19,7 @@ try:  # pragma: no cover - optional sparse retriever dependency
     from rank_bm25 import BM25Okapi  # type: ignore
 except Exception:  # pragma: no cover - gracefully degrade when unavailable
     BM25Okapi = None  # type: ignore
-from qdrant_client import models
-from qdrant_client.http.exceptions import UnexpectedResponse
+from src.services.vector_store.filter_models import models
 from utils.gpu import configure_gpu, load_cross_encoder
 from services.semantic_cache import SemanticCacheManager
 from . import ask_flags, ask_trace
@@ -33,7 +32,7 @@ except Exception:  # pragma: no cover - gracefully degrade when unavailable
     faiss = None  # type: ignore
 
 # Imported, never redeclared. This module and document_embedding_service both
-# write to the same Qdrant collections; a second local set would drift and one
+# write to the same vector store collections; a second local set would drift and one
 # of the two write paths would stop redacting without anything failing.
 from services.document_embedding_service import (  # noqa: E402
     DISALLOWED_METADATA_KEYS,
@@ -74,11 +73,10 @@ class RAGService:
     def __init__(self, agent_nick, cross_encoder_cls=None):
         self.agent_nick = agent_nick
         self.settings = agent_nick.settings
-        self.client = agent_nick.qdrant_client
         self.embedder = agent_nick.embedding_model
         self.primary_collection = getattr(
             self.settings,
-            "qdrant_collection_name",
+            "document_collection_name",
             "procwise_document_embeddings",
         )
         self.uploaded_collection = getattr(
@@ -96,7 +94,7 @@ class RAGService:
             "learning_collection_name",
             "learning",
         )
-        # Local FAISS and BM25 indexes to complement Qdrant
+        # Local FAISS and BM25 indexes to complement the vector store
         self._faiss_available = faiss is not None
         self._faiss_warned = False
         self._faiss_index = None
@@ -161,19 +159,8 @@ class RAGService:
         )
         self._rerank_cache: "OrderedDict[str, float]" = OrderedDict()
         self._rerank_cache_lock = threading.Lock()
-        self._qdrant_search_workers = max(
-            int(getattr(self.settings, "rag_qdrant_search_workers", 4) or 1), 1
-        )
-        self._qdrant_hnsw_ef = max(
-            int(getattr(self.settings, "rag_qdrant_search_ef", 160) or 1), 16
-        )
-        self._qdrant_search_params = models.SearchParams(
-            hnsw_ef=self._qdrant_hnsw_ef,
-            exact=False,
-        )
-        self._qdrant_exact_search_params = models.SearchParams(
-            hnsw_ef=self._qdrant_hnsw_ef,
-            exact=True,
+        self._search_workers = max(
+            int(getattr(self.settings, "rag_search_workers", 4) or 1), 1
         )
 
     # ------------------------------------------------------------------
@@ -478,154 +465,32 @@ class RAGService:
             if probe and isinstance(probe[0], (list, tuple, np.ndarray)):
                 first = probe[0]
                 return len(first)
-        raise RuntimeError("Unable to determine embedding dimension for Qdrant collection initialisation")
+        raise RuntimeError("Unable to determine embedding dimension")
 
     def ensure_collection(self, collection_name: Optional[str] = None) -> None:
-        """Ensure the specified Qdrant collection exists with the right vector size (nothing to do on pgvector: the table is created by migration)."""
-
-        if self._pg_active():
-            return
-        if self.client is None:
-            raise RuntimeError("Qdrant client is not configured on AgentNick")
+        """Check ``collection_name`` is one of the vector store's collections. Nothing is created: the tables come from migrations."""
 
         target = collection_name or self.primary_collection
-
-        try:
-            self.client.get_collection(collection_name=target)
-            self._refresh_payload_index_cache(target)
-            return
-        except UnexpectedResponse as exc:
-            if getattr(exc, "status_code", None) != 404:
-                return
-        except Exception:
-            try:
-                collections = self.client.get_collections().collections
-            except Exception:
-                collections = []
-            if any(getattr(col, "name", None) == target for col in collections):
-                return
-
-        dimension = self._embedding_dimension()
-        try:
-            self.client.create_collection(
-                collection_name=target,
-                vectors_config=models.VectorParams(
-                    size=int(dimension),
-                    distance=models.Distance.COSINE,
-                ),
-            )
-            self._payload_index_cache.pop(target, None)
-        except UnexpectedResponse as exc:
-            if getattr(exc, "status_code", None) != 409:
-                raise
-        except Exception:  # pragma: no cover - defensive logging only
-            logger.warning("Failed to ensure Qdrant collection %s", target, exc_info=True)
-
-        self._refresh_payload_index_cache(target)
-
-    def _refresh_payload_index_cache(self, collection_name: str) -> None:
-        if not self.client or not collection_name:
-            return
-        get_collection = getattr(self.client, "get_collection", None)
-        if get_collection is None:
-            return
-        try:
-            info = get_collection(collection_name=collection_name)
-        except Exception:
-            return
-
-        schema = getattr(info, "payload_schema", {}) or {}
-        if isinstance(schema, dict):
-            self._payload_index_cache[collection_name] = set(schema.keys())
-
-    def _ensure_payload_index(
-        self,
-        collection_name: Optional[str],
-        field_name: Optional[str],
-        schema: models.PayloadSchemaType = models.PayloadSchemaType.KEYWORD,
-    ) -> None:
-        if not collection_name or not field_name or not self.client:
-            return
-
-        create_index = getattr(self.client, "create_payload_index", None)
-        if create_index is None:
-            return
-
-        cached = self._payload_index_cache.setdefault(collection_name, set())
-        if field_name in cached:
-            return
-
-        if not cached:
-            self._refresh_payload_index_cache(collection_name)
-            cached = self._payload_index_cache.setdefault(collection_name, set())
-            if field_name in cached:
-                return
-
-        try:
-            create_index(
-                collection_name=collection_name,
-                field_name=field_name,
-                field_schema=schema,
-                wait=True,
-            )
-            cached.add(field_name)
-        except UnexpectedResponse as exc:
-            status = getattr(exc, "status_code", None)
-            if status in (400, 409):
-                cached.add(field_name)
-            else:  # pragma: no cover - diagnostic logging only
-                logger.debug(
-                    "Failed to create payload index for %s.%s", collection_name, field_name, exc_info=True
-                )
-        except Exception:  # pragma: no cover - diagnostic logging only
-            logger.debug(
-                "Failed to ensure payload index for %s.%s", collection_name, field_name, exc_info=True
-            )
-
-    def _collect_filter_fields(self, query_filter: Optional[models.Filter]) -> Set[str]:
-        if query_filter is None:
-            return set()
-
-        fields: Set[str] = set()
-        stack: List[Any] = [query_filter]
-        while stack:
-            current = stack.pop()
-            if isinstance(current, models.FieldCondition):
-                key = getattr(current, "key", None)
-                if isinstance(key, str) and key.strip():
-                    fields.add(key.strip())
-                continue
-
-            if isinstance(current, models.Filter):
-                for attr in ("must", "must_not", "should"):
-                    items = getattr(current, attr, None) or []
-                    for item in items:
-                        if item is not None:
-                            stack.append(item)
-
-        return fields
-
-    def _pg_active(self) -> bool:
-        from src.services.vector_store.backend import use_pgvector
-        return use_pgvector()
+        if self._logical_collection(target) is None:
+            raise ValueError(f"{target!r} is not a vector store collection")
 
     def _logical_collection(self, name: Optional[str]) -> Optional[str]:
-        """The vector store's name for one of the configured Qdrant collections (None if it is not one of ours)."""
+        """The vector store's collection for one of the configured collection names (None if it is not one of ours)."""
         return {self.primary_collection: "documents", self.uploaded_collection: "uploaded",
                 self.static_policy_collection: "policy", self.learning_collection: "learning"}.get(name)
 
-    def _query_pgvector_collection(
+    def _query_collection(
         self, collection_name: str, vector: Sequence[float], *, query_filter: Optional[models.Filter], limit: int
     ) -> List[SimpleNamespace]:
-        """One collection through the VectorStore, as the one tenant there is today. A failure is no hits, as a Qdrant failure was."""
+        """One collection through the VectorStore, as the one tenant there is today. A failure is no hits."""
         logical = self._logical_collection(collection_name)
         if logical is None:
             return []
         try:
             from src.services.vector_store import DEFAULT_TENANT, get_vector_store
-            from src.services.vector_store.filters import from_qdrant_filter
+            from src.services.vector_store.filters import to_store_filter
             store = getattr(self, "_vector_store", None) or get_vector_store()
-            hits = store.search(DEFAULT_TENANT, list(vector), from_qdrant_filter(query_filter), int(limit), collection=logical)
+            hits = store.search(DEFAULT_TENANT, list(vector), to_store_filter(query_filter), int(limit), collection=logical)
         except Exception:
             logger.warning("Vector search failed for collection %s", collection_name, exc_info=True)
             return []
@@ -636,119 +501,6 @@ class RAGService:
             wrapped.append(SimpleNamespace(id=str(hit.id), payload=payload, score=float(hit.score or 0.0)))
         return wrapped
 
-    def _query_qdrant_collection(
-        self,
-        collection_name: str,
-        vector: Sequence[float],
-        *,
-        query_filter: Optional[models.Filter],
-        limit: int,
-    ) -> List[SimpleNamespace]:
-        if collection_name and self._pg_active():
-            return self._query_pgvector_collection(collection_name, vector, query_filter=query_filter, limit=limit)
-        if not collection_name or self.client is None:
-            return []
-
-        self._ensure_filter_indexes(collection_name, query_filter)
-
-        search_kwargs = dict(
-            collection_name=collection_name,
-            query=vector,
-            query_filter=query_filter,
-            limit=limit,
-            with_payload=True,
-            with_vectors=False,
-        )
-
-        def _copy_params(params: Optional[models.SearchParams]) -> Optional[models.SearchParams]:
-            if params is None:
-                return None
-            copier = getattr(params, "model_copy", None)
-            if callable(copier):
-                try:
-                    return copier(deep=True)
-                except Exception:
-                    return params
-            return params
-
-        def _extract_points(response: Any) -> Sequence[Any]:
-            """Extract scored points from query_points response.
-
-            qdrant-client >= 1.17 returns a QueryResponse with a .points
-            attribute instead of a raw list of ScoredPoint objects.
-            """
-            if response is None:
-                return []
-            points = getattr(response, "points", None)
-            if points is not None:
-                return points
-            if isinstance(response, (list, tuple)):
-                return response
-            return []
-
-        def _wrap_hits(raw_hits: Any) -> List[SimpleNamespace]:
-            wrapped: List[SimpleNamespace] = []
-            for hit in _extract_points(raw_hits):
-                payload = dict(getattr(hit, "payload", {}) or {})
-                payload.setdefault("collection_name", collection_name)
-                wrapped.append(
-                    SimpleNamespace(
-                        id=str(getattr(hit, "id", payload.get("record_id"))),
-                        payload=payload,
-                        score=float(getattr(hit, "score", 0.0)),
-                    )
-                )
-            return wrapped
-
-        need_exact_retry = False
-        raw_hits: Any = None
-        try:
-            raw_hits = self.client.query_points(
-                **search_kwargs,
-                search_params=_copy_params(self._qdrant_search_params),
-            )
-        except UnexpectedResponse as exc:
-            if getattr(exc, "status_code", None) == 404:
-                return []
-            logger.warning(
-                "Qdrant search failed for collection %s", collection_name, exc_info=True
-            )
-            need_exact_retry = True
-        except Exception:
-            logger.warning(
-                "Qdrant search failed for collection %s", collection_name, exc_info=True
-            )
-            need_exact_retry = True
-        else:
-            return _wrap_hits(raw_hits)
-
-        if not need_exact_retry:
-            return []
-
-        try:
-            raw_hits = self.client.query_points(
-                **search_kwargs,
-                search_params=_copy_params(self._qdrant_exact_search_params),
-            )
-        except UnexpectedResponse as exc:
-            if getattr(exc, "status_code", None) == 404:
-                return []
-            logger.warning(
-                "Exact Qdrant search failed for collection %s",
-                collection_name,
-                exc_info=True,
-            )
-            return []
-        except Exception:
-            logger.warning(
-                "Exact Qdrant search failed for collection %s",
-                collection_name,
-                exc_info=True,
-            )
-            return []
-
-        return _wrap_hits(raw_hits)
-
     def _search_collections_parallel(
         self,
         requests: Sequence[Tuple[str, Optional[models.Filter]]],
@@ -756,7 +508,7 @@ class RAGService:
         *,
         limit: int,
     ) -> Dict[str, List[SimpleNamespace]]:
-        if not requests or (self.client is None and not self._pg_active()):
+        if not requests:
             return {}
 
         tasks: List[Tuple[str, Optional[models.Filter]]] = [
@@ -767,12 +519,12 @@ class RAGService:
         if not tasks:
             return {}
 
-        max_workers = min(len(tasks), max(self._qdrant_search_workers, 1))
+        max_workers = min(len(tasks), max(self._search_workers, 1))
         results: Dict[str, List[SimpleNamespace]] = {}
 
         if max_workers <= 1:
             for name, query_filter in tasks:
-                results[name] = self._query_qdrant_collection(
+                results[name] = self._query_collection(
                     name,
                     vector,
                     query_filter=query_filter,
@@ -783,7 +535,7 @@ class RAGService:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_map = {
                 executor.submit(
-                    self._query_qdrant_collection,
+                    self._query_collection,
                     name,
                     vector,
                     query_filter=query_filter,
@@ -798,7 +550,7 @@ class RAGService:
                     results[name] = future.result()
                 except Exception:
                     logger.warning(
-                        "Parallel Qdrant search failed for collection %s",
+                        "Parallel vector search failed for collection %s",
                         name,
                         exc_info=True,
                     )
@@ -953,43 +705,11 @@ class RAGService:
 
         return [float(score) if score is not None else 0.0 for score in scores]
 
-    def _ensure_filter_indexes(
-        self, collection_name: Optional[str], query_filter: Optional[models.Filter]
-    ) -> None:
-        if not collection_name or query_filter is None:
-            return
-
-        try:
-            fields = self._collect_filter_fields(query_filter)
-        except Exception:  # pragma: no cover - diagnostic logging only
-            logger.debug(
-                "Failed to inspect filter for collection %s", collection_name, exc_info=True
-            )
-            return
-
-        for field in fields:
-            self._ensure_payload_index(collection_name, field)
-
-    def _purge_disallowed_metadata(self, collection_name: str) -> None:
-        if not DISALLOWED_METADATA_KEYS:
-            return
-        try:
-            selector = models.FilterSelector(filter=models.Filter(must=[]))
-            self.client.delete_payload(
-                collection_name=collection_name,
-                keys=list(DISALLOWED_METADATA_KEYS),
-                points=selector,
-                wait=False,
-            )
-        except Exception:
-            logger.debug(
-                "Failed to purge disallowed metadata for collection %s",
-                collection_name,
-                exc_info=True,
-            )
-
-    def _upsert_payloads_pgvector(
-        self, payloads: List[Dict[str, Any]], text_representation_key: str, collection_name: Optional[str]
+    def upsert_payloads(
+        self,
+        payloads: List[Dict[str, Any]],
+        text_representation_key: str = "content",
+        collection_name: Optional[str] = None,
     ) -> None:
         """Write each payload as a SOURCE row in Postgres; the worker chunks, embeds and indexes it.
 
@@ -1035,181 +755,6 @@ class RAGService:
             except Exception:
                 logger.exception("Vector source write failed for collection %r record %r — document processing continues", target, record_id)
 
-    def upsert_payloads(
-        self,
-        payloads: List[Dict[str, Any]],
-        text_representation_key: str = "content",
-        collection_name: Optional[str] = None,
-    ):
-        """Encode and upsert structured payloads into Qdrant, FAISS and BM25."""
-
-        if not payloads:
-            return
-
-        if self._pg_active():
-            return self._upsert_payloads_pgvector(payloads, text_representation_key, collection_name)
-
-        resolved_collection = collection_name or self.primary_collection
-        points: List[models.PointStruct] = []
-        texts_for_embedding: List[str] = []
-        payloads_for_storage: List[Dict[str, Any]] = []
-
-        for payload in payloads:
-            if not isinstance(payload, dict):
-                continue
-
-            structured_payload = payload.get("payload")
-            if isinstance(structured_payload, dict):
-                base_payload = dict(structured_payload)
-            else:
-                base_payload = dict(payload)
-            base_payload.pop("payload", None)
-            for key in DISALLOWED_METADATA_KEYS:
-                base_payload.pop(key, None)
-
-            record_id = (
-                base_payload.get("record_id")
-                or payload.get("record_id")
-                or str(uuid.uuid4())
-            )
-            base_payload["record_id"] = record_id
-
-            override_collection = self._extract_source_collection(base_payload)
-            if override_collection:
-                resolved_collection = override_collection
-
-            if text_representation_key in base_payload:
-                base_payload.pop(text_representation_key, None)
-
-            text_to_embed = payload.get(text_representation_key)
-            if text_to_embed is None and text_representation_key != "content":
-                text_to_embed = base_payload.get(text_representation_key)
-            if not isinstance(text_to_embed, str) or not text_to_embed.strip():
-                summary_fallback = payload.get("text_summary")
-                if isinstance(summary_fallback, str) and summary_fallback.strip():
-                    text_to_embed = summary_fallback
-            if not isinstance(text_to_embed, str) or not text_to_embed.strip():
-                try:
-                    text_to_embed = json.dumps(base_payload, ensure_ascii=False)
-                except (TypeError, ValueError):
-                    text_to_embed = ""
-
-            chunks = self._chunk_text(text_to_embed)
-            if not chunks:
-                continue
-
-            for idx, chunk in enumerate(chunks):
-                chunk_payload = dict(base_payload)
-                chunk_payload["chunk_id"] = idx
-                chunk_payload["chunk_index"] = idx
-
-                if isinstance(chunk, SemanticChunk):
-                    chunk_text = chunk.content
-                    chunk_metadata = chunk.metadata or {}
-                else:
-                    chunk_text = str(chunk)
-                    chunk_metadata = {}
-
-                chunk_text = (chunk_text or "").strip()
-                if not chunk_text:
-                    continue
-
-                for key, value in (chunk_metadata or {}).items():
-                    if value in (None, "", [], {}):
-                        continue
-                    chunk_payload.setdefault(key, value)
-
-                if (
-                    "content" in chunk_payload
-                    and chunk_payload.get("content") != chunk_text
-                ):
-                    chunk_payload.setdefault(
-                        "_rag_source_content", chunk_payload.get("content")
-                    )
-                chunk_payload["content"] = chunk_text
-                if (
-                    "text_summary" in chunk_payload
-                    and chunk_payload.get("text_summary") != chunk_text
-                ):
-                    chunk_payload.setdefault(
-                        "_rag_source_text_summary",
-                        chunk_payload.get("text_summary"),
-                    )
-                chunk_payload["text_summary"] = chunk_text
-                chunk_payload.setdefault("collection_name", resolved_collection)
-                texts_for_embedding.append(chunk_text)
-                payloads_for_storage.append(chunk_payload)
-
-        if not texts_for_embedding:
-            return
-
-        vectors = self.embedder.encode(
-            texts_for_embedding, normalize_embeddings=True, show_progress_bar=False
-        )
-
-        new_vectors: List[np.ndarray] = []
-        for idx, (vector, payload) in enumerate(zip(vectors, payloads_for_storage)):
-            point_id = self._build_point_id(
-                payload.get("record_id", str(uuid.uuid4())), payload.get("chunk_id", idx)
-            )
-            vec = np.array(vector, dtype="float32")
-            points.append(
-                models.PointStruct(id=point_id, vector=vec.tolist(), payload=payload)
-            )
-
-            # --- Update local FAISS/BM25 indexes ---
-            new_vectors.append(vec)
-            self._doc_vectors.append(vec)
-            self._documents.append({"id": point_id, **payload})
-            content_value = payload.get("content")
-            if isinstance(content_value, str):
-                self._bm25_corpus.append(content_value.lower().split())
-            else:
-                self._bm25_corpus.append([])
-
-        if new_vectors:
-            if self._bm25_corpus and self._bm25_available:
-                self._bm25 = BM25Okapi(self._bm25_corpus)
-            elif self._bm25_corpus and not self._bm25_warned and not self._bm25_available:
-                logger.info(
-                    "rank_bm25 is not installed; skipping sparse BM25 index for RAGService."
-                )
-                self._bm25_warned = True
-
-            if self._faiss_available:
-                dim = len(new_vectors[0])
-                if self._faiss_index is None:
-                    index = faiss.IndexFlatIP(dim)
-                    index = self._maybe_init_gpu_index(index)
-                    self._faiss_index = index
-                stacked = np.vstack(new_vectors)
-                self._faiss_index.add(stacked)
-            elif not self._faiss_warned:
-                logger.warning(
-                    "FAISS is not installed; falling back to CPU index for local dense retrieval."
-                )
-                self._faiss_warned = True
-
-        collection_name = (
-            resolved_collection
-            or getattr(self.settings, "qdrant_collection_name", None)
-        )
-
-        if points and collection_name:
-            self._purge_disallowed_metadata(collection_name)
-            try:
-                self.client.upsert(
-                    collection_name=collection_name,
-                    points=points,
-                    wait=True,
-                )
-            except Exception:
-                logger.exception(
-                    "Qdrant upsert failed for collection %r (%d points) — "
-                    "document processing continues",
-                    collection_name, len(points),
-                )
-
     def upsert_texts(self, texts: List[str], metadata: Optional[Dict] = None):
         """Backward compatible wrapper around :meth:`upsert_payloads`."""
 
@@ -1233,13 +778,6 @@ class RAGService:
             if isinstance(nested_candidate, str) and nested_candidate.strip():
                 return nested_candidate.strip()
         return None
-
-    def _build_point_id(self, record_id: str, chunk_idx: int) -> str:
-        """Create a Qdrant-compatible point ID for the given record chunk."""
-
-        namespace_uuid = self._normalise_uuid(record_id)
-        chunk_uuid = uuid.uuid5(namespace_uuid, str(chunk_idx))
-        return str(chunk_uuid)
 
     @staticmethod
     def _normalise_uuid(value: str) -> uuid.UUID:
@@ -1377,7 +915,7 @@ class RAGService:
         )
         prefetch = min(ratio_target, prefetch_ceiling)
         prefetch = max(effective_top_k, prefetch)
-        weights = {"dense": 1.0, "sparse": 0.75, "qdrant": 1.0, "cache": 0.6}
+        weights = {"dense": 1.0, "sparse": 0.75, "vector": 1.0, "cache": 0.6}
 
         def _register_candidate(
             source: str,
@@ -1578,9 +1116,9 @@ class RAGService:
 
         collections_to_query = tuple(base_collections)
 
-        if collections_to_query and (self.client is not None or self._pg_active()):
+        if collections_to_query:
             _, vector = _ensure_query_vectors()
-            with ask_trace.current().span("qdrant_search"):
+            with ask_trace.current().span("vector_search"):
                 batched_hits = self._search_collections_parallel(
                     collections_to_query,
                     vector,
@@ -1592,12 +1130,12 @@ class RAGService:
                     payload = dict(getattr(hit, "payload", {}) or {})
                     payload.setdefault("collection_name", name)
                     _register_candidate(
-                        "qdrant",
+                        "vector",
                         payload,
                         getattr(hit, "id", payload.get("record_id")),
                         float(getattr(hit, "score", 0.0)),
                         rank,
-                        weights["qdrant"],
+                        weights["vector"],
                     )
 
         if not candidates:
@@ -2153,7 +1691,7 @@ class RAGService:
                 return self._get_relevant_documents(query, run_manager=run_manager, **kwargs)
 
         tool_description = description or (
-            "Retrieve procurement knowledge base documents from Qdrant to "
+            "Retrieve procurement knowledge base documents from the vector store to "
             "ground supplier negotiations and policy checks."
         )
         retriever = _RAGServiceRetriever(limit=top_k)

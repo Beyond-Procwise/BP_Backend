@@ -7,11 +7,6 @@ from src.agents import quote_evaluation_agent as qea
 from src.services.vector_store import DEFAULT_TENANT, VectorHit
 
 
-@pytest.fixture(autouse=True)
-def pg(monkeypatch):
-    monkeypatch.setenv("VECTOR_BACKEND", "pgvector")
-
-
 class Store:
     def __init__(self, batches):
         self.batches, self.calls = list(batches), []

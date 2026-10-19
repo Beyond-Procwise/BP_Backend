@@ -4,7 +4,7 @@ The trainer orchestrates a multi-stage curriculum:
 
 Layer 0
     Ensure collections and baseline retrieval settings are in place so the
-    agent always has a healthy Qdrant foundation.
+    agent always has a healthy vector store foundation.
 Layer 1
     Ingest new procurement documents (POs, RFQs, contracts, invoices) while
     removing sensitive identifiers before embedding them with
@@ -102,7 +102,7 @@ class LayeredRAGTrainer:
     # Layer helpers
     # ------------------------------------------------------------------
     def _run_layer_zero(self) -> Dict[str, Any]:
-        """Ensure Qdrant collections exist for all procurement corpora."""
+        """Check every procurement corpus is a vector store collection."""
 
         collections = {
             "primary": self.rag_service.primary_collection,
@@ -120,7 +120,7 @@ class LayeredRAGTrainer:
                 self.rag_service.ensure_collection(name)
             except Exception:
                 ensured[label] = False
-                logger.exception("Failed to ensure Qdrant collection %s", name)
+                logger.exception("Failed to ensure vector store collection %s", name)
             else:
                 ensured[label] = True
         ensured["timestamp"] = datetime.utcnow().isoformat()

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
@@ -166,11 +165,9 @@ def build_line_items(
 def _enqueue_embedding(cur, doc_type: str, doc_pk, parser_snapshot: Mapping[str, Any]) -> None:
     """Queue this document for embedding on the CALLER'S cursor: the job commits or rolls back with the raw row (the outbox pattern).
 
-    Off unless VECTOR_OUTBOX is set. Inside a savepoint, so a missing outbox table (or any failure here) can never fail the extraction: the
-    document is then simply picked up by the next ``rebuild``.
+    Inside a savepoint, so a missing outbox table (or any failure here) can never fail the extraction: the document is then simply picked up by
+    the watcher's safety-net queue call or the next ``rebuild``.
     """
-    if os.environ.get("VECTOR_OUTBOX", "").strip().lower() not in ("1", "true", "yes", "on"):
-        return
     if not doc_pk or not str((parser_snapshot or {}).get("full_text") or "").strip():
         return
     try:

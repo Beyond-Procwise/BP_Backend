@@ -2,17 +2,14 @@
 
 Both exist because their silence has already gone unnoticed for weeks: findings
 writes were rejected in bp_sqldb for 65 days, and the document vector store sat
-empty for five weeks after Qdrant Cloud died. From every existing surface, both
+empty for five weeks after the old vector service died. From every existing surface, both
 looked exactly like "nothing to report". These helpers are pure functions over
 a cursor or a client so they can be tested without a database; /health owns the
 connections and turns any failure into the string "unavailable".
 """
 from __future__ import annotations
 
-import re
 from typing import Any, Optional
-
-DEFAULT_COLLECTION = "procwise_document_embeddings"
 
 
 def last_finding_written(cur) -> Optional[str]:
@@ -24,25 +21,9 @@ def last_finding_written(cur) -> Optional[str]:
     return ts.isoformat() if ts is not None else None
 
 
-def vector_store_points(client: Any, collection: str) -> int:
-    """Exact number of points in the document collection. ``exact=True`` so a
-    zero is a real zero and not an estimate from a stale segment count."""
-    return int(client.count(collection_name=collection, exact=True).count)
-
-
-def vector_store_points_pg(store: Any) -> int:
-    """Exact number of document vectors the pgvector store holds (the one tenant there is today)."""
+def vector_store_points(store: Any) -> int:
+    """Exact number of document vectors the vector store holds (the one tenant there is today). A zero is a real zero."""
     return int(store.count("default", collection="documents"))
-
-
-def collection_name(settings: Any) -> str:
-    """The document collection's name, sanitised the same way the extraction
-    agent sanitises it before writing, so /health counts the collection the
-    pipeline actually fills."""
-    base = getattr(settings, "qdrant_collection_name", DEFAULT_COLLECTION)
-    if not isinstance(base, str) or not base.strip():
-        return DEFAULT_COLLECTION
-    return re.sub(r"[^A-Za-z0-9_-]", "_", base.strip()) or DEFAULT_COLLECTION
 
 
 def last_triage_run(cur) -> Optional[dict]:

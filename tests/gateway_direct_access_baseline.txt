@@ -60,8 +60,6 @@ src/repositories/workflow_email_tracking_repo.py
 src/repositories/workflow_input_request_repo.py
 src/repositories/workflow_lifecycle_repo.py
 src/repositories/workflow_round_response_repo.py
-src/resources/qdrant_migrations/20241015_add_learning_collection.py
-src/resources/qdrant_migrations/20241105_add_source_type_indexes.py
 src/services/agent_actions.py
 src/services/agent_policy/approval_views.py
 src/services/agent_policy/approvals.py
@@ -207,9 +205,6 @@ src/services/product_catalog_service.py
 src/services/prompt_engine/db.py
 src/services/prompt_engine/legacy_import.py
 src/services/proposal_store.py
-src/services/qdrant_health.py
-src/services/rag_qwen30b.py
-src/services/rag_service.py
 src/services/rbac.py
 src/services/report_data/live.py
 src/services/report_data/mode.py

@@ -1,0 +1,381 @@
+{
+ "13287200038033921509": {
+  "contracts": {
+   "contract_ids": [
+    "CO2"
+   ],
+   "count": 1
+  },
+  "coverage_ratio": 1.0,
+  "document_type": "supplier_flow",
+  "mapping_summary": [
+   "Company contract records link to Supplier Two (SI2), covering 1 contract including CO2.",
+   "Operational purchase orders reference Supplier Two (SI2) via the shared supplier identifier, covering 1 order including PO2.",
+   "Purchase order line items for Supplier Two (SI2) highlight Widget Service.",
+   "The supplier's product catalogue spans 1 unique item descriptions."
+  ],
+  "products": {
+   "catalog_products": [
+    "Widget Service"
+   ],
+   "top_items": [
+    {
+     "description": "Widget Service",
+     "spend_gbp": 0.0
+    }
+   ],
+   "unique_items": 1
+  },
+  "purchase_orders": {
+   "count": 1,
+   "po_ids": [
+    "PO2"
+   ],
+   "total_value_gbp": 0.0
+  },
+  "summary": "Supplier Two (SI2) data flow summary. Coverage ratio across contracts, purchase orders, quotes and invoices is 1.00. 1 contract (CO2). 1 purchase order. Key products include Widget Service (0.00 GBP). Product catalogue covers 1 unique items. Catalog references include Widget Service. Category coverage spans Services. Primary category focus: Services. Company contract records link to Supplier Two (SI2), covering 1 contract including CO2. Operational purchase orders reference Supplier Two (SI2) via the shared supplier identifier, covering 1 order including PO2. Purchase order line items for Supplier Two (SI2) highlight Widget Service. The supplier's product catalogue spans 1 unique item descriptions.",
+  "supplier_id": "SI2",
+  "supplier_name": "Supplier Two",
+  "supplier_name_normalized": "supplier two"
+ },
+ "15051327720949784516": {
+  "confidence": 0.75,
+  "description": "Invoices reconcile to the purchase order that triggered them.",
+  "document_type": "knowledge_graph_relation",
+  "relationship_type": "reconciles",
+  "sample_values": [
+   "PO1"
+  ],
+  "source_table": "proc.bp_invoice_trgt",
+  "source_table_alias": "invoices",
+  "status": "linked",
+  "target_table": "proc.bp_purchase_order_trgt",
+  "target_table_alias": "purchase_orders"
+ },
+ "16130527124483925637": {
+  "confidence": 1.0,
+  "description": "Line items roll up to their parent purchase order via po_id.",
+  "document_type": "knowledge_graph_relation",
+  "relationship_type": "belongs_to",
+  "sample_values": [
+   "PO1",
+   "PO2"
+  ],
+  "source_table": "proc.bp_po_line_items_trgt",
+  "source_table_alias": "purchase_order_lines",
+  "status": "linked",
+  "target_table": "proc.bp_purchase_order_trgt",
+  "target_table_alias": "purchase_orders"
+ },
+ "1649413160182076047": {
+  "contracts": {
+   "contract_ids": [
+    "CO1"
+   ],
+   "count": 1
+  },
+  "coverage_ratio": 1.0,
+  "document_type": "supplier_flow",
+  "mapping_summary": [
+   "Company contract records link to Supplier One (SI1), covering 1 contract including CO1.",
+   "Operational purchase orders reference Supplier One (SI1) via the shared supplier identifier, covering 1 order including PO1.",
+   "Purchase order line items for Supplier One (SI1) highlight Widget Service.",
+   "The supplier's product catalogue spans 1 unique item descriptions."
+  ],
+  "products": {
+   "catalog_products": [
+    "Widget Service"
+   ],
+   "top_items": [
+    {
+     "description": "Widget Service",
+     "spend_gbp": 0.0
+    }
+   ],
+   "unique_items": 1
+  },
+  "purchase_orders": {
+   "count": 1,
+   "po_ids": [
+    "PO1"
+   ],
+   "total_value_gbp": 0.0
+  },
+  "summary": "Supplier One (SI1) data flow summary. Coverage ratio across contracts, purchase orders, quotes and invoices is 1.00. 1 contract (CO1). 1 purchase order. Key products include Widget Service (0.00 GBP). Product catalogue covers 1 unique items. Catalog references include Widget Service. Category coverage spans Services. Primary category focus: Services. Company contract records link to Supplier One (SI1), covering 1 contract including CO1. Operational purchase orders reference Supplier One (SI1) via the shared supplier identifier, covering 1 order including PO1. Purchase order line items for Supplier One (SI1) highlight Widget Service. The supplier's product catalogue spans 1 unique item descriptions.",
+  "supplier_id": "SI1",
+  "supplier_name": "Supplier One",
+  "supplier_name_normalized": "supplier one"
+ },
+ "16711581018005207074": {
+  "confidence": 0.75,
+  "description": "Invoice lines reconcile back to the originating purchase order.",
+  "document_type": "knowledge_graph_relation",
+  "relationship_type": "reconciles",
+  "sample_values": [
+   "PO1"
+  ],
+  "source_table": "proc.bp_invoice_line_items_trgt",
+  "source_table_alias": "invoice_lines",
+  "status": "linked",
+  "target_table": "proc.bp_purchase_order_trgt",
+  "target_table_alias": "purchase_orders"
+ },
+ "16869546065433546591": {
+  "document_type": "knowledge_graph_path",
+  "path": [
+   "proc.bp_purchase_order_trgt",
+   "proc.bp_quote_trgt",
+   "proc.bp_quote_line_items_trgt"
+  ],
+  "resolved_aliases": [
+   "purchase_orders",
+   "quotes",
+   "quote_lines"
+  ]
+ },
+ "16899735241378275165": {
+  "confidence": 1.0,
+  "description": "Invoice line items aggregate into invoices via invoice_id.",
+  "document_type": "knowledge_graph_relation",
+  "relationship_type": "belongs_to",
+  "sample_values": [
+   "INV1"
+  ],
+  "source_table": "proc.bp_invoice_line_items_trgt",
+  "source_table_alias": "invoice_lines",
+  "status": "linked",
+  "target_table": "proc.bp_invoice_trgt",
+  "target_table_alias": "invoices"
+ },
+ "17440404782212393842": {
+  "agent_name": "NegotiationAgent",
+  "document_type": "agent_relationship_summary",
+  "related_tables": [
+   "proc.bp_invoice_trgt",
+   "proc.bp_purchase_order_trgt",
+   "proc.negotiation_session_state",
+   "proc.negotiation_sessions",
+   "proc.rfq_targets"
+  ],
+  "relationship_statements": [
+   "proc.bp_invoice_line_items_trgt belongs_to proc.bp_invoice_line_items_trgt via invoice_id \u2192 invoice_id e.g. INV1  (confidence 1.00)",
+   "proc.bp_purchase_order_trgt references proc.bp_contracts via contract_id \u2192 contract_id e.g. CO1, CO2  (confidence 1.00)",
+   "proc.bp_purchase_order_trgt references proc.bp_supplier via supplier_id \u2192 supplier_id e.g. SI1, SI2  (confidence 1.00)",
+   "proc.bp_po_line_items_trgt belongs_to proc.bp_po_line_items_trgt via po_id \u2192 po_id e.g. PO1, PO2  (confidence 1.00)",
+   "proc.bp_invoice_line_items_trgt reconciles proc.bp_invoice_line_items_trgt via po_id \u2192 po_id e.g. PO1  (confidence 0.75)",
+   "proc.bp_quote_trgt compares proc.bp_quote_trgt via po_id \u2192 po_id e.g. PO1  (confidence 0.75)"
+  ],
+  "summary": "Generates counter offers based on RFQ targets, supplier quotes and historical spend insights. Key data relationships include proc.bp_invoice_line_items_trgt belongs_to proc.bp_invoice_line_items_trgt via invoice_id \u2192 invoice_id e.g. INV1  (confidence 1.00); proc.bp_purchase_order_trgt references proc.bp_contracts via contract_id \u2192 contract_id e.g. CO1, CO2  (confidence 1.00); proc.bp_purchase_order_trgt references proc.bp_supplier via supplier_id \u2192 supplier_id e.g. SI1, SI2  (confidence 1.00). Primary outputs: negotiation_outcomes, agentic_plan."
+ },
+ "17779482479427131949": {
+  "confidence": 1.0,
+  "description": "Purchase orders inherit supplier attributes from the supplier master.",
+  "document_type": "knowledge_graph_relation",
+  "relationship_type": "references",
+  "sample_values": [
+   "SI1",
+   "SI2"
+  ],
+  "source_table": "proc.bp_purchase_order_trgt",
+  "source_table_alias": "purchase_orders",
+  "status": "linked",
+  "target_table": "proc.bp_supplier",
+  "target_table_alias": "supplier_master"
+ },
+ "17853695313897510437": {
+  "document_type": "knowledge_graph_path",
+  "path": [
+   "proc.bp_purchase_order_trgt",
+   "proc.bp_invoice_trgt",
+   "proc.bp_invoice_line_items_trgt"
+  ],
+  "resolved_aliases": [
+   "purchase_orders",
+   "invoices",
+   "invoice_lines"
+  ]
+ },
+ "2275152856831954773": {
+  "document_type": "knowledge_graph_path",
+  "path": [
+   "proc.bp_contracts",
+   "proc.bp_purchase_order_trgt",
+   "proc.bp_invoice_trgt",
+   "proc.bp_invoice_line_items_trgt"
+  ],
+  "resolved_aliases": [
+   "contracts",
+   "purchase_orders",
+   "invoices",
+   "invoice_lines"
+  ]
+ },
+ "3100132426250581129": {
+  "agent_name": "SupplierRankingAgent",
+  "document_type": "agent_relationship_summary",
+  "flow_snapshot_size": 2,
+  "related_tables": [
+   "proc.bp_contracts",
+   "proc.bp_invoice_line_items_trgt",
+   "proc.bp_invoice_trgt",
+   "proc.bp_po_line_items_trgt",
+   "proc.bp_purchase_order_trgt",
+   "proc.bp_quote_trgt",
+   "proc.bp_supplier"
+  ],
+  "relationship_statements": [
+   "proc.bp_quote_line_items_trgt belongs_to proc.bp_quote_line_items_trgt via quote_id \u2192 quote_id e.g. Q1  (confidence 1.00)",
+   "proc.cat_product_mapping categorises proc.cat_product_mapping via item_description \u2192 product e.g. widget service  (confidence 1.00)"
+  ],
+  "summary": "Scores suppliers shared by upstream opportunity mining using purchase history, invoice performance and risk metrics. Key data relationships include proc.bp_quote_line_items_trgt belongs_to proc.bp_quote_line_items_trgt via quote_id \u2192 quote_id e.g. Q1  (confidence 1.00); proc.cat_product_mapping categorises proc.cat_product_mapping via item_description \u2192 product e.g. widget service  (confidence 1.00). Primary outputs: supplier_rankings, supplier_profiles, agentic_plan. Knowledge graph currently tracks 2 supplier flows."
+ },
+ "4418444514724280949": {
+  "confidence": 1.0,
+  "description": "Purchase orders reference the contract they were raised against.",
+  "document_type": "knowledge_graph_relation",
+  "relationship_type": "references",
+  "sample_values": [
+   "CO1",
+   "CO2"
+  ],
+  "source_table": "proc.bp_purchase_order_trgt",
+  "source_table_alias": "purchase_orders",
+  "status": "linked",
+  "target_table": "proc.bp_contracts",
+  "target_table_alias": "contracts"
+ },
+ "5433945475264162746": {
+  "agent_name": "SupplierInteractionAgent",
+  "document_type": "agent_relationship_summary",
+  "related_tables": [
+   "proc.bp_purchase_order_trgt",
+   "proc.bp_quote_trgt",
+   "proc.negotiation_session_state",
+   "proc.negotiation_sessions",
+   "proc.rfq_targets"
+  ],
+  "relationship_statements": [
+   "proc.bp_quote_line_items_trgt belongs_to proc.bp_quote_line_items_trgt via quote_id \u2192 quote_id e.g. Q1  (confidence 1.00)",
+   "proc.bp_purchase_order_trgt references proc.bp_contracts via contract_id \u2192 contract_id e.g. CO1, CO2  (confidence 1.00)",
+   "proc.bp_purchase_order_trgt references proc.bp_supplier via supplier_id \u2192 supplier_id e.g. SI1, SI2  (confidence 1.00)",
+   "proc.bp_po_line_items_trgt belongs_to proc.bp_po_line_items_trgt via po_id \u2192 po_id e.g. PO1, PO2  (confidence 1.00)",
+   "proc.bp_invoice_line_items_trgt reconciles proc.bp_invoice_line_items_trgt via po_id \u2192 po_id e.g. PO1  (confidence 0.75)",
+   "proc.bp_invoice_trgt reconciles proc.bp_invoice_trgt via po_id \u2192 po_id e.g. PO1  (confidence 0.75)"
+  ],
+  "summary": "Processes inbound RFQ responses from suppliers and prepares negotiation hand-offs. Key data relationships include proc.bp_quote_line_items_trgt belongs_to proc.bp_quote_line_items_trgt via quote_id \u2192 quote_id e.g. Q1  (confidence 1.00); proc.bp_purchase_order_trgt references proc.bp_contracts via contract_id \u2192 contract_id e.g. CO1, CO2  (confidence 1.00); proc.bp_purchase_order_trgt references proc.bp_supplier via supplier_id \u2192 supplier_id e.g. SI1, SI2  (confidence 1.00). Primary outputs: rfq_responses, negotiation_prompts, agentic_plan."
+ },
+ "621025059877423846": {
+  "confidence": 1.0,
+  "description": "Product taxonomy enriches PO line descriptions for category analytics.",
+  "document_type": "knowledge_graph_relation",
+  "relationship_type": "categorises",
+  "sample_values": [
+   "widget service"
+  ],
+  "source_table": "proc.cat_product_mapping",
+  "source_table_alias": "product_mapping",
+  "status": "linked",
+  "target_table": "proc.bp_po_line_items_trgt",
+  "target_table_alias": "purchase_order_lines"
+ },
+ "6385266619707184138": {
+  "document_type": "knowledge_graph_path",
+  "path": [
+   "proc.bp_contracts",
+   "proc.bp_supplier",
+   "proc.bp_purchase_order_trgt",
+   "proc.bp_po_line_items_trgt"
+  ],
+  "resolved_aliases": [
+   "contracts",
+   "supplier_master",
+   "purchase_orders",
+   "purchase_order_lines"
+  ]
+ },
+ "6655397235657435061": {
+  "confidence": 1.0,
+  "description": "Contracts are linked to supplier master records via supplier_id.",
+  "document_type": "knowledge_graph_relation",
+  "relationship_type": "references",
+  "sample_values": [
+   "SI1",
+   "SI2"
+  ],
+  "source_table": "proc.bp_contracts",
+  "source_table_alias": "contracts",
+  "status": "linked",
+  "target_table": "proc.bp_supplier",
+  "target_table_alias": "supplier_master"
+ },
+ "6987878675539701818": {
+  "document_type": "knowledge_graph_path",
+  "path": [
+   "proc.bp_purchase_order_trgt",
+   "proc.bp_po_line_items_trgt",
+   "proc.cat_product_mapping"
+  ],
+  "resolved_aliases": [
+   "purchase_orders",
+   "purchase_order_lines",
+   "product_mapping"
+  ]
+ },
+ "7801794983621449004": {
+  "agent_name": "OpportunityMinerAgent",
+  "document_type": "agent_relationship_summary",
+  "flow_snapshot_size": 2,
+  "related_tables": [
+   "proc.bp_contracts",
+   "proc.bp_invoice_line_items_trgt",
+   "proc.bp_invoice_trgt",
+   "proc.bp_po_line_items_trgt",
+   "proc.bp_purchase_order_trgt",
+   "proc.bp_quote_line_items_trgt",
+   "proc.bp_quote_trgt",
+   "proc.bp_supplier"
+  ],
+  "relationship_statements": [
+   "proc.cat_product_mapping categorises proc.cat_product_mapping via item_description \u2192 product e.g. widget service  (confidence 1.00)"
+  ],
+  "summary": "Analyses spend, invoices, quotes and contracts to surface procurement savings opportunities and supplier gaps. Key data relationships include proc.cat_product_mapping categorises proc.cat_product_mapping via item_description \u2192 product e.g. widget service  (confidence 1.00). Primary outputs: policy_opportunities, supplier_candidates, knowledge_graph, agentic_plan. Knowledge graph currently tracks 2 supplier flows."
+ },
+ "8301989305166799979": {
+  "confidence": 0.75,
+  "description": "Quotes can be compared against the purchase order ultimately issued.",
+  "document_type": "knowledge_graph_relation",
+  "relationship_type": "compares",
+  "sample_values": [
+   "PO1"
+  ],
+  "source_table": "proc.bp_quote_trgt",
+  "source_table_alias": "quotes",
+  "status": "linked",
+  "target_table": "proc.bp_purchase_order_trgt",
+  "target_table_alias": "purchase_orders"
+ },
+ "8757527779208783929": {
+  "agent_name": "RAGAgent",
+  "document_type": "agent_relationship_summary",
+  "flow_snapshot_size": 2,
+  "related_tables": [
+   "procwise_document_embeddings",
+   "procwise_knowledge_graph"
+  ],
+  "summary": "Answers procurement questions using the embedded ProcWise MVP knowledge base and topic-specific prompts. Key data sources: procwise_document_embeddings, procwise_knowledge_graph. Primary outputs: rag_answers, agentic_plan. Knowledge graph currently tracks 2 supplier flows."
+ },
+ "9365548534235425841": {
+  "confidence": 1.0,
+  "description": "Quote line items attach to their header quote records.",
+  "document_type": "knowledge_graph_relation",
+  "relationship_type": "belongs_to",
+  "sample_values": [
+   "Q1"
+  ],
+  "source_table": "proc.bp_quote_line_items_trgt",
+  "source_table_alias": "quote_lines",
+  "status": "linked",
+  "target_table": "proc.bp_quote_trgt",
+  "target_table_alias": "quotes"
+ }
+}

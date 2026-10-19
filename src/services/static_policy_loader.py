@@ -1,4 +1,4 @@
-"""Ingest and maintain the static procurement policy corpus in Qdrant."""
+"""Ingest and maintain the static procurement policy corpus in the vector store."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
-from qdrant_client import models
 
 from services.document_embedding_service import (
     DocumentEmbeddingService,
@@ -21,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class StaticPolicyLoader(DocumentEmbeddingService):
-    """Synchronise S3-hosted policy documents into a dedicated Qdrant collection."""
+    """Synchronise S3-hosted policy documents into the vector store's policy collection (source rows the vector worker embeds)."""
 
     _DEFAULT_PREFIX = "Static Policy/"
 
@@ -45,7 +44,6 @@ class StaticPolicyLoader(DocumentEmbeddingService):
         # retrieved directly as a dedicated collection.
         self._rag_service_failed = True
 
-        self._policy_indexes_ready = False
         self._s3_client = getattr(agent_nick, "s3_client", None)
         if self._s3_client is None:
             raise ValueError("AgentNick must expose an S3 client for policy ingestion")
@@ -67,7 +65,7 @@ class StaticPolicyLoader(DocumentEmbeddingService):
         s3_uri: Optional[str] = None,
         force: bool = False,
     ) -> Dict[str, Any]:
-        """Load policy documents from S3 and persist them into Qdrant.
+        """Load policy documents from S3 and store them as policy sources the vector worker embeds.
 
         Parameters
         ----------
@@ -182,67 +180,20 @@ class StaticPolicyLoader(DocumentEmbeddingService):
         return cleaned or None
 
     def _lookup_existing(self, source_path: str) -> Optional[Dict[str, Any]]:
-        from src.services.vector_store.backend import use_pgvector
-        if use_pgvector():
-            try:
-                from src.services.vector_store import DEFAULT_TENANT, sources
-                return sources.find_source_metadata(DEFAULT_TENANT, "policy", {"source_path": source_path})
-            except Exception:
-                logger.debug("Static policy lookup failed for %s", source_path, exc_info=True)
-                return None
+        """The stored metadata of this policy file (its s3_etag says whether it changed), or None."""
         try:
-            points, _ = self.client.scroll(
-                collection_name=self.collection_name,
-                scroll_filter=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="source_path",
-                            match=models.MatchValue(value=source_path),
-                        )
-                    ]
-                ),
-                limit=1,
-                with_payload=True,
-                with_vectors=False,
-            )
+            from src.services.vector_store import DEFAULT_TENANT, sources
+            return sources.find_source_metadata(DEFAULT_TENANT, "policy", {"source_path": source_path})
         except Exception:
             logger.debug("Static policy lookup failed for %s", source_path, exc_info=True)
             return None
 
-        for point in points or []:
-            payload = getattr(point, "payload", None)
-            if isinstance(payload, dict):
-                return dict(payload)
-        return None
-
     def _purge_existing(self, source_path: str) -> None:
-        from src.services.vector_store.backend import use_pgvector
-        if use_pgvector():
-            try:
-                from src.services.vector_store import DEFAULT_TENANT, sources
-                sources.delete_sources_matching(DEFAULT_TENANT, "policy", {"source_path": source_path})
-            except Exception:
-                logger.warning("Failed to purge stale policy sources for %s", source_path, exc_info=True)
-            return
         try:
-            self.client.delete(
-                collection_name=self.collection_name,
-                points_selector=models.FilterSelector(
-                    filter=models.Filter(
-                        must=[
-                            models.FieldCondition(
-                                key="source_path",
-                                match=models.MatchValue(value=source_path),
-                            )
-                        ]
-                    )
-                ),
-                wait=True,
-            )
+            from src.services.vector_store import DEFAULT_TENANT, sources
+            sources.delete_sources_matching(DEFAULT_TENANT, "policy", {"source_path": source_path})
         except Exception:
-            logger.warning(
-                "Failed to purge stale policy payloads for %s", source_path, exc_info=True
-            )
+            logger.warning("Failed to purge stale policy sources for %s", source_path, exc_info=True)
 
     def _fetch_object(self, bucket: str, key: str) -> bytes:
         try:
@@ -293,68 +244,17 @@ class StaticPolicyLoader(DocumentEmbeddingService):
         if not chunks:
             raise ValueError(f"No embeddable chunks produced for {filename}")
 
-        from src.services.vector_store.backend import use_pgvector
         ingested_at = datetime.utcnow().isoformat(timespec="seconds")
         last_modified_iso = (
             last_modified.isoformat() if hasattr(last_modified, "isoformat") else None
         )
-        if use_pgvector():
-            return self._ingest_object_pgvector(document_id=document_id, chunks=chunks, base_metadata=self._policy_base_metadata(
-                document_id=document_id, chunk_seed=chunk_seed, extracted=extracted, filename=filename, bucket=bucket, key=key,
-                etag=etag, ingested_at=ingested_at, last_modified_iso=last_modified_iso))
-
-        vectors = self._encode_chunks(chunks)
-        if not vectors:
-            raise ValueError(f"Embedding model returned no vectors for {filename}")
-
-        vector_size = len(vectors[0])
-        self._ensure_policy_collection(vector_size)
-
-        namespace_uuid = uuid.UUID(document_id)
-
-        base_metadata = self._policy_base_metadata(
-            document_id=document_id, chunk_seed=chunk_seed, extracted=extracted, filename=filename, bucket=bucket, key=key, etag=etag,
-            ingested_at=ingested_at, last_modified_iso=last_modified_iso)
-
-        points: List[models.PointStruct] = []
-        for idx, (chunk, vector) in enumerate(zip(chunks, vectors)):
-            payload = {k: v for k, v in base_metadata.items() if k not in DISALLOWED_METADATA_KEYS}
-            payload.update(
-                {
-                    key: value
-                    for key, value in chunk.metadata.items()
-                    if key not in DISALLOWED_METADATA_KEYS
-                }
-            )
-            payload["document_type"] = "policy"
-            payload["chunk_id"] = idx
-            payload["chunk_index"] = idx
-            payload["content"] = chunk.content
-            payload["text_summary"] = chunk.content
-            payload["embedding_model"] = self._embedding_model_name
-
-            point_id = uuid.uuid5(namespace_uuid, str(idx))
-            points.append(
-                models.PointStruct(id=str(point_id), vector=vector, payload=payload)
-            )
-
-        self.client.upsert(
-            collection_name=self.collection_name,
-            points=points,
-            wait=True,
-        )
-        self._remove_disallowed_payload_fields(self.collection_name)
-
-        return EmbeddedDocument(
-            document_id=document_id,
-            collection=self.collection_name,
-            chunk_count=len(points),
-            metadata=base_metadata,
-        )
+        return self._ingest_chunks(document_id=document_id, chunks=chunks, base_metadata=self._policy_base_metadata(
+            document_id=document_id, chunk_seed=chunk_seed, extracted=extracted, filename=filename, bucket=bucket, key=key,
+            etag=etag, ingested_at=ingested_at, last_modified_iso=last_modified_iso))
 
     def _policy_base_metadata(self, *, document_id: str, chunk_seed: Dict[str, Any], extracted: Any, filename: str, bucket: str, key: str,
                               etag: Optional[str], ingested_at: str, last_modified_iso: Optional[str]) -> Dict[str, Any]:
-        """The metadata every chunk of a policy file carries. Shared by the Qdrant and the pgvector paths so they cannot drift."""
+        """The metadata every chunk of a policy file carries. The metadata is built in one place."""
         base_metadata: Dict[str, Any] = {
             "document_id": document_id,
             "policy_document_id": document_id,
@@ -383,7 +283,7 @@ class StaticPolicyLoader(DocumentEmbeddingService):
             base_metadata.pop(disallowed, None)
         return base_metadata
 
-    def _ingest_object_pgvector(self, *, document_id: str, chunks: List[Any], base_metadata: Dict[str, Any]) -> EmbeddedDocument:
+    def _ingest_chunks(self, *, document_id: str, chunks: List[Any], base_metadata: Dict[str, Any]) -> EmbeddedDocument:
         """One policy SOURCE row per chunk (text + the same payload as before); the worker embeds them."""
         from src.services.vector_store import DEFAULT_TENANT, active_profile, sources
 
@@ -394,39 +294,6 @@ class StaticPolicyLoader(DocumentEmbeddingService):
             payload.pop("content", None)
             sources.put_source(DEFAULT_TENANT, "policy", f"{document_id}:{idx}", chunk.content, payload)
         return EmbeddedDocument(document_id=document_id, collection=self.collection_name, chunk_count=len(chunks), metadata=base_metadata)
-
-    def _ensure_policy_collection(self, vector_size: int) -> None:
-        if vector_size <= 0:
-            raise ValueError("Vector size must be positive for policy ingestion")
-        self._ensure_collection(vector_size)
-        if self._policy_indexes_ready:
-            return
-
-        indexed_fields = (
-            "document_type",
-            "policy_source",
-            "policy_document_id",
-            "section",
-            "source_path",
-            "record_id",
-            "source_type",
-        )
-        for field in indexed_fields:
-            try:
-                self.client.create_payload_index(
-                    collection_name=self.collection_name,
-                    field_name=field,
-                    field_schema=models.PayloadSchemaType.KEYWORD,
-                    wait=True,
-                )
-            except Exception:
-                logger.debug(
-                    "Failed to create payload index for static policy field %s",
-                    field,
-                    exc_info=True,
-                )
-
-        self._policy_indexes_ready = True
 
     def _derive_document_id(self, bucket: str, key: str, etag: Optional[str]) -> str:
         base = f"s3://{bucket}/{key}"

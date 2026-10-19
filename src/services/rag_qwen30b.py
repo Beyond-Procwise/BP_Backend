@@ -18,7 +18,6 @@ configure_gpu()
 # Defaults and env-driven configuration
 RAG_TOP_K = int(os.getenv("RAG_TOP_K", "10"))
 RAG_RERANK_TOP_N = int(os.getenv("RAG_RERANK_TOP_N", "8"))
-QDRANT_VECTOR_NAME = os.getenv("QDRANT_VECTOR_NAME", "text")
 RAG_PER_DOC_CAP = int(os.getenv("RAG_PER_DOC_CAP", "2"))
 RAG_CONTEXT_MAX_CHARS = int(os.getenv("RAG_CONTEXT_MAX_CHARS", "12000"))
 COMPRESS_PER_CHUNK_CHARS = int(os.getenv("COMPRESS_PER_CHUNK_CHARS", "1200"))
@@ -101,7 +100,6 @@ class RAGQwen30b:
 
     The class expects an `agent_nick` which exposes:
       - settings (config object)
-      - qdrant_client
       - embedding_model (with .encode)
       - device (optional)
 
@@ -111,10 +109,9 @@ class RAGQwen30b:
     def __init__(self, agent_nick, cross_encoder_cls=None):
         self.agent_nick = agent_nick
         self.settings = agent_nick.settings
-        self.qdrant = agent_nick.qdrant_client
         self.embedder = agent_nick.embedding_model
         self.device = getattr(agent_nick, "device", None)
-        self.primary_collection = getattr(self.settings, "qdrant_collection_name", "procwise_document_embeddings")
+        self.primary_collection = getattr(self.settings, "document_collection_name", "procwise_document_embeddings")
         self.uploaded_collection = getattr(self.settings, "uploaded_documents_collection_name", "uploaded_documents")
         # load reranker
         if cross_encoder_cls is None:
@@ -168,7 +165,7 @@ class RAGQwen30b:
 
     # -------------------- Retrieval & rerank --------------------------------
     def retrieve_and_rerank(self, query: str, top_k: int = RAG_TOP_K, rerank_top_n: int = RAG_RERANK_TOP_N, vector_name: Optional[str] = None, collections: Optional[List[str]] = None) -> List[Chunk]:
-        """Retrieve candidates from Qdrant and rerank using cross-encoder. Returns list of chunks with added fields:
+        """Retrieve candidates from the vector store and rerank using cross-encoder. Returns list of chunks with added fields:
         - rerank_score
         - embedding (if available or computed)
 
@@ -182,25 +179,13 @@ class RAGQwen30b:
             q_vec = [0.0]
 
         search_collections = collections or [self.primary_collection]
-        named_vector = vector_name or QDRANT_VECTOR_NAME
         all_hits = []
-        from src.services.vector_store.backend import use_pgvector
-        pg = use_pgvector()
         logical_names = {self.primary_collection: "documents", self.uploaded_collection: "uploaded"}
         for coll in search_collections:
             try:
-                if pg:
-                    # No vectors come back from the store: the chunks below carry vector=None and the rest of the pipeline computes what it needs.
-                    from src.services.vector_store.compat import search_hits
-                    hits = search_hits(list(np.asarray(q_vec, dtype=float)), logical_names[coll], top_k) if coll in logical_names else []
-                else:
-                    _qp_result = self.qdrant.query_points(
-                        collection_name=coll,
-                        query=q_vec,
-                        limit=top_k,
-                        with_vectors=True,
-                    )
-                    hits = getattr(_qp_result, "points", _qp_result) or []
+                # No vectors come back from the store: the chunks below carry vector=None and the rest of the pipeline computes what it needs.
+                from src.services.vector_store.compat import search_hits
+                hits = search_hits(list(np.asarray(q_vec, dtype=float)), logical_names[coll], top_k) if coll in logical_names else []
             except Exception:
                 logger.exception("Vector search failed for collection %s; continuing", coll)
                 hits = []
@@ -239,7 +224,7 @@ class RAGQwen30b:
         pairs = [[query, t] for t in texts]
         rerank_scores: List[float]
         if self._reranker is None:
-            # fallback: use qdrant score
+            # fallback: use the vector store score
             rerank_scores = [float(c.get("score") or 0.0) for c in dense]
         else:
             # batch predict
@@ -250,7 +235,7 @@ class RAGQwen30b:
                     scores = list(self._reranker.predict(batch))
                     rerank_scores.extend([float(s) for s in scores])
             except Exception:
-                logger.exception("Reranker failed during prediction; falling back to qdrant scores")
+                logger.exception("Reranker failed during prediction; falling back to the vector store scores")
                 rerank_scores = [float(c.get("score") or 0.0) for c in dense]
         for idx, chunk in enumerate(dense):
             chunk["rerank_score"] = rerank_scores[idx] if idx < len(rerank_scores) else float(chunk.get("score") or 0.0)

@@ -1,4 +1,4 @@
-"""Utilities for embedding uploaded documents into Qdrant collections."""
+"""Utilities for storing uploaded documents for retrieval: extract, chunk, and write one source row per chunk (the vector worker embeds them)."""
 from __future__ import annotations
 
 import logging
@@ -12,49 +12,21 @@ from tempfile import NamedTemporaryFile
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
-from qdrant_client import models
 
 from services.document_extractor import LayoutAwareParser
 from services.semantic_chunker import SemanticChunker
-from services.semantic_cache import SemanticCacheManager
 
-# Metadata keys stripped from every payload before it is written to the vector
-# index. This is the LAST point at which a field can be kept out of Qdrant —
-# QDRANT_URL points at Qdrant Cloud (eu-central-1), so a payload written here
-# has left the trust boundary and there is no per-tenant scoping to fall back on.
+# Metadata keys stripped from every payload before it is stored for retrieval (the vector store's own adapter strips the same set; a test pins that
+# they stay equal). It is declared ONCE here and imported by rag_service and static_policy_loader, so populating it covers every write path.
 #
-# Declared ONCE and imported by rag_service and static_policy_loader. It used to
-# be declared separately in rag_service as well, and both were empty; two empty
-# sets meant populating either one silently left the other write path unredacted.
+# Each key earns its place by being (a) observed in the live index and (b) never read back on any retrieval path:
 #
-# Each key earns its place by being (a) observed in the live index and (b) never
-# read back on any retrieval path:
+#   uploaded_by  a named person's email address, set by routers/documents.py. The scoping logic in model_selector.py that reads `uploaded_by`
+#                takes it from the in-process upload context, NOT from a stored payload, so removing it here does not affect that check.
+#   s3_key       an internal object path. Every other s3_key reference in the codebase reads the database or S3 itself, never a payload.
 #
-#   uploaded_by  a named person's email address, set by routers/documents.py:435.
-#                Observed live in `uploaded_documents`. The scoping logic in
-#                model_selector.py:2710 that reads `uploaded_by` takes it from
-#                the in-process upload context, NOT from the Qdrant payload, so
-#                removing it here does not affect that check.
-#   s3_key       an internal object path. Observed live in
-#                `procwise_document_embeddings`. Every other s3_key reference in
-#                the codebase reads the database or S3 itself, never a payload.
-#
-# Deliberately NOT here: `content`, `summary`, `text_summary`, `session_id`,
-# `filename`, `doc_name`, `document_id`, `chunk_id`. Retrieval consumes all of
-# them, and over-redaction fails silently — the write succeeds, the answers get
-# worse, and nothing errors. `content` in particular is the document text and IS
-# still leaving; scoping that is per-tenant collections plus a disable switch,
-# which this set cannot express and must not be described as covering.
-#
-# Adding a key here also purges it from existing points on the next write, via
-# _remove_disallowed_payload_fields / rag_service._purge_disallowed_metadata.
-#
-# OPEN, as of 2026-08-11: points written BEFORE this set was populated still
-# carry both keys — 244 in procwise_document_embeddings, 6 in uploaded_documents.
-# The purge above clears them, but only when something next writes to that
-# collection, which may be today or next month. Whether to run it deliberately
-# instead is an open decision, with the one-off script and the reasoning in
-# docs/remediation/02_open_operational_actions.md.
+# Deliberately NOT here: `content`, `summary`, `text_summary`, `session_id`, `filename`, `doc_name`, `document_id`, `chunk_id`. Retrieval consumes
+# all of them, and over-redaction fails silently: the write succeeds, the answers get worse, and nothing errors.
 DISALLOWED_METADATA_KEYS: set[str] = {
     "uploaded_by",
     "s3_key",
@@ -118,23 +90,11 @@ class DocumentEmbeddingService:
         self.agent_nick = agent_nick
         self.collection_name = collection_name
         self.settings = getattr(agent_nick, "settings", None)
-        self.client = getattr(agent_nick, "qdrant_client", None)
-        self.embedder = getattr(agent_nick, "embedding_model", None)
         self._rag_service_factory = rag_service_factory
         self._rag_service: Optional[Any] = None
         self._rag_service_failed = False
         self._layout_parser = LayoutAwareParser()
         self._chunker = SemanticChunker(settings=self.settings)
-        self._semantic_cache = (
-            SemanticCacheManager(self.settings, namespace="document_embeddings")
-            if self.settings is not None
-            else SemanticCacheManager(None, namespace="document_embeddings")
-        )
-        self._embedding_model_name = self._resolve_embedding_model_name()
-        from src.services.vector_store.backend import use_pgvector
-        # On pgvector nothing here embeds or writes a vector inline (the worker does), so neither the client nor the model is needed.
-        if (self.client is None or self.embedder is None) and not use_pgvector():
-            raise ValueError("AgentNick must provide Qdrant client and embedding model")
 
     # ------------------------------------------------------------------
     # Public API
@@ -195,62 +155,14 @@ class DocumentEmbeddingService:
             "source_type", first_chunk_metadata.get("source_type")
         )
         metadata_payload.setdefault("title", first_chunk_metadata.get("title"))
-        from src.services.vector_store.backend import use_pgvector
-        if use_pgvector():
-            return self._embed_document_pgvector(document_id, metadata_payload, chunks)
-        vectors = self._encode_chunks(chunks)
-        if not vectors:
-            raise ValueError("Embedding model returned no vectors")
-
-        vector_size = len(vectors[0])
-        self._ensure_collection(vector_size)
-        self._remove_disallowed_payload_fields(self.collection_name)
-
-        chunk_vector_pairs = list(zip(chunks, vectors))
-        points: List[models.PointStruct] = []
-        for idx, (chunk, vector) in enumerate(chunk_vector_pairs):
-            payload = dict(metadata_payload)
-            payload.update(
-                {
-                    key: value
-                    for key, value in chunk.metadata.items()
-                    if key not in DISALLOWED_METADATA_KEYS
-                }
-            )
-            payload.update(
-                {
-                    "chunk_id": idx,
-                    "chunk_index": idx,
-                    "content": chunk.content,
-                    "embedding_model": self._embedding_model_name,
-                }
-            )
-            point_id = str(uuid.uuid5(uuid.UUID(document_id), str(idx)))
-            points.append(
-                models.PointStruct(id=point_id, vector=vector, payload=payload)
-            )
-
-        self.client.upsert(
-            collection_name=self.collection_name,
-            points=points,
-            wait=True,
-        )
-
-        self._propagate_to_rag([chunk for chunk, _ in chunk_vector_pairs], metadata_payload)
-
-        return EmbeddedDocument(
-            document_id=document_id,
-            collection=self.collection_name,
-            chunk_count=len(points),
-            metadata=metadata_payload,
-        )
+        return self._store_chunks(document_id, metadata_payload, chunks)
 
     def _vector_collection(self) -> str:
         """The vector store's name for this service's collection: the policy corpus, or uploads."""
         policy = getattr(self.settings, "static_policy_collection_name", "static_policy") if self.settings is not None else "static_policy"
         return "policy" if self.collection_name == policy else "uploaded"
 
-    def _embed_document_pgvector(self, document_id: str, metadata_payload: Dict[str, Any], chunks: List[DocumentChunk]) -> EmbeddedDocument:
+    def _store_chunks(self, document_id: str, metadata_payload: Dict[str, Any], chunks: List[DocumentChunk]) -> EmbeddedDocument:
         """Write each chunk as a SOURCE row (its own text and metadata); the worker embeds. The request waits for the worker, never embeds.
 
         One source per chunk keeps the semantic chunking and the per-chunk metadata exactly as they were stored before.
@@ -426,144 +338,6 @@ class DocumentEmbeddingService:
         ratio = non_ascii / len(characters)
         return ratio > 0.25
 
-    def _encode_chunks(self, chunks: Sequence[DocumentChunk]) -> List[List[float]]:
-        if not chunks:
-            return []
-
-        vectors: Dict[int, List[float]] = {}
-        encode_batches: List[str] = []
-        encode_indices: List[int] = []
-
-        for idx, chunk in enumerate(chunks):
-            text = chunk.content.strip()
-            if not text:
-                continue
-            cached = self._semantic_cache.get_embedding(text, self._embedding_model_name)
-            if cached is not None:
-                vectors[idx] = [float(value) for value in cached]
-                continue
-            encode_batches.append(text)
-            encode_indices.append(idx)
-
-        if encode_batches:
-            raw_vectors = self.embedder.encode(
-                encode_batches,
-                normalize_embeddings=True,
-                show_progress_bar=False,
-            )
-            if isinstance(raw_vectors, np.ndarray):
-                encoded = raw_vectors.astype("float32").tolist()
-            else:
-                encoded = [list(map(float, vec)) for vec in raw_vectors]
-
-            for idx, vector in zip(encode_indices, encoded):
-                vectors[idx] = vector
-            for text, vector in zip(encode_batches, encoded):
-                self._semantic_cache.set_embedding(text, vector, self._embedding_model_name)
-
-        ordered: List[List[float]] = []
-        for idx in range(len(chunks)):
-            vector = vectors.get(idx)
-            if vector is not None:
-                ordered.append(vector)
-
-        return ordered
-
-    def _ensure_collection(self, vector_size: int) -> None:
-        try:
-            collection_info = self.client.get_collection(
-                collection_name=self.collection_name
-            )
-            payload_schema = getattr(collection_info, "payload_schema", {}) or {}
-            self._ensure_payload_indexes(payload_schema)
-            return
-        except Exception:
-            logger.info(
-                "Creating Qdrant collection '%s' for uploaded documents",
-                self.collection_name,
-            )
-
-        self.client.create_collection(
-            collection_name=self.collection_name,
-            vectors_config=models.VectorParams(
-                size=vector_size,
-                distance=models.Distance.COSINE,
-            ),
-        )
-        self._ensure_payload_indexes({})
-
-    def _ensure_payload_indexes(self, schema: Dict[str, Any]) -> None:
-        indexed_fields = set(schema.keys()) if schema else set()
-        required = {
-            "document_id",
-            "filename",
-            "file_extension",
-            "uploaded_at",
-            "doc_name",
-            "document_type",
-            "content_type",
-            "section",
-            "section_path",
-            "source_type",
-            "title",
-        }
-        for field in required:
-            if field in indexed_fields:
-                continue
-            try:
-                self.client.create_payload_index(
-                    collection_name=self.collection_name,
-                    field_name=field,
-                    field_schema=models.PayloadSchemaType.KEYWORD,
-                    wait=True,
-                )
-            except Exception:
-                logger.debug("Failed to create payload index for %s", field, exc_info=True)
-
-    def _remove_disallowed_payload_fields(self, collection_name: str) -> None:
-        if not DISALLOWED_METADATA_KEYS:
-            return
-        try:
-            selector = models.FilterSelector(filter=models.Filter(must=[]))
-            self.client.delete_payload(
-                collection_name=collection_name,
-                keys=list(DISALLOWED_METADATA_KEYS),
-                points=selector,
-                wait=False,
-            )
-        except Exception:
-            logger.debug(
-                "Failed to purge disallowed metadata keys from %s", collection_name,
-                exc_info=True,
-            )
-
-    def _infer_vector_size(self) -> Optional[int]:
-        getter = getattr(self.embedder, "get_sentence_embedding_dimension", None)
-        if callable(getter):
-            try:
-                size = int(getter())
-                if size > 0:
-                    return size
-            except Exception:
-                logger.debug("Embedding model dimension lookup failed", exc_info=True)
-        try:
-            probe = self.embedder.encode("uploaded document warmup", normalize_embeddings=True)
-        except TypeError:
-            probe = self.embedder.encode("uploaded document warmup")  # type: ignore[call-arg]
-        except Exception:
-            logger.exception("Failed to probe embedding vector size")
-            return None
-        if probe is None:
-            return None
-        if isinstance(probe, np.ndarray):
-            return int(probe.size)
-        if hasattr(probe, "__len__"):
-            return int(len(probe))
-        return None
-
-    # ------------------------------------------------------------------
-    # RAG propagation helpers
-    # ------------------------------------------------------------------
     def _resolve_rag_service(self) -> Optional[Any]:
         if self._rag_service_failed:
             return None
@@ -678,12 +452,3 @@ class DocumentEmbeddingService:
 
         return best_type
 
-    def _resolve_embedding_model_name(self) -> str:
-        if self.settings is not None:
-            configured = getattr(self.settings, "embedding_model", None)
-            if isinstance(configured, str) and configured:
-                return configured
-        candidate = getattr(self.embedder, "model_name", None)
-        if isinstance(candidate, str) and candidate:
-            return candidate
-        return self.embedder.__class__.__name__

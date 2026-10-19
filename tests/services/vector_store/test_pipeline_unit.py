@@ -91,38 +91,28 @@ class TxnConn:
         self.rolled_back = True
 
 
-def _write(monkeypatch, cur, flag):
+def _write(monkeypatch, cur):
     from src.services.extraction import persistence
     conn = TxnConn(cur)
     monkeypatch.setattr(persistence, "get_conn", lambda: conn)
-    if flag is None:
-        monkeypatch.delenv("VECTOR_OUTBOX", raising=False)
-    else:
-        monkeypatch.setenv("VECTOR_OUTBOX", flag)
     raw_id = persistence.write_raw(doc_type="invoice", file_path="x.pdf", process_monitor_id=None, trace_id="00000000-0000-0000-0000-000000000001",
                                    pipeline_version="t", columns={"invoice_id": "INV-1"}, parser_snapshot={"full_text": "some text"},
                                    promotion_status="pending")
     return raw_id, conn
 
 
-def test_write_raw_enqueues_in_the_same_transaction_when_the_outbox_is_on(monkeypatch):
+def test_write_raw_enqueues_in_the_same_transaction(monkeypatch):
     cur = TxnCur()
-    raw_id, conn = _write(monkeypatch, cur, "1")
+    raw_id, conn = _write(monkeypatch, cur)
     assert raw_id == 7 and conn.committed and not conn.rolled_back
     assert any("insert into proc.bp_embedding_job" in s.lower() for s in cur.executed)
     order = [i for i, s in enumerate(cur.executed) if "insert into proc.bp_invoice_raw" in s.lower() or "bp_embedding_job" in s.lower()]
     assert len(order) == 2 and order[0] < order[1]                         # the raw row first, then its job, before the single commit
 
 
-def test_write_raw_does_nothing_extra_when_the_outbox_is_off(monkeypatch):
-    cur = TxnCur()
-    _write(monkeypatch, cur, None)
-    assert not any("bp_embedding_job" in s for s in cur.executed)
-
-
 def test_a_missing_outbox_never_blocks_extraction(monkeypatch):
     cur = TxnCur(fail_enqueue=True)
-    raw_id, conn = _write(monkeypatch, cur, "1")
+    raw_id, conn = _write(monkeypatch, cur)
     assert raw_id == 7 and conn.committed and not conn.rolled_back
     assert any(s.lower().startswith("savepoint") for s in cur.executed) and any("rollback to savepoint" in s.lower() for s in cur.executed)
 
@@ -132,7 +122,6 @@ def test_no_job_is_queued_for_a_document_with_no_text_or_no_key(monkeypatch):
     cur = TxnCur()
     conn = TxnConn(cur)
     monkeypatch.setattr(persistence, "get_conn", lambda: conn)
-    monkeypatch.setenv("VECTOR_OUTBOX", "1")
     persistence.write_raw(doc_type="invoice", file_path="x", process_monitor_id=None, trace_id="00000000-0000-0000-0000-000000000001",
                           pipeline_version="t", columns={"invoice_id": "INV-1"}, parser_snapshot={"full_text": ""}, promotion_status="pending")
     persistence.write_raw(doc_type="invoice", file_path="x", process_monitor_id=None, trace_id="00000000-0000-0000-0000-000000000001",
