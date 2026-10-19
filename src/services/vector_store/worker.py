@@ -46,7 +46,12 @@ class VectorWorker:
             return "deleted"
         loader = self._loaders.get(job.collection) or GenericSourceLoader(job.collection)
         doc = loader.load(cur, job.tenant_id, job.source_id)
-        chunks = chunk_text(doc.text) if doc else []
+        # A source that carries its own chunk_id is already ONE chunk (callers that chunk semantically write a source per chunk): embed it whole,
+        # as the old path did. Only a whole-document source is split into windows.
+        if doc and doc.metadata.get("chunk_id") is not None:
+            chunks = [doc.text.strip()] if doc.text.strip() else []
+        else:
+            chunks = chunk_text(doc.text) if doc else []
         if not chunks:                                     # source gone, or nothing to embed: no vector may outlive it
             store.delete(job.tenant_id, job.source_id, collection=job.collection)
             return "deleted"
