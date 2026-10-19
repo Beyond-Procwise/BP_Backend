@@ -102,8 +102,11 @@ def list_opportunities(conn: Any, *, account_id: Optional[str] = None,
     cur = dict_cursor(conn)
     # Names ride along so a screen can say WHO and WHAT, not just ids. LEFT joins: an opportunity
     # whose account or item row is gone still lists, with the name NULL rather than the row hidden.
+    # `reasons` is every claim written for the opportunity, oldest first ([] when none): the plain-English why.
     cur.execute(
-        "SELECT o.*, a.account_name, i.item_description "
+        "SELECT o.*, a.account_name, i.item_description, "
+        "ARRAY(SELECT j.claim FROM proc.bp_sales_justification j "
+        "      WHERE j.sales_opportunity_id = o.sales_opportunity_id ORDER BY j.justification_id) AS reasons "
         "FROM proc.bp_sales_opportunity o "
         "LEFT JOIN proc.bp_account a ON a.account_id = o.account_id "
         "LEFT JOIN proc.bp_catalog_item i ON i.catalog_item_id = o.catalog_item_id "
