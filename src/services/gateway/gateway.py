@@ -10,7 +10,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional, Type
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 
 from pydantic import BaseModel, ValidationError
 
@@ -30,6 +30,8 @@ class FunctionSpec:
     kind: str = "read"            # "read" | "write"
     version: int = 1
     description: str = ""
+    allowed_roles: Optional[Tuple[str, ...]] = None   # None = any role; else only these (versioned config)
+    needs_principal: bool = False                     # the function asks an existing permit check about the signed-in user
 
 
 @dataclass
@@ -70,6 +72,11 @@ class Gateway:
 
         if spec is None:
             return fail("UNSUPPORTED", f"no gateway function named {name!r}; logged to the function backlog")
+
+        if spec.allowed_roles is not None and ctx.role not in spec.allowed_roles:
+            return fail("NOT_ALLOWED", f"{name} is not available to the {ctx.role or 'unknown'} role")
+        if spec.needs_principal and ctx.principal is None:
+            return fail("NOT_ALLOWED", f"{name} needs a signed-in user")
 
         forbidden = sorted(k for k in params if k in CONTEXT_KEYS)
         if forbidden:

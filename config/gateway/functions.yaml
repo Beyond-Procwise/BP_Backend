@@ -27,3 +27,9 @@ functions:
   get_reseller_programme_terms: {kind: read, max_rows: 10}
   get_partner_tier:         {kind: read, max_rows: 10}
   get_customer_pricing_agreement: {kind: read, max_rows: 10}
+  # Sales quotes through /ask: Sales and Admin only (ruled 2026-10-19). The existing permit checks (quote.read, margin.read)
+  # still decide on top of this; the role rule is an additional gate, not a replacement. "Sales" is not a defined role yet, so
+  # today only Admin passes; creating the role is an auth change that needs sign-off.
+  get_quote:                {kind: read, max_rows: 5, allowed_roles: [Sales, Admin], needs_principal: true}
+  list_quotes:              {kind: read, max_rows: 25, allowed_roles: [Sales, Admin], needs_principal: true}
+  get_quote_margin:         {kind: read, max_rows: 5, allowed_roles: [Sales, Admin], needs_principal: true}

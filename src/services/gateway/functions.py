@@ -265,31 +265,8 @@ def find_applicable_contracts(ctx: CallerContext, p: FindContractsParams, backen
     return Raw(data=rows, provenance=[_prov("bp_contracts", [r["contract_id"] for r in rows])])
 
 
-# --- approvals: declared, unsupported -------------------------------------------------------------------------------------------
-
-class GetApprovalChainParams(_P):
-    doc_type: str = Field(min_length=1, max_length=40)
-    amount: Decimal
-    currency: str = Field(min_length=3, max_length=3)
-    business_unit: str = Field(min_length=1, max_length=80)
-    as_of: Optional[dt.date] = None
-
-
-class EvaluateApprovalParams(_P):
-    doc_type: str = Field(min_length=1, max_length=40)
-    doc_id: str = Field(min_length=1, max_length=80)
-
-
-_NO_RULES = ("approval rules do not exist as structured data yet (the Delegation of Authority matrix is document text only); "
-             "logged to the function backlog. An LLM does not decide this.")
-
-
-def get_approval_chain(ctx: CallerContext, p: GetApprovalChainParams, backends: Optional[Backends]) -> Raw:
-    raise GatewayFault("UNSUPPORTED", _NO_RULES)
-
-
-def evaluate_approval_status(ctx: CallerContext, p: EvaluateApprovalParams, backends: Optional[Backends]) -> Raw:
-    raise GatewayFault("UNSUPPORTED", _NO_RULES)
+from .approvals import (EvaluateApprovalParams, GetApprovalChainParams, evaluate_approval_status,  # noqa: E402
+                        get_approval_chain)
 
 
 # --- catalogue ------------------------------------------------------------------------------------------------------------------
@@ -315,6 +292,10 @@ from .batch3 import DECLARED as _BATCH3  # noqa: E402
 
 _DECLARED.update(_BATCH3)
 
+from .sales import DECLARED as _SALES  # noqa: E402
+
+_DECLARED.update(_SALES)
+
 
 def build_catalogue(config_path: Optional[str] = None) -> Dict[str, FunctionSpec]:
     with open(config_path or os.path.join(CONFIG_DIR, "functions.yaml"), encoding="utf-8") as fh:
@@ -325,5 +306,7 @@ def build_catalogue(config_path: Optional[str] = None) -> Dict[str, FunctionSpec
                          f"only in code {sorted(set(_DECLARED) - set(declared))}")
     version = int(cfg.get("version", 1))
     return {name: FunctionSpec(name=name, params=model, fn=fn, max_rows=int(declared[name]["max_rows"]),
-                               kind=declared[name].get("kind", "read"), version=version)
+                               kind=declared[name].get("kind", "read"), version=version,
+                               allowed_roles=tuple(declared[name]["allowed_roles"]) if declared[name].get("allowed_roles") else None,
+                               needs_principal=bool(declared[name].get("needs_principal", False)))
             for name, (model, fn) in _DECLARED.items()}

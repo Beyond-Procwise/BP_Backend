@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 # Not src.services.db.get_conn: that opens autocommit connections, under which the
 # sell-side services' rollback-before-raise is a no-op and FOR UPDATE locks don't hold.
 from src.services.sell_side._db import transactional_conn as get_conn
-from src.services.sell_side import (accounts, calibration, opportunities, outcomes,
+from src.services.sell_side import (accounts, calibration, margin_permit, opportunities, outcomes,
                                     quote_render, quote_send, quotes)
 
 from src.services import agent_actions
@@ -41,8 +41,7 @@ from api.sell_side_http import http_errors, money_json
 
 router = APIRouter(prefix="/sales", tags=["Sales"])
 _AGENT = "SalesRouter"
-MARGIN_NOTE = ("This is front-end margin only: distributor back-end rebates are not "
-               "modelled, so it understates what a line may finally earn.")
+MARGIN_NOTE = margin_permit.MARGIN_NOTE
 
 
 def _subject(principal) -> Optional[str]:
@@ -50,24 +49,11 @@ def _subject(principal) -> Optional[str]:
 
 
 def _require_margin_permit(principal, context: dict) -> None:
-    """Cost and margin go only to a caller a STATED policy permits.
+    """Cost and margin go only to a caller a STATED policy permits (the rule is services.sell_side.margin_permit).
 
-    margin.read is a read, and a read no policy speaks to is allowed for every
-    role -- the anonymous caller included. An allow from that default carries no
-    policy_id, so it is refused here: a missing SalesMarginReadAuthorityPolicy row
-    withholds margin from everyone rather than handing it to anyone.
+    ``gate`` is this module's reference, passed in so it is the one asked here and tests can replace it.
     """
-    decision = gate("margin.read", principal, agent=_AGENT, context=context)
-    if decision.policy_id:
-        return
-    agent_actions.record_action_or_fail(
-        phase="authorize", action_type="margin.read", agent=_AGENT, status="denied",
-        summary="no stated permit for margin.read; the reversible-read default does "
-                "not extend to cost and margin",
-        details={**context, "principal": _subject(principal),
-                 "allowed_by": decision.policy_name})
-    raise NotPermitted("margin.read needs a stated permit and none is active, so "
-                       "cost and margin are withheld.")
+    margin_permit.check(principal, context, agent=_AGENT, gate=gate)
 
 
 class AccountBody(BaseModel):

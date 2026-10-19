@@ -143,22 +143,14 @@ there is no customer-specific price to look up, only a catalog list price and th
 None of these is on any agent's allowlist. `reseller_id` is a subject parameter, not caller scope; each reseller function must intersect
 it with the caller's `reseller_account_ids` and treat an id outside it as not found (Step 10).
 
-**Not built, because building it needs a decision from you (auth or exposure):**
+**Rulings of 2026-10-19 and what they built**
 
-- `get_quote(quote_id)` (customer record: no cost, no margin) and `list_quotes`: the existing route lets any signed-in user read any
-  quote, and there is no list endpoint at all. Wrapping `get_quote` in the gateway would extend that to /ask for every role, and
-  `list_quotes` would be new exposure. Row scope for sales quotes would have to be invented (`account_owner_email` is the only
-  ownership concept). Decide who may see which quotes through /ask.
-- `get_quote_margin(quote_id)` (cost and margin): must be behind `margin.read`, which only passes when a **stated policy permit**
-  exists (the route refuses the reversible-read default). That check needs a full principal (`gate(action, principal, ...)`), and the
-  caller context carries only subject and role. Building it means the gateway evaluating action-class permits, an auth change.
-- `get_price`: today it could only return the catalog list price (customer pricing agreements do not exist); the name in the
-  architecture (`get_price(sku, customer_id, qty, date)`) promises more than the data supports. Decide whether to build
-  `get_list_price(sku)` now under a different name, or wait for agreements.
+1. *Reseller identity:* a user-to-reseller link table. Migration written (`deploy/sql/2026-10-19_user_reseller_link.sql`, rollback beside it), **not applied**: a schema change awaiting sign-off. Same rules as `bp_user_buyer_scope`. The caller context now carries `reseller_account_ids` (`None` = Admin, empty = sees none) read from it; until the table exists the read fails closed to empty. `reseller_account_id` has no foreign key because no reseller entity exists yet.
+2. *Sales quotes through /ask: Sales and Admin only.* `get_quote` (customer record, no cost or margin) and `list_quotes` (header only) are built, with the role rule in `config/gateway/functions.yaml` (`allowed_roles`), enforced by the gateway before the function runs. **"Sales" is not a defined role** (roles are Admin, Buyer, Approver, Viewer, SecurityReviewer), so today only Admin passes; creating the role is an auth change awaiting sign-off. The existing `quote.read` permit is asked as well; the role rule is added on top, not instead.
+3. *Margin:* `get_quote_margin` is built. It asks the one existing rule, now `services/sell_side/margin_permit.py` (moved out of the sales router, which calls the same function), with the signed-in user carried on the caller context (`principal`, never logged). The gateway holds no copy of the rule. Needs a stated `margin.read` permit, as before.
+4. *Approvals come from the policy engine.* `get_approval_chain` is built on it: today the one `ApprovalThresholdPolicy` (GBP 10,000, above it escalates to Approver) and, when someone builds it, an `approval_chain` policy in the shape documented in `gateway/approvals.py`. It states gaps instead of guessing (no conversion across currencies, no pick between conflicting thresholds, no invented chain; the hard-coded screen table is not a source). `evaluate_approval_status` stays UNSUPPORTED: it would need a stated rule for "satisfied" and the role each approver held, and neither exists (PO `approval_status` is empty on all 5,042 POs; `bp_approval` has 18 rows keyed by deal and records no role).
 
-**Decisions needed to continue Batch 3:** (1) the reseller/tenant model; (2) who may read sales quotes through /ask and how a quote is
-scoped; (3) whether the gateway may evaluate `margin.read` and other action-class permits (and how it receives a principal); (4) product
-calls on inventory and shipment data; (5) the landed-cost definition; (6) the list-price question above.
+**Still not built:** `get_price` / a list-price function (question 12), and everything in the table above that waits on a product decision.
 
 ### B.4 Write functions (Step 9; listed so the registry can keep read and write apart)
 

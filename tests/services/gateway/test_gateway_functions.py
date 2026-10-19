@@ -228,7 +228,7 @@ def test_search_documents_refuses_an_unknown_filter_and_an_oversized_top_k():
 # --- approvals: nothing structured exists yet -------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("name,params", [
-    ("get_approval_chain", {"doc_type": "po", "amount": 80000, "currency": "GBP", "business_unit": "IT"}),
+    # get_approval_chain became real (policy engine, see test_gateway_approvals.py); only the verdict function stays unsupported.
     ("evaluate_approval_status", {"doc_type": "po", "doc_id": "PO000001"}),
 ])
 def test_approval_functions_are_unsupported_and_logged_until_the_rules_exist_as_data(name, params):
