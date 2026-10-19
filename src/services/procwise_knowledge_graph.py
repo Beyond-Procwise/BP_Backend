@@ -19,9 +19,8 @@ logger = logging.getLogger(__name__)
 def _get_agent() -> ProcWiseKnowledgeGraphAgent:
     config = AppConfig.from_settings(settings)
     logger.debug(
-        "Initialising ProcWise knowledge graph agent (Neo4j=%s, Qdrant=%s)",
+        "Initialising ProcWise knowledge graph agent (Neo4j=%s, vectors=pgvector)",
         config.neo4j.uri,
-        f"{config.qdrant.host}:{config.qdrant.port}",
     )
     return ProcWiseKnowledgeGraphAgent(config)
 

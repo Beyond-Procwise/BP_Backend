@@ -8,12 +8,12 @@ import pandas as pd
 import requests
 from loguru import logger
 from neo4j import GraphDatabase
-from qdrant_client import QdrantClient
 from retrying import retry
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
-from .config import AppConfig, Neo4jConfig, OllamaConfig, PostgresConfig, QdrantConfig
+from .config import AppConfig, Neo4jConfig, OllamaConfig, PostgresConfig
+from .vectors import KnowledgeGraphVectors
 
 SCHEMA = "proc"
 
@@ -94,12 +94,11 @@ class HybridProcurementQueryEngine:
         self,
         postgres_config: PostgresConfig,
         neo4j_config: Neo4jConfig,
-        qdrant_config: QdrantConfig,
         ollama_config: OllamaConfig,
+        vectors: Optional[KnowledgeGraphVectors] = None,
     ) -> None:
         self._postgres_config = postgres_config
         self._neo4j_config = neo4j_config
-        self._qdrant_config = qdrant_config
         self._ollama_config = ollama_config
 
         self._engine: Engine = create_engine(self._postgres_config.dsn, pool_size=10, max_overflow=5)
@@ -107,12 +106,12 @@ class HybridProcurementQueryEngine:
             self._neo4j_config.uri,
             auth=(self._neo4j_config.username, self._neo4j_config.password),
         )
-        self._qdrant = QdrantClient(host=self._qdrant_config.host, port=self._qdrant_config.port, api_key=self._qdrant_config.api_key)
+        self._vectors = vectors if vectors is not None else KnowledgeGraphVectors()
         self._ollama = OllamaJsonClient(self._ollama_config)
 
     @classmethod
     def from_config(cls, config: AppConfig) -> "HybridProcurementQueryEngine":
-        return cls(config.postgres, config.neo4j, config.qdrant, config.ollama)
+        return cls(config.postgres, config.neo4j, config.ollama)
 
     def close(self) -> None:
         self._engine.dispose()
@@ -236,15 +235,10 @@ class HybridProcurementQueryEngine:
     # ------------------------------------------------------------------
     def find_similar_negotiations(self, negotiation_context: str, top_k: int = 5) -> List[Dict[str, Any]]:
         logger.info("Searching for similar negotiations: {context}", context=negotiation_context)
-        embedding = self._ollama.embed(negotiation_context)
-        search_result = self._qdrant.search(
-            collection_name="negotiations",
-            query_vector=embedding,
-            limit=top_k,
-        )
+        search_result = self._vectors.search("negotiations", negotiation_context, limit=top_k)
         matches: List[SimilarNegotiation] = []
         for point in search_result:
-            payload = point.payload or {}
+            payload = point
             rfq_id = payload.get("rfq_id")
             supplier_id = payload.get("supplier_id")
             round_number = payload.get("round", 0)
@@ -271,7 +265,7 @@ class HybridProcurementQueryEngine:
                     round=round_number,
                     counter_offer=counter_offer,
                     status=status,
-                    similarity=point.score,
+                    similarity=point["score"] or 0.0,
                     supplier_name=supplier_name,
                     final_price=final_price,
                 )
@@ -505,9 +499,7 @@ class HybridProcurementQueryEngine:
         }
 
     def _supplier_search(self, question: str) -> List[Dict[str, Any]]:
-        vector = self._ollama.embed(question)
-        results = self._qdrant.search("suppliers", query_vector=vector, limit=5)
-        return [dict(hit.payload or {}, score=hit.score) for hit in results]
+        return self._vectors.search("suppliers", question, limit=5)
 
     def _spend_analysis(self) -> List[Dict[str, Any]]:
         query = """
