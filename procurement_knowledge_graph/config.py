@@ -63,28 +63,6 @@ class Neo4jConfig:
 
 
 @dataclass(frozen=True)
-class QdrantConfig:
-    host: str
-    port: int
-    api_key: Optional[str]
-
-    @classmethod
-    def from_env(cls) -> "QdrantConfig":
-        host = _getenv("QDRANT_HOST", "localhost")
-        port = int(_getenv("QDRANT_PORT", "6333"))
-        api_key = os.getenv("QDRANT_API_KEY")
-        return cls(host=host, port=port, api_key=api_key)
-
-    @classmethod
-    def from_settings(cls, settings) -> "QdrantConfig":
-        url = settings.qdrant_url
-        parsed = urlparse(url)
-        host = parsed.hostname or url
-        port = parsed.port or 6333
-        return cls(host=host, port=port, api_key=settings.qdrant_api_key)
-
-
-@dataclass(frozen=True)
 class OllamaConfig:
     base_url: str
     generate_model: str
@@ -118,7 +96,6 @@ class OllamaConfig:
 class AppConfig:
     postgres: PostgresConfig
     neo4j: Neo4jConfig
-    qdrant: QdrantConfig
     ollama: OllamaConfig
 
     @classmethod
@@ -126,7 +103,6 @@ class AppConfig:
         return cls(
             postgres=PostgresConfig.from_env(),
             neo4j=Neo4jConfig.from_env(),
-            qdrant=QdrantConfig.from_env(),
             ollama=OllamaConfig.from_env(),
         )
 
@@ -135,7 +111,6 @@ class AppConfig:
         return cls(
             postgres=PostgresConfig.from_settings(settings),
             neo4j=Neo4jConfig.from_settings(settings),
-            qdrant=QdrantConfig.from_settings(settings),
             ollama=OllamaConfig.from_settings(settings),
         )
 
@@ -152,7 +127,6 @@ __all__ = [
     "AppConfig",
     "PostgresConfig",
     "Neo4jConfig",
-    "QdrantConfig",
     "OllamaConfig",
     "app_config_from_global_settings",
 ]

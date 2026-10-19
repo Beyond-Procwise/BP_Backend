@@ -40,9 +40,6 @@ log "Postgres ready."
 log "Waiting for Neo4j HTTP"
 wait_for_service "Neo4j" "http://localhost:7474" 30
 
-log "Waiting for Qdrant"
-wait_for_service "Qdrant" "http://localhost:6333/healthz" 30
-
 log "Waiting for Ollama"
 wait_for_service "Ollama" "http://localhost:11434/api/tags" 30
 

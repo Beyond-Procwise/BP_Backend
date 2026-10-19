@@ -10,13 +10,12 @@ import pandas as pd
 import requests
 from loguru import logger
 from neo4j import GraphDatabase
-from qdrant_client import QdrantClient
-from qdrant_client.http import models as qmodels
 from retrying import retry
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
-from .config import AppConfig, Neo4jConfig, OllamaConfig, PostgresConfig, QdrantConfig
+from .config import AppConfig, Neo4jConfig, OllamaConfig, PostgresConfig
+from .vectors import KnowledgeGraphVectors
 
 
 SCHEMA = "proc"
@@ -78,13 +77,12 @@ class ProcurementKnowledgeGraph:
         self,
         postgres_config: PostgresConfig,
         neo4j_config: Neo4jConfig,
-        qdrant_config: QdrantConfig,
         ollama_config: OllamaConfig,
         batch_size: int = DEFAULT_BATCH_SIZE,
+        vectors: Optional[KnowledgeGraphVectors] = None,
     ) -> None:
         self._postgres_config = postgres_config
         self._neo4j_config = neo4j_config
-        self._qdrant_config = qdrant_config
         self._ollama_config = ollama_config
         self._batch_size = batch_size
 
@@ -94,13 +92,13 @@ class ProcurementKnowledgeGraph:
             auth=(self._neo4j_config.username, self._neo4j_config.password),
             max_connection_pool_size=50,
         )
-        self._qdrant = QdrantClient(host=self._qdrant_config.host, port=self._qdrant_config.port, api_key=self._qdrant_config.api_key)
+        self._vectors = vectors if vectors is not None else KnowledgeGraphVectors()
         self._ollama = OllamaClient(self._ollama_config)
         logger.configure(handlers=[{"sink": sys.stdout, "level": "INFO"}])
 
     @classmethod
     def from_config(cls, config: AppConfig) -> "ProcurementKnowledgeGraph":
-        return cls(config.postgres, config.neo4j, config.qdrant, config.ollama)
+        return cls(config.postgres, config.neo4j, config.ollama)
 
     def close(self) -> None:
         logger.info("Closing database connections")
@@ -117,10 +115,10 @@ class ProcurementKnowledgeGraph:
         logger.info("Testing Neo4j connection")
         with self._neo4j_driver.session() as session:
             session.run("RETURN 1")
-        logger.info("Testing Qdrant connection")
-        self._qdrant.get_collections()
-        logger.info("Testing Ollama embedding endpoint")
-        self._ollama.embed(["connection test"])
+        logger.info("Testing vector store")
+        self._vectors.count()
+        logger.info("Testing embedding model")
+        self._vectors.embed(["connection test"])
 
     # -----------------------------------------------------
     # Data extraction
@@ -495,21 +493,8 @@ class ProcurementKnowledgeGraph:
             session.run(query, rows=wf_records)
 
     # -----------------------------------------------------
-    # Embeddings + Qdrant
+    # Embeddings + vector store (pgvector)
     # -----------------------------------------------------
-    def _ensure_collections(self) -> None:
-        collections = self._qdrant.get_collections().collections
-        existing = {c.name for c in collections}
-        schema = {
-            "suppliers": qmodels.VectorParams(size=384, distance=qmodels.Distance.COSINE),
-            "contracts": qmodels.VectorParams(size=384, distance=qmodels.Distance.COSINE),
-            "negotiations": qmodels.VectorParams(size=384, distance=qmodels.Distance.COSINE),
-        }
-        for name, params in schema.items():
-            if name not in existing:
-                logger.info("Creating Qdrant collection {name}", name=name)
-                self._qdrant.create_collection(name=name, vectors_config=params)
-
     def _prepare_supplier_payloads(self, df: pd.DataFrame) -> Tuple[List[str], List[Dict[str, Any]]]:
         descriptions = []
         payloads = []
@@ -577,7 +562,6 @@ class ProcurementKnowledgeGraph:
         return descriptions, payloads
 
     def sync_embeddings(self, frames: DataFrames) -> None:
-        self._ensure_collections()
         collections = [
             ("suppliers", *self._prepare_supplier_payloads(frames.suppliers)),
             ("contracts", *self._prepare_contract_payloads(frames.contracts)),
@@ -586,21 +570,12 @@ class ProcurementKnowledgeGraph:
         for name, descriptions, payloads in collections:
             if not descriptions:
                 continue
-            logger.info("Generating embeddings for {name}", name=name)
-            vectors = self._ollama.embed(descriptions)
+            logger.info("Embedding and storing {count} vectors in {name}", count=len(descriptions), name=name)
             points = []
-            for idx, vector in enumerate(vectors):
-                payload = payloads[idx]
+            for description, payload in zip(descriptions, payloads):
                 point_id = payload.get("supplier_id") or payload.get("contract_id") or f"{payload.get('rfq_id')}:{payload.get('supplier_id')}:{payload.get('round')}"
-                points.append(
-                    qmodels.PointStruct(
-                        id=point_id,
-                        vector=vector,
-                        payload=payload,
-                    )
-                )
-            logger.info("Upserting {count} vectors into {name}", count=len(points), name=name)
-            self._qdrant.upsert(collection_name=name, points=points)
+                points.append({"id": point_id, "text": description, "payload": payload})
+            self._vectors.upsert(name, points)
 
     # -----------------------------------------------------
     # Utility methods
