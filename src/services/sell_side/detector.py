@@ -19,6 +19,10 @@ from src.services.sell_side._db import dict_cursor
 logger = logging.getLogger(__name__)
 
 DETECTOR_TYPE = "catalog_relation"
+# Session-level advisory lock key: one detection run at a time. The writers commit per row
+# and nothing is unique in the table, so only a lock held across the whole run stops two
+# runs (daily job + endpoint) both passing the open/won snapshot and doubling opportunities.
+ADVISORY_LOCK_KEY = 7_204_190_001
 # a relation proposes its target to an account that bought its source
 _TYPE_OF = {"replaced_by": "upgrade", "upgrade_of": "upgrade", "refill_of": "refill",
             "accessory_of": "cross_sell", "requires": "cross_sell"}
@@ -55,6 +59,27 @@ def _ended(status: Optional[str], on: Optional[dt.date]) -> bool:
 
 
 def detect(conn: Any, *, account_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Run `_detect` under a session advisory lock; return [] if another run holds it."""
+    cur = dict_cursor(conn)
+    cur.execute("SELECT pg_try_advisory_lock(%s) AS got", (ADVISORY_LOCK_KEY,))
+    got = cur.fetchone()["got"]
+    conn.commit()
+    if not got:
+        logger.info("another detection run is in progress; skipping")
+        return []
+    try:
+        return _detect(conn, account_id=account_id)
+    finally:
+        try:
+            conn.rollback()
+            cur = dict_cursor(conn)
+            cur.execute("SELECT pg_advisory_unlock(%s)", (ADVISORY_LOCK_KEY,))
+            conn.commit()
+        except Exception:
+            logger.exception("could not release the detection advisory lock")
+
+
+def _detect(conn: Any, *, account_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Create the opportunities the stated relations support; return them (with their
     justifications). Safe to re-run: an open or won opportunity for the same account,
     target and type blocks a new one."""
@@ -103,7 +128,7 @@ def detect(conn: Any, *, account_id: Optional[str] = None) -> List[Dict[str, Any
                 conn, account_id=acct, opportunity_type=kind, catalog_item_id=r["target_id"],
                 expected_quantity=Decimal(r["quantity"]) if r["quantity"] else None,
                 detector_type=DETECTOR_TYPE, reason_codes=reasons)
-        except ValueError as exc:      # e.g. a target the catalog cannot price
+        except (ValueError, LookupError) as exc:      # e.g. a target the catalog cannot price, or gone (NotFound)
             logger.warning("opportunity for %s / %s skipped: %s", acct, r["to_sku"], exc)
             continue
         try:
@@ -125,11 +150,19 @@ def detect(conn: Any, *, account_id: Optional[str] = None) -> List[Dict[str, Any
             # an opportunity without its evidence must not stand (the 'open' dedup would keep it)
             logger.exception("justification failed for opportunity %s; withdrawing it",
                              o["sales_opportunity_id"])
-            with conn.cursor() as wc:
-                wc.execute("UPDATE proc.bp_sales_opportunity SET outcome='withdrawn', "
-                           "last_modified_date=now() WHERE sales_opportunity_id=%s",
-                           (o["sales_opportunity_id"],))
-            conn.commit()
+            try:
+                conn.rollback()
+                with conn.cursor() as wc:
+                    wc.execute("UPDATE proc.bp_sales_opportunity SET outcome='withdrawn', "
+                               "last_modified_date=now() WHERE sales_opportunity_id=%s",
+                               (o["sales_opportunity_id"],))
+                conn.commit()
+            except Exception:
+                logger.exception("could not withdraw opportunity %s", o["sales_opportunity_id"])
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
             continue
         made.append(opportunities.get_opportunity(conn, o["sales_opportunity_id"]))
     return made

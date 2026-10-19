@@ -241,3 +241,41 @@ def test_a_second_run_adds_nothing_but_a_lost_one_does_not_block(live_db):
                     "WHERE sales_opportunity_id=%s", (first["sales_opportunity_id"],))
     conn.commit()
     assert len(detector.detect(conn, account_id=acct)) == 1
+
+
+def test_a_concurrent_run_is_refused_while_another_holds_the_lock(live_db):
+    import os
+    import psycopg2
+    conn, dist = live_db
+    acct, a, b = _world(conn, dist)
+    _quote(conn, acct, a)
+    other = psycopg2.connect(
+        host=os.environ["DB_HOST"], port=os.getenv("DB_PORT", 5432),
+        dbname=os.environ["DB_NAME"], user=os.environ["DB_USER"],
+        password=os.environ["DB_PASSWORD"], connect_timeout=10)
+    try:
+        with other.cursor() as oc:
+            oc.execute("SELECT pg_try_advisory_lock(%s)", (detector.ADVISORY_LOCK_KEY,))
+            assert oc.fetchone()[0] is True
+        assert detector.detect(conn, account_id=acct) == []
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM proc.bp_sales_opportunity WHERE account_id=%s", (acct,))
+            assert cur.fetchone()[0] == 0
+        with other.cursor() as oc:
+            oc.execute("SELECT pg_advisory_unlock(%s)", (detector.ADVISORY_LOCK_KEY,))
+    finally:
+        other.close()
+    assert len(detector.detect(conn, account_id=acct)) == 1
+
+
+def test_a_missing_target_is_skipped_not_fatal(live_db, monkeypatch):
+    from src.services.sell_side import opportunities
+    from src.services.sell_side._db import NotFound
+    conn, dist = live_db
+    acct, a, b = _world(conn, dist)
+    _quote(conn, acct, a)
+
+    def gone(*a, **k):
+        raise NotFound("gone")
+    monkeypatch.setattr(opportunities, "create_opportunity", gone)
+    assert detector.detect(conn, account_id=acct) == []

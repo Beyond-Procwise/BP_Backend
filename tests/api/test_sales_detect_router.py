@@ -25,11 +25,15 @@ def test_detect_runs_the_detector_behind_its_permit(monkeypatch):
     gates, calls = [], []
     monkeypatch.setattr(sr.detector, "detect",
                         lambda c, *, account_id=None: calls.append((c, account_id))
-                        or [{"sales_opportunity_id": 1}])
+                        or [{"sales_opportunity_id": 1, "account_id": "A1", "opportunity_type": "upgrade",
+                             "catalog_item_id": 7, "reason_codes": ["replaced_by"],
+                             "expected_cost": "9.00", "expected_margin": "1", "expected_revenue": "5"}])
     client = _client(monkeypatch, lambda action, *a, **k: gates.append(action))
     r = client.post("/sales/opportunities/detect?account_id=A1")
     assert r.status_code == 200, r.text
-    assert r.json() == {"created": [{"sales_opportunity_id": 1}]}
+    assert r.json() == {"created": [{"id": 1, "accountId": "A1", "opportunityType": "upgrade",
+                                     "catalogItemId": 7, "reasonCodes": ["replaced_by"]}], "count": 1}
+    assert not any(w in r.text.lower() for w in ("cost", "margin", "revenue"))
     assert gates == ["sales.detect"]
     assert calls == [("CONN", "A1")]
 
@@ -48,4 +52,4 @@ def test_detect_refused_when_the_gate_refuses(monkeypatch):
 
 def test_sales_detect_is_a_registered_action():
     from src.services import actions
-    assert actions.ACTIONS["sales.detect"] == "compute"
+    assert actions.ACTIONS["sales.detect"] == "write"

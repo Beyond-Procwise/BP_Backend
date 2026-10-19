@@ -376,5 +376,10 @@ def calibrate(principal=Depends(require_user)):
 @router.post("/opportunities/detect")
 def detect(account_id: Optional[str] = None, principal=Depends(require_user)):
     gate("sales.detect", principal, agent=_AGENT)
-    with get_conn() as c:
-        return money_json({"created": detector.detect(c, account_id=account_id)})
+    with http_errors(), get_conn() as c:
+        made = detector.detect(c, account_id=account_id)
+    # identity and type only: the full rows carry expected_cost, which is margin.read's to give
+    created = [{"id": o["sales_opportunity_id"], "accountId": o["account_id"],
+                "opportunityType": o["opportunity_type"], "catalogItemId": o["catalog_item_id"],
+                "reasonCodes": o["reason_codes"]} for o in made]
+    return money_json({"created": created, "count": len(created)})
