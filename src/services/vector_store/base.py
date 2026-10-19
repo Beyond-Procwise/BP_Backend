@@ -33,8 +33,8 @@ class VectorStore(ABC):
 
     @abstractmethod
     def list(self, tenant_id: str, *, collection: str, filters: Optional[Mapping[str, Any]] = None, limit: int = 100,
-             offset: int = 0) -> List[VectorHit]:
-        """Stored chunks without similarity (what a Qdrant scroll was used for), in a stable order."""
+             offset: int = 0, newest_first: bool = False) -> List[VectorHit]:
+        """Stored chunks without similarity (what a Qdrant scroll was used for): oldest first, or newest first with ``newest_first``."""
 
     @abstractmethod
     def count(self, tenant_id: str, *, collection: Optional[str] = None) -> int:

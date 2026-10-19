@@ -271,7 +271,12 @@ class QuoteEvaluationAgent(BaseAgent):
 
         supplier_ids = supplier_ids or []
 
+        from src.services.vector_store.backend import use_pgvector
+        pg = use_pgvector()
+
         def ensure_index(field_name: str) -> None:
+            if pg:                                  # the vector store keeps its own indexes; there is nothing to create
+                return
             try:
                 self.agent_nick.qdrant_client.create_payload_index(
                     collection_name=self.settings.qdrant_collection_name,
@@ -330,6 +335,10 @@ class QuoteEvaluationAgent(BaseAgent):
             return models.Filter(must=filters)
 
         def qdrant_scroll(q_filter: models.Filter):
+            if pg:
+                from src.services.vector_store import DEFAULT_TENANT, get_vector_store
+                from src.services.vector_store.filters import from_qdrant_filter
+                return get_vector_store().list(DEFAULT_TENANT, collection="documents", filters=from_qdrant_filter(q_filter), limit=100), None
             return self.agent_nick.qdrant_client.scroll(
                 collection_name=self.settings.qdrant_collection_name,
                 scroll_filter=q_filter,

@@ -219,12 +219,13 @@ class PgVectorStore(VectorStore):
             cur.execute(sql, tuple([vec] + params + [vec, k]))
             return [self._hit(r, r[12]) for r in cur.fetchall()]
 
-    def list(self, tenant_id, *, collection, filters=None, limit=100, offset=0) -> List[VectorHit]:
+    def list(self, tenant_id, *, collection, filters=None, limit=100, offset=0, newest_first=False) -> List[VectorHit]:
         tenant_id = _tenant(tenant_id)
         if not 1 <= int(limit) <= 1000 or int(offset) < 0:
             raise ValueError("limit must be 1..1000 and offset >= 0")
         where, params = self._base_where(tenant_id, collection, filters)
-        sql = f"SELECT {_COLS} FROM {self.profile.table} WHERE {where} ORDER BY vector_id LIMIT %s OFFSET %s"
+        order = "vector_id DESC" if newest_first else "vector_id"
+        sql = f"SELECT {_COLS} FROM {self.profile.table} WHERE {where} ORDER BY {order} LIMIT %s OFFSET %s"
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(sql, tuple(params + [int(limit), int(offset)]))
             return [self._hit(r, None) for r in cur.fetchall()]

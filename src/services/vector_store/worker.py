@@ -51,9 +51,18 @@ class VectorWorker:
             store.delete(job.tenant_id, job.source_id, collection=job.collection)
             return "deleted"
         vectors = self._embedder_for(profile).encode(chunks)
+        # A source that is already one chunk of a larger document keeps the chunk_id it was written with; a source this worker splits is numbered.
+        # ... and keeps its own summary: the worker's chunk summary is only a default for a source that has none.
+        single = len(chunks) == 1
+
+        def meta_for(i: int, chunk: str) -> Dict[str, Any]:
+            numbered = {"chunk_id": i, "chunk_index": i, "summary": chunk.strip()[:SUMMARY_CHARS]}
+            if single:
+                return {**numbered, **doc.metadata, "chunk_index": doc.metadata.get("chunk_index", doc.metadata.get("chunk_id", 0))}
+            return {**doc.metadata, **numbered}
+
         store.replace(job.tenant_id, job.source_id, [
-            {"embedding": vec, "content": chunk,
-             "metadata": {**doc.metadata, "chunk_id": i, "chunk_index": i, "summary": chunk.strip()[:SUMMARY_CHARS]}}
+            {"embedding": vec, "content": chunk, "metadata": meta_for(i, chunk)}
             for i, (chunk, vec) in enumerate(zip(chunks, vectors))], collection=job.collection)
         return "upserted"
 

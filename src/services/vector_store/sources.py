@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any, Callable, Dict, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Union
 
 from .pgvector_store import DISALLOWED_METADATA_KEYS
 
@@ -47,14 +47,44 @@ def delete_source(tenant_id: str, collection: str, source_id: str, *, connect: O
         return cur.rowcount
 
 
-def wait_until_embedded(tenant_id: str, collection: str, source_id: str, *, timeout_s: float = 30.0, poll_s: float = 0.5,
+def delete_sources_matching(tenant_id: str, collection: str, metadata: Optional[Mapping[str, Any]], *,
+                            connect: Optional[Callable[[], Any]] = None) -> int:
+    """Delete every source whose metadata contains ``metadata`` (e.g. all chunks of one policy file). An empty match is refused, so this can
+    never delete a whole collection."""
+    _need(tenant_id, "tenant_id"), _need(collection, "collection")
+    if not metadata:
+        raise ValueError("a non-empty metadata match is required")
+    with _conn(connect) as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM proc.bp_vector_source WHERE tenant_id = %s AND collection = %s AND metadata @> %s::jsonb",
+                    (tenant_id, collection, json.dumps(dict(metadata), sort_keys=True, default=str)))
+        return cur.rowcount
+
+
+def find_source_metadata(tenant_id: str, collection: str, metadata: Optional[Mapping[str, Any]], *,
+                         connect: Optional[Callable[[], Any]] = None) -> Optional[Dict[str, Any]]:
+    """The metadata of one source matching ``metadata`` (what a Qdrant scroll with a payload filter and limit 1 returned), or None."""
+    _need(tenant_id, "tenant_id"), _need(collection, "collection")
+    if not metadata:
+        raise ValueError("a non-empty metadata match is required")
+    with _conn(connect) as conn, conn.cursor() as cur:
+        cur.execute("SELECT metadata FROM proc.bp_vector_source WHERE tenant_id = %s AND collection = %s AND metadata @> %s::jsonb "
+                    "ORDER BY source_id LIMIT 1", (tenant_id, collection, json.dumps(dict(metadata), sort_keys=True, default=str)))
+        row = cur.fetchone()
+    if not row:
+        return None
+    meta = row[0]
+    return json.loads(meta) if isinstance(meta, str) else dict(meta or {})
+
+
+def wait_until_embedded(tenant_id: str, collection: str, source_id: Union[str, Sequence[str]], *, timeout_s: float = 30.0, poll_s: float = 0.5,
                         connect: Optional[Callable[[], Any]] = None) -> str:
     """'done' when no job for the source is waiting or running, 'pending' if still queued at the timeout, 'failed' if the only outcome is a failure."""
     deadline = time.monotonic() + max(0.0, timeout_s)
     while True:
+        ids: List[str] = [str(i) for i in ([source_id] if isinstance(source_id, str) else source_id)]
         with _conn(connect) as conn, conn.cursor() as cur:
-            cur.execute("SELECT status FROM proc.bp_embedding_job WHERE tenant_id = %s AND collection = %s AND source_id = %s "
-                        "AND status IN ('pending', 'processing', 'failed') ORDER BY job_id DESC LIMIT 5", (tenant_id, collection, str(source_id)))
+            cur.execute("SELECT status FROM proc.bp_embedding_job WHERE tenant_id = %s AND collection = %s AND source_id = ANY(%s) "
+                        "AND status IN ('pending', 'processing', 'failed') ORDER BY job_id DESC LIMIT 50", (tenant_id, collection, ids))
             statuses = [r[0] for r in cur.fetchall() if r[0] in ("pending", "processing", "failed")]
         if not statuses:
             return "done"

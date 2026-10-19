@@ -220,3 +220,64 @@ def test_a_written_source_is_embedded_by_the_worker_and_removed_when_deleted(con
     sources.delete_source("t1", "uploaded", "doc-1", connect=connect)
     worker.run_once()
     assert store.count("t1") == 0
+
+
+# --- several chunks of one record must not overwrite each other (found while reading the upload path) ---------------------------------
+
+def test_chunks_that_share_a_record_id_become_separate_sources_and_keep_their_chunk_ids(monkeypatch):
+    calls = []
+    rag(monkeypatch, calls).upsert_payloads([
+        {"content": "first chunk text", "record_id": "doc-1", "chunk_id": 0, "document_type": "uploaded_document"},
+        {"content": "second chunk text", "record_id": "doc-1", "chunk_id": 1, "document_type": "uploaded_document"}])
+    ids = [c[0][2] for c in calls]
+    assert ids == ["doc-1:0", "doc-1:1"] and len(set(ids)) == 2
+    assert [c[0][4]["chunk_id"] for c in calls] == [0, 1] and all(c[0][4]["record_id"] == "doc-1" for c in calls)
+
+
+def test_a_payload_with_no_chunk_id_keeps_its_record_id_as_the_source_id(monkeypatch):
+    calls = []
+    rag(monkeypatch, calls).upsert_payloads([{"content": "whole record", "record_id": "rec-7"}])
+    assert calls[0][0][2] == "rec-7"
+
+
+# --- sources helpers for policy sync and uploads -----------------------------------------------------------------------------------
+
+def test_delete_sources_matching_deletes_by_metadata_containment_within_tenant_and_collection():
+    rec = Rec()
+    sources.delete_sources_matching("t", "policy", {"source_path": "s3://b/policy.pdf"}, connect=rec)
+    sql, params = rec.executed[0]
+    assert "delete from proc.bp_vector_source" in sql.lower() and "metadata @> %s::jsonb" in sql and params[:2] == ("t", "policy")
+    assert json.loads(params[2]) == {"source_path": "s3://b/policy.pdf"}
+
+
+@pytest.mark.parametrize("meta", [{}, None])
+def test_delete_sources_matching_refuses_an_empty_match_so_it_can_never_delete_a_whole_collection(meta):
+    rec = Rec()
+    with pytest.raises(ValueError):
+        sources.delete_sources_matching("t", "policy", meta, connect=rec)
+    assert rec.executed == []
+
+
+def test_find_source_metadata_returns_the_first_match_or_none():
+    class Row(Rec):
+        def cursor(self):
+            rec = self
+
+            class C:
+                description = [("metadata",)]
+                def __enter__(s): return s
+                def __exit__(s, *a): return False
+                def execute(s, sql, params=()): rec.executed.append((sql, params))
+                def fetchone(s): return ({"s3_etag": "abc"},) if rec.rows else None
+            return C()
+    assert sources.find_source_metadata("t", "policy", {"source_path": "p"}, connect=Row(rows=[1])) == {"s3_etag": "abc"}
+    assert sources.find_source_metadata("t", "policy", {"source_path": "p"}, connect=Row()) is None
+    with pytest.raises(ValueError):
+        sources.find_source_metadata("t", "policy", {}, connect=Row())
+
+
+def test_wait_until_embedded_accepts_several_source_ids():
+    rec = StatusRec(["pending"])
+    assert sources.wait_until_embedded("t", "uploaded", ["d:0", "d:1"], timeout_s=0, poll_s=0, connect=rec) == "pending"
+    sql, params = rec.executed[0]
+    assert "source_id = any(%s)" in sql.lower() and ["d:0", "d:1"] in params

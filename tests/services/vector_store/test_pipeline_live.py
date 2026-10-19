@@ -267,3 +267,14 @@ def test_the_generated_table_template_matches_what_the_migration_created(conn):
     cur.execute("SELECT indexdef FROM pg_indexes WHERE tablename = 'bp_vector_chunk_probe_v1' AND indexdef LIKE '%hnsw%'")
     hnsw = cur.fetchone()[0]
     assert "vector_cosine_ops" in hnsw and "m='16'" in hnsw and "ef_construction='64'" in hnsw
+
+
+def test_a_source_that_is_one_chunk_of_a_document_keeps_its_chunk_id_and_a_split_source_is_numbered(conn, connect, store):
+    add_source(conn, "t1", "uploaded", "doc:3", "a short chunk", '{"chunk_id": 3, "chunk_index": 3, "document_id": "doc"}')
+    add_source(conn, "t1", "uploaded", "long", words(900), '{"chunk_id": 9}')
+    worker(connect).run_once()
+    by_source = {}
+    for h in store.list("t1", collection="uploaded"):
+        by_source.setdefault(h.source_id, []).append(h.payload["chunk_id"])
+    assert by_source["doc:3"] == [3]
+    assert sorted(by_source["long"]) == [0, 1, 2]

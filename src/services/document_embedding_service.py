@@ -131,7 +131,9 @@ class DocumentEmbeddingService:
             else SemanticCacheManager(None, namespace="document_embeddings")
         )
         self._embedding_model_name = self._resolve_embedding_model_name()
-        if self.client is None or self.embedder is None:
+        from src.services.vector_store.backend import use_pgvector
+        # On pgvector nothing here embeds or writes a vector inline (the worker does), so neither the client nor the model is needed.
+        if (self.client is None or self.embedder is None) and not use_pgvector():
             raise ValueError("AgentNick must provide Qdrant client and embedding model")
 
     # ------------------------------------------------------------------
@@ -193,6 +195,9 @@ class DocumentEmbeddingService:
             "source_type", first_chunk_metadata.get("source_type")
         )
         metadata_payload.setdefault("title", first_chunk_metadata.get("title"))
+        from src.services.vector_store.backend import use_pgvector
+        if use_pgvector():
+            return self._embed_document_pgvector(document_id, metadata_payload, chunks)
         vectors = self._encode_chunks(chunks)
         if not vectors:
             raise ValueError("Embedding model returned no vectors")
@@ -239,6 +244,34 @@ class DocumentEmbeddingService:
             chunk_count=len(points),
             metadata=metadata_payload,
         )
+
+    def _vector_collection(self) -> str:
+        """The vector store's name for this service's collection: the policy corpus, or uploads."""
+        policy = getattr(self.settings, "static_policy_collection_name", "static_policy") if self.settings is not None else "static_policy"
+        return "policy" if self.collection_name == policy else "uploaded"
+
+    def _embed_document_pgvector(self, document_id: str, metadata_payload: Dict[str, Any], chunks: List[DocumentChunk]) -> EmbeddedDocument:
+        """Write each chunk as a SOURCE row (its own text and metadata); the worker embeds. The request waits for the worker, never embeds.
+
+        One source per chunk keeps the semantic chunking and the per-chunk metadata exactly as they were stored before.
+        """
+        from src.services.vector_store import DEFAULT_TENANT, active_profile, sources
+
+        logical = self._vector_collection()
+        ids: List[str] = []
+        for idx, chunk in enumerate(chunks):
+            payload = dict(metadata_payload)
+            payload.update({k: v for k, v in chunk.metadata.items() if k not in DISALLOWED_METADATA_KEYS})
+            payload.update({"chunk_id": idx, "chunk_index": idx, "embedding_model": active_profile().model})
+            payload.pop("content", None)
+            source_id = f"{document_id}:{idx}"
+            sources.put_source(DEFAULT_TENANT, logical, source_id, chunk.content, payload)
+            ids.append(source_id)
+        self._propagate_to_rag(chunks, metadata_payload)
+        for collection in (logical, "documents"):
+            if sources.wait_until_embedded(DEFAULT_TENANT, collection, ids, timeout_s=30.0) != "done":
+                logger.warning("Document %s is still being embedded (%s); it will be searchable shortly", document_id, collection)
+        return EmbeddedDocument(document_id=document_id, collection=self.collection_name, chunk_count=len(chunks), metadata=metadata_payload)
 
     # ------------------------------------------------------------------
     # Extraction helpers
