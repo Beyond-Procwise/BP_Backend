@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 # Not src.services.db.get_conn: that opens autocommit connections, under which the
 # sell-side services' rollback-before-raise is a no-op and FOR UPDATE locks don't hold.
 from src.services.sell_side._db import transactional_conn as get_conn
-from src.services.sell_side import (accounts, calibration, margin_permit, opportunities, outcomes,
+from src.services.sell_side import (accounts, calibration, detector, margin_permit, opportunities, outcomes,
                                     quote_render, quote_send, quotes)
 
 from src.services import agent_actions
@@ -371,3 +371,10 @@ def calibrate(principal=Depends(require_user)):
     gate("sales.calibrate", principal, agent=_AGENT)
     with get_conn() as c:
         return money_json({"calibrations": [c_.__dict__ for c_ in calibration.calibrate(c)]})
+
+
+@router.post("/opportunities/detect")
+def detect(account_id: Optional[str] = None, principal=Depends(require_user)):
+    gate("sales.detect", principal, agent=_AGENT)
+    with get_conn() as c:
+        return money_json({"created": detector.detect(c, account_id=account_id)})

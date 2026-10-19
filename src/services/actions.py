@@ -47,6 +47,7 @@ ACTIONS: Dict[str, str] = {
     "opportunity.mine": "compute",
     "document.extract": "compute",
     "sales.calibrate": "compute",
+    "sales.detect": "compute",
     # Building a report inside the tenant changes nothing; sending one out is
     # report.export, a share, and is refused unless a rule says otherwise.
     "report.generate": "compute",
