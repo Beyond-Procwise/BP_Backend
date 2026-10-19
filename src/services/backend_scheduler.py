@@ -373,9 +373,8 @@ class BackendScheduler:
     VECTOR_WORKER_JOB_NAME = "vector_embedding_worker"
 
     def _register_vector_worker_job(self) -> None:
-        """Embed queued sources into the vector store (every 10 s). Registered only when VECTOR_BACKEND=pgvector."""
-        from src.services.vector_store.backend import use_pgvector
-        if not use_pgvector() or self.VECTOR_WORKER_JOB_NAME in self._jobs:
+        """Embed queued sources into the vector store (every 10 s)."""
+        if self.VECTOR_WORKER_JOB_NAME in self._jobs:
             return
         self.register_job(self.VECTOR_WORKER_JOB_NAME, self._run_vector_worker, interval=timedelta(seconds=10),
                           initial_delay=timedelta(seconds=20))

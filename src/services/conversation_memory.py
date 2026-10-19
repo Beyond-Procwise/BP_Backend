@@ -2,7 +2,7 @@
 
 This module maintains a thin layer over :class:`services.rag_service.RAGService`
 so agents can persist and retrieve snippets of conversation history.  The
-service is intentionally defensive - when Qdrant, embedding models or the RAG
+service is intentionally defensive - when the vector store, embedding models or the RAG
 stack are unavailable the helpers degrade gracefully, returning empty
 responses instead of raising exceptions.  This keeps unit tests isolated from
 vector infrastructure while ensuring production environments gain richer
@@ -17,7 +17,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 
-from qdrant_client import models
+from src.services.vector_store.filter_models import models
 
 from services import rag_service as rag_module
 

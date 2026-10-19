@@ -1,6 +1,6 @@
-"""Translate the Qdrant-style filters the application builds into VectorStore filters (migration window only; deleted with Qdrant).
+"""Translate the filter objects the application builds (``filter_models``) into VectorStore filters.
 
-Duck-typed (``.key`` / ``.match`` / ``.must`` / ``.should``), so it needs no Qdrant import. A payload key that has no column filters the stored
+Duck-typed (``.key`` / ``.match`` / ``.must`` / ``.should``). A payload key that has no column filters the stored
 metadata, as it did in Qdrant; ``must_not`` is refused rather than silently dropped; ``tenant_id`` can never be filtered on.
 """
 from __future__ import annotations
@@ -43,19 +43,19 @@ def _merge(into: Dict[str, Any], part: Dict[str, Any]) -> None:
             into[key] = value
 
 
-def from_qdrant_filter(flt: Optional[Any]) -> Dict[str, Any]:
+def to_store_filter(flt: Optional[Any]) -> Dict[str, Any]:
     if flt is None:
         return {}
     if getattr(flt, "must_not", None):
         raise ValueError("must_not filters are not supported by the vector store")
     out: Dict[str, Any] = {}
     for item in list(getattr(flt, "must", None) or []):
-        _merge(out, _condition(item) if _is_condition(item) else from_qdrant_filter(item))
+        _merge(out, _condition(item) if _is_condition(item) else to_store_filter(item))
     should = list(getattr(flt, "should", None) or [])
     if should:
         alternatives: List[Dict[str, Any]] = []
         for item in should:
-            alt = _condition(item) if _is_condition(item) else from_qdrant_filter(item)
+            alt = _condition(item) if _is_condition(item) else to_store_filter(item)
             if "any_of" in alt:                      # an OR nested in an OR: flatten its alternatives
                 alternatives.extend(alt.pop("any_of"))
                 if alt:

@@ -1,4 +1,4 @@
-"""The learning repository under VECTOR_BACKEND=pgvector: events are source rows, reads come back as the same payload dicts."""
+"""The learning repository: events are source rows, reads come back as the same payload dicts."""
 import contextlib
 import os
 import types
@@ -10,11 +10,6 @@ from src.services.vector_store import DEFAULT_TENANT, PgVectorStore, VectorHit, 
 from src.services.vector_store.profiles import PROFILES
 from tests.services.vector_store.helpers import HashEmbedder
 from tests.services.vector_store.test_pgvector_store_unit import PROFILE, Rec, VEC, sql_of
-
-
-@pytest.fixture(autouse=True)
-def pg(monkeypatch):
-    monkeypatch.setenv("VECTOR_BACKEND", "pgvector")
 
 
 def repo(monkeypatch, put=None, store=None):

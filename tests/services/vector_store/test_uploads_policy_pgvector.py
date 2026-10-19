@@ -1,4 +1,4 @@
-"""Uploads and the static policy corpus under VECTOR_BACKEND=pgvector: chunks become source rows (metadata intact), nothing embeds inline."""
+"""Uploads and the static policy corpus: chunks become source rows (metadata intact), nothing embeds inline."""
 import types
 
 import pytest
@@ -6,11 +6,6 @@ import pytest
 from src.services import document_embedding_service as des
 from src.services import static_policy_loader as spl
 from src.services.vector_store import DEFAULT_TENANT, sources
-
-
-@pytest.fixture(autouse=True)
-def pg(monkeypatch):
-    monkeypatch.setenv("VECTOR_BACKEND", "pgvector")
 
 
 @pytest.fixture()
@@ -69,15 +64,9 @@ def test_an_upload_is_also_propagated_to_the_primary_store_as_before(recorded):
     assert [p["chunk_id"] for p in s._rag.payloads] == [0, 1]
 
 
-def test_the_service_can_be_built_without_a_qdrant_client_or_an_embedder_on_pgvector():
+def test_the_service_can_be_built_without_a_qdrant_client_or_an_embedder():
     nick = types.SimpleNamespace(settings=None, qdrant_client=None, embedding_model=None)
     des.DocumentEmbeddingService(nick)
-
-
-def test_the_service_still_requires_them_on_qdrant(monkeypatch):
-    monkeypatch.setenv("VECTOR_BACKEND", "qdrant")
-    with pytest.raises(ValueError):
-        des.DocumentEmbeddingService(types.SimpleNamespace(settings=None, qdrant_client=None, embedding_model=None))
 
 
 # --- the static policy corpus ----------------------------------------------------------------------------------------------------

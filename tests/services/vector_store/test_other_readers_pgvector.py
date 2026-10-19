@@ -8,11 +8,6 @@ from src.services.vector_store import DEFAULT_TENANT, VectorHit
 from src.services.vector_store.compat import search_hits
 
 
-@pytest.fixture(autouse=True)
-def pg(monkeypatch):
-    monkeypatch.setenv("VECTOR_BACKEND", "pgvector")
-
-
 class Store:
     def __init__(self, hits=None, boom=False):
         self.hits, self.boom, self.calls = hits or [], boom, []

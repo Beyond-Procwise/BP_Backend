@@ -23,36 +23,26 @@ from agents.data_extraction_agent import (
 def test_vectorize_document_normalizes_labels(monkeypatch):
     """doc_type and product_type may be returned as lists; ensure they're handled."""
 
-    captured = {}
+    from src.services.vector_store import DEFAULT_TENANT, sources
 
-    import numpy as np
-
-    def fake_encode(chunks, **kwargs):
-        # return a numpy vector per chunk to mimic real encoder output
-        return [np.zeros(3) for _ in chunks]
-
-    def fake_upsert(collection_name, points, wait):
-        captured["collection"] = collection_name
-        captured["points"] = points
+    written = []
+    monkeypatch.setattr(sources, "put_source", lambda *a, **k: written.append(a))
 
     nick = SimpleNamespace(
-        embedding_model=SimpleNamespace(encode=fake_encode),
-        qdrant_client=SimpleNamespace(upsert=fake_upsert),
-        _initialize_qdrant_collection=lambda: None,
         settings=SimpleNamespace(qdrant_collection_name="test", extraction_model="m"),
     )
 
     agent = DataExtractionAgent(nick)
-    monkeypatch.setattr(agent, "_chunk_text", lambda text: [text])
+    monkeypatch.setattr(agent, "_chunk_text", lambda text, doc_type=None: [text])
 
     agent._vectorize_document("hello world", "1", ["Invoice"], ["Hardware"], "doc.pdf")
 
-    assert captured["collection"] == "test"
-    payload = captured["points"][0].payload
+    assert written[0][:4] == (DEFAULT_TENANT, "documents", "1_0", "hello world")
+    payload = written[0][4]
     assert payload["document_type"] == "invoice"
     assert payload["product_type"] == "hardware"
     assert payload["record_id"] == "1"
-    assert payload["content"] == "hello world"
+    assert "content" not in payload  # the text is the source's content, not metadata
 
 
 def test_validate_and_cast_truncates_varchar_fields():
@@ -83,8 +73,6 @@ def test_contract_docs_are_persisted_and_vectorized(monkeypatch):
             get_object=lambda Bucket, Key: {"Body": BytesIO(b"fake")}
         ),
         embedding_model=SimpleNamespace(encode=lambda chunks, **kwargs: [np.zeros(3) for _ in chunks]),
-        qdrant_client=SimpleNamespace(upsert=lambda **kwargs: captured.setdefault("vectorized", True)),
-        _initialize_qdrant_collection=lambda: None,
         settings=SimpleNamespace(
             s3_bucket_name="b",
             s3_prefixes=[],
@@ -92,6 +80,10 @@ def test_contract_docs_are_persisted_and_vectorized(monkeypatch):
             extraction_model="m",
         ),
     )
+
+    from src.services.vector_store import sources
+
+    monkeypatch.setattr(sources, "put_source", lambda *a, **k: captured.setdefault("vectorized", True))
 
     agent = DataExtractionAgent(nick)
 
@@ -620,20 +612,12 @@ def test_process_documents_with_a_bare_string_s3_object_keys_is_one_key_not_char
 
 
 def test_vectorize_structured_data_creates_points(monkeypatch):
-    captured = {}
+    from src.services.vector_store import sources
 
-    import numpy as np
-
-    def fake_encode(chunks, **kwargs):
-        return [np.zeros(3) for _ in chunks]
-
-    def fake_upsert(collection_name, points, wait):
-        captured["points"] = points
+    written = []
+    monkeypatch.setattr(sources, "put_source", lambda *a, **k: written.append(a))
 
     nick = SimpleNamespace(
-        embedding_model=SimpleNamespace(encode=fake_encode),
-        qdrant_client=SimpleNamespace(upsert=fake_upsert),
-        _initialize_qdrant_collection=lambda: None,
         settings=SimpleNamespace(qdrant_collection_name="test", extraction_model="m"),
     )
 
@@ -642,12 +626,12 @@ def test_vectorize_structured_data_creates_points(monkeypatch):
     line_items = [{"item_id": "A1", "description": "Widget"}]
 
     agent._vectorize_structured_data(header, line_items, "Invoice", "1", "Hardware")
-    types = {p.payload["data_type"] for p in captured["points"]}
-    assert types == {"header", "line_item"}
-    # ensure points are associated with the same record id
-    for p in captured["points"]:
-        assert p.payload["record_id"] == "1"
-        assert p.payload["product_type"] == "hardware"
+    payloads = [a[4] for a in written]
+    assert {p["data_type"] for p in payloads} == {"header", "line_item"}
+    # ensure sources are associated with the same record id
+    for p in payloads:
+        assert p["record_id"] == "1"
+        assert p["product_type"] == "hardware"
 
 
 def test_contextual_field_normalisation():

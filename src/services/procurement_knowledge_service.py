@@ -1,7 +1,7 @@
 """Utilities for sourcing procurement-specific external knowledge for gpt-oss.
 
 The service surfaces procurement market intelligence briefs that can be
-embedded into Qdrant and retrieved by RAG-enabled agents.  The dataset is
+embedded into the vector store and retrieved by RAG-enabled agents.  The dataset is
 limited to procurement topics and is sanitised to ensure no customer
 information is introduced or manipulated.
 """

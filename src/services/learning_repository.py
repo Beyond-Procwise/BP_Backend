@@ -1,6 +1,6 @@
 """Centralised repository for vectorised workflow learnings.
 
-The repository maintains a dedicated Qdrant collection that stores metadata
+The repository maintains a dedicated vector store collection that stores metadata
 based learnings produced across workflows.  Only structured metadata and
 high-level summaries are embedded – raw email bodies, internal scoring logic
 and any sensitive calculations are explicitly filtered out.
@@ -14,8 +14,6 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
-import numpy as np
-from qdrant_client import models
 
 
 logger = logging.getLogger(__name__)
@@ -38,28 +36,20 @@ _EXCLUDED_METADATA_KEYS: tuple[str, ...] = (
 
 
 class LearningRepository:
-    """Helper that coordinates the ``learning`` Qdrant collection."""
+    """Helper that coordinates the ``learning`` collection of the vector store."""
 
     def __init__(self, agent_nick: Any) -> None:
         self.agent_nick = agent_nick
         self.settings = getattr(agent_nick, "settings", None)
-        self.qdrant_client = getattr(agent_nick, "qdrant_client", None)
-        self.embedder = getattr(agent_nick, "embedding_model", None)
         self.collection_name: str = getattr(
             self.settings, "learning_collection_name", "learning"
         )
-        if not self._pg():
-            self._ensure_collection()
 
     # ------------------------------------------------------------------
-    # Public helpers
-    @staticmethod
-    def _pg() -> bool:
-        from src.services.vector_store.backend import use_pgvector
-        return use_pgvector()
-
-    def _put_pg(self, content: str, payload: Dict[str, Any], failure: str, *args: Any) -> Optional[str]:
-        """Under pgvector a learning record is a SOURCE row (its text and payload); the worker embeds it. Returns its id, or None on failure."""
+    # Storage
+    # ------------------------------------------------------------------
+    def _put(self, content: str, payload: Dict[str, Any], failure: str, *args: Any) -> Optional[str]:
+        """A learning record is a SOURCE row (its text and payload); the vector worker embeds it. Returns its id, or None on failure."""
         from src.services.vector_store import DEFAULT_TENANT, sources
         source_id = str(uuid.uuid4())
         try:
@@ -69,8 +59,8 @@ class LearningRepository:
             return None
         return source_id
 
-    def _list_pg(self, filters: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:
-        """Stored records, newest first, as the same payload dicts the Qdrant scroll returned (the store's bookkeeping keys removed)."""
+    def _list(self, filters: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:
+        """Stored records, newest first, as the same payload dicts that were stored (the store's bookkeeping keys removed)."""
         from src.services.vector_store import DEFAULT_TENANT, get_vector_store
         try:
             hits = get_vector_store().list(DEFAULT_TENANT, collection="learning", filters=filters, limit=max(1, min(int(limit), 1000)),
@@ -87,6 +77,9 @@ class LearningRepository:
         return out
 
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Public helpers
+    # ------------------------------------------------------------------
     def record_learning(
         self,
         *,
@@ -96,11 +89,7 @@ class LearningRepository:
         metadata: Optional[Dict[str, Any]] = None,
         tags: Optional[Iterable[str]] = None,
     ) -> Optional[str]:
-        """Persist a metadata learning point into Qdrant."""
-
-        if not self._pg() and (self.qdrant_client is None or self.embedder is None):
-            logger.debug("Learning repository disabled (missing client or embedder)")
-            return None
+        """Persist a metadata learning point into the vector store."""
 
         safe_metadata = self._normalise_metadata(metadata)
         if workflow_id:
@@ -109,10 +98,6 @@ class LearningRepository:
         summary = self._build_summary(source, event_type, safe_metadata)
         if not summary:
             logger.debug("Skipping learning record for %s – empty summary", event_type)
-            return None
-
-        vector = None if self._pg() else self._encode_text(summary)
-        if vector is None and not self._pg():
             return None
 
         payload: Dict[str, Any] = {
@@ -131,23 +116,7 @@ class LearningRepository:
             if cleaned_tags:
                 payload["tags"] = sorted(set(cleaned_tags))
 
-        if self._pg():
-            return self._put_pg(summary, payload, "Failed to persist learning record for %s", event_type)
-
-        point_id = str(uuid.uuid4())
-        point = models.PointStruct(id=point_id, vector=vector, payload=payload)
-
-        try:
-            self.qdrant_client.upsert(
-                collection_name=self.collection_name,
-                points=[point],
-                wait=True,
-            )
-        except Exception:
-            logger.exception("Failed to persist learning record for %s", event_type)
-            return None
-
-        return point_id
+        return self._put(summary, payload, "Failed to persist learning record for %s", event_type)
 
     def record_model_plan(
         self,
@@ -160,12 +129,8 @@ class LearningRepository:
         """Persist a lightweight fine-tuning plan for a model.
 
         The record is stored in the learning collection so that agents can
-        retrieve the latest humanisation playbook directly from Qdrant.
+        retrieve the latest humanisation playbook directly from the vector store.
         """
-
-        if not self._pg() and (self.qdrant_client is None or self.embedder is None):
-            logger.debug("Model plan repository disabled (missing client or embedder)")
-            return None
 
         cleaned_plan = str(plan_text or "").strip()
         if not cleaned_plan:
@@ -174,10 +139,6 @@ class LearningRepository:
 
         metadata = self._normalise_metadata(plan_metadata)
         metadata["model_name"] = model_name
-
-        vector = None if self._pg() else self._encode_text(cleaned_plan)
-        if vector is None and not self._pg():
-            return None
 
         payload: Dict[str, Any] = {
             "document_type": "model_plan",
@@ -194,23 +155,7 @@ class LearningRepository:
             if cleaned_tags:
                 payload["tags"] = sorted(set(cleaned_tags))
 
-        if self._pg():
-            return self._put_pg(cleaned_plan, payload, "Failed to persist model plan for %s", model_name)
-
-        point_id = str(uuid.uuid4())
-        point = models.PointStruct(id=point_id, vector=vector, payload=payload)
-
-        try:
-            self.qdrant_client.upsert(
-                collection_name=self.collection_name,
-                points=[point],
-                wait=True,
-            )
-        except Exception:
-            logger.exception("Failed to persist model plan for %s", model_name)
-            return None
-
-        return point_id
+        return self._put(cleaned_plan, payload, "Failed to persist model plan for %s", model_name)
 
     def record_email_learning(
         self,
@@ -302,50 +247,10 @@ class LearningRepository:
         workflow_id: Optional[str] = None,
         limit: int = 20,
     ) -> List[Dict[str, Any]]:
-        if self._pg():
-            return self._list_pg({"document_type": "learning", **({"metadata": {"workflow_id": workflow_id}} if workflow_id else {})}, limit)
-        if self.qdrant_client is None:
-            return []
-
-        must_conditions: List[models.FieldCondition] = [
-            models.FieldCondition(
-                key="document_type", match=models.MatchValue(value="learning")
-            )
-        ]
+        filters: Dict[str, Any] = {"document_type": "learning"}
         if workflow_id:
-            must_conditions.append(
-                models.FieldCondition(
-                    key="workflow_id", match=models.MatchValue(value=workflow_id)
-                )
-            )
-
-        query_filter = models.Filter(must=must_conditions)
-        results: List[Dict[str, Any]] = []
-        offset = None
-
-        while len(results) < limit:
-            batch_size = min(64, limit - len(results))
-            try:
-                batch, offset = self.qdrant_client.scroll(
-                    collection_name=self.collection_name,
-                    scroll_filter=query_filter,
-                    limit=batch_size,
-                    offset=offset,
-                    with_payload=True,
-                    with_vectors=False,
-                )
-            except Exception:
-                logger.exception("Failed to scroll learning collection")
-                break
-
-            for point in batch or []:
-                payload = getattr(point, "payload", None)
-                if isinstance(payload, dict):
-                    results.append(payload)
-            if offset is None:
-                break
-
-        return results
+            filters["metadata"] = {"workflow_id": workflow_id}
+        return self._list(filters, limit)
 
     def build_context_snapshot(
         self, *, workflow_id: Optional[str], limit: int = 10
@@ -365,118 +270,11 @@ class LearningRepository:
         model_name: str,
         limit: int = 5,
     ) -> List[Dict[str, Any]]:
-        """Retrieve stored model plans for a given model name."""
+        """Retrieve stored model plans for a given model name, newest first."""
 
-        if self._pg():
-            plans = self._list_pg({"document_type": "model_plan", "metadata": {"model_name": model_name}}, limit)
-            plans.sort(key=lambda item: item.get("created_at") or "", reverse=True)
-            return plans[:limit]
-        client = self.qdrant_client
-        if client is None:
-            return []
-
-        must_conditions: List[models.FieldCondition] = [
-            models.FieldCondition(
-                key="document_type", match=models.MatchValue(value="model_plan")
-            ),
-            models.FieldCondition(
-                key="model_name", match=models.MatchValue(value=model_name)
-            ),
-        ]
-
-        query_filter = models.Filter(must=must_conditions)
-        results: List[Dict[str, Any]] = []
-        offset = None
-
-        while len(results) < limit:
-            batch_size = min(64, limit - len(results))
-            try:
-                batch, offset = client.scroll(
-                    collection_name=self.collection_name,
-                    scroll_filter=query_filter,
-                    limit=batch_size,
-                    offset=offset,
-                    with_payload=True,
-                    with_vectors=False,
-                )
-            except Exception:
-                logger.exception("Failed to scroll model plans for %s", model_name)
-                break
-
-            for point in batch or []:
-                payload = getattr(point, "payload", None)
-                if isinstance(payload, dict) and payload.get("document_type") == "model_plan":
-                    results.append(payload)
-            if offset is None:
-                break
-
-        results.sort(
-            key=lambda item: item.get("created_at") or "",
-            reverse=True,
-        )
-        return results[:limit]
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-    def _ensure_collection(self) -> None:
-        client = self.qdrant_client
-        if client is None:
-            return
-        try:
-            collection = client.get_collection(collection_name=self.collection_name)
-            schema = getattr(collection, "payload_schema", {}) or {}
-            self._ensure_indexes(schema)
-            return
-        except Exception:
-            logger.debug("Creating learning collection %s", self.collection_name)
-
-        try:
-            client.create_collection(
-                collection_name=self.collection_name,
-                vectors_config=models.VectorParams(
-                    size=int(getattr(self.settings, "vector_size", 768)),
-                    distance=models.Distance.COSINE,
-                ),
-            )
-        except Exception:
-            logger.exception("Failed to create learning collection %s", self.collection_name)
-            return
-
-        try:
-            client.get_collection(collection_name=self.collection_name)
-            self._ensure_indexes({})
-        except Exception:
-            logger.exception("Failed to verify learning collection %s", self.collection_name)
-
-    def _ensure_indexes(self, schema: Dict[str, Any]) -> None:
-        client = self.qdrant_client
-        if client is None:
-            return
-        existing = set(schema.keys()) if schema else set()
-        required = {
-            "document_type": models.PayloadSchemaType.KEYWORD,
-            "source": models.PayloadSchemaType.KEYWORD,
-            "event_type": models.PayloadSchemaType.KEYWORD,
-            "workflow_id": models.PayloadSchemaType.KEYWORD,
-            "rfq_id": models.PayloadSchemaType.KEYWORD,
-            "supplier_id": models.PayloadSchemaType.KEYWORD,
-            "source_type": models.PayloadSchemaType.KEYWORD,
-            "model_name": models.PayloadSchemaType.KEYWORD,
-        }
-
-        for field, schema_type in required.items():
-            if field in existing:
-                continue
-            try:
-                client.create_payload_index(
-                    collection_name=self.collection_name,
-                    field_name=field,
-                    field_schema=schema_type,
-                    wait=True,
-                )
-            except Exception:
-                logger.debug("Payload index %s already exists", field, exc_info=True)
+        plans = self._list({"document_type": "model_plan", "metadata": {"model_name": model_name}}, limit)
+        plans.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+        return plans[:limit]
 
     def _normalise_metadata(self, metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         cleaned: Dict[str, Any] = {}
@@ -527,22 +325,4 @@ class LearningRepository:
                 display = str(value)
             parts.append(f"{key}: {display}")
         return "; ".join(parts)
-
-    def _encode_text(self, text: str) -> Optional[List[float]]:
-        if self.embedder is None:
-            return None
-        try:
-            vectors = self.embedder.encode(
-                [text], normalize_embeddings=True, show_progress_bar=False
-            )
-        except Exception:
-            logger.exception("Failed to encode learning summary")
-            return None
-        array = np.asarray(vectors, dtype=np.float32)
-        if array.ndim == 2:
-            array = array[0]
-        if array.ndim != 1:
-            logger.debug("Unexpected embedding shape for learning summary: %s", array.shape)
-            return None
-        return array.astype(np.float32).tolist()
 

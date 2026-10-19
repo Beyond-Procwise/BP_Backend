@@ -3,54 +3,29 @@ import pytest
 from types import SimpleNamespace
 
 import pandas as pd
-from qdrant_client import models
 
 import services.data_flow_manager as data_flow_module
 
 from services.data_flow_manager import DataFlowManager
 
 
-class DummyEmbedder:
-    def get_sentence_embedding_dimension(self):
-        return 3
-
-    def encode(self, text, normalize_embeddings=True):
-        length = float(len(text))
-        return [length, length / 2.0, 1.0]
-
-
-class DummyQdrant:
-    def __init__(self):
-        self.collections = {}
-        self.upserts = []
-
-    def get_collection(self, collection_name: str):
-        if collection_name not in self.collections:
-            raise ValueError("collection missing")
-        return SimpleNamespace(payload_schema={})
-
-    def create_collection(self, collection_name: str, vectors_config):
-        self.collections[collection_name] = {
-            "vectors_config": vectors_config,
-            "indexes": set(),
-        }
-
-    def create_payload_index(self, collection_name: str, field_name: str, field_schema, wait: bool):
-        if collection_name in self.collections:
-            self.collections[collection_name]["indexes"].add(field_name)
-
-    def upsert(self, collection_name: str, points, wait: bool):
-        self.upserts.append({"collection": collection_name, "points": points, "wait": wait})
-
-
 class DummyNick:
+    """No Qdrant client and no embedder: persistence only stores source rows, the vector worker embeds."""
+
     def __init__(self, *, enable_learning: bool = True):
         self.settings = SimpleNamespace(
             enable_learning=enable_learning,
             knowledge_graph_collection_name="procwise_knowledge_graph",
         )
-        self.qdrant_client = DummyQdrant()
-        self.embedding_model = DummyEmbedder()
+
+
+@pytest.fixture()
+def written(monkeypatch):
+    """The vector-store source rows persistence writes: (tenant, collection, source_id, text, metadata)."""
+    from src.services.vector_store import sources
+    rows = []
+    monkeypatch.setattr(sources, "put_source", lambda *a, **k: rows.append(a))
+    return rows
 
 
 def _tables_fixture():
@@ -117,7 +92,7 @@ def _tables_fixture():
     }
 
 
-def test_data_flow_manager_builds_graph_and_persists():
+def test_data_flow_manager_builds_graph_and_persists(written):
     nick = DummyNick(enable_learning=True)
     manager = DataFlowManager(nick)
     tables = _tables_fixture()
@@ -158,38 +133,25 @@ def test_data_flow_manager_builds_graph_and_persists():
 
     manager.persist_knowledge_graph(relations, graph)
 
-    assert nick.qdrant_client.collections
-    assert nick.qdrant_client.upserts
-    assert all(
-        entry["collection"] == "procwise_knowledge_graph"
-        for entry in nick.qdrant_client.upserts
-    )
-    payload_types = {
-        point.payload.get("document_type")
-        for entry in nick.qdrant_client.upserts
-        for point in entry["points"]
-    }
+    assert written and all(row[0] == "default" and row[1] == "knowledge_graph" and row[3].strip() for row in written)
+    payload_types = {row[4].get("document_type") for row in written}
     assert "supplier_flow" in payload_types
     assert "agent_relationship_summary" in payload_types
 
-    supplier_points = [
-        point
-        for entry in nick.qdrant_client.upserts
-        for point in entry["points"]
-        if point.payload.get("document_type") == "supplier_flow"
-    ]
-    assert supplier_points
-    for point in supplier_points:
-        summary = point.payload.get("summary")
+    supplier_rows = [row for row in written if row[4].get("document_type") == "supplier_flow"]
+    assert supplier_rows
+    for row in supplier_rows:
+        payload = row[4]
+        summary = payload.get("summary")
         assert isinstance(summary, str) and summary.strip()
-        mapping_summary = point.payload.get("mapping_summary")
+        mapping_summary = payload.get("mapping_summary")
         assert isinstance(mapping_summary, list) and mapping_summary
         assert all("proc." not in statement for statement in mapping_summary)
-        if point.payload.get("categories"):
-            assert point.payload.get("primary_category")
+        if payload.get("categories"):
+            assert payload.get("primary_category")
 
 
-def test_persist_knowledge_graph_skips_when_learning_disabled():
+def test_persist_knowledge_graph_skips_when_learning_disabled(written):
     nick = DummyNick(enable_learning=False)
     manager = DataFlowManager(nick)
 
@@ -205,7 +167,7 @@ def test_persist_knowledge_graph_skips_when_learning_disabled():
 
     manager.persist_knowledge_graph(relations, graph)
 
-    assert nick.qdrant_client.upserts == []
+    assert written == []
 
 
 def test_supplier_flow_payload_is_trimmed_below_limit(monkeypatch):
@@ -261,41 +223,3 @@ def test_supplier_flow_payload_is_trimmed_below_limit(monkeypatch):
     products = trimmed.get("products")
     if isinstance(products, dict):
         assert len(products.get("top_items", [])) <= 3
-
-
-def test_batch_points_respects_serialized_size_threshold():
-    nick = DummyNick()
-    manager = DataFlowManager(nick)
-
-    points = [
-        models.PointStruct(
-            id=idx,
-            vector=[float(idx + 1)] * 128,
-            payload={
-                "document_type": "supplier_flow",
-                "supplier_id": f"S-{idx}",
-                "summary": "X" * 1800,
-            },
-        )
-        for idx in range(4)
-    ]
-
-    max_bytes = 5000
-    batches = list(manager._batch_points(points, max_batch_bytes=max_bytes))
-
-    assert len(batches) > 1
-    for batch in batches:
-        point_dicts = [
-            point.model_dump(exclude_none=True)
-            if hasattr(point, "model_dump")
-            else point.dict(exclude_none=True)
-            for point in batch
-        ]
-        serialized_size = len(
-            json.dumps({"points": point_dicts}, ensure_ascii=False).encode("utf-8")
-        )
-        assert serialized_size <= max_bytes + data_flow_module._POINT_BATCH_OVERHEAD
-        guard = data_flow_module._POINT_BATCH_OVERHEAD
-        for point in batch:
-            guard += manager._estimate_point_size(point)
-        assert guard <= max_bytes + data_flow_module._POINT_BATCH_OVERHEAD

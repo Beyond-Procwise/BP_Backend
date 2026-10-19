@@ -31,18 +31,13 @@ class Settings(BaseSettings):
         default=64, env="S3_MAX_POOL_CONNECTIONS"
     )
 
-    qdrant_url: str = Field(..., env="QDRANT_URL")
-    qdrant_api_key: str = Field(..., env="QDRANT_API_KEY")
-    qdrant_collection_name: str = Field(
-        default="procwise_document_embeddings", env="QDRANT_COLLECTION_NAME"
-    )
-    # How long startup may wait for Qdrant to answer before giving up and
-    # coming up without a vector store. 0 disables the wait entirely.
-    qdrant_startup_wait_seconds: int = Field(
-        default=90, env="QDRANT_STARTUP_WAIT_SECONDS"
-    )
-    qdrant_startup_grace_seconds: int = Field(
-        default=30, env="QDRANT_STARTUP_GRACE_SECONDS"
+    # Qdrant is NOT used by chat, RAG, uploads, policy or learning any more (they use the application's own Postgres: src/services/vector_store).
+    # These two remain, optional, for the separate procurement_knowledge_graph package, whose hybrid query engine still keeps its supplier
+    # embeddings in Qdrant. Remove them with that package's Qdrant use.
+    qdrant_url: Optional[str] = Field(default="http://localhost:6333", env="QDRANT_URL")
+    qdrant_api_key: Optional[str] = Field(default=None, env="QDRANT_API_KEY")
+    document_collection_name: str = Field(
+        default="procwise_document_embeddings", env="DOCUMENT_COLLECTION_NAME"
     )
     uploaded_documents_collection_name: str = Field(
         default="uploaded_documents", env="UPLOADED_DOCUMENTS_COLLECTION_NAME"
@@ -393,8 +388,9 @@ class Settings(BaseSettings):
     rag_model: str = Field(default="BeyondProcwise/AgentNick:unified", env="RAG_LLM_MODEL")
     # ``BAAI/bge-large-en-v1.5`` provides state-of-the-art dense retrieval
     # performance for procurement terminology while remaining compatible with
-    # Qdrant's HNSW indexes. The model outputs 1024 dimensional vectors which
-    # improves clustering of nuanced supplier and category data.
+    # pgvector's HNSW indexes. The model outputs 1024 dimensional vectors which
+    # improves clustering of nuanced supplier and category data. The vector store's
+    # embedding profile (src/services/vector_store/profiles.py) must agree with these.
     embedding_model: str = "BAAI/bge-large-en-v1.5"
     vector_size: int = 1024
     reranker_model: str = Field(
@@ -420,15 +416,10 @@ class Settings(BaseSettings):
         env="RAG_RERANKER_CACHE_SIZE",
         description="Number of cross-encoder scores memoised to skip redundant reranking calls.",
     )
-    rag_qdrant_search_ef: int = Field(
-        default=160,
-        env="RAG_QDRANT_SEARCH_EF",
-        description="HNSW exploration factor for vector lookups; lower values speed up retrieval while trading slight recall.",
-    )
-    rag_qdrant_search_workers: int = Field(
+    rag_search_workers: int = Field(
         default=4,
-        env="RAG_QDRANT_SEARCH_WORKERS",
-        description="Maximum number of Qdrant collections queried in parallel during retrieval.",
+        env="RAG_SEARCH_WORKERS",
+        description="Maximum number of vector store collections queried in parallel during retrieval.",
     )
     procurement_knowledge_path: Optional[str] = Field(
         default=None, env="PROCUREMENT_KNOWLEDGE_PATH"

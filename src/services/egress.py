@@ -98,7 +98,6 @@ class Purpose(str, Enum):
     SUPPLIER_RESEARCH = "supplier_research"      # public web, supplier profile
     FX_RATES = "fx_rates"                        # currency reference data
     MODEL_INFERENCE = "model_inference"          # prompt to a model host
-    VECTOR_INDEX = "vector_index"                # embedding read/write
     MAILBOX = "mailbox"                          # IMAP/Graph mailbox access
     NOTIFICATION = "notification"                # outbound mail
     HEALTHCHECK = "healthcheck"                  # liveness, carries no payload
@@ -162,7 +161,7 @@ def check_destination(url: str, *, allowed_ports: frozenset[int] | None = None,
     """(allowed, reason) for one URL.
 
     ``require_global`` is False for the hosts that are deliberately internal —
-    the model daemon on localhost, a Qdrant instance inside the VPC. Those still
+    the model daemon on localhost. Those still
     pass through this module so the call is described and recorded; what varies
     is whether reaching a private address is the point or the attack.
     """
@@ -359,7 +358,7 @@ def post(url: str, *, purpose: Purpose, **kwargs: Any) -> Optional[requests.Resp
 # ---------------------------------------------------------------------------
 # SDK clients
 #
-# boto3, qdrant_client and neo4j open their own connections. They cannot be
+# boto3 and neo4j open their own connections. They cannot be
 # routed through the HTTP wrapper above without reimplementing them, so the
 # shape here is a factory: the caller says why it wants a client, and gets a
 # real one back with recording attached.
@@ -370,14 +369,16 @@ def post(url: str, *, purpose: Purpose, **kwargs: Any) -> Optional[requests.Resp
 #   aws_client     botocore has a per-request event hook, so EVERY call the
 #                  client makes is recorded, with its destination. Genuine
 #                  coverage, equivalent to the HTTP path.
-#   vector_client  qdrant_client exposes no comparable hook. Only the
+#   graph_client   the neo4j driver exposes no comparable hook. Only the
 #                  CONSTRUCTION is recorded — one line saying a client was made
-#                  for a purpose, against a host. The individual upserts and
-#                  searches are not visible here.
-#   graph_client   same as vector_client.
+#                  for a purpose, against a host. The individual queries are not
+#                  visible here.
+#
+# There is no vector client any more: vectors live in the application's own
+# Postgres (src/services/vector_store), so nothing leaves the database for them.
 #
 # So a `bp_egress_event` built on this would be complete for AWS and a
-# construction-level summary for the other two. That is worth having and worth
+# construction-level summary for the graph driver. That is worth having and worth
 # saying out loud; it is not the same thing as auditing every call.
 # ---------------------------------------------------------------------------
 
@@ -428,115 +429,10 @@ def aws_client(service: str, *, purpose: Purpose, **kwargs: Any) -> Any:
     return client
 
 
-class EgressDisabled(RuntimeError):
-    """Raised when an outbound path is switched off and the caller was writing.
-
-    Distinct from ``EgressDenied``, which means policy refused this particular
-    call. This means the whole channel is off by configuration.
-    """
-
-
-def external_rag_enabled() -> bool:
-    """Whether document text may be sent to the external vector index.
-
-    ``RAG_EXTERNAL_ENABLED=0`` turns it off. Default ON, because turning it off
-    on an existing deployment without being asked would silently empty every
-    search result — the switch exists to be a deliberate choice, in both
-    directions.
-    """
-    import os
-    return os.getenv("RAG_EXTERNAL_ENABLED", "1").strip() not in ("0", "false", "False")
-
-
-class _DisabledVectorClient:
-    """Stands in for QdrantClient when the external index is switched off.
-
-    The asymmetry here is deliberate and is the whole design:
-
-      READS return empty. A search that finds nothing is what "we hold no
-      documents you can search" looks like, and the product degrades to
-      answering from the database instead of failing. That is the graceful
-      degradation the audit asked for.
-
-      WRITES raise. A no-op upsert would let a document report as ingested and
-      then never be findable — data loss wearing the costume of success. If
-      embedding is off, an upload must fail loudly enough that somebody turns it
-      back on or stops uploading.
-
-    Attribute access for anything unrecognised raises too, rather than returning
-    a Mock-like object that would make an unknown call silently succeed.
-    """
-
-    _READ_EMPTY: dict[str, Any] = {
-        "search": [], "query_points": [], "scroll": ([], None),
-        "retrieve": [], "search_batch": [], "get_collections": None,
-        "count": 0,
-    }
-
-    def __init__(self, destination: str) -> None:
-        self._destination = destination
-
-    def __getattr__(self, name: str) -> Any:
-        if name in self._READ_EMPTY:
-            empty = self._READ_EMPTY[name]
-
-            def _read(*_a: Any, **_kw: Any) -> Any:
-                logger.debug(
-                    "vector index disabled: %s returned empty", name
-                )
-                return empty
-
-            return _read
-
-        def _write(*_a: Any, **_kw: Any) -> Any:
-            _record(purpose=Purpose.VECTOR_INDEX, destination=self._destination,
-                    method=name.upper(), outcome="disabled",
-                    detail="RAG_EXTERNAL_ENABLED=0")
-            raise EgressDisabled(
-                f"the external vector index is disabled (RAG_EXTERNAL_ENABLED=0), "
-                f"so {name}() cannot run. Reads degrade to empty; writes refuse, "
-                f"because a silent no-op would make a document look ingested and "
-                f"leave it unsearchable."
-            )
-
-        return _write
-
-
-def vector_client(*, purpose: Purpose, url: str, api_key: Optional[str] = None,
-                  **kwargs: Any) -> Any:
-    """A QdrantClient, with its CONSTRUCTION recorded — or a disabled stand-in.
-
-    The ``RAG_EXTERNAL_ENABLED`` check lives HERE rather than at the callers.
-    The audit's I3 finding was that the one enrichment switch in the codebase is
-    read at exactly one line, in one router, while four other importable entry
-    points to the same egress ignore it. A switch each caller must remember to
-    consult is a switch some caller will not.
-
-    Per-call recording is not available: qdrant_client offers no request hook to
-    attach to. The line this writes says a client was made for a purpose against
-    a host — it does not describe the upserts and searches that follow. Anyone
-    reading an egress log should know a single line here can stand for a great
-    many payloads.
-    """
-    destination = urlsplit(url).hostname or url
-
-    if not external_rag_enabled():
-        _record(purpose=purpose, destination=destination, method="CONNECT",
-                outcome="disabled", detail="RAG_EXTERNAL_ENABLED=0")
-        return _DisabledVectorClient(destination)
-
-    from qdrant_client import QdrantClient
-
-    _record(purpose=purpose, destination=destination,
-            method="CONNECT", outcome="client_created",
-            detail="qdrant; per-call recording unavailable")
-    return QdrantClient(url=url, api_key=api_key, **kwargs)
-
-
 def graph_client(*, purpose: Purpose, uri: str, auth: Any = None,
                  **kwargs: Any) -> Any:
-    """A neo4j driver, with its CONSTRUCTION recorded. Same caveat as
-    :func:`vector_client`: the queries that follow are not individually visible.
+    """A neo4j driver, with its CONSTRUCTION recorded. The queries that follow
+    are not individually visible (see the note above on uneven coverage).
     """
     from neo4j import GraphDatabase
 

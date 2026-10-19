@@ -54,150 +54,18 @@ class DummyCrossEncoder:
         return [0.5 for _ in pairs]
 
 
-def test_upsert_and_search():
-    nick = SimpleNamespace(device="cpu", settings=SimpleNamespace(qdrant_collection_name="c", reranker_model="x"),
-                           qdrant_client=DummyQdrant(), embedding_model=DummyEmbed())
-    rag = RAGService(nick, cross_encoder_cls=DummyCrossEncoder)
-    rag.upsert_texts(["hello world"], {"record_id": "test"})
-    assert nick.qdrant_client.upserts  # ensure upsert called
-    assert nick.qdrant_client.upserts[0]["collection_name"] == "c"
-    point_ids = [p.id for p in nick.qdrant_client.upserts[0]["points"]]
-    for pid in point_ids:
-        uuid.UUID(str(pid))
-    hits = rag.search("hello")
-    assert hits[0].payload["record_id"] == "test"
-    # ensure qdrant was queried across configured collections even with local hits
-    collections = {call["collection_name"] for call in nick.qdrant_client.search_calls}
-    assert {"c", "uploaded_documents", "static_policy"}.issubset(collections)
-
-
-def test_search_prioritises_target_documents_over_policies():
-    class FocusQdrant(DummyQdrant):
-        def search(self, **kwargs):
-            self.search_calls.append(kwargs)
-            name = kwargs.get("collection_name")
-            if name == "static_policy":
-                return [
-                    SimpleNamespace(
-                        id="policy-1",
-                        payload={
-                            "record_id": "policy-1",
-                            "collection_name": name,
-                            "document_type": "policy",
-                            "source_type": "Policy",
-                            "summary": "Policy guidance.",
-                        },
-                        score=0.92,
-                    )
-                ]
-            if name == "c":
-                return [
-                    SimpleNamespace(
-                        id="invoice-77",
-                        payload={
-                            "record_id": "invoice-77",
-                            "collection_name": name,
-                            "document_type": "Invoice",
-                            "source_type": "Invoice",
-                            "summary": "Invoice 77 details.",
-                        },
-                        score=0.55,
-                    )
-                ]
-            return []
-
-    nick = SimpleNamespace(
-        device="cpu",
-        settings=SimpleNamespace(qdrant_collection_name="c", reranker_model="x"),
-        qdrant_client=FocusQdrant(),
-        embedding_model=DummyEmbed(),
-    )
-    rag = RAGService(nick, cross_encoder_cls=DummyCrossEncoder)
-
-    hits = rag.search("Need invoice 77 details and PO reference")
-
-    assert hits, "RAG service should return results"
-    assert hits[0].payload["document_type"].lower() == "invoice"
-    assert any(hit.payload["document_type"].lower() == "invoice" for hit in hits)
-
-
-def test_upsert_gpu_fallback(monkeypatch, caplog):
+def test_gpu_index_falls_back_to_cpu_when_faiss_has_no_gpu_build(monkeypatch, caplog):
     monkeypatch.delattr("services.rag_service.faiss.StandardGpuResources", raising=False)
     nick = SimpleNamespace(
         device="cuda",
         settings=SimpleNamespace(qdrant_collection_name="c", reranker_model="x"),
-        qdrant_client=DummyQdrant(),
         embedding_model=DummyEmbed(),
     )
     rag = RAGService(nick, cross_encoder_cls=DummyCrossEncoder)
+    index = object()
     with caplog.at_level("WARNING"):
-        rag.upsert_texts(["gpu fallback"], {"record_id": "gpu"})
+        assert rag._maybe_init_gpu_index(index) is index
     assert "falling back to CPU index" in caplog.text
-    hits = rag.search("gpu")
-    assert hits[0].payload["record_id"] == "gpu"
-    collections = {call["collection_name"] for call in nick.qdrant_client.search_calls}
-    assert {"c", "uploaded_documents", "static_policy"}.issubset(collections)
-
-
-def test_upsert_payloads_respects_source_collection():
-    nick = SimpleNamespace(
-        device="cpu",
-        settings=SimpleNamespace(qdrant_collection_name="procwise_document_embeddings", reranker_model="x"),
-        qdrant_client=DummyQdrant(),
-        embedding_model=DummyEmbed(),
-    )
-    rag = RAGService(nick, cross_encoder_cls=DummyCrossEncoder)
-
-    rag.upsert_payloads(
-        [
-            {
-                "record_id": "doc-1",
-                "content": "Uploaded content",
-                "source_collection": "uploaded_documents",
-            }
-        ]
-    )
-
-    assert nick.qdrant_client.upserts
-    assert nick.qdrant_client.upserts[0]["collection_name"] == "uploaded_documents"
-
-
-def test_search_scopes_uploaded_collection_to_session():
-    qdrant = DummyQdrant()
-    nick = SimpleNamespace(
-        device="cpu",
-        settings=SimpleNamespace(qdrant_collection_name="c", reranker_model="x"),
-        qdrant_client=qdrant,
-        embedding_model=DummyEmbed(),
-    )
-    rag = RAGService(nick, cross_encoder_cls=DummyCrossEncoder)
-
-    rag.search("session scoped query", session_id="session-abc")
-
-    uploaded_calls = [
-        call for call in qdrant.search_calls if call["collection_name"] == rag.uploaded_collection
-    ]
-    assert uploaded_calls, "Uploaded collection should be queried"
-    for call in uploaded_calls:
-        filt = call["query_filter"]
-        assert filt is not None, "Uploaded collection queries must include a session filter"
-        assert any(
-            getattr(condition, "key", None) == "session_id"
-            for condition in getattr(filt, "must", []) or []
-        )
-
-    other_calls = [
-        call for call in qdrant.search_calls if call["collection_name"] != rag.uploaded_collection
-    ]
-    assert other_calls, "Primary collections should also be queried"
-    for call in other_calls:
-        filt = call["query_filter"]
-        if filt is None:
-            continue
-        assert all(
-            getattr(condition, "key", None) != "session_id"
-            for condition in getattr(filt, "must", []) or []
-        )
 
 
 @pytest.mark.timeout(30)

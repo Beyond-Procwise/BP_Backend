@@ -1,4 +1,4 @@
-"""The write side under VECTOR_BACKEND=pgvector: callers write SOURCE rows / queue jobs, never embed or upsert vectors inline."""
+"""The write side: callers write SOURCE rows / queue jobs, never embed or upsert vectors inline."""
 import contextlib
 import json
 import os
@@ -79,7 +79,6 @@ def rag(monkeypatch, calls):
     s.embedder = None                                  # an inline embed would crash: it must not happen
     s.primary_collection, s.uploaded_collection = "procwise_document_embeddings", "uploaded_documents"
     s.static_policy_collection, s.learning_collection = "static_policy", "learning"
-    monkeypatch.setenv("VECTOR_BACKEND", "pgvector")
     monkeypatch.setattr(sources, "put_source", lambda *a, **k: calls.append((a, k)))
     return s
 
@@ -118,7 +117,6 @@ def test_a_failed_source_write_is_logged_and_the_caller_carries_on(monkeypatch):
     s = RAGService.__new__(RAGService)
     s.client, s.embedder = None, None
     s.primary_collection, s.uploaded_collection, s.static_policy_collection, s.learning_collection = "p", "u", "s", "l"
-    monkeypatch.setenv("VECTOR_BACKEND", "pgvector")
 
     def boom(*a, **k):
         raise RuntimeError("db down")
@@ -148,7 +146,6 @@ class RawCur:
 def test_embed_document_queues_a_job_instead_of_embedding_when_the_backend_is_pgvector(monkeypatch):
     from src.services.extraction import embed
     queued = []
-    monkeypatch.setenv("VECTOR_BACKEND", "pgvector")
     monkeypatch.setattr("src.services.vector_store.outbox.enqueue", lambda cur, *a, **k: queued.append(a) or True)
 
     class Conn:
@@ -165,7 +162,6 @@ def test_embed_document_queues_a_job_instead_of_embedding_when_the_backend_is_pg
 
 def test_embed_document_with_no_text_queues_nothing(monkeypatch):
     from src.services.extraction import embed
-    monkeypatch.setenv("VECTOR_BACKEND", "pgvector")
     monkeypatch.setattr("src.services.vector_store.outbox.enqueue", lambda *a, **k: pytest.fail("queued a job for a document with no text"))
     assert embed.embed_document(types.SimpleNamespace(settings=None), RawCur(""), doc_type="invoice", doc_pk="INV-1", raw_id=1) == 0
 
@@ -179,14 +175,11 @@ def _scheduler():
     return s
 
 
-def test_the_vector_worker_job_is_registered_on_pgvector_and_not_on_qdrant(monkeypatch):
-    monkeypatch.setenv("VECTOR_BACKEND", "qdrant")
+def test_the_vector_worker_job_is_registered_once_and_runs_every_few_seconds():
     s = _scheduler()
     s._register_vector_worker_job()
-    assert "vector_embedding_worker" not in s._jobs
-    monkeypatch.setenv("VECTOR_BACKEND", "pgvector")
     s._register_vector_worker_job()
-    assert "vector_embedding_worker" in s._jobs and s._jobs["vector_embedding_worker"].interval.total_seconds() <= 15
+    assert len(s._jobs) == 1 and "vector_embedding_worker" in s._jobs and s._jobs["vector_embedding_worker"].interval.total_seconds() <= 15
 
 
 # --- live: the trigger, the worker and delete, end to end -------------------------------------------------------------------------

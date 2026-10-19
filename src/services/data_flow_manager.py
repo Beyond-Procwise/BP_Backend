@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import pandas as pd
-from qdrant_client import models
 
 from utils.gpu import configure_gpu
 from services.event_bus import get_event_bus, get_current_workflow
@@ -412,7 +411,6 @@ _MAPPING_SUMMARY_LIMIT = 32
 _SUPPLIER_SAMPLE_LIMIT = 200
 _POINT_PAYLOAD_SOFT_LIMIT = 256 * 1024
 _POINT_PAYLOAD_HARD_LIMIT = 384 * 1024
-_POINT_BATCH_OVERHEAD = 256  # safety margin for JSON envelope/metadata
 
 
 class DataFlowManager:
@@ -427,13 +425,9 @@ class DataFlowManager:
                 or "procwise_knowledge_graph"
             )
         self.collection_name = collection_name
-        self.qdrant_client = getattr(agent_nick, "qdrant_client", None)
-        self.embedding_model = getattr(agent_nick, "embedding_model", None)
         self.settings = getattr(agent_nick, "settings", None)
         self.device = configure_gpu()
         os.environ.setdefault("PROCWISE_DEVICE", self.device)
-        self._collection_ready: bool = False
-        self._cached_vector_size: Optional[int] = None
         self._event_bus = get_event_bus()
 
     def _is_learning_enabled(self) -> bool:
@@ -525,33 +519,16 @@ class DataFlowManager:
         relations: Iterable[Dict[str, Any]],
         graph: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Vectorise ``relations`` and persist them to Qdrant (or, on pgvector, as source rows the worker embeds)."""
+        """Persist ``relations`` as vector-store SOURCE rows (a record's text plus its payload); the vector worker embeds them.
 
-        from src.services.vector_store.backend import use_pgvector
-        pg = use_pgvector()
-        if not pg and (not self.qdrant_client or not self.embedding_model):
-            logger.debug(
-                "Knowledge graph persistence skipped – Qdrant or embedding model unavailable."
-            )
-            return
+        Nothing is embedded here. ``_stage`` remembers each record's text and keeps its payload, so the four builders below share one shape.
+        """
 
-        if not pg:
-            try:
-                if not self._ensure_collection():
-                    return
-            except Exception:  # pragma: no cover - defensive
-                logger.exception("Failed to ensure Qdrant collection for knowledge graph")
-                return
-
-        # On pgvector nothing is embedded here: a record is its text plus its payload, stored as a source row. ``_mk`` builds a Qdrant point,
-        # or (pgvector) remembers the text and keeps the payload, so the four builders below are shared by both backends.
         texts_by_id: Dict[int, str] = {}
 
-        def _mk(point_id: int, text: str, vector: Any, payload: Dict[str, Any]) -> Any:
-            if pg:
-                texts_by_id[point_id] = text
-                return payload
-            return models.PointStruct(id=point_id, vector=vector, payload=payload)
+        def _stage(point_id: int, text: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+            texts_by_id[point_id] = text
+            return payload
 
         points_by_id: Dict[int, Any] = {}
         seen_point_ids: set[int] = set()
@@ -559,9 +536,6 @@ class DataFlowManager:
             text = self._relation_to_text(relation)
             point_id = self._deterministic_id(text)
             if point_id in seen_point_ids:
-                continue
-            vector = self._embed_text(text) if not pg else []
-            if vector is None:
                 continue
             seen_point_ids.add(point_id)
             payload = {
@@ -582,7 +556,7 @@ class DataFlowManager:
             payload = self._sanitize_payload(payload)
             payload = self._enforce_payload_limits(payload)
 
-            points_by_id[point_id] = _mk(point_id, text, vector, payload)
+            points_by_id[point_id] = _stage(point_id, text, payload)
 
         if graph:
             for path_entry in graph.get("paths", []):
@@ -598,9 +572,6 @@ class DataFlowManager:
                 point_id = self._deterministic_id(path_text)
                 if point_id in seen_point_ids:
                     continue
-                vector = self._embed_text(path_text) if not pg else []
-                if vector is None:
-                    continue
                 seen_point_ids.add(point_id)
                 payload = {
                     "document_type": "knowledge_graph_path",
@@ -612,7 +583,7 @@ class DataFlowManager:
                 payload = self._sanitize_payload(payload)
                 payload = self._enforce_payload_limits(payload)
 
-                points_by_id[point_id] = _mk(point_id, path_text, vector, payload)
+                points_by_id[point_id] = _stage(point_id, path_text, payload)
 
             for flow in graph.get("supplier_flows", []):
                 if not isinstance(flow, Mapping):
@@ -620,9 +591,6 @@ class DataFlowManager:
                 text, mapping_summary = self._supplier_flow_text_bundle(flow)
                 point_id = self._deterministic_id(text)
                 if point_id in seen_point_ids:
-                    continue
-                vector = self._embed_text(text) if not pg else []
-                if vector is None:
                     continue
                 seen_point_ids.add(point_id)
                 payload: Dict[str, Any] = {
@@ -645,9 +613,9 @@ class DataFlowManager:
                         payload[key] = value
                 payload = self._sanitize_payload(payload)
                 payload = self._enforce_payload_limits(payload)
-                points_by_id[point_id] = _mk(point_id, text, vector, payload)
+                points_by_id[point_id] = _stage(point_id, text, payload)
 
-        agent_points = self._agent_relationship_points(relations, graph, _mk if pg else None)
+        agent_points = self._agent_relationship_points(relations, graph, _stage)
         for point_id, point in agent_points.items():
             if point_id in seen_point_ids:
                 continue
@@ -659,24 +627,12 @@ class DataFlowManager:
             logger.debug("No knowledge graph points generated for persistence")
             return
 
-        if pg:
-            from src.services.vector_store import DEFAULT_TENANT, sources
-            for point_id, payload in points_by_id.items():
-                try:
-                    sources.put_source(DEFAULT_TENANT, "knowledge_graph", str(point_id), texts_by_id[point_id], payload)
-                except Exception:
-                    logger.exception("Failed to write knowledge graph source %s", point_id)
-            return
-
-        try:
-            for batch in self._batch_points(points):
-                self.qdrant_client.upsert(
-                    collection_name=self.collection_name,
-                    points=batch,
-                    wait=True,
-                )
-        except Exception:  # pragma: no cover - network/runtime issues
-            logger.exception("Failed to upsert knowledge graph points into Qdrant")
+        from src.services.vector_store import DEFAULT_TENANT, sources
+        for point_id, payload in points_by_id.items():
+            try:
+                sources.put_source(DEFAULT_TENANT, "knowledge_graph", str(point_id), texts_by_id[point_id], payload)
+            except Exception:
+                logger.exception("Failed to write knowledge graph source %s", point_id)
 
     # ------------------------------------------------------------------
     # Relationship analysis helpers
@@ -684,12 +640,12 @@ class DataFlowManager:
     def _agent_relationship_points(
         self,
         relations: Iterable[Dict[str, Any]],
-        graph: Optional[Dict[str, Any]] = None,
-        mk: Optional[Any] = None,
+        graph: Optional[Dict[str, Any]],
+        stage: Any,
     ) -> Dict[int, Any]:
         """Construct payloads summarising how agents interact with the graph.
 
-        ``mk(point_id, text, vector, payload)`` replaces building a Qdrant point (the pgvector path keeps the text and payload instead).
+        ``stage(point_id, text, payload)`` keeps a record's text and payload for storage as a vector-store source row.
         """
 
         relation_list: List[Dict[str, Any]] = [
@@ -715,7 +671,7 @@ class DataFlowManager:
             if isinstance(flows, Sequence):
                 supplier_flows = [flow for flow in flows if isinstance(flow, Mapping)]
 
-        points: Dict[int, models.PointStruct] = {}
+        points: Dict[int, Dict[str, Any]] = {}
 
         for agent_name, meta in AGENT_RELATIONSHIP_SUMMARIES.items():
             tables = {
@@ -829,10 +785,6 @@ class DataFlowManager:
             if not summary_text:
                 continue
 
-            vector = self._embed_text(summary_text) if mk is None else []
-            if vector is None:
-                continue
-
             payload: Dict[str, Any] = {
                 "document_type": "agent_relationship_summary",
                 "agent_name": agent_name,
@@ -846,11 +798,7 @@ class DataFlowManager:
 
             point_id = self._deterministic_id(f"agent:{agent_name.lower()}")
             final_payload = self._enforce_payload_limits(self._sanitize_payload(payload))
-            points[point_id] = (
-                mk(point_id, summary_text, vector, final_payload)
-                if mk is not None
-                else models.PointStruct(id=point_id, vector=vector, payload=final_payload)
-            )
+            points[point_id] = stage(point_id, summary_text, final_payload)
 
         return points
 
@@ -2181,175 +2129,9 @@ class DataFlowManager:
         )
 
 
-    # ------------------------------------------------------------------
-    # Qdrant helpers
-    # ------------------------------------------------------------------
-    def _ensure_collection(self) -> bool:
-        if not self.qdrant_client or not self.embedding_model:
-            return False
-        if self._collection_ready:
-            return True
-
-        vector_size = self._determine_vector_size()
-        if vector_size is None:
-            logger.debug("Unable to determine embedding vector size; skipping Qdrant init")
-            return False
-
-        try:
-            self.qdrant_client.get_collection(collection_name=self.collection_name)
-            self._collection_ready = True
-            return True
-        except Exception:
-            logger.info("Creating Qdrant collection '%s' for knowledge graph", self.collection_name)
-
-        try:
-            self.qdrant_client.create_collection(
-                collection_name=self.collection_name,
-                vectors_config=models.VectorParams(
-                    size=vector_size,
-                    distance=models.Distance.COSINE,
-                ),
-            )
-            for field in (
-                "document_type",
-                "source_table",
-                "target_table",
-                "relationship_type",
-            ):
-
-                try:
-                    self.qdrant_client.create_payload_index(
-                        collection_name=self.collection_name,
-                        field_name=field,
-                        field_schema=models.PayloadSchemaType.KEYWORD,
-                        wait=True,
-                    )
-                except Exception:
-                    logger.debug("Failed to create payload index for %s", field, exc_info=True)
-            self._collection_ready = True
-        except Exception:
-            logger.exception("Failed to create knowledge graph collection")
-            return False
-        return True
-
-    def _determine_vector_size(self) -> Optional[int]:
-        if self._cached_vector_size:
-            return self._cached_vector_size
-        model = self.embedding_model
-        if not model:
-            return None
-        size: Optional[int] = None
-        getter = getattr(model, "get_sentence_embedding_dimension", None)
-        if callable(getter):
-            try:
-                size = int(getter())
-            except Exception:
-                logger.debug("Embedding model did not provide dimension", exc_info=True)
-        if size is None:
-            try:
-                vector = self._embed_text("procurement knowledge graph warmup")
-                size = len(vector) if vector else None
-            except Exception:
-                logger.debug("Failed to probe embedding vector size", exc_info=True)
-                size = None
-        self._cached_vector_size = size
-        return size
-
-    def _embed_text(self, text: str) -> Optional[List[float]]:
-        if not text:
-            return None
-        model = self.embedding_model
-        if not model or not hasattr(model, "encode"):
-            return None
-        try:
-            vector = model.encode(text, normalize_embeddings=True)
-        except TypeError:
-            vector = model.encode(text)  # type: ignore[call-arg]
-        except Exception:
-            logger.exception("Embedding generation failed for knowledge graph text")
-            return None
-        if vector is None:
-            return None
-        if isinstance(vector, list):
-            return [float(value) for value in vector]
-        if hasattr(vector, "tolist"):
-            return [float(value) for value in vector.tolist()]
-        return None
-
     def _deterministic_id(self, text: str) -> int:
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
         return int(digest[:16], 16)
-
-    def _batch_points(
-        self,
-        points: Sequence[models.PointStruct],
-        max_batch_bytes: int = 20 * 1024 * 1024,
-    ) -> Iterable[List[models.PointStruct]]:
-        """Yield point batches that respect Qdrant payload size limits.
-
-        ``max_batch_bytes`` is slightly below the 32MiB Qdrant limit to provide a
-        safety margin for protocol overhead.
-        """
-
-        batch: List[models.PointStruct] = []
-        batch_bytes = _POINT_BATCH_OVERHEAD
-        for point in points:
-            point_bytes = self._estimate_point_size(point)
-            if point_bytes >= max_batch_bytes:
-                if batch:
-                    yield batch
-                    batch = []
-                    batch_bytes = _POINT_BATCH_OVERHEAD
-                yield [point]
-                continue
-            if batch and batch_bytes + point_bytes > max_batch_bytes:
-                yield batch
-                batch = []
-                batch_bytes = _POINT_BATCH_OVERHEAD
-            batch.append(point)
-            batch_bytes += point_bytes
-        if batch:
-            yield batch
-
-    def _estimate_point_size(self, point: models.PointStruct) -> int:
-        """Estimate the serialized size of a Qdrant point."""
-
-        point_dict = self._point_as_dict(point)
-        try:
-            return len(json.dumps(point_dict, ensure_ascii=False).encode("utf-8")) + _POINT_BATCH_OVERHEAD
-        except (TypeError, ValueError):  # pragma: no cover - fallback
-            payload = getattr(point, "payload", {})
-            sanitized_payload = (
-                self._sanitize_payload(payload if isinstance(payload, Mapping) else {})
-            )
-            fallback = {
-                "id": getattr(point, "id", None),
-                "vector": list(getattr(point, "vector", []) or []),
-                "payload": sanitized_payload,
-            }
-            return len(json.dumps(fallback, ensure_ascii=False).encode("utf-8")) + _POINT_BATCH_OVERHEAD
-
-    def _point_as_dict(self, point: models.PointStruct) -> Dict[str, Any]:
-        if hasattr(point, "model_dump") and callable(getattr(point, "model_dump")):
-            try:
-                return point.model_dump(exclude_none=True)
-            except TypeError:  # pragma: no cover - compatibility with older pydantic
-                return point.model_dump()
-            except Exception:  # pragma: no cover - defensive
-                pass
-        if hasattr(point, "dict") and callable(getattr(point, "dict")):
-            try:
-                return point.dict(exclude_none=True)
-            except TypeError:  # pragma: no cover - compatibility with older pydantic
-                return point.dict()
-            except Exception:  # pragma: no cover - defensive
-                pass
-        return {
-            "id": getattr(point, "id", None),
-            "vector": list(getattr(point, "vector", []) or []),
-            "payload": getattr(point, "payload", {}) or {},
-        }
-
 
     def _relation_to_text(self, relation: Dict[str, Any]) -> str:
         source = relation.get("source_table")

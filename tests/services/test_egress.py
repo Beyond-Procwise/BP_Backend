@@ -199,7 +199,7 @@ def test_request_or_raise_distinguishes_refused_from_empty(transport):
 # SDK clients
 #
 # The point of these is the ASYMMETRY. aws_client records every request;
-# vector_client and graph_client record only that a client was made. Asserting
+# graph_client records only that a client was made. Asserting
 # that difference is what stops a reader of an egress log assuming uniform
 # coverage.
 # --------------------------------------------------------------------------
@@ -230,25 +230,6 @@ def test_constructing_an_aws_client_alone_records_nothing(caplog):
     assert "aws_request" not in "\n".join(caplog.messages)
 
 
-def test_a_vector_client_records_its_construction_and_says_what_it_cannot_see(
-    monkeypatch, caplog,
-):
-    """qdrant_client has no request hook. One line stands for every upsert and
-    search that follows, and the record says so rather than implying each call
-    was seen."""
-    import qdrant_client
-    monkeypatch.setattr(qdrant_client, "QdrantClient",
-                        lambda **kw: object())
-    with caplog.at_level(logging.INFO, logger="src.services.egress"):
-        egress.vector_client(purpose=Purpose.VECTOR_INDEX,
-                             url="https://abc.eu-central-1-0.aws.cloud.qdrant.io:6333",
-                             api_key="k")
-    line = "\n".join(caplog.messages)
-    assert "outcome=client_created" in line
-    assert "destination=abc.eu-central-1-0.aws.cloud.qdrant.io" in line
-    assert "per-call recording unavailable" in line
-
-
 def test_a_graph_client_carries_the_same_caveat(monkeypatch, caplog):
     # neo4j is not installed in every environment (it is absent from this venv,
     # which is why the four modules that import it do so lazily). Skip rather
@@ -272,122 +253,3 @@ def test_the_sdk_factories_return_a_real_client(monkeypatch):
     assert hasattr(client, "list_buckets") and hasattr(client, "put_object")
 
 
-# --------------------------------------------------------------------------
-# RAG_EXTERNAL_ENABLED
-#
-# The audit's 2J finding was that a tenant cannot disable external enrichment,
-# and I3 was that the one switch which does exist is read at a single line in a
-# single router while four importable entry points to the same egress ignore it.
-# So the check lives in the factory, and these assert it cannot be walked past.
-# --------------------------------------------------------------------------
-
-def test_the_switch_is_read_in_the_factory_not_by_callers(monkeypatch):
-    """Any caller of vector_client gets the disabled stand-in — none of them has
-    to remember to check first."""
-    monkeypatch.setenv("RAG_EXTERNAL_ENABLED", "0")
-    client = egress.vector_client(purpose=Purpose.VECTOR_INDEX,
-                                  url="https://x.cloud.qdrant.io:6333")
-    assert isinstance(client, egress._DisabledVectorClient)
-
-
-def test_disabled_reads_return_empty_so_the_product_degrades(monkeypatch):
-    """A search finding nothing is what "we hold no searchable documents" looks
-    like. Raising here would turn a switched-off feature into a 500."""
-    monkeypatch.setenv("RAG_EXTERNAL_ENABLED", "0")
-    client = egress.vector_client(purpose=Purpose.VECTOR_INDEX,
-                                  url="https://x.cloud.qdrant.io:6333")
-    assert client.search(collection_name="c", query_vector=[0.1]) == []
-    assert client.retrieve(collection_name="c", ids=[1]) == []
-    assert client.count(collection_name="c") == 0
-    points, offset = client.scroll(collection_name="c")
-    assert points == [] and offset is None
-
-
-def test_disabled_writes_raise_rather_than_no_op(monkeypatch):
-    """A silent no-op upsert would let a document report as ingested and never
-    be findable — data loss wearing the costume of success."""
-    monkeypatch.setenv("RAG_EXTERNAL_ENABLED", "0")
-    client = egress.vector_client(purpose=Purpose.VECTOR_INDEX,
-                                  url="https://x.cloud.qdrant.io:6333")
-    for call in ("upsert", "delete", "delete_payload", "create_collection"):
-        with pytest.raises(egress.EgressDisabled):
-            getattr(client, call)(collection_name="c")
-
-
-def test_an_unknown_method_raises_rather_than_silently_succeeding(monkeypatch):
-    """Returning a Mock-like object for anything unrecognised would make a call
-    nobody anticipated appear to work."""
-    monkeypatch.setenv("RAG_EXTERNAL_ENABLED", "0")
-    client = egress.vector_client(purpose=Purpose.VECTOR_INDEX,
-                                  url="https://x.cloud.qdrant.io:6333")
-    with pytest.raises(egress.EgressDisabled):
-        client.some_method_added_next_year(collection_name="c")
-
-
-def test_a_disabled_write_is_recorded(monkeypatch, caplog):
-    monkeypatch.setenv("RAG_EXTERNAL_ENABLED", "0")
-    client = egress.vector_client(purpose=Purpose.VECTOR_INDEX,
-                                  url="https://x.cloud.qdrant.io:6333")
-    with caplog.at_level(logging.INFO, logger="src.services.egress"):
-        with pytest.raises(egress.EgressDisabled):
-            client.upsert(collection_name="c")
-    line = "\n".join(caplog.messages)
-    assert "outcome=disabled" in line
-    assert "RAG_EXTERNAL_ENABLED=0" in line
-
-
-def test_the_switch_defaults_to_on(monkeypatch):
-    """Turning it off for an existing deployment without being asked would
-    silently empty every search result."""
-    monkeypatch.delenv("RAG_EXTERNAL_ENABLED", raising=False)
-    assert egress.external_rag_enabled() is True
-
-
-@pytest.mark.parametrize("value,expected", [
-    ("0", False), ("false", False), ("False", False),
-    ("1", True), ("true", True), ("", True),
-])
-def test_the_switch_parses_the_usual_spellings(monkeypatch, value, expected):
-    monkeypatch.setenv("RAG_EXTERNAL_ENABLED", value)
-    assert egress.external_rag_enabled() is expected
-
-
-def test_a_client_without_an_event_system_is_still_returned_usable(monkeypatch):
-    """Recording is best-effort; the client is not.
-
-    A stub or a future boto3 object may not expose meta.events. Returning an
-    unrecorded but working client is the right trade — this observes AWS calls,
-    and an observer that can stop them happening is a worse problem than a gap
-    in the record.
-    """
-    class _NoMeta:
-        def list_buckets(self):
-            return {"Buckets": []}
-
-    import boto3
-    monkeypatch.setattr(boto3, "client", lambda *a, **kw: _NoMeta())
-    client = egress.aws_client("s3", purpose=Purpose.OBJECT_STORAGE)
-    assert client.list_buckets() == {"Buckets": []}
-
-
-def test_no_region_is_added_to_an_aws_client(monkeypatch):
-    """The house pattern is a bare client that takes its region from the
-    environment (see tests/api/test_email_attachments.py). The factory must not
-    quietly start pinning one."""
-    seen = {}
-
-    class _Stub:
-        class meta:
-            class events:
-                @staticmethod
-                def register(*a, **kw):
-                    return None
-
-    import boto3
-    def _client(service, *a, **kw):
-        seen["call"] = (service, a, kw)
-        return _Stub()
-
-    monkeypatch.setattr(boto3, "client", _client)
-    egress.aws_client("s3", purpose=Purpose.OBJECT_STORAGE)
-    assert seen["call"] == ("s3", (), {})

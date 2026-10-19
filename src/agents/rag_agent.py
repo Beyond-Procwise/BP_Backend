@@ -459,7 +459,7 @@ class RAGAgent(BaseAgent):
 
         agentic_plan = (
             "1. Match the query to the closest procurement topic.\n"
-            "2. Pull context from procurement records and policy guidance via Qdrant.\n"
+            "2. Pull context from procurement records and policy guidance via the knowledge base.\n"
             "3. Blend the findings into a structured, human-friendly summary."
         )
 

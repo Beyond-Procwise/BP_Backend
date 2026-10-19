@@ -23,7 +23,6 @@ import threading
 import psycopg2
 from http import HTTPStatus
 
-from qdrant_client import models  # dataclasses only; the client is built by services.egress
 from sentence_transformers import SentenceTransformer
 import ollama
 from ollama._types import ResponseError
@@ -972,8 +971,6 @@ class BaseAgent:
         except Exception:  # pragma: no cover - optional dependency missing
             logger.debug("Conversation memory service unavailable", exc_info=True)
             return None
-        if not _vector_backend_ready(self.agent_nick):
-            return None
         if not getattr(self.agent_nick, "embedding_model", None):
             return None
         try:
@@ -1860,36 +1857,17 @@ class BaseAgent:
         setattr(self.agent_nick, "_available_ollama_models", updated)
 
     def vector_search(self, query: str, top_k: int = 5):
-        """Search the vector database for similar content.
+        """Search the vector store for similar content.
 
-        Falls back gracefully when vector infrastructure is unavailable.
+        Falls back gracefully when the store or the embedding model is unavailable.
         """
-        client = getattr(self.agent_nick, "qdrant_client", None)
         embedder = getattr(self.agent_nick, "embedding_model", None)
-        collection = getattr(self.settings, "qdrant_collection_name", None)
-        from src.services.vector_store.backend import use_pgvector
-        if use_pgvector():
-            if embedder is None:
-                return []
-            try:
-                from src.services.vector_store.compat import search_hits
-                vec = embedder.encode(query, normalize_embeddings=True).tolist()
-                return search_hits(vec, "documents", top_k)
-            except Exception:  # pragma: no cover - best effort
-                logger.exception("vector search failed")
-                return []
-        if not all([client, embedder, collection]) or not hasattr(client, "search"):
+        if embedder is None:
             return []
         try:
+            from src.services.vector_store.compat import search_hits
             vec = embedder.encode(query, normalize_embeddings=True).tolist()
-            _qp_result = client.query_points(
-                collection_name=collection,
-                query=vec,
-                limit=top_k,
-                with_payload=True,
-                with_vectors=False,
-            )
-            return getattr(_qp_result, "points", _qp_result) or []
+            return search_hits(vec, "documents", top_k)
         except Exception:  # pragma: no cover - best effort
             logger.exception("vector search failed")
             return []
@@ -1906,12 +1884,6 @@ class BaseAgent:
             raise AttributeError("AgentNick must provide an s3_client")
         yield client
 
-def _vector_backend_ready(agent_nick: Any) -> bool:
-    """True when there is a vector backend to use: pgvector (a database table), or a Qdrant client on the agent."""
-    from src.services.vector_store.backend import use_pgvector
-    return use_pgvector() or bool(getattr(agent_nick, "qdrant_client", None))
-
-
 class AgentNick:
     def __init__(self):
         logger.info("AgentNick is waking up...")
@@ -1920,15 +1892,9 @@ class AgentNick:
         self.device = configure_gpu()
         os.environ.setdefault("OMP_NUM_THREADS", "8")
         self._db_engine = None
-        # The ONE production construction of a Qdrant client. Every other
-        # consumer — rag_service, document_embedding_service, learning_repository,
-        # the agents — borrows this instance off agent_nick rather than making
-        # its own, so routing this single line through egress puts the whole
-        # vector-index path behind RAG_EXTERNAL_ENABLED and the egress record.
-        # (The two other QdrantClient constructions in the tree are one-off
-        # migration scripts.)
         from src.services import egress as _egress
-        self._init_vector_backend()
+        # The vector store is the application's own Postgres (src/services/vector_store), so there is no separate client to build or wait for.
+        self._check_vector_store()
         self.embedding_model = SentenceTransformer(self.settings.embedding_model, device=self.device)
         self.learning_repository = LearningRepository(self)
         self.static_policy_loader: Optional[StaticPolicyLoader] = None
@@ -1973,9 +1939,6 @@ class AgentNick:
         # Set by api/main.py once the catalogue is loaded. AgentNick needs it to
         # advertise the agents as tools it can call.
         self.auto_registry = None
-        from src.services.vector_store.backend import use_pgvector as _use_pgvector
-        if not _use_pgvector():
-            self._initialize_qdrant_collection()
         self._preload_ollama_model()
         self._verify_neo4j()
         logger.info("AgentNick is ready.")
@@ -2006,81 +1969,21 @@ class AgentNick:
 
         return build_tools(self)
 
-    def _init_vector_backend(self) -> None:
-        """Set up the vector backend: pgvector needs no client and no wait, only a loud check that its table is reachable.
+    def _check_vector_store(self) -> None:
+        """A LOUD check that the vector store is reachable, at start-up.
 
-        On Qdrant this builds the one production client and holds startup until it answers (the original behaviour, unchanged).
+        A missing table would otherwise look exactly like an empty corpus (the Qdrant outage left the index empty for five weeks without a signal),
+        so an unreachable store is an ERROR in the log and /health reports the count, and an empty one is a warning.
         """
-        from src.services.vector_store.backend import use_pgvector
-        if use_pgvector():
-            self.qdrant_client = None
-            try:
-                from src.services.vector_store import DEFAULT_TENANT, get_vector_store
-                n = get_vector_store().count(DEFAULT_TENANT, collection="documents")
-                if n == 0:
-                    logger.warning("The vector store holds no document vectors; run the rebuild if documents have been extracted")
-                else:
-                    logger.info("Vector store ready: %d document vectors", n)
-            except Exception:
-                # Loud on purpose: a missing table would otherwise look like an empty corpus (the Qdrant outage lesson).
-                logger.exception("The vector store is not reachable or its table is missing; search will return nothing until it is")
-            return
-        from src.services import egress as _egress
-        # A blank key means "no auth" (the local container). Passing "" makes
-        # qdrant_client send an empty api-key header and warn about an insecure
-        # connection on every boot.
-        _qdrant_key = (self.settings.qdrant_api_key or "").strip() or None
-        self.qdrant_client = _egress.vector_client(
-            purpose=_egress.Purpose.VECTOR_INDEX,
-            url=self.settings.qdrant_url,
-            api_key=_qdrant_key,
-        )
-        # Nothing below may touch Qdrant until it answers. The learning
-        # repository and the static policy sync both run inside this
-        # constructor and both swallow their own failures, so without this
-        # gate a boot that overtakes the Qdrant container comes up looking
-        # healthy with nothing in the vector store.
-        self._await_qdrant_ready()
-
-    def _await_qdrant_ready(self) -> None:
-        """Hold startup until the vector store answers, or say so plainly."""
-
-        wait = int(getattr(self.settings, "qdrant_startup_wait_seconds", 90) or 0)
-        if wait <= 0:
-            logger.debug("Qdrant startup wait is disabled")
-            return
-
-        grace = int(getattr(self.settings, "qdrant_startup_grace_seconds", 30) or 0)
-        url = getattr(self.settings, "qdrant_url", "http://localhost:6333")
-
         try:
-            from src.services.qdrant_health import await_qdrant_ready
-
-            ready = await_qdrant_ready(
-                url,
-                api_key=(getattr(self.settings, "qdrant_api_key", None) or "").strip() or None,
-                wait_seconds=wait,
-                grace_seconds=grace,
-            )
-        except Exception:  # pragma: no cover - the gate must never block a boot
-            logger.exception("Qdrant readiness check failed; continuing startup")
-            return
-
-        if ready:
-            logger.info("Qdrant is ready at %s", url)
-            return
-
-        # Loud on purpose. Everything downstream degrades silently, so this
-        # line is the only warning anyone gets that the box is about to serve
-        # an empty vector store.
-        logger.error(
-            "Qdrant did not answer at %s within %ss — the learning collection "
-            "and the static policy corpus will NOT be ingested this boot, and "
-            "policy and document search will return nothing until the vector "
-            "store is reachable and the service is restarted",
-            url,
-            wait,
-        )
+            from src.services.vector_store import DEFAULT_TENANT, get_vector_store
+            n = get_vector_store().count(DEFAULT_TENANT, collection="documents")
+            if n == 0:
+                logger.warning("The vector store holds no document vectors; run the rebuild if documents have been extracted")
+            else:
+                logger.info("Vector store ready: %d document vectors", n)
+        except Exception:
+            logger.exception("The vector store is not reachable or its table is missing; search will return nothing until it is")
 
     def _initialise_static_policy_corpus(self) -> None:
         """Ensure the static policy knowledge base is synchronised."""
@@ -2407,95 +2310,3 @@ class AgentNick:
         except Exception as exc:
             logger.warning("Ollama model preload failed (non-critical): %s", exc)
 
-    def _initialize_qdrant_collection(self):
-        collection_name = self.settings.qdrant_collection_name
-        required_indexes = {
-            "document_type": models.PayloadSchemaType.KEYWORD,
-            "product_type": models.PayloadSchemaType.KEYWORD,
-            "record_id": models.PayloadSchemaType.KEYWORD,
-            "workflow_id": models.PayloadSchemaType.KEYWORD,
-            "source_type": models.PayloadSchemaType.KEYWORD,
-        }
-
-        def ensure_indexes(schema: Dict[str, Any]) -> None:
-            existing_indexes = set(schema.keys()) if schema else set()
-            for field_name, field_schema in required_indexes.items():
-                if field_name in existing_indexes:
-                    continue
-                try:
-                    self.qdrant_client.create_payload_index(
-                        collection_name=collection_name,
-                        field_name=field_name,
-                        field_schema=field_schema,
-                        wait=True,
-                    )
-                    logger.info("Successfully created index for '%s'.", field_name)
-                except Exception as exc:
-                    status_code = getattr(exc, "status_code", None)
-                    if status_code == HTTPStatus.CONFLICT:
-                        logger.debug(
-                            "Payload index '%s' already exists for collection '%s'.",
-                            field_name,
-                            collection_name,
-                        )
-                    else:
-                        logger.warning(
-                            "Failed to create payload index '%s': %s",
-                            field_name,
-                            exc,
-                        )
-
-        try:
-            collection_info = self.qdrant_client.get_collection(
-                collection_name=collection_name
-            )
-            logger.info(
-                "Qdrant collection '%s' already exists.",
-                collection_name,
-            )
-            ensure_indexes(getattr(collection_info, "payload_schema", {}) or {})
-            return
-        except Exception as exc:
-            status_code = getattr(exc, "status_code", None)
-            if status_code != HTTPStatus.NOT_FOUND:
-                logger.warning(
-                    "Failed to fetch Qdrant collection '%s': %s",
-                    collection_name,
-                    exc,
-                )
-                return
-
-        logger.info("Creating Qdrant collection '%s'...", collection_name)
-        try:
-            self.qdrant_client.create_collection(
-                collection_name=collection_name,
-                vectors_config=models.VectorParams(
-                    size=self.settings.vector_size,
-                    distance=models.Distance.COSINE,
-                ),
-            )
-        except Exception as exc:
-            status_code = getattr(exc, "status_code", None)
-            if status_code == HTTPStatus.CONFLICT:
-                logger.info(
-                    "Qdrant collection '%s' already existed during creation race.",
-                    collection_name,
-                )
-            else:
-                logger.warning(
-                    "Failed to create Qdrant collection '%s': %s",
-                    collection_name,
-                    exc,
-                )
-                return
-
-        try:
-            collection_info = self.qdrant_client.get_collection(
-                collection_name=collection_name
-            )
-            ensure_indexes(getattr(collection_info, "payload_schema", {}) or {})
-        except Exception:  # pragma: no cover - final guardrail
-            logger.exception(
-                "Failed to verify payload indexes for Qdrant collection '%s'",
-                collection_name,
-            )

@@ -7,11 +7,6 @@ from src.services import supplier_relationship_service as srs
 from src.services.vector_store import DEFAULT_TENANT, VectorHit
 
 
-@pytest.fixture(autouse=True)
-def pg(monkeypatch):
-    monkeypatch.setenv("VECTOR_BACKEND", "pgvector")
-
-
 class FakeListStore:
     def __init__(self, hits=None, boom=False):
         self.hits, self.calls, self.boom = hits or [], [], boom
@@ -81,3 +76,21 @@ def test_the_service_builds_on_pgvector_without_qdrant_or_payload_indexes(monkey
     nick = types.SimpleNamespace(settings=types.SimpleNamespace(qdrant_collection_name="p"), qdrant_client=None)
     monkeypatch.setattr(srs.rag_module, "RAGService", lambda n: (_ for _ in ()).throw(RuntimeError("no rag in this test")))
     srs.SupplierRelationshipService(nick)
+
+
+def test_a_found_supplier_is_cached_so_the_second_lookup_does_not_touch_the_store(monkeypatch):
+    store = FakeListStore([hit(document_type="supplier_relationship", supplier_id="S1", supplier_name="Acme", supplier_name_normalized="acme")])
+    svc = service(monkeypatch, store)
+    first = svc.fetch_relationship(supplier_id="S1")
+    assert first and len(store.calls) == 1
+    assert svc.fetch_relationship(supplier_id="S1") == first
+    assert len(store.calls) == 1
+
+
+def test_a_supplier_that_was_not_found_is_remembered_so_it_is_not_asked_for_again(monkeypatch):
+    store = FakeListStore([])
+    svc = service(monkeypatch, store)
+    assert svc.fetch_relationship(supplier_id="S1") == []
+    assert len(store.calls) == 1
+    assert svc.fetch_relationship(supplier_id="S1") == []
+    assert len(store.calls) == 1

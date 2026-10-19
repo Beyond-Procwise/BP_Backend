@@ -926,27 +926,15 @@ def _last_triage_run():
 
 
 def _vector_store_status():
-    """How many points the document collection holds, or "unavailable" when
-    there is no client to ask. The collection sat empty for five weeks once;
+    """How many vectors the document collection holds, or "unavailable" when
+    the store cannot be read. The index sat empty for five weeks once;
     a zero here is the signal that was missing then."""
-    collection = health_signals.collection_name(_settings)
-    from src.services.vector_store.backend import use_pgvector
-    if use_pgvector():
-        try:
-            from src.services.vector_store import get_vector_store
-            return {"collection": "documents", "points": health_signals.vector_store_points_pg(get_vector_store())}
-        except Exception as exc:  # noqa: BLE001
-            logger.error("health: vector store count unavailable: %s", exc)
-            return {"collection": "documents", "points": "unavailable"}
-    client = getattr(getattr(app.state, "agent_nick", None), "qdrant_client", None)
-    if client is None:
-        return {"collection": collection, "points": "unavailable"}
     try:
-        return {"collection": collection,
-                "points": health_signals.vector_store_points(client, collection)}
+        from src.services.vector_store import get_vector_store
+        return {"collection": "documents", "points": health_signals.vector_store_points(get_vector_store())}
     except Exception as exc:  # noqa: BLE001
         logger.error("health: vector store count unavailable: %s", exc)
-        return {"collection": collection, "points": "unavailable"}
+        return {"collection": "documents", "points": "unavailable"}
 
 
 @app.get("/health", tags=["General"])

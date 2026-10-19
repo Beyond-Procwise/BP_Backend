@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional, Set
 
 import numpy as np
-from qdrant_client import models
+from src.services.vector_store.filter_models import models
 
 from agents.base_agent import BaseAgent, AgentContext, AgentOutput, AgentStatus
 from services.version_collapse import latest_per_family, latest_quote_pred
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class QuoteEvaluationAgent(BaseAgent):
-    """Agent for retrieving and exposing quote data from Qdrant."""
+    """Agent for retrieving and exposing quote data from the vector store."""
 
     AGENTIC_PLAN_STEPS = (
         "Gather RFQ context, supplier candidates, and historical quotes from databases and the vector store.",
@@ -267,31 +267,9 @@ class QuoteEvaluationAgent(BaseAgent):
         supplier_ids: Optional[List[str]] = None,
         product_category: Optional[str] = None,
     ) -> List[Dict]:
-        """Fetch quotes from Qdrant vector database."""
+        """Fetch quotes from the vector store."""
 
         supplier_ids = supplier_ids or []
-
-        from src.services.vector_store.backend import use_pgvector
-        pg = use_pgvector()
-
-        def ensure_index(field_name: str) -> None:
-            if pg:                                  # the vector store keeps its own indexes; there is nothing to create
-                return
-            try:
-                self.agent_nick.qdrant_client.create_payload_index(
-                    collection_name=self.settings.qdrant_collection_name,
-                    field_name=field_name,
-                    field_schema=models.PayloadSchemaType.KEYWORD,
-                )
-            except Exception as ie:  # pragma: no cover - network dependent
-                logger.debug("Index creation skipped for %s: %s", field_name, ie)
-
-        if supplier_names:
-            ensure_index("supplier_name")
-        if supplier_ids:
-            ensure_index("supplier_id")
-        if product_category:
-            ensure_index("product_category")
 
         def build_filter(include_supplier: bool = True) -> models.Filter:
             filters = [
@@ -334,33 +312,26 @@ class QuoteEvaluationAgent(BaseAgent):
                 )
             return models.Filter(must=filters)
 
-        def qdrant_scroll(q_filter: models.Filter):
-            if pg:
-                from src.services.vector_store import DEFAULT_TENANT, get_vector_store
-                from src.services.vector_store.filters import from_qdrant_filter
-                return get_vector_store().list(DEFAULT_TENANT, collection="documents", filters=from_qdrant_filter(q_filter), limit=100), None
-            return self.agent_nick.qdrant_client.scroll(
-                collection_name=self.settings.qdrant_collection_name,
-                scroll_filter=q_filter,
-                with_payload=True,
-                limit=100,
-            )
+        def list_quotes(q_filter: models.Filter):
+            from src.services.vector_store import DEFAULT_TENANT, get_vector_store
+            from src.services.vector_store.filters import to_store_filter
+            return get_vector_store().list(DEFAULT_TENANT, collection="documents", filters=to_store_filter(q_filter), limit=100), None
 
         try:
-            points, _ = qdrant_scroll(build_filter())
+            points, _ = list_quotes(build_filter())
             if not points and (supplier_names or supplier_ids):
                 logger.info(
                     "QuoteEvaluationAgent: retrying quote fetch without supplier filter",
                 )
-                points, _ = qdrant_scroll(build_filter(include_supplier=False))
+                points, _ = list_quotes(build_filter(include_supplier=False))
         except Exception as e:
             logger.warning(
                 "Primary quote fetch failed (%s). Retrying without supplier filter.", e
             )
             try:
-                points, _ = qdrant_scroll(build_filter(include_supplier=False))
+                points, _ = list_quotes(build_filter(include_supplier=False))
             except Exception as e2:
-                logger.error("Failed to fetch quotes from Qdrant: %s", e2)
+                logger.error("Failed to fetch quotes from the vector store: %s", e2)
                 return []
 
         quotes: List[Dict] = []
