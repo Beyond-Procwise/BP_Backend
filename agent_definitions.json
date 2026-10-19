@@ -22,7 +22,6 @@
       "dependencies": [
         "s3_client",
         "db_client",
-        "qdrant_client",
         "ollama_client",
         "embedding_model"
       ],
@@ -525,7 +524,6 @@
         "sources"
       ],
       "dependencies": [
-        "qdrant_client",
         "embedding_model",
         "ollama_client"
       ],

@@ -4,7 +4,6 @@ The main collection holds a lowercase ``document_type`` and no ``source_type``, 
 ``source_type == 'Contract'`` (and PO / Invoice / Quote) matched nothing and retrieval returned no documents.
 """
 import pytest
-from qdrant_client import models
 
 from src.services import ask_flags
 from src.services.rag_service import RAGService

@@ -25,8 +25,6 @@ jobs:
       DB_PASSWORD: ci-placeholder
       S3_BUCKET_NAME: ci-placeholder
       S3_PREFIXES: '["ci"]'
-      QDRANT_URL: http://127.0.0.1:9
-      QDRANT_API_KEY: ci-placeholder
       SES_DEFAULT_SENDER: ci-placeholder
       CUDA_VISIBLE_DEVICES: ""
     steps:
