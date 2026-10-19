@@ -184,17 +184,25 @@ class RAGQwen30b:
         search_collections = collections or [self.primary_collection]
         named_vector = vector_name or QDRANT_VECTOR_NAME
         all_hits = []
+        from src.services.vector_store.backend import use_pgvector
+        pg = use_pgvector()
+        logical_names = {self.primary_collection: "documents", self.uploaded_collection: "uploaded"}
         for coll in search_collections:
             try:
-                _qp_result = self.qdrant.query_points(
-                    collection_name=coll,
-                    query=q_vec,
-                    limit=top_k,
-                    with_vectors=True,
-                )
-                hits = getattr(_qp_result, "points", _qp_result) or []
+                if pg:
+                    # No vectors come back from the store: the chunks below carry vector=None and the rest of the pipeline computes what it needs.
+                    from src.services.vector_store.compat import search_hits
+                    hits = search_hits(list(np.asarray(q_vec, dtype=float)), logical_names[coll], top_k) if coll in logical_names else []
+                else:
+                    _qp_result = self.qdrant.query_points(
+                        collection_name=coll,
+                        query=q_vec,
+                        limit=top_k,
+                        with_vectors=True,
+                    )
+                    hits = getattr(_qp_result, "points", _qp_result) or []
             except Exception:
-                logger.exception("Qdrant search failed for collection %s; continuing", coll)
+                logger.exception("Vector search failed for collection %s; continuing", coll)
                 hits = []
             for h in hits or []:
                 # tag collection name into payload so downstream code can prioritise

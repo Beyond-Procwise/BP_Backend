@@ -1024,8 +1024,12 @@ class RAGService:
                 continue
             base_payload.pop("content", None)
             base_payload.pop("text_summary", None)
+            # Several payloads can share a record_id (the chunks of one document, told apart by chunk_id): each is its own source, as each was
+            # its own point before, or they would overwrite one another.
+            chunk_id = base_payload.get("chunk_id")
+            source_id = f"{record_id}:{chunk_id}" if chunk_id is not None else str(record_id)
             try:
-                sources.put_source(DEFAULT_TENANT, self._logical_collection(target) or str(target), str(record_id), text, base_payload)
+                sources.put_source(DEFAULT_TENANT, self._logical_collection(target) or str(target), source_id, text, base_payload)
             except Exception:
                 logger.exception("Vector source write failed for collection %r record %r — document processing continues", target, record_id)
 

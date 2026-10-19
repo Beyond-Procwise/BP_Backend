@@ -182,6 +182,14 @@ class StaticPolicyLoader(DocumentEmbeddingService):
         return cleaned or None
 
     def _lookup_existing(self, source_path: str) -> Optional[Dict[str, Any]]:
+        from src.services.vector_store.backend import use_pgvector
+        if use_pgvector():
+            try:
+                from src.services.vector_store import DEFAULT_TENANT, sources
+                return sources.find_source_metadata(DEFAULT_TENANT, "policy", {"source_path": source_path})
+            except Exception:
+                logger.debug("Static policy lookup failed for %s", source_path, exc_info=True)
+                return None
         try:
             points, _ = self.client.scroll(
                 collection_name=self.collection_name,
@@ -208,6 +216,14 @@ class StaticPolicyLoader(DocumentEmbeddingService):
         return None
 
     def _purge_existing(self, source_path: str) -> None:
+        from src.services.vector_store.backend import use_pgvector
+        if use_pgvector():
+            try:
+                from src.services.vector_store import DEFAULT_TENANT, sources
+                sources.delete_sources_matching(DEFAULT_TENANT, "policy", {"source_path": source_path})
+            except Exception:
+                logger.warning("Failed to purge stale policy sources for %s", source_path, exc_info=True)
+            return
         try:
             self.client.delete(
                 collection_name=self.collection_name,
@@ -277,6 +293,16 @@ class StaticPolicyLoader(DocumentEmbeddingService):
         if not chunks:
             raise ValueError(f"No embeddable chunks produced for {filename}")
 
+        from src.services.vector_store.backend import use_pgvector
+        ingested_at = datetime.utcnow().isoformat(timespec="seconds")
+        last_modified_iso = (
+            last_modified.isoformat() if hasattr(last_modified, "isoformat") else None
+        )
+        if use_pgvector():
+            return self._ingest_object_pgvector(document_id=document_id, chunks=chunks, base_metadata=self._policy_base_metadata(
+                document_id=document_id, chunk_seed=chunk_seed, extracted=extracted, filename=filename, bucket=bucket, key=key,
+                etag=etag, ingested_at=ingested_at, last_modified_iso=last_modified_iso))
+
         vectors = self._encode_chunks(chunks)
         if not vectors:
             raise ValueError(f"Embedding model returned no vectors for {filename}")
@@ -285,37 +311,10 @@ class StaticPolicyLoader(DocumentEmbeddingService):
         self._ensure_policy_collection(vector_size)
 
         namespace_uuid = uuid.UUID(document_id)
-        ingested_at = datetime.utcnow().isoformat(timespec="seconds")
-        last_modified_iso = (
-            last_modified.isoformat() if hasattr(last_modified, "isoformat") else None
-        )
 
-        base_metadata: Dict[str, Any] = {
-            "document_id": document_id,
-            "policy_document_id": document_id,
-            "record_id": document_id,
-            "collection_name": self.collection_name,
-            "policy_source": "static_policy",
-            "official_policy": True,
-            "document_type": "Policy",
-            "doc_name": Path(filename).stem,
-            "filename": filename,
-            "file_extension": Path(filename).suffix.lower(),
-            "uploaded_at": ingested_at,
-            "ingested_at": ingested_at,
-            "source_path": f"s3://{bucket}/{key}",
-            "s3_bucket": bucket,
-            "s3_key": key,
-            "s3_etag": etag,
-            "s3_last_modified": last_modified_iso,
-            "extraction_method": extracted.method,
-        }
-        base_metadata.update(chunk_seed)
-        base_metadata.update(extracted.metadata or {})
-        base_metadata.setdefault("source_type", "Policy")
-        base_metadata.setdefault("title", chunk_seed.get("title"))
-        for disallowed in DISALLOWED_METADATA_KEYS:
-            base_metadata.pop(disallowed, None)
+        base_metadata = self._policy_base_metadata(
+            document_id=document_id, chunk_seed=chunk_seed, extracted=extracted, filename=filename, bucket=bucket, key=key, etag=etag,
+            ingested_at=ingested_at, last_modified_iso=last_modified_iso)
 
         points: List[models.PointStruct] = []
         for idx, (chunk, vector) in enumerate(zip(chunks, vectors)):
@@ -352,6 +351,49 @@ class StaticPolicyLoader(DocumentEmbeddingService):
             chunk_count=len(points),
             metadata=base_metadata,
         )
+
+    def _policy_base_metadata(self, *, document_id: str, chunk_seed: Dict[str, Any], extracted: Any, filename: str, bucket: str, key: str,
+                              etag: Optional[str], ingested_at: str, last_modified_iso: Optional[str]) -> Dict[str, Any]:
+        """The metadata every chunk of a policy file carries. Shared by the Qdrant and the pgvector paths so they cannot drift."""
+        base_metadata: Dict[str, Any] = {
+            "document_id": document_id,
+            "policy_document_id": document_id,
+            "record_id": document_id,
+            "collection_name": self.collection_name,
+            "policy_source": "static_policy",
+            "official_policy": True,
+            "document_type": "Policy",
+            "doc_name": Path(filename).stem,
+            "filename": filename,
+            "file_extension": Path(filename).suffix.lower(),
+            "uploaded_at": ingested_at,
+            "ingested_at": ingested_at,
+            "source_path": f"s3://{bucket}/{key}",
+            "s3_bucket": bucket,
+            "s3_key": key,
+            "s3_etag": etag,
+            "s3_last_modified": last_modified_iso,
+            "extraction_method": extracted.method,
+        }
+        base_metadata.update(chunk_seed)
+        base_metadata.update(extracted.metadata or {})
+        base_metadata.setdefault("source_type", "Policy")
+        base_metadata.setdefault("title", chunk_seed.get("title"))
+        for disallowed in DISALLOWED_METADATA_KEYS:
+            base_metadata.pop(disallowed, None)
+        return base_metadata
+
+    def _ingest_object_pgvector(self, *, document_id: str, chunks: List[Any], base_metadata: Dict[str, Any]) -> EmbeddedDocument:
+        """One policy SOURCE row per chunk (text + the same payload as before); the worker embeds them."""
+        from src.services.vector_store import DEFAULT_TENANT, active_profile, sources
+
+        for idx, chunk in enumerate(chunks):
+            payload = {k: v for k, v in base_metadata.items() if k not in DISALLOWED_METADATA_KEYS}
+            payload.update({k: v for k, v in chunk.metadata.items() if k not in DISALLOWED_METADATA_KEYS})
+            payload.update({"document_type": "policy", "chunk_id": idx, "chunk_index": idx, "embedding_model": active_profile().model})
+            payload.pop("content", None)
+            sources.put_source(DEFAULT_TENANT, "policy", f"{document_id}:{idx}", chunk.content, payload)
+        return EmbeddedDocument(document_id=document_id, collection=self.collection_name, chunk_count=len(chunks), metadata=base_metadata)
 
     def _ensure_policy_collection(self, vector_size: int) -> None:
         if vector_size <= 0:

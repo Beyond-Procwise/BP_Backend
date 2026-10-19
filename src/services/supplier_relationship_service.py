@@ -30,7 +30,18 @@ class SupplierRelationshipService:
         self._fallback_cache_limit = cache_limit
         self._fallback_cache: OrderedDict[str, Dict[str, Any]] = OrderedDict()
         self._fallback_negative_cache: OrderedDict[str, None] = OrderedDict()
-        self._ensure_payload_indexes()
+        if not self._pg():
+            self._ensure_payload_indexes()
+
+    @staticmethod
+    def _pg() -> bool:
+        from src.services.vector_store.backend import use_pgvector
+        return use_pgvector()
+
+    def _list_pg(self, filters: Dict[str, Any], limit: int) -> List[Any]:
+        """Stored records through the VectorStore (what the Qdrant scroll did). Records live in the primary 'documents' collection."""
+        from src.services.vector_store import DEFAULT_TENANT, get_vector_store
+        return list(get_vector_store().list(DEFAULT_TENANT, collection="documents", filters=filters, limit=max(1, min(int(limit), 1000))))
 
     # ------------------------------------------------------------------
     # Public API
@@ -94,7 +105,8 @@ class SupplierRelationshipService:
         supplier_name: Optional[str] = None,
         limit: int = 1,
     ) -> List[Dict[str, Any]]:
-        if not self.client or not self.collection_name or not hasattr(self.client, "scroll"):
+        pg = self._pg()
+        if not pg and (not self.client or not self.collection_name or not hasattr(self.client, "scroll")):
             return []
 
         must: List[models.FieldCondition] = []
@@ -123,14 +135,25 @@ class SupplierRelationshipService:
             return cached_payloads
 
         try:
-            results, _ = self.client.scroll(
-                collection_name=self.collection_name,
-                scroll_filter=models.Filter(must=must),
-                with_payload=True,
-                with_vectors=False,
-                limit=limit,
-            )
+            if pg:
+                pg_filters: Dict[str, Any] = {}
+                if supplier_id:
+                    pg_filters["supplier_id"] = str(supplier_id)
+                if supplier_name and self._normalise_key(supplier_name):
+                    pg_filters["metadata"] = {"supplier_name_normalized": self._normalise_key(supplier_name)}
+                results = self._list_pg(pg_filters, limit)
+            else:
+                results, _ = self.client.scroll(
+                    collection_name=self.collection_name,
+                    scroll_filter=models.Filter(must=must),
+                    with_payload=True,
+                    with_vectors=False,
+                    limit=limit,
+                )
         except Exception as exc:
+            if pg:
+                logger.exception("Failed to load supplier relationship from the vector store")
+                return []
             if self._is_missing_index_error(exc):
                 logger.warning(
                     "SupplierRelationshipService: missing Qdrant index detected while loading supplier relationship. Attempting to create payload indexes before falling back.",
@@ -181,24 +204,28 @@ class SupplierRelationshipService:
         return payloads
 
     def fetch_overview(self) -> Optional[Dict[str, Any]]:
-        if not self.client or not self.collection_name or not hasattr(self.client, "scroll"):
+        pg = self._pg()
+        if not pg and (not self.client or not self.collection_name or not hasattr(self.client, "scroll")):
             return None
 
         try:
-            results, _ = self.client.scroll(
-                collection_name=self.collection_name,
-                scroll_filter=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="document_type",
-                            match=models.MatchValue(value="supplier_relationship_overview"),
-                        )
-                    ]
-                ),
-                with_payload=True,
-                with_vectors=False,
-                limit=1,
-            )
+            if pg:
+                results = self._list_pg({"document_type": "supplier_relationship_overview"}, 1)
+            else:
+                results, _ = self.client.scroll(
+                    collection_name=self.collection_name,
+                    scroll_filter=models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="document_type",
+                                match=models.MatchValue(value="supplier_relationship_overview"),
+                            )
+                        ]
+                    ),
+                    with_payload=True,
+                    with_vectors=False,
+                    limit=1,
+                )
         except Exception:
             logger.exception("Failed to load supplier relationship overview from Qdrant")
             return None

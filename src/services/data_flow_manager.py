@@ -525,29 +525,42 @@ class DataFlowManager:
         relations: Iterable[Dict[str, Any]],
         graph: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Vectorise ``relations`` and persist them to Qdrant."""
+        """Vectorise ``relations`` and persist them to Qdrant (or, on pgvector, as source rows the worker embeds)."""
 
-        if not self.qdrant_client or not self.embedding_model:
+        from src.services.vector_store.backend import use_pgvector
+        pg = use_pgvector()
+        if not pg and (not self.qdrant_client or not self.embedding_model):
             logger.debug(
                 "Knowledge graph persistence skipped – Qdrant or embedding model unavailable."
             )
             return
 
-        try:
-            if not self._ensure_collection():
+        if not pg:
+            try:
+                if not self._ensure_collection():
+                    return
+            except Exception:  # pragma: no cover - defensive
+                logger.exception("Failed to ensure Qdrant collection for knowledge graph")
                 return
-        except Exception:  # pragma: no cover - defensive
-            logger.exception("Failed to ensure Qdrant collection for knowledge graph")
-            return
 
-        points_by_id: Dict[int, models.PointStruct] = {}
+        # On pgvector nothing is embedded here: a record is its text plus its payload, stored as a source row. ``_mk`` builds a Qdrant point,
+        # or (pgvector) remembers the text and keeps the payload, so the four builders below are shared by both backends.
+        texts_by_id: Dict[int, str] = {}
+
+        def _mk(point_id: int, text: str, vector: Any, payload: Dict[str, Any]) -> Any:
+            if pg:
+                texts_by_id[point_id] = text
+                return payload
+            return models.PointStruct(id=point_id, vector=vector, payload=payload)
+
+        points_by_id: Dict[int, Any] = {}
         seen_point_ids: set[int] = set()
         for relation in relations:
             text = self._relation_to_text(relation)
             point_id = self._deterministic_id(text)
             if point_id in seen_point_ids:
                 continue
-            vector = self._embed_text(text)
+            vector = self._embed_text(text) if not pg else []
             if vector is None:
                 continue
             seen_point_ids.add(point_id)
@@ -569,9 +582,7 @@ class DataFlowManager:
             payload = self._sanitize_payload(payload)
             payload = self._enforce_payload_limits(payload)
 
-            points_by_id[point_id] = models.PointStruct(
-                id=point_id, vector=vector, payload=payload
-            )
+            points_by_id[point_id] = _mk(point_id, text, vector, payload)
 
         if graph:
             for path_entry in graph.get("paths", []):
@@ -587,7 +598,7 @@ class DataFlowManager:
                 point_id = self._deterministic_id(path_text)
                 if point_id in seen_point_ids:
                     continue
-                vector = self._embed_text(path_text)
+                vector = self._embed_text(path_text) if not pg else []
                 if vector is None:
                     continue
                 seen_point_ids.add(point_id)
@@ -601,9 +612,7 @@ class DataFlowManager:
                 payload = self._sanitize_payload(payload)
                 payload = self._enforce_payload_limits(payload)
 
-                points_by_id[point_id] = models.PointStruct(
-                    id=point_id, vector=vector, payload=payload
-                )
+                points_by_id[point_id] = _mk(point_id, path_text, vector, payload)
 
             for flow in graph.get("supplier_flows", []):
                 if not isinstance(flow, Mapping):
@@ -612,7 +621,7 @@ class DataFlowManager:
                 point_id = self._deterministic_id(text)
                 if point_id in seen_point_ids:
                     continue
-                vector = self._embed_text(text)
+                vector = self._embed_text(text) if not pg else []
                 if vector is None:
                     continue
                 seen_point_ids.add(point_id)
@@ -636,11 +645,9 @@ class DataFlowManager:
                         payload[key] = value
                 payload = self._sanitize_payload(payload)
                 payload = self._enforce_payload_limits(payload)
-                points_by_id[point_id] = models.PointStruct(
-                    id=point_id, vector=vector, payload=payload
-                )
+                points_by_id[point_id] = _mk(point_id, text, vector, payload)
 
-        agent_points = self._agent_relationship_points(relations, graph)
+        agent_points = self._agent_relationship_points(relations, graph, _mk if pg else None)
         for point_id, point in agent_points.items():
             if point_id in seen_point_ids:
                 continue
@@ -650,6 +657,15 @@ class DataFlowManager:
         points = list(points_by_id.values())
         if not points:
             logger.debug("No knowledge graph points generated for persistence")
+            return
+
+        if pg:
+            from src.services.vector_store import DEFAULT_TENANT, sources
+            for point_id, payload in points_by_id.items():
+                try:
+                    sources.put_source(DEFAULT_TENANT, "knowledge_graph", str(point_id), texts_by_id[point_id], payload)
+                except Exception:
+                    logger.exception("Failed to write knowledge graph source %s", point_id)
             return
 
         try:
@@ -669,8 +685,12 @@ class DataFlowManager:
         self,
         relations: Iterable[Dict[str, Any]],
         graph: Optional[Dict[str, Any]] = None,
-    ) -> Dict[int, models.PointStruct]:
-        """Construct payloads summarising how agents interact with the graph."""
+        mk: Optional[Any] = None,
+    ) -> Dict[int, Any]:
+        """Construct payloads summarising how agents interact with the graph.
+
+        ``mk(point_id, text, vector, payload)`` replaces building a Qdrant point (the pgvector path keeps the text and payload instead).
+        """
 
         relation_list: List[Dict[str, Any]] = [
             dict(relation)
@@ -809,7 +829,7 @@ class DataFlowManager:
             if not summary_text:
                 continue
 
-            vector = self._embed_text(summary_text)
+            vector = self._embed_text(summary_text) if mk is None else []
             if vector is None:
                 continue
 
@@ -825,10 +845,11 @@ class DataFlowManager:
                 payload["flow_snapshot_size"] = len(supplier_flows)
 
             point_id = self._deterministic_id(f"agent:{agent_name.lower()}")
-            points[point_id] = models.PointStruct(
-                id=point_id,
-                vector=vector,
-                payload=self._enforce_payload_limits(self._sanitize_payload(payload)),
+            final_payload = self._enforce_payload_limits(self._sanitize_payload(payload))
+            points[point_id] = (
+                mk(point_id, summary_text, vector, final_payload)
+                if mk is not None
+                else models.PointStruct(id=point_id, vector=vector, payload=final_payload)
             )
 
         return points

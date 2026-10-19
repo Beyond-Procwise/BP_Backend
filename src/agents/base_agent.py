@@ -1867,6 +1867,17 @@ class BaseAgent:
         client = getattr(self.agent_nick, "qdrant_client", None)
         embedder = getattr(self.agent_nick, "embedding_model", None)
         collection = getattr(self.settings, "qdrant_collection_name", None)
+        from src.services.vector_store.backend import use_pgvector
+        if use_pgvector():
+            if embedder is None:
+                return []
+            try:
+                from src.services.vector_store.compat import search_hits
+                vec = embedder.encode(query, normalize_embeddings=True).tolist()
+                return search_hits(vec, "documents", top_k)
+            except Exception:  # pragma: no cover - best effort
+                logger.exception("vector search failed")
+                return []
         if not all([client, embedder, collection]) or not hasattr(client, "search"):
             return []
         try:

@@ -48,10 +48,44 @@ class LearningRepository:
         self.collection_name: str = getattr(
             self.settings, "learning_collection_name", "learning"
         )
-        self._ensure_collection()
+        if not self._pg():
+            self._ensure_collection()
 
     # ------------------------------------------------------------------
     # Public helpers
+    @staticmethod
+    def _pg() -> bool:
+        from src.services.vector_store.backend import use_pgvector
+        return use_pgvector()
+
+    def _put_pg(self, content: str, payload: Dict[str, Any], failure: str, *args: Any) -> Optional[str]:
+        """Under pgvector a learning record is a SOURCE row (its text and payload); the worker embeds it. Returns its id, or None on failure."""
+        from src.services.vector_store import DEFAULT_TENANT, sources
+        source_id = str(uuid.uuid4())
+        try:
+            sources.put_source(DEFAULT_TENANT, "learning", source_id, content, payload)
+        except Exception:
+            logger.exception(failure, *args)
+            return None
+        return source_id
+
+    def _list_pg(self, filters: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:
+        """Stored records, newest first, as the same payload dicts the Qdrant scroll returned (the store's bookkeeping keys removed)."""
+        from src.services.vector_store import DEFAULT_TENANT, get_vector_store
+        try:
+            hits = get_vector_store().list(DEFAULT_TENANT, collection="learning", filters=filters, limit=max(1, min(int(limit), 1000)),
+                                           newest_first=True)
+        except Exception:
+            logger.exception("Failed to list learning records")
+            return []
+        out: List[Dict[str, Any]] = []
+        for hit in hits:
+            payload = {k: v for k, v in (hit.payload or {}).items() if k not in ("content", "chunk_id", "chunk_index")}
+            if payload.get("document_type") == "model_plan":
+                payload.pop("summary", None)                      # a model plan never had one; the worker adds a default
+            out.append(payload)
+        return out
+
     # ------------------------------------------------------------------
     def record_learning(
         self,
@@ -64,7 +98,7 @@ class LearningRepository:
     ) -> Optional[str]:
         """Persist a metadata learning point into Qdrant."""
 
-        if self.qdrant_client is None or self.embedder is None:
+        if not self._pg() and (self.qdrant_client is None or self.embedder is None):
             logger.debug("Learning repository disabled (missing client or embedder)")
             return None
 
@@ -77,8 +111,8 @@ class LearningRepository:
             logger.debug("Skipping learning record for %s – empty summary", event_type)
             return None
 
-        vector = self._encode_text(summary)
-        if vector is None:
+        vector = None if self._pg() else self._encode_text(summary)
+        if vector is None and not self._pg():
             return None
 
         payload: Dict[str, Any] = {
@@ -96,6 +130,9 @@ class LearningRepository:
             ]
             if cleaned_tags:
                 payload["tags"] = sorted(set(cleaned_tags))
+
+        if self._pg():
+            return self._put_pg(summary, payload, "Failed to persist learning record for %s", event_type)
 
         point_id = str(uuid.uuid4())
         point = models.PointStruct(id=point_id, vector=vector, payload=payload)
@@ -126,7 +163,7 @@ class LearningRepository:
         retrieve the latest humanisation playbook directly from Qdrant.
         """
 
-        if self.qdrant_client is None or self.embedder is None:
+        if not self._pg() and (self.qdrant_client is None or self.embedder is None):
             logger.debug("Model plan repository disabled (missing client or embedder)")
             return None
 
@@ -138,8 +175,8 @@ class LearningRepository:
         metadata = self._normalise_metadata(plan_metadata)
         metadata["model_name"] = model_name
 
-        vector = self._encode_text(cleaned_plan)
-        if vector is None:
+        vector = None if self._pg() else self._encode_text(cleaned_plan)
+        if vector is None and not self._pg():
             return None
 
         payload: Dict[str, Any] = {
@@ -156,6 +193,9 @@ class LearningRepository:
             ]
             if cleaned_tags:
                 payload["tags"] = sorted(set(cleaned_tags))
+
+        if self._pg():
+            return self._put_pg(cleaned_plan, payload, "Failed to persist model plan for %s", model_name)
 
         point_id = str(uuid.uuid4())
         point = models.PointStruct(id=point_id, vector=vector, payload=payload)
@@ -262,6 +302,8 @@ class LearningRepository:
         workflow_id: Optional[str] = None,
         limit: int = 20,
     ) -> List[Dict[str, Any]]:
+        if self._pg():
+            return self._list_pg({"document_type": "learning", **({"metadata": {"workflow_id": workflow_id}} if workflow_id else {})}, limit)
         if self.qdrant_client is None:
             return []
 
@@ -325,6 +367,10 @@ class LearningRepository:
     ) -> List[Dict[str, Any]]:
         """Retrieve stored model plans for a given model name."""
 
+        if self._pg():
+            plans = self._list_pg({"document_type": "model_plan", "metadata": {"model_name": model_name}}, limit)
+            plans.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+            return plans[:limit]
         client = self.qdrant_client
         if client is None:
             return []
