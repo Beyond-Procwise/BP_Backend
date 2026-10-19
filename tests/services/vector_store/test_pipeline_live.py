@@ -269,12 +269,20 @@ def test_the_generated_table_template_matches_what_the_migration_created(conn):
     assert "vector_cosine_ops" in hnsw and "m='16'" in hnsw and "ef_construction='64'" in hnsw
 
 
-def test_a_source_that_is_one_chunk_of_a_document_keeps_its_chunk_id_and_a_split_source_is_numbered(conn, connect, store):
+def test_a_source_that_carries_its_own_chunk_id_is_one_chunk_and_is_never_split(conn, connect, store):
+    """The callers that chunk semantically (uploads, policy) write one source per chunk, each with a chunk_id. Embedding such a source whole is
+    what the old path did (the model truncates at 512 tokens itself); re-splitting it would change what is retrieved and what the snippet says."""
     add_source(conn, "t1", "uploaded", "doc:3", "a short chunk", '{"chunk_id": 3, "chunk_index": 3, "document_id": "doc"}')
-    add_source(conn, "t1", "uploaded", "long", words(900), '{"chunk_id": 9}')
+    add_source(conn, "t1", "uploaded", "doc:9", words(900), '{"chunk_id": 9}')
     worker(connect).run_once()
     by_source = {}
     for h in store.list("t1", collection="uploaded"):
-        by_source.setdefault(h.source_id, []).append(h.payload["chunk_id"])
-    assert by_source["doc:3"] == [3]
-    assert sorted(by_source["long"]) == [0, 1, 2]
+        by_source.setdefault(h.source_id, []).append((h.payload["chunk_id"], len((h.content or "").split())))
+    assert by_source["doc:3"] == [(3, 3)]
+    assert by_source["doc:9"] == [(9, 900)]                 # one vector, the whole 900-word chunk, its own id
+
+
+def test_a_source_with_no_chunk_id_is_split_into_numbered_windows(conn, connect, store):
+    add_source(conn, "t1", "uploaded", "whole-doc", words(900))
+    worker(connect).run_once()
+    assert sorted(h.payload["chunk_id"] for h in store.list("t1", collection="uploaded")) == [0, 1, 2]
