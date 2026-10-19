@@ -55,7 +55,8 @@ def test_everything_else_is_still_scrubbed(policy, method, path, status):
 # --------------------------------------------------------------------------
 # Through the real application, scrubber included
 # --------------------------------------------------------------------------
-WORDING = "Reply to the supplier by 01/04/2026, then retry the tool call."
+# Holds an internal route, which the output filter withholds unless policy lets the wording through.
+WORDING = "Reply to the supplier at /admin/users/list, then retry the tool call."
 
 
 @pytest.fixture()

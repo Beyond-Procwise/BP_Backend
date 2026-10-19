@@ -1696,9 +1696,12 @@ def generate_unique_email_id(
     *,
     round_number: Optional[int] = None,
 ) -> str:
-    """Proxy to :func:`utils.email_tracking.generate_unique_email_id`."""
+    """Proxy to :func:`utils.email_tracking.generate_unique_email_id`.
 
-    return email_tracking.generate_unique_email_id(workflow_id, supplier_id, round_number=round_number)
+    ``round_number`` is accepted for callers that still pass it, and is not part of the id: the
+    generator takes no round, so forwarding it raised TypeError on every call."""
+
+    return email_tracking.generate_unique_email_id(workflow_id, supplier_id)
 
 
 def embed_unique_id_in_email_body(body: Optional[str], unique_id: str) -> str:

@@ -16,6 +16,9 @@ from tests.agent_policy.fixtures import FORM_EXAMPLE, REGISTRY, SETTINGS
 
 EXCERPT = "From 01/04/2026, refunds or credits above $500 need approval from the Finance Manager."
 REASON = "The orchestrator does not receive the refund total at this checkpoint."
+# A string the output filter must still withhold: an internal route. (A date such as 01/04/2026 used to be
+# withheld too, as a "route"; commit 62116dfc taught the filter that it is not one, so it is no longer a leak.)
+LEAK = "Per /admin/users/list, refunds or credits above $500 need approval from the Finance Manager."
 SAFE_NAMES = ["IT_SEC_POLICY_V3.pdf", "bp_rules.md"]
 HDR = {"X-Gateway-Key": "k1", "X-User-Sub": "u1", "X-User-Groups": json.dumps(["PROCWISE_ADMIN"])}
 
@@ -136,7 +139,7 @@ def probe():
     added = []
 
     def _add(path):
-        app.get(path)(lambda: {"excerpt": EXCERPT})
+        app.get(path)(lambda: {"excerpt": LEAK})
         added.append(path)
     yield _add
     app.router.routes[:] = [rt for rt in app.router.routes if getattr(rt, "path", None) not in added]
@@ -158,7 +161,7 @@ def test_another_method_on_a_read_path_is_scrubbed(client, monkeypatch):
     # Through the app: register (POST /documents) answers 2xx and is scrubbed.
     monkeypatch.setattr(R.documents, "register_uploads",
                         lambda conn, uploads, actor: [{"documentId": 3, "title": SAFE_NAMES[0],
-                                                       "excerpt": EXCERPT}])
+                                                       "excerpt": LEAK}])
     r = client.post("/agent-policies/documents", json={"uploads": [{"uploadId": "u0", "name": "x"}]},
                     headers=HDR)
     assert r.status_code == 200

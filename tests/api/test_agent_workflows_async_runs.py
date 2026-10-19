@@ -61,11 +61,12 @@ class _RunStore:
         self.finished = []
 
     def install(self, monkeypatch):
+        monkeypatch.setattr(awf, "gate", lambda *a, **k: None)   # the audit of workflow.run is not under test here
         monkeypatch.setattr(awf.reqrepo, "answers_for", lambda rid: {})
         monkeypatch.setattr(awf.reqrepo, "open_requests", lambda rid: [])
         monkeypatch.setattr(
             awf.reqrepo, "create_run",
-            lambda rid, agent_workflow_id, payload, status: self.status.__setitem__(rid, status),
+            lambda rid, agent_workflow_id, payload, status, **_: self.status.__setitem__(rid, status),
         )
         def claim(rid):
             if self.status.get(rid) == "pending":
