@@ -8,8 +8,9 @@ from .gateway import Backends, FunctionSpec, Gateway
 
 def build_default_gateway(backends: "Backends | None" = None, audit: "AuditSink | None" = None) -> Gateway:
     """The shipped catalogue, with its row limits read from config/gateway/functions.yaml."""
+    from .audit import default_audit_sink
     from .functions import build_catalogue
-    return Gateway(build_catalogue(), audit=audit, backends=backends)
+    return Gateway(build_catalogue(), audit=audit or default_audit_sink(), backends=backends)
 
 
 __all__ = ["AgentRegistry", "AgentSpec", "AuditSink", "Backends", "CONTEXT_KEYS", "CallerContext", "DataRequestBroker", "FunctionSpec",

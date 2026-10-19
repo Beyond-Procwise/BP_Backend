@@ -27,6 +27,7 @@ CONDENSE = "ASK_CONDENSE_HISTORY"           # rewrite a follow-up into a standal
 ROUTER = "ASK_ROUTER"                      # greeting / calculation / inventory routes ahead of retrieval
 ROUTER_EMBED = "ASK_ROUTER_EMBED"          # embedding second opinion for the router
 FAST_RERANK = "ASK_FAST_RERANK"            # smaller reranker, fewer and shorter candidates (read once, at start-up)
+GATEWAY_AUDIT = "ASK_GATEWAY_AUDIT_DB"       # every gateway call is also written to proc.bp_gateway_call (needs the 2026-10-19 migration)
 GATEWAY = "ASK_GATEWAY"                    # record lookups (PO / contract / supplier / part) go through the data gateway, scoped to the caller
 TRACE = "ASK_TRACE"                        # debug trace, shown to admins only
 
@@ -36,7 +37,7 @@ def is_production() -> bool:
 
 
 # Flags that change WHICH documents come back, or which data layer answers, are opt-in everywhere until approved.
-OPT_IN = frozenset({FAST_RERANK, GATEWAY})
+OPT_IN = frozenset({FAST_RERANK, GATEWAY, GATEWAY_AUDIT})
 
 
 def enabled(name: str) -> bool:
