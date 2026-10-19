@@ -129,3 +129,27 @@ def test_list_opportunities_filters_by_account(live_db):
                            currency="GBP")
     got = opp.list_opportunities(conn, account_id=a["account_id"])
     assert [o["sales_opportunity_id"] for o in got] == [oa["sales_opportunity_id"]]
+
+
+def test_the_list_names_the_account_and_describes_the_item(live_db):
+    conn, dist = live_db
+    a = _acct(conn)
+    item = seed_item(conn, dist, "LIVETEST-N1", cost="10.0000", tiers=[(D("10"), D("9.0000"))])
+    o = opp.create_opportunity(conn, account_id=a["account_id"], opportunity_type="upsell",
+                               catalog_item_id=item, expected_quantity=D("1"),
+                               expected_unit_price=D("12.50"))
+    [got] = opp.list_opportunities(conn, account_id=a["account_id"])
+    assert got["sales_opportunity_id"] == o["sales_opportunity_id"]
+    assert got["account_name"] == "Livetest Ltd"
+    assert got["item_description"]  # seed_item writes a description; the list now carries it
+    # the opportunity's own columns are untouched by the join
+    assert got["expected_revenue"] == o["expected_revenue"]
+
+
+def test_an_opportunity_with_no_item_still_lists_with_no_description(live_db):
+    conn, _ = live_db
+    a = _acct(conn)
+    opp.create_opportunity(conn, account_id=a["account_id"], opportunity_type="upsell", currency="GBP")
+    [got] = opp.list_opportunities(conn, account_id=a["account_id"])
+    assert got["account_name"] == "Livetest Ltd"
+    assert got["item_description"] is None

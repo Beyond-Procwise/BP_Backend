@@ -100,9 +100,15 @@ def get_opportunity(conn: Any, sales_opportunity_id: int) -> Dict[str, Any]:
 def list_opportunities(conn: Any, *, account_id: Optional[str] = None,
                        outcome: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
     cur = dict_cursor(conn)
+    # Names ride along so a screen can say WHO and WHAT, not just ids. LEFT joins: an opportunity
+    # whose account or item row is gone still lists, with the name NULL rather than the row hidden.
     cur.execute(
-        "SELECT * FROM proc.bp_sales_opportunity WHERE (%s IS NULL OR account_id = %s) "
-        "AND (%s IS NULL OR outcome = %s) ORDER BY sales_opportunity_id DESC LIMIT %s",
+        "SELECT o.*, a.account_name, i.item_description "
+        "FROM proc.bp_sales_opportunity o "
+        "LEFT JOIN proc.bp_account a ON a.account_id = o.account_id "
+        "LEFT JOIN proc.bp_catalog_item i ON i.catalog_item_id = o.catalog_item_id "
+        "WHERE (%s IS NULL OR o.account_id = %s) AND (%s IS NULL OR o.outcome = %s) "
+        "ORDER BY o.sales_opportunity_id DESC LIMIT %s",
         (account_id, account_id, outcome, outcome, max(1, min(limit, 500))))
     return [dict(r) for r in cur.fetchall()]
 
