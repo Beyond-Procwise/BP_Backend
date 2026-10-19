@@ -13,7 +13,7 @@ import logging
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from src.services.sell_side import opportunities
+from src.services.sell_side import opportunities, reason_prompts
 from src.services.sell_side._db import dict_cursor
 
 logger = logging.getLogger(__name__)
@@ -26,8 +26,6 @@ ADVISORY_LOCK_KEY = 7_204_190_001
 # a relation proposes its target to an account that bought its source
 _TYPE_OF = {"replaced_by": "upgrade", "upgrade_of": "upgrade", "refill_of": "refill",
             "accessory_of": "cross_sell", "requires": "cross_sell"}
-_WORDS = {"replaced_by": "replaced by", "upgrade_of": "upgraded by", "refill_of": "refilled by",
-          "accessory_of": "has the accessory", "requires": "requires"}
 _ENDED = ("end_of_life", "end_of_sale")
 
 _SQL = """
@@ -135,16 +133,19 @@ def _detect(conn: Any, *, account_id: Optional[str] = None) -> List[Dict[str, An
             for g in c["gaps"].values():
                 opportunities.add_justification(
                     conn, o["sales_opportunity_id"], kind="coverage_gap",
-                    claim=f"Bought {g['distributor_sku']}; the distributor states it is "
-                          f"{_WORDS[g['relation_type']]} {g['to_sku']}.",
+                    claim=reason_prompts.render(conn, reason_prompts.RELATION, {
+                        "bought_sku": g["distributor_sku"], "relation_type": g["relation_type"],
+                        "target_sku": g["to_sku"]}),
                     evidence_ref=f"relation:{g['relation_id']}")
             if c["ended"]:
                 e = c["ended"]
-                what = "end of sale" if e["lifecycle_status"] == "end_of_sale" else "end of life"
-                when = f"on {e['end_of_life_date']}" if e["end_of_life_date"] else "(no date given)"
+                name = (reason_prompts.END_OF_LIFE_DATED if e["end_of_life_date"]
+                        else reason_prompts.END_OF_LIFE_UNDATED)
                 opportunities.add_justification(
                     conn, o["sales_opportunity_id"], kind="end_of_life",
-                    claim=f"{e['distributor_sku']} reached {what} {when}.",
+                    claim=reason_prompts.render(conn, name, {
+                        "sku": e["distributor_sku"], "lifecycle_status": e["lifecycle_status"],
+                        "end_of_life_date": e["end_of_life_date"]}),
                     evidence_ref=f"catalog_item:{e['bought_id']}")
         except Exception:
             # an opportunity without its evidence must not stand (the 'open' dedup would keep it)

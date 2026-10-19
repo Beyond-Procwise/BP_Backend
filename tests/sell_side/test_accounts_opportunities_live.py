@@ -153,3 +153,17 @@ def test_an_opportunity_with_no_item_still_lists_with_no_description(live_db):
     [got] = opp.list_opportunities(conn, account_id=a["account_id"])
     assert got["account_name"] == "Livetest Ltd"
     assert got["item_description"] is None
+
+
+def test_the_list_carries_each_opportunitys_claims_in_the_order_they_were_written(live_db):
+    conn, _ = live_db
+    a = _acct(conn)
+    o = opp.create_opportunity(conn, account_id=a["account_id"], opportunity_type="upsell", currency="GBP")
+    opp.add_justification(conn, o["sales_opportunity_id"], kind="end_of_life", claim="First claim.")
+    opp.add_justification(conn, o["sales_opportunity_id"], kind="price_gap", claim="Second claim.",
+                          customer_safe=False)
+    bare = opp.create_opportunity(conn, account_id=a["account_id"], opportunity_type="refill", currency="GBP")
+    got = {r["sales_opportunity_id"]: r for r in opp.list_opportunities(conn, account_id=a["account_id"])}
+    assert got[o["sales_opportunity_id"]]["reasons"] == ["First claim.", "Second claim."]
+    # no claim yet is an empty list, not a missing key and not an invented sentence
+    assert got[bare["sales_opportunity_id"]]["reasons"] == []

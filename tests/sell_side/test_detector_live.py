@@ -279,3 +279,17 @@ def test_a_missing_target_is_skipped_not_fatal(live_db, monkeypatch):
         raise NotFound("gone")
     monkeypatch.setattr(opportunities, "create_opportunity", gone)
     assert detector.detect(conn, account_id=acct) == []
+
+
+def test_the_claim_follows_the_prompt_not_the_code(live_db, monkeypatch):
+    """Reword the prompt (stubbed, so no shared row is edited) and the stored claim is reworded."""
+    from src.services.sell_side import reason_prompts
+    monkeypatch.setattr(reason_prompts, "_load", lambda conn, name: (
+        "PROMPTED {bought_sku} -> {target_sku} via {relation_type}",
+        {"relation_type": {"replaced_by": "a replacement"}}))
+    conn, dist = live_db
+    acct, a, b = _world(conn, dist)
+    _quote(conn, acct, a)
+    (o,) = detector.detect(conn, account_id=acct)
+    (j,) = [j for j in o["justifications"] if j["kind"] == "coverage_gap"]
+    assert j["claim"] == "PROMPTED LIVETEST-A -> LIVETEST-B via a replacement"
