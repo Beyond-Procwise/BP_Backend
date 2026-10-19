@@ -89,6 +89,14 @@ def _flag(v: Any) -> Optional[bool]:
     return v if isinstance(v, bool) else None
 
 
+def _corridor_setting(value: Any) -> Any:
+    """One percent, or {category: percent} with a "default"; anything else is not a corridor."""
+    if isinstance(value, dict):
+        out = {k: _percent(v) for k, v in value.items()}
+        return out if out and all(v is not None for v in out.values()) else None
+    return _percent(value)
+
+
 _SETTINGS = (("quote.tax.rate_pct", "tax_rate_pct", _percent),
              ("quote.validity.days", "validity_days", _days),
              ("quote.terms.payment_default", "payment_terms_default", _words),
@@ -96,7 +104,10 @@ _SETTINGS = (("quote.tax.rate_pct", "tax_rate_pct", _percent),
              # how the floor is enforced; null here means the strict default applies
              ("quote.margin.floor_action", "margin_floor_action", _choice(FLOOR_ACTIONS)),
              ("quote.margin.untested", "margin_floor_untested", _choice(("refuse", "allow"))),
-             ("quote.margin.applies_to_catalog", "margin_floor_applies_to_catalog", _flag))
+             ("quote.margin.applies_to_catalog", "margin_floor_applies_to_catalog", _flag),
+             ("quote.discount.corridor_max_pct", "discount_corridor_max_pct", _corridor_setting),
+             # how the corridor is enforced; null here means the strict default applies
+             ("quote.discount.corridor_action", "discount_corridor_action", _choice(FLOOR_ACTIONS)))
 
 
 def settings() -> Dict[str, Dict[str, Any]]:
@@ -182,3 +193,26 @@ def floor_test(margin_fraction: Any, costed_lines: Any, *,
                 "action": rules["margin_floor_action"],
                 "message": f"The margin is {margin:.2f}%, below the {floor:g}% floor."}
     return None
+
+
+def corridor_action() -> str:
+    """What happens to a quote whose discount is outside the corridor: the same three
+    choices as the floor, and the strict reading when nobody has stated one."""
+    stated, _ = _stated("discount_corridor_action")
+    return stated if stated in FLOOR_ACTIONS and not isinstance(stated, bool) else "refuse"
+
+
+def corridor_test(max_discount_pct: Any, category: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Whether the deepest discount the seller typed on a quote (a percent) holds the
+    policy corridor. None when it holds, when no discount was typed, or when no corridor
+    is stated (not set is not tested, never read as zero). Otherwise the block, carrying
+    the policy's `action`: DISCOUNT_ABOVE_CORRIDOR."""
+    if max_discount_pct is None:
+        return None
+    corridor = _corridor(_stated("discount_corridor_max_pct")[0], category)
+    if corridor is None or float(max_discount_pct) <= corridor:
+        return None
+    return {"code": "DISCOUNT_ABOVE_CORRIDOR", "corridorPct": corridor,
+            "discountPct": round(float(max_discount_pct), 2), "action": corridor_action(),
+            "message": f"A {float(max_discount_pct):g}% discount is outside the "
+                       f"{corridor:g}% corridor."}

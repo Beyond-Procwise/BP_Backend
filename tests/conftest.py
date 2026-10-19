@@ -66,7 +66,8 @@ GOVERNED_LIMIT_SEED = {
                             "payment_terms_default": None,
                             "margin_floor_action": "override",
                             "margin_floor_untested": "refuse",
-                            "margin_floor_applies_to_catalog": False},
+                            "margin_floor_applies_to_catalog": False,
+                            "discount_corridor_action": "refuse"},
     "receipt_tolerances": {
         "over_delivery_pct": 0.00, "billed_over_received_qty": 0,
         "uom_conversion_required": True},

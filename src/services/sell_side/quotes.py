@@ -398,6 +398,19 @@ def _refuse_ended_bids(cur: Any, sales_quote_id: int) -> None:
             + ". Re-cost the quote before it goes further.")
 
 
+class DiscountAboveCorridor(MarginBelowFloor):
+    """A quote with a typed discount outside the pricing policy's corridor, approved by
+    someone with no exception to give. Same shape and same override permit as the floor."""
+
+    def __init__(self, sales_quote_id: int, block: Dict[str, Any]) -> None:
+        self.block = block
+        self.codes = [block["code"]]
+        StateConflict.__init__(
+            self, f"quote {sales_quote_id} cannot be routinely approved: {block['message']} "
+                  f"Reprice it, or an approver who may override pricing policy approves it "
+                  f"({block['code']})")
+
+
 def approve(conn: Any, sales_quote_id: int, *, approver: Optional[str],
             conditions: Optional[Sequence[str]] = None,
             may_override_floor: Optional[Callable[[Dict[str, Any]], bool]] = None
@@ -439,17 +452,29 @@ def approve(conn: Any, sales_quote_id: int, *, approver: Optional[str],
                     (sales_quote_id, sales_quote_id))
         held = cur.fetchone() or {}
         costed = held.get("lines") if catalog else held.get("costed_lines")
-        block = pricing_checks.floor_test(held.get("margin_pct"), costed, catalog=catalog)
-        if block is None:
-            return {"conditions": conditions}
-        if block["action"] == "refuse" or (block["action"] == "override" and not (
-                may_override_floor and may_override_floor(block))):
-            raise MarginBelowFloor(sales_quote_id, block)
-        # the event says that and why, never the margin itself (record_event carries no
-        # cost or margin)
-        return {"conditions": conditions,
-                "margin_floor_override": {"code": block["code"], "floor_pct": block["floorPct"],
-                                          "by": block["action"]}}
+        floor_block = pricing_checks.floor_test(held.get("margin_pct"), costed, catalog=catalog)
+        # the corridor holds the discount the seller typed on a line, not one derived from
+        # a catalog list price
+        cur.execute("SELECT (SELECT max(entered_discount_pct) FROM proc.bp_sales_quote_line "
+                    " WHERE sales_quote_id = q.sales_quote_id) AS deepest, q.category "
+                    "FROM proc.bp_sales_quote q WHERE q.sales_quote_id = %s", (sales_quote_id,))
+        d = cur.fetchone() or {}
+        corridor_block = pricing_checks.corridor_test(d.get("deepest"), d.get("category"))
+        out: Dict[str, Any] = {"conditions": conditions}
+        for block, refused, key in ((floor_block, MarginBelowFloor, "margin_floor_override"),
+                                    (corridor_block, DiscountAboveCorridor,
+                                     "discount_corridor_override")):
+            if block is None:
+                continue
+            if block["action"] == "refuse" or (block["action"] == "override" and not (
+                    may_override_floor and may_override_floor(block))):
+                raise refused(sales_quote_id, block)
+            # the event says that and why, never the margin itself (record_event carries no
+            # cost or margin)
+            out[key] = {"code": block["code"],
+                        "floor_pct": block.get("floorPct", block.get("corridorPct")),
+                        "by": block["action"]}
+        return out
     return _transition(conn, sales_quote_id, frm="in_review", to="approved", check=_check,
                        event="sales_quote.approved", actor=approver,
                        sets=", approved_by = %s, approved_at = now(), conditions = %s::jsonb",

@@ -689,3 +689,49 @@ def test_a_quote_says_it_was_sent_only_once_the_send_is_recorded(live_db):
     conn.commit()
     sent = builder.get(conn, int(q["id"]))["sent"]
     assert sent["emailId"] == "<m-1@livetest>" and sent["at"] is not None
+
+
+def _discounted(conn, pct):
+    # unit price 100, cost 50: margin stays far above the 20% floor after a typed discount
+    return _in_review(conn, [{"tag": "product", "description": "Discounted", "qty": 1,
+                              "unitPrice": 100, "cost": 50, "discountPct": pct}])
+
+
+def test_a_discount_outside_the_corridor_is_not_routinely_approved(live_db, monkeypatch):
+    from tests.sell_side.conftest import STATED_PRICING, state_pricing
+    conn, _ = live_db
+    state_pricing(monkeypatch, {**STATED_PRICING, "discount_corridor_max_pct": 15})
+    qid = _discounted(conn, 20)
+    with pytest.raises(quotes.DiscountAboveCorridor, match="20% discount is outside the 15%"
+                       ) as refused:
+        quotes.approve(conn, qid, approver=REVIEWER)
+    assert refused.value.codes == ["DISCOUNT_ABOVE_CORRIDOR"]
+    assert builder.get(conn, qid)["status"] == "in-review", "the refusal changed nothing"
+    # exactly at the corridor holds it
+    assert quotes.approve(conn, _discounted(conn, 15), approver=REVIEWER)["status"] == "approved"
+
+
+def test_the_corridor_action_is_policy_and_an_override_is_recorded(live_db, monkeypatch):
+    from tests.sell_side.conftest import STATED_PRICING, state_pricing
+    conn, _ = live_db
+    rules = {**STATED_PRICING, "discount_corridor_max_pct": 15}
+    state_pricing(monkeypatch, {**rules, "discount_corridor_action": "override"})
+    qid = _discounted(conn, 20)
+    with pytest.raises(quotes.DiscountAboveCorridor):
+        quotes.approve(conn, qid, approver=REVIEWER, may_override_floor=lambda b: False)
+    assert quotes.approve(conn, qid, approver=REVIEWER,
+                          may_override_floor=lambda b: True)["status"] == "approved"
+    cur = conn.cursor()
+    cur.execute("SELECT details FROM proc.bp_agent_actions WHERE doc_type = 'sales_quote' "
+                "AND doc_pk = %s AND action_type = 'sales_quote.approved'", (str(qid),))
+    details = cur.fetchone()[0]
+    conn.rollback()
+    assert details["discount_corridor_override"] == {
+        "code": "DISCOUNT_ABOVE_CORRIDOR", "floor_pct": 15.0, "by": "override"}
+    state_pricing(monkeypatch, {**rules, "discount_corridor_action": "record"})
+    assert quotes.approve(conn, _discounted(conn, 20), approver=REVIEWER)["status"] == "approved"
+
+
+def test_no_corridor_stated_means_no_discount_is_tested(live_db):
+    conn, _ = live_db      # STATED_PRICING leaves the corridor unset
+    assert quotes.approve(conn, _discounted(conn, 30), approver=REVIEWER)["status"] == "approved"
