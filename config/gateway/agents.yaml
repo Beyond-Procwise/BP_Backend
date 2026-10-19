@@ -1,0 +1,39 @@
+# Ask-path agent registry: what each agent may request through the gateway. Read and write are kept apart.
+# Loaded and validated against the catalogue at start-up; an allowlisted function that does not exist fails the load.
+# Batch 1 lists only functions that exist. Later batches add to these lists in reviewed changes.
+version: 1
+defaults: {max_steps: 4, max_retries: 1, max_data_requests_per_step: 3}
+agents:
+  ask_policy:
+    purpose: Explain governed policy and process, citing the source.
+    reads: [search_documents, get_policy, find_applicable_contracts, get_approval_chain]
+    writes: []
+    prefetch: policy_default
+    max_data_requests_per_step: 2
+  ask_records:
+    purpose: Answer a lookup about a named record.
+    reads: [resolve_entity, get_record, get_po_status]
+    writes: []
+    prefetch: records_default
+  ask_analytics:
+    purpose: Answer an aggregate question over a period.
+    reads: [get_spend_summary]
+    writes: []
+    prefetch: analytics_default
+    max_data_requests_per_step: 4
+  ask_compare:
+    purpose: Compare named entities side by side.
+    reads: [resolve_entity, get_record, find_applicable_contracts]
+    writes: []
+    prefetch: compare_default
+    max_data_requests_per_step: 6
+  ask_eligibility:
+    purpose: Explain an approval or eligibility result. It explains the gateway's answer and never decides it.
+    reads: [get_approval_chain, evaluate_approval_status, get_policy, search_documents, find_applicable_contracts]
+    writes: []
+    prefetch: eligibility_default
+  ask_action:
+    purpose: Prepare an action request. No write functions exist yet (Step 9).
+    reads: [resolve_entity, get_record]
+    writes: []
+    prefetch: action_default

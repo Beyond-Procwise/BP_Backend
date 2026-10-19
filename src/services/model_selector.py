@@ -2798,7 +2798,69 @@ class RAGPipeline:
         self.history_manager.save_history(user_id, history)
         return {"answer": text, "follow_ups": [], "retrieved_documents": [], "next_steps": []}
 
-    def _exact_id_facts(self, query: str) -> str:
+    def _ask_gateway(self) -> Any:
+        """The in-process data gateway, built once. Record lookups under ``ASK_GATEWAY`` go through it."""
+        gw = getattr(self, "_gw", None)
+        if gw is None:
+            from src.services.db import get_conn
+            from src.services.gateway import Backends, build_default_gateway
+            gw = self._gw = build_default_gateway(Backends(connect=get_conn))
+        return gw
+
+    def _exact_id_facts_via_gateway(self, query: str, ids: Dict[str, List[str]], caller: Optional[Any]) -> str:
+        """The same text as the direct path, read through the gateway as the person asking (spec: gateway Step 2).
+
+        Fails closed: with no caller context nothing is read, so the question falls back to normal retrieval. A lookup
+        that could not be completed is *stated*, never left to read as "the record does not exist".
+        """
+        if caller is None:
+            logger.warning("ASK_GATEWAY is on but no caller context reached the pipeline; record lookup skipped")
+            return ""
+        gw, ctx, tr = self._ask_gateway(), caller.for_agent("ask_records"), ask_trace.current()
+        parts: List[str] = []
+        records: List[Dict[str, Any]] = []
+        missing: List[str] = []
+
+        def unavailable(ident: str, res: Any) -> None:
+            parts.append(f"The record lookup for {ident} could not be completed ({res.error.code}); "
+                         "do not conclude that the record does not exist.")
+
+        fan_out_po = (ask_flags.enabled(ask_flags.PO_STATUS) and ask_po_status.is_status_question(query, ids.get("po", [])))
+        plain = {k: list(v) for k, v in ids.items()}
+        if fan_out_po:
+            po_id = ids["po"][0]
+            with tr.span("po_status_fanout"):
+                res = gw.call(ctx, "get_po_status", {"po_id": po_id})
+            if not res.ok:
+                unavailable(po_id, res)
+                plain.pop("po", None)
+            elif res.data:
+                results = {d["source"]: {"state": d["state"], "rows": d["rows"], "why": d["why"], "seconds": 0.0} for d in res.data}
+                parts.append(ask_po_status.render(po_id, results))
+                plain["po"] = plain["po"][1:]
+        for kind in ("po", "part", "contract", "supplier"):
+            for ident in plain.get(kind, []):
+                with tr.span("exact_id_lookup"):
+                    res = gw.call(ctx, "get_record", {"type": kind, "id": ident})
+                if not res.ok:
+                    unavailable(ident, res)
+                elif res.data:
+                    records.extend(res.data)
+                else:
+                    missing.append(ident)
+        text = ask_exact_id.render({"records": records, "missing": missing})
+        if text:
+            parts.append(text)
+        if ask_flags.enabled(ask_flags.DATE_FACTS):
+            for rec in records:
+                if rec["kind"] == "contract" and rec["rows"]:
+                    computed = ask_dates.render(ask_dates.from_contract_row(rec["rows"][0]))
+                    if computed:
+                        parts.append(computed)
+        logger.info("ask exact-id lookup (gateway): ids=%s found=%d missing=%s po_fanout=%s", ids, len(records), missing, fan_out_po)
+        return "\n\n".join(parts)
+
+    def _exact_id_facts(self, query: str, caller: Optional[Any] = None) -> str:
         """Rows for any PO, part, supplier or contract id in the question, as prompt text; empty if none or not found.
 
         A PO asked about by status is read from every source that knows about it at once (``ask_po_status``); a
@@ -2809,6 +2871,8 @@ class RAGPipeline:
         ids = ask_exact_id.extract(query)
         if not ids:
             return ""
+        if ask_flags.enabled(ask_flags.GATEWAY):
+            return self._exact_id_facts_via_gateway(query, ids, caller)
         tr = ask_trace.current()
         connect = getattr(getattr(self, "agent_nick", None), "get_db_connection", None)
         parts: List[str] = []
@@ -2907,6 +2971,7 @@ class RAGPipeline:
         persona: Optional[str] = None,
         action_id: Optional[str] = None,
         on_event: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        caller: Optional[Any] = None,
     ) -> Dict:
         """Answer a question against the retrieved corpus.
 
@@ -3020,7 +3085,7 @@ class RAGPipeline:
             return routed
         original_query = query            # what the user typed: kept in the history and the cache key
         query = self._condense_question(original_query, history, model_name or llm_to_use, _emit)
-        exact_text = self._exact_id_facts(query)
+        exact_text = self._exact_id_facts(query, caller)
         computed_text = self._computed_date_facts(query)
 
         _emit("stage", stage="retrieving", **({"lookup": "records"} if exact_text else {}))

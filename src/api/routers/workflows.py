@@ -19,7 +19,7 @@ from orchestration.orchestrator import Orchestrator
 from api.auth import require_user
 from api.endpoint_gate import require as gate
 from services.model_selector import RAGPipeline
-from services import ask_trace
+from services import ask_flags, ask_trace
 from services.opportunity_service import record_opportunity_feedback
 from services.email_dispatch_service import EmailDispatchService
 from services.backend_scheduler import BackendScheduler
@@ -892,6 +892,18 @@ def _asker(principal: Any, typed: Optional[str]) -> Optional[str]:
     return getattr(principal, "subject", None) or typed
 
 
+def _gateway_caller(principal: Any, session_id: Optional[str]) -> Dict[str, Any]:
+    """``{"caller": CallerContext}`` for the pipeline when ASK_GATEWAY is on, else nothing.
+
+    The identity is built here, from the authenticated session, and handed down; the pipeline and its agents never
+    build or change it. Returned as a dict so the call is unchanged when the flag is off.
+    """
+    if not ask_flags.enabled(ask_flags.GATEWAY):
+        return {}
+    from src.services.gateway.session import caller_from_principal
+    return {"caller": caller_from_principal(principal, session_id=session_id or "")}
+
+
 @router.post("/ask")
 async def ask_question(
     req: AskRequest,
@@ -928,9 +940,11 @@ async def ask_question(
     resolved_session = _clean(req.session_id) or header_session or _clean(asker)
 
     show_trace = ask_trace.visible_to(principal, request.headers.get("x-ask-trace"))
+    gateway_kwargs = await run_in_threadpool(_gateway_caller, principal, resolved_session)
     result = await run_in_threadpool(
         pipeline.answer_question,
         trace=show_trace,
+        **gateway_kwargs,
         query=req.query,
         user_id=asker,
         session_id=resolved_session,
@@ -990,6 +1004,7 @@ async def ask_question_stream(
     def _work() -> None:
         try:
             result = pipeline.answer_question(
+                **_gateway_caller(principal, resolved_session),
                 query=req.query,
                 user_id=asker,
                 session_id=resolved_session,

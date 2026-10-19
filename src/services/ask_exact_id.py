@@ -63,11 +63,12 @@ _CONTRACT_COLS = ("contract_id, contract_title, contract_type, supplier_id, cont
                   "total_contract_value, payment_terms, contract_lifecycle_status, auto_renew_flag, renewal_term")
 
 
-def fetch(conn_factory: Callable[[], Any], ids: Dict[str, List[str]]) -> Dict[str, Any]:
+def fetch(conn_factory: Callable[[], Any], ids: Dict[str, List[str]], *, strict: bool = False) -> Dict[str, Any]:
     """Rows for the identifiers: {"records": [{"kind", "id", "rows": [...], "lines": [...]}], "missing": [...]}.
 
     ``conn_factory`` returns a context-managed DB connection (``agent_nick.get_db_connection``). Any database
-    failure returns nothing found, so the question falls back to normal retrieval rather than failing.
+    failure returns nothing found, so the question falls back to normal retrieval rather than failing. ``strict=True``
+    (the gateway) re-raises instead, because an unreadable table and an absent record must never look the same.
     """
     out: Dict[str, Any] = {"records": [], "missing": []}
     if not ids:
@@ -107,6 +108,8 @@ def fetch(conn_factory: Callable[[], Any], ids: Dict[str, List[str]]) -> Dict[st
                         continue
                     out["records"].append({"kind": "supplier", "id": sup_id, "rows": rows, "lines": []})
     except Exception:
+        if strict:
+            raise
         logger.exception("exact-id lookup failed; falling back to retrieval")
         return {"records": [], "missing": []}
     return out

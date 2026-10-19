@@ -27,6 +27,7 @@ class Trace:
         self.output_filter: Dict[str, Any] = {}
         self.grading: List[Dict[str, Any]] = []
         self.comparison: Dict[str, Any] = {}
+        self.gateway_calls: List[Dict[str, Any]] = []
         self.stages: Dict[str, float] = {}      # stage name -> seconds since start when it began
         self.timings: Dict[str, float] = {}     # sub-stage name -> seconds spent
 
@@ -67,6 +68,10 @@ class Trace:
     def set_comparison(self, *, entities: List[str], found: Dict[str, int]) -> None:
         self.comparison = {"entities": entities, "documents_found": found}
 
+    def add_gateway_call(self, row: Dict[str, Any]) -> None:
+        keep = ("call_id", "function", "agent", "ok", "error_code", "row_count", "truncated", "latency_ms", "result_record_ids")
+        self.gateway_calls.append({k: row.get(k) for k in keep})
+
     def set_output_filter(self, *, decision: str, rule: Optional[str] = None, reason: Optional[str] = None) -> None:
         self.output_filter = {"decision": decision, "rule": rule, "reason": reason}
 
@@ -80,6 +85,7 @@ class Trace:
             "output_filter": self.output_filter,
             "grading": self.grading,
             "comparison": self.comparison,
+            "gateway_calls": self.gateway_calls,
             "stage_starts_s": self.stages,
             "sub_stage_s": self.timings,
             "total_s": round(time.perf_counter() - self._t0, 3),

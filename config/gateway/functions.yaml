@@ -1,0 +1,14 @@
+# The gateway function catalogue: every function the gateway answers, and its hard result bound.
+# A function must be here AND in src/services/gateway/functions.py, or the gateway refuses to build.
+# Adding a function is a reviewed change. There is no free-form query function and none may be added here.
+version: 1
+functions:
+  resolve_entity:           {kind: read, max_rows: 25}
+  get_record:               {kind: read, max_rows: 5}
+  get_po_status:            {kind: read, max_rows: 10}
+  get_spend_summary:        {kind: read, max_rows: 50}
+  search_documents:         {kind: read, max_rows: 10}
+  get_policy:               {kind: read, max_rows: 10}
+  find_applicable_contracts: {kind: read, max_rows: 25}
+  get_approval_chain:       {kind: read, max_rows: 10}      # UNSUPPORTED until approval rules exist as structured data
+  evaluate_approval_status: {kind: read, max_rows: 10}      # UNSUPPORTED, same reason

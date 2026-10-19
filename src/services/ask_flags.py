@@ -27,6 +27,7 @@ CONDENSE = "ASK_CONDENSE_HISTORY"           # rewrite a follow-up into a standal
 ROUTER = "ASK_ROUTER"                      # greeting / calculation / inventory routes ahead of retrieval
 ROUTER_EMBED = "ASK_ROUTER_EMBED"          # embedding second opinion for the router
 FAST_RERANK = "ASK_FAST_RERANK"            # smaller reranker, fewer and shorter candidates (read once, at start-up)
+GATEWAY = "ASK_GATEWAY"                    # record lookups (PO / contract / supplier / part) go through the data gateway, scoped to the caller
 TRACE = "ASK_TRACE"                        # debug trace, shown to admins only
 
 
@@ -34,8 +35,8 @@ def is_production() -> bool:
     return os.environ.get("ENVIRONMENT", "").strip().lower() in ("prod", "production")
 
 
-# Flags that change WHICH documents come back are opt-in everywhere until their effect on answers is approved.
-OPT_IN = frozenset({FAST_RERANK})
+# Flags that change WHICH documents come back, or which data layer answers, are opt-in everywhere until approved.
+OPT_IN = frozenset({FAST_RERANK, GATEWAY})
 
 
 def enabled(name: str) -> bool:
