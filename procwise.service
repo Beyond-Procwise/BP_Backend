@@ -14,11 +14,8 @@ Environment=PYTHONPATH=/home/muthu/PycharmProjects/BP_Backend:/home/muthu/Pychar
 Environment=PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 EnvironmentFile=/home/muthu/PycharmProjects/BP_Backend/.env
 
-# Bring up BOTH stores the API talks to. Only neo4j was listed here, so on a
-# cold boot Qdrant came up on Docker's own schedule and the API regularly
-# overtook it -- the app-side wait in AgentNick._await_qdrant_ready covers
-# the rest of the race, this just stops us relying on it every boot.
-ExecStartPre=/usr/bin/docker compose --env-file /home/muthu/PycharmProjects/BP_Backend/.env -f /home/muthu/PycharmProjects/BP_Backend/procurement_knowledge_graph/docker-compose.yml up -d neo4j qdrant
+# Bring up the graph store the API talks to (vectors live in Postgres/pgvector now; Qdrant is no longer started).
+ExecStartPre=/usr/bin/docker compose --env-file /home/muthu/PycharmProjects/BP_Backend/.env -f /home/muthu/PycharmProjects/BP_Backend/procurement_knowledge_graph/docker-compose.yml up -d neo4j
 ExecStartPre=/bin/sleep 10
 
 ExecStart=/home/muthu/PycharmProjects/BP_Backend/.venv/bin/uvicorn api.main:app \

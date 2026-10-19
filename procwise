@@ -167,22 +167,10 @@ infra_up() {
     # Neo4j
     wait_for "Neo4j" "http://localhost:7474" 30
 
-    # Qdrant (local — cloud Qdrant verified separately)
-    local qdrant_container
-    qdrant_container=$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q qdrant 2>/dev/null)
-    if [[ -n "$qdrant_container" ]]; then
-        wait_for "Qdrant (local)" "http://localhost:6333/healthz" 30
-    fi
-
     # Ollama
     wait_for "Ollama" "http://localhost:11434/api/tags" 30
 
-    # Qdrant Cloud (if configured)
     load_env
-    if [[ -n "${QDRANT_URL:-}" ]] && [[ "$QDRANT_URL" == https://* ]]; then
-        check_service "Qdrant (cloud)" "${QDRANT_URL}/healthz" "${QDRANT_API_KEY:-}" || \
-            warn "Cloud Qdrant not reachable — will retry on first request"
-    fi
 }
 
 infra_down() {
@@ -314,14 +302,6 @@ cmd_status() {
     else
         fail "API         HTTP $http_code  (port $PORT)"
     fi
-
-    # Qdrant Cloud
-    if [[ -n "${QDRANT_URL:-}" ]] && [[ "$QDRANT_URL" == https://* ]]; then
-        check_service "Qdrant Cloud" "${QDRANT_URL}/healthz" "${QDRANT_API_KEY:-}"
-    fi
-
-    # Qdrant Local
-    check_service "Qdrant Local" "http://localhost:6333/healthz" || true
 
     # Ollama
     if curl -sf http://localhost:11434/api/tags &>/dev/null; then
