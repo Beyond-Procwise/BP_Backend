@@ -122,17 +122,43 @@ Not covered: the knowledge-graph description (`corpus_facts.fetch_graph`) still 
 RBAC action-class gating (`invoice.read`, `quote.read`, `deal.read`, `finding.read`, as the report builder applies) is not applied
 here; scope is by buyer only. Both are open decisions for review.
 
-### B.3 Batch 3: supply chain, reseller/channel, sales, CPQ (mostly MISSING)
+### B.3 Batch 3: supply chain, reseller, sales, CPQ (started 2026-10-19; mostly blocked on decisions)
 
-| Function | Status | Dependency |
-|---|---|---|
-| `get_price(sku, customer_id, qty, date)` | PARTIAL (`sell_side` catalog + pricing policy `sales_quote_pricing`) | needs customer/reseller identity |
-| `get_quote`, `list_quotes(filters)`, `get_quote_margin(quote_id)` | EXISTS in `sell_side/quotes.py`, no row scope | margin visible to roles with `margin.read` only (existing gating) |
-| `get_inventory_position(sku, location?)` | **MISSING**: no inventory tables exist (audit finding D4) | product decision: where does stock data come from? |
-| `get_shipment_status(po_id|shipment_id)` | **MISSING**: no ERP, no carrier tracking (F3) | product decision |
-| `get_landed_cost(sku, supplier_id, qty, incoterm?)` | **MISSING**: no formula in the register (D2) | `[decision]` landed-cost definition |
-| `get_reseller_programme_terms(reseller_id)`, `get_partner_tier(reseller_id)` | **MISSING**: no programme or reseller model | `[decision]` tenant/reseller model (section F, item 1) |
-| `get_customer_pricing_agreement(customer_id, date)` | **MISSING** | same |
+What the estate actually holds (read 2026-10-19): sales tables (`bp_account`, `bp_sales_quote`, `bp_sales_opportunity`, `bp_catalog_*`)
+carry a constant `tenant_id` and an `account_owner_email`; there is **no** reseller, programme, tier, inventory, shipment or
+customer-agreement table. Pricing code (`sell_side/costing.py`) computes **our cost**, which is internal and behind `margin.read`;
+there is no customer-specific price to look up, only a catalog list price and the prices on a quote's lines.
+
+**Built (declared UNSUPPORTED, run no query, each says what it is waiting on and is logged to the function backlog):**
+
+| Function | Parameters | Waiting on | Example questions |
+|---|---|---|---|
+| `get_inventory_position` | `sku`, `location?` | where stock data comes from (product decision) | "How many of ITM00123 are in stock?" |
+| `get_shipment_status` | `po_id` or `shipment_id` | carrier / ERP tracking (product decision) | "Where is my shipment for PO-2025-0257?" |
+| `get_landed_cost` | `sku`, `supplier_id`, `quantity`, `incoterm?` | your definition of landed cost, then a register formula | "What is the landed cost of 500 units?" |
+| `get_reseller_programme_terms` | `reseller_id` | reseller/tenant model | "What are Acme Partners' programme terms?" |
+| `get_partner_tier` | `reseller_id` | reseller/tenant model | "What tier is this reseller?" |
+| `get_customer_pricing_agreement` | `customer_id`, `date` | reseller/tenant model + a home for agreements | "What price did we agree with this customer?" |
+
+None of these is on any agent's allowlist. `reseller_id` is a subject parameter, not caller scope; each reseller function must intersect
+it with the caller's `reseller_account_ids` and treat an id outside it as not found (Step 10).
+
+**Not built, because building it needs a decision from you (auth or exposure):**
+
+- `get_quote(quote_id)` (customer record: no cost, no margin) and `list_quotes`: the existing route lets any signed-in user read any
+  quote, and there is no list endpoint at all. Wrapping `get_quote` in the gateway would extend that to /ask for every role, and
+  `list_quotes` would be new exposure. Row scope for sales quotes would have to be invented (`account_owner_email` is the only
+  ownership concept). Decide who may see which quotes through /ask.
+- `get_quote_margin(quote_id)` (cost and margin): must be behind `margin.read`, which only passes when a **stated policy permit**
+  exists (the route refuses the reversible-read default). That check needs a full principal (`gate(action, principal, ...)`), and the
+  caller context carries only subject and role. Building it means the gateway evaluating action-class permits, an auth change.
+- `get_price`: today it could only return the catalog list price (customer pricing agreements do not exist); the name in the
+  architecture (`get_price(sku, customer_id, qty, date)`) promises more than the data supports. Decide whether to build
+  `get_list_price(sku)` now under a different name, or wait for agreements.
+
+**Decisions needed to continue Batch 3:** (1) the reseller/tenant model; (2) who may read sales quotes through /ask and how a quote is
+scoped; (3) whether the gateway may evaluate `margin.read` and other action-class permits (and how it receives a principal); (4) product
+calls on inventory and shipment data; (5) the landed-cost definition; (6) the list-price question above.
 
 ### B.4 Write functions (Step 9; listed so the registry can keep read and write apart)
 

@@ -311,6 +311,10 @@ from .batch2 import DECLARED as _BATCH2  # noqa: E402
 
 _DECLARED.update(_BATCH2)
 
+from .batch3 import DECLARED as _BATCH3  # noqa: E402
+
+_DECLARED.update(_BATCH3)
+
 
 def build_catalogue(config_path: Optional[str] = None) -> Dict[str, FunctionSpec]:
     with open(config_path or os.path.join(CONFIG_DIR, "functions.yaml"), encoding="utf-8") as fh:

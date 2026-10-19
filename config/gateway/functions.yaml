@@ -20,3 +20,10 @@ functions:
   list_deals:               {kind: read, max_rows: 25}
   get_findings_overview:    {kind: read, max_rows: 25}
   list_policies:            {kind: read, max_rows: 25}
+  # Batch 3: declared, always UNSUPPORTED until the decision named in the spec is made. They run no query.
+  get_inventory_position:   {kind: read, max_rows: 10}
+  get_shipment_status:      {kind: read, max_rows: 10}
+  get_landed_cost:          {kind: read, max_rows: 10}
+  get_reseller_programme_terms: {kind: read, max_rows: 10}
+  get_partner_tier:         {kind: read, max_rows: 10}
+  get_customer_pricing_agreement: {kind: read, max_rows: 10}
