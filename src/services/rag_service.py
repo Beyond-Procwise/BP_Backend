@@ -481,8 +481,10 @@ class RAGService:
         raise RuntimeError("Unable to determine embedding dimension for Qdrant collection initialisation")
 
     def ensure_collection(self, collection_name: Optional[str] = None) -> None:
-        """Ensure the specified Qdrant collection exists with the right vector size."""
+        """Ensure the specified Qdrant collection exists with the right vector size (nothing to do on pgvector: the table is created by migration)."""
 
+        if self._pg_active():
+            return
         if self.client is None:
             raise RuntimeError("Qdrant client is not configured on AgentNick")
 

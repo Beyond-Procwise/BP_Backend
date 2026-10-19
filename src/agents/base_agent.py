@@ -972,7 +972,7 @@ class BaseAgent:
         except Exception:  # pragma: no cover - optional dependency missing
             logger.debug("Conversation memory service unavailable", exc_info=True)
             return None
-        if not getattr(self.agent_nick, "qdrant_client", None):
+        if not _vector_backend_ready(self.agent_nick):
             return None
         if not getattr(self.agent_nick, "embedding_model", None):
             return None
@@ -1906,6 +1906,12 @@ class BaseAgent:
             raise AttributeError("AgentNick must provide an s3_client")
         yield client
 
+def _vector_backend_ready(agent_nick: Any) -> bool:
+    """True when there is a vector backend to use: pgvector (a database table), or a Qdrant client on the agent."""
+    from src.services.vector_store.backend import use_pgvector
+    return use_pgvector() or bool(getattr(agent_nick, "qdrant_client", None))
+
+
 class AgentNick:
     def __init__(self):
         logger.info("AgentNick is waking up...")
@@ -1922,21 +1928,7 @@ class AgentNick:
         # (The two other QdrantClient constructions in the tree are one-off
         # migration scripts.)
         from src.services import egress as _egress
-        # A blank key means "no auth" (the local container). Passing "" makes
-        # qdrant_client send an empty api-key header and warn about an insecure
-        # connection on every boot.
-        _qdrant_key = (self.settings.qdrant_api_key or "").strip() or None
-        self.qdrant_client = _egress.vector_client(
-            purpose=_egress.Purpose.VECTOR_INDEX,
-            url=self.settings.qdrant_url,
-            api_key=_qdrant_key,
-        )
-        # Nothing below may touch Qdrant until it answers. The learning
-        # repository and the static policy sync both run inside this
-        # constructor and both swallow their own failures, so without this
-        # gate a boot that overtakes the Qdrant container comes up looking
-        # healthy with nothing in the vector store.
-        self._await_qdrant_ready()
+        self._init_vector_backend()
         self.embedding_model = SentenceTransformer(self.settings.embedding_model, device=self.device)
         self.learning_repository = LearningRepository(self)
         self.static_policy_loader: Optional[StaticPolicyLoader] = None
@@ -1981,7 +1973,9 @@ class AgentNick:
         # Set by api/main.py once the catalogue is loaded. AgentNick needs it to
         # advertise the agents as tools it can call.
         self.auto_registry = None
-        self._initialize_qdrant_collection()
+        from src.services.vector_store.backend import use_pgvector as _use_pgvector
+        if not _use_pgvector():
+            self._initialize_qdrant_collection()
         self._preload_ollama_model()
         self._verify_neo4j()
         logger.info("AgentNick is ready.")
@@ -2011,6 +2005,42 @@ class AgentNick:
         from orchestration.agentnick_control import build_tools
 
         return build_tools(self)
+
+    def _init_vector_backend(self) -> None:
+        """Set up the vector backend: pgvector needs no client and no wait, only a loud check that its table is reachable.
+
+        On Qdrant this builds the one production client and holds startup until it answers (the original behaviour, unchanged).
+        """
+        from src.services.vector_store.backend import use_pgvector
+        if use_pgvector():
+            self.qdrant_client = None
+            try:
+                from src.services.vector_store import DEFAULT_TENANT, get_vector_store
+                n = get_vector_store().count(DEFAULT_TENANT, collection="documents")
+                if n == 0:
+                    logger.warning("The vector store holds no document vectors; run the rebuild if documents have been extracted")
+                else:
+                    logger.info("Vector store ready: %d document vectors", n)
+            except Exception:
+                # Loud on purpose: a missing table would otherwise look like an empty corpus (the Qdrant outage lesson).
+                logger.exception("The vector store is not reachable or its table is missing; search will return nothing until it is")
+            return
+        from src.services import egress as _egress
+        # A blank key means "no auth" (the local container). Passing "" makes
+        # qdrant_client send an empty api-key header and warn about an insecure
+        # connection on every boot.
+        _qdrant_key = (self.settings.qdrant_api_key or "").strip() or None
+        self.qdrant_client = _egress.vector_client(
+            purpose=_egress.Purpose.VECTOR_INDEX,
+            url=self.settings.qdrant_url,
+            api_key=_qdrant_key,
+        )
+        # Nothing below may touch Qdrant until it answers. The learning
+        # repository and the static policy sync both run inside this
+        # constructor and both swallow their own failures, so without this
+        # gate a boot that overtakes the Qdrant container comes up looking
+        # healthy with nothing in the vector store.
+        self._await_qdrant_ready()
 
     def _await_qdrant_ready(self) -> None:
         """Hold startup until the vector store answers, or say so plainly."""

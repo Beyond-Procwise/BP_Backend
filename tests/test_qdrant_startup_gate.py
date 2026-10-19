@@ -183,18 +183,27 @@ def test_the_gate_runs_before_anything_that_uses_qdrant():
     placed after either of them would pass every other test here while the
     box still booted with an empty vector store. This asserts the position,
     not just the existence, of the call.
+
+    The gate now lives in ``_init_vector_backend`` (which also handles the pgvector backend, where there is nothing to wait for), so the
+    constructor must call that helper before either consumer, and the helper must run the gate right after it builds the client and
+    before it returns.
     """
     import inspect
 
-    src = inspect.getsource(_agent_nick_class().__init__)
+    cls = _agent_nick_class()
+    src = inspect.getsource(cls.__init__)
 
-    gate = src.find("self._await_qdrant_ready()")
-    assert gate != -1, "AgentNick.__init__ no longer consults the readiness gate"
-
+    backend = src.find("self._init_vector_backend()")
+    assert backend != -1, "AgentNick.__init__ no longer sets up the vector backend (and so no longer consults the readiness gate)"
     for consumer in ("LearningRepository(", "_initialise_static_policy_corpus("):
         at = src.find(consumer)
         assert at != -1, f"{consumer} moved out of __init__ -- re-check the gate"
-        assert gate < at, (
-            f"the readiness gate must run before {consumer}; a consumer that "
+        assert backend < at, (
+            f"the vector backend (and its readiness gate) must be set up before {consumer}; a consumer that "
             "runs first fails silently against a Qdrant that is not up yet"
         )
+
+    helper = inspect.getsource(cls._init_vector_backend)
+    built = helper.find("_egress.vector_client(")
+    gate = helper.find("self._await_qdrant_ready()")
+    assert built != -1 and gate != -1 and built < gate, "on Qdrant the client must be built and then the gate consulted"
