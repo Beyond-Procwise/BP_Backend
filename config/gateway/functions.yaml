@@ -12,3 +12,11 @@ functions:
   find_applicable_contracts: {kind: read, max_rows: 25}
   get_approval_chain:       {kind: read, max_rows: 10}      # UNSUPPORTED until approval rules exist as structured data
   evaluate_approval_status: {kind: read, max_rows: 10}      # UNSUPPORTED, same reason
+  # Batch 2: the corpus_facts intents, row-scoped by buyer. limit is capped here (default 10 matches the legacy top-N).
+  get_supplier_overview:    {kind: read, max_rows: 25}
+  get_invoice_overview:     {kind: read, max_rows: 25}
+  get_quote_overview:       {kind: read, max_rows: 25}
+  get_purchase_order_overview: {kind: read, max_rows: 25}
+  list_deals:               {kind: read, max_rows: 25}
+  get_findings_overview:    {kind: read, max_rows: 25}
+  list_policies:            {kind: read, max_rows: 25}

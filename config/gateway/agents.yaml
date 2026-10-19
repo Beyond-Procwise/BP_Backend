@@ -6,18 +6,18 @@ defaults: {max_steps: 4, max_retries: 1, max_data_requests_per_step: 3}
 agents:
   ask_policy:
     purpose: Explain governed policy and process, citing the source.
-    reads: [search_documents, get_policy, find_applicable_contracts, get_approval_chain]
+    reads: [search_documents, get_policy, list_policies, find_applicable_contracts, get_approval_chain]
     writes: []
     prefetch: policy_default
     max_data_requests_per_step: 2
   ask_records:
     purpose: Answer a lookup about a named record.
-    reads: [resolve_entity, get_record, get_po_status]
+    reads: [resolve_entity, get_record, get_po_status, list_deals]
     writes: []
     prefetch: records_default
   ask_analytics:
     purpose: Answer an aggregate question over a period.
-    reads: [get_spend_summary]
+    reads: [get_spend_summary, get_supplier_overview, get_invoice_overview, get_quote_overview, get_purchase_order_overview, get_findings_overview]
     writes: []
     prefetch: analytics_default
     max_data_requests_per_step: 4

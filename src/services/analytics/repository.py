@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 from decimal import Decimal
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Optional, Sequence, Tuple
 
 from src.services.analytics.currency import DEFAULT_CURRENCY, NATIVE, DisplayCurrency
 from src.services.analytics.period import Period
@@ -54,9 +54,20 @@ SELECT COUNT(DISTINCT supplier_id)::int AS suppliers,
 """
 
 
-def fetch_supplier_spend(cur, period: Period) -> List[SupplierSpendRow]:
-    """Every supplier's spend in the period, split by the currency it was billed in."""
-    cur.execute(_SUPPLIER_SPEND_SQL, (period.start, period.end))
+_SUPPLIER_SPEND_SCOPED_SQL = _SUPPLIER_SPEND_SQL.replace(
+    "\n GROUP BY", "\n   AND i.buyer_id::text = ANY(%s)\n GROUP BY", 1)
+
+
+def fetch_supplier_spend(cur, period: Period, buyer_ids: Optional[Sequence[str]] = None) -> List[SupplierSpendRow]:
+    """Every supplier's spend in the period, split by the currency it was billed in.
+
+    ``buyer_ids`` restricts it to those buyers' invoices (the gateway passes a restricted caller's scope);
+    ``None`` is the whole population, as before.
+    """
+    if buyer_ids is None:
+        cur.execute(_SUPPLIER_SPEND_SQL, (period.start, period.end))
+    else:
+        cur.execute(_SUPPLIER_SPEND_SCOPED_SQL, (period.start, period.end, list(buyer_ids)))
     columns = [d[0] for d in cur.description]
     rows: List[SupplierSpendRow] = []
     for record in cur.fetchall():

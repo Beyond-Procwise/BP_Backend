@@ -1,8 +1,8 @@
 """Batch 1 gateway functions. Fixed, parameterised SQL only; user text is only ever a bound parameter.
 
-Row scope in Batch 1: purchase orders (and anything reached through them) are restricted to the caller's buyer ids
-(``CallerContext.buyer_scope``; ``None`` = unrestricted, an empty tuple sees nothing). Suppliers, contracts, policies and
-the invoice aggregate carry no buyer column that maps to ``bp_user_buyer_scope`` and are NOT row-scoped yet; that waits on
+Row scope: purchase orders (and anything reached through them) and, since Batch 2, the invoice aggregate are restricted to the caller's buyer ids
+(``CallerContext.buyer_scope``; ``None`` = unrestricted, an empty tuple sees nothing). Suppliers, contracts and
+policies carry no buyer column that maps to ``bp_user_buyer_scope`` and are NOT row-scoped yet; that waits on
 the tenant/reseller decision (spec section F, item 1).
 
 A store that cannot be read raises, and the gateway turns that into UNAVAILABLE. It is never returned as an empty result.
@@ -20,45 +20,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from src.services import ask_exact_id, ask_po_status
 
 from .broker import CONFIG_DIR
+from .common import _P, _PO_TABLE, _blind, _connect, _prov, _rows, _scope_sql
 from .context import CallerContext
 from .envelope import GatewayFault, Raw
 from .gateway import Backends, FunctionSpec
 
 EntityType = Literal["supplier", "customer", "reseller", "sku", "quote", "order", "po", "invoice", "contract", "rfq", "programme"]
 _IMPLEMENTED = ("po", "supplier", "contract", "sku")
-_PO_TABLE = "bp_purchase_order_trgt"
-
-
-class _P(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-
-def _prov(table: str, ids: List[str], store: str = "postgres") -> Dict[str, Any]:
-    return {"store": store, "table": table, "record_ids": [str(i) for i in ids]}
-
-
-def _connect(backends: Optional[Backends]):
-    if backends is None or backends.connect is None:
-        raise GatewayFault("UNAVAILABLE", "no database connection is configured for the gateway", retryable=True)
-    return backends.connect
-
-
-def _rows(cur: Any, sql: str, params: tuple) -> List[Dict[str, Any]]:
-    cur.execute(sql, params)
-    cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, r)) for r in cur.fetchall()]
-
-
-def _scope_sql(ctx: CallerContext, column: str) -> Tuple[str, tuple]:
-    """The buyer clause for this caller, or nothing for an unrestricted one."""
-    if ctx.buyer_scope is None:
-        return "", ()
-    return f" AND {column}::text = ANY(%s)", (list(ctx.buyer_scope),)
-
-
-def _blind(ctx: CallerContext) -> bool:
-    """An empty scope sees no purchase orders at all; no query is needed to know that."""
-    return ctx.buyer_scope is not None and len(ctx.buyer_scope) == 0
 
 
 def _visible_po(cur: Any, ctx: CallerContext, po_id: str) -> Optional[Dict[str, Any]]:
@@ -202,8 +170,12 @@ def get_spend_summary(ctx: CallerContext, p: GetSpendSummaryParams, backends: Op
     from src.services.analytics import repository
     from src.services.analytics.period import Period
     connect = _connect(backends)
-    with connect() as conn, conn.cursor() as cur:
-        rows = repository.fetch_supplier_spend(cur, Period(p.period_start, p.period_end, f"{p.period_start}..{p.period_end}"))
+    if _blind(ctx):
+        rows = []
+    else:
+        with connect() as conn, conn.cursor() as cur:
+            rows = repository.fetch_supplier_spend(cur, Period(p.period_start, p.period_end, f"{p.period_start}..{p.period_end}"),
+                                                   buyer_ids=ctx.buyer_scope)
     totals: Dict[str, Decimal] = {}
     for r in rows:
         totals[r.currency] = totals.get(r.currency, Decimal(0)) + r.amount
@@ -333,6 +305,11 @@ _DECLARED = {
     "get_approval_chain": (GetApprovalChainParams, get_approval_chain),
     "evaluate_approval_status": (EvaluateApprovalParams, evaluate_approval_status),
 }
+
+
+from .batch2 import DECLARED as _BATCH2  # noqa: E402
+
+_DECLARED.update(_BATCH2)
 
 
 def build_catalogue(config_path: Optional[str] = None) -> Dict[str, FunctionSpec]:

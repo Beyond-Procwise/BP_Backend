@@ -94,15 +94,33 @@ is spread across modules or lacks scope/provenance; **MISSING** = nothing to wra
 | `evaluate_approval_status` | Is the approval requirement for this specific document satisfied? | `doc_type`, `doc_id` | **MISSING** (deterministic evaluation over recorded approvals + chain) | "Is PO-123 fully approved?" |
 | `find_applicable_contracts` | Which contracts govern this supplier/customer/SKU on this date? | `supplier_id|customer_id`, `sku?`, `date` | PARTIAL: contract tables + KG `Contract` nodes; cross-store join to build | "Which contract covers licences from Ironbridge?" |
 
-### B.2 Batch 2: decompose `corpus_facts` and analytics into named questions
+### B.2 Batch 2: the `corpus_facts` intents as named, row-scoped functions (BUILT 2026-10-19)
 
-Each current `corpus_facts` intent becomes its own function with typed params. Proposed (confirm the list against `corpus_facts.py`
-intents when Batch 2 is specified):
+**Correction.** The first version of this section listed `get_open_pos`, `get_overdue_invoices`, `get_supplier_performance`,
+`get_price_history`, `get_contract_expiry` and others. Those names were inferred and do not match `corpus_facts`, which has exactly
+eight intents. Batch 2 follows the code, not the guess. The names above that do not exist as legacy intents (open POs, overdue
+invoices, supplier performance, price history, contract expiry as a list, savings opportunities, demand summary) move to a later
+batch and are still unbuilt.
 
-`get_open_pos(filters, limit)` · `get_overdue_invoices(as_of, filters, limit)` · `get_supplier_performance(supplier_id, period)` ·
-`get_price_history(sku|supplier_id, period)` · `get_savings_opportunities(filters, limit)` (wraps existing opportunity tools) ·
-`get_discrepancies(filters, limit)` (wraps triage findings) · `get_contract_expiry(window_days, filters)` ·
-`get_deal_summary(deal_id)` · `list_deals(filters, limit)` · `get_demand_summary(period, group_by)` (wraps `analytics/demand.py`).
+| Legacy intent | Function | Scope | Notes |
+|---|---|---|---|
+| suppliers | `get_supplier_overview(limit)` | invoices by `buyer_id` | the count of every supplier on record is the whole population; withheld from a restricted caller |
+| invoices | `get_invoice_overview(limit)` | `buyer_id` | |
+| quotes | `get_quote_overview(limit)` | `buyer_id` | totals count each quote once at its latest version |
+| purchase_orders | `get_purchase_order_overview(limit)` | `buyer_id` | |
+| deals | `list_deals(limit)` | `buyer_id` (overview and documents) | |
+| findings | `get_findings_overview(limit)` | through the finding's document, its deal, the deal's buyer (the report builder's rule) | findings with no deal: unrestricted callers only |
+| policies | `list_policies(limit)` | none: the organisation's own governed rule set | |
+| spend | `get_spend_summary` (Batch 1) | now scoped by invoice `buyer_id` | deliberate divergence: per supplier **and currency**, never one summed figure |
+
+Each returns a dict keyed exactly as the legacy facts were. Verified on `bp_testdb`: for an unrestricted caller the rows and the
+rendered prompt text are identical to the legacy queries for all seven non-spend intents.
+`limit` is capped at 25 (legacy 10). Under `ASK_GATEWAY` the `/ask` corpus lookup calls these as the caller; with no caller it reads
+no record rows.
+
+Not covered: the knowledge-graph description (`corpus_facts.fetch_graph`) still reads Neo4j directly and is not caller-scoped.
+RBAC action-class gating (`invoice.read`, `quote.read`, `deal.read`, `finding.read`, as the report builder applies) is not applied
+here; scope is by buyer only. Both are open decisions for review.
 
 ### B.3 Batch 3: supply chain, reseller/channel, sales, CPQ (mostly MISSING)
 
@@ -244,5 +262,4 @@ governed limit can only lower it.
    I will list them as `UNSUPPORTED` in the registry and log asks to the function backlog until you decide.
 8. **Review of this catalogue:** confirm Batch 1 as the first build (all wrapping existing code, no new store, no migration).
 
-**Not verified:** function names in B.2 are inferred from `corpus_facts`/analytics module names, not yet from a line-by-line read of each
-intent; exact params get fixed when each batch is specified. Nothing in this document has been run.
+**Not verified:** Batch 1 and Batch 2 sections describe built and tested code. Batch 3 and the write functions are still design only.

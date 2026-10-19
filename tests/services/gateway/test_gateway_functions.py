@@ -244,7 +244,7 @@ def test_catalogue_and_functions_yaml_declare_exactly_the_same_functions():
     g = build_default_gateway()
     assert set(cfg["functions"]) == set(g.functions) and cfg["version"] >= 1
     assert {"resolve_entity", "get_record", "get_po_status", "get_spend_summary", "search_documents", "get_policy",
-            "find_applicable_contracts", "get_approval_chain", "evaluate_approval_status"} == set(g.functions)
+            "find_applicable_contracts", "get_approval_chain", "evaluate_approval_status"} <= set(g.functions)     # Batch 1
 
 
 def test_no_catalogue_function_takes_a_free_form_query_parameter():

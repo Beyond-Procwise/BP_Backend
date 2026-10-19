@@ -2798,6 +2798,30 @@ class RAGPipeline:
         self.history_manager.save_history(user_id, history)
         return {"answer": text, "follow_ups": [], "retrieved_documents": [], "next_steps": []}
 
+    def _corpus_facts(self, query: str, caller: Optional[Any] = None) -> Optional[Dict[str, Any]]:
+        """Counted corpus facts for the question. Under ``ASK_GATEWAY`` they are read through the gateway as the caller.
+
+        Fails closed: with no caller context no record rows are read (the knowledge-graph description, which names no
+        records, still is). A failed read is stated in the facts rather than left to look like an empty corpus.
+        """
+        if not ask_flags.enabled(ask_flags.GATEWAY):
+            return corpus_facts.fetch_facts(self.agent_nick, query)
+        from src.services.gateway.corpus import facts_via_gateway
+        intent = corpus_facts.detect_intent(query)
+        if caller is None:
+            if intent:
+                logger.warning("ASK_GATEWAY is on but no caller context reached the pipeline; corpus facts skipped")
+            facts: Dict[str, Any] = {}
+        else:
+            with ask_trace.current().span("corpus_facts"):
+                facts = facts_via_gateway(self._ask_gateway(), caller.for_agent("ask_analytics"), intent)
+        graph = corpus_facts.fetch_graph(query)
+        if graph:
+            facts["knowledge_graph"] = graph
+        if not any(facts.values()):
+            return None
+        return {"intent": intent or "graph", **facts}
+
     def _ask_gateway(self) -> Any:
         """The in-process data gateway, built once. Record lookups under ``ASK_GATEWAY`` go through it."""
         gw = getattr(self, "_gw", None)
@@ -3344,7 +3368,7 @@ class RAGPipeline:
         corpus_context = ""
         if not restrict_to_uploaded:
             try:
-                corpus = corpus_facts.fetch_facts(self.agent_nick, query)
+                corpus = self._corpus_facts(query, caller)
             except Exception:
                 logger.exception("Corpus fact lookup failed")
                 corpus = None
