@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from api.auth import require_user
+from api.endpoint_gate import require as gate
 from src.services import intent_router
 
 logger = logging.getLogger(__name__)
@@ -38,4 +39,6 @@ def _supplier_lookup(text: str) -> List[Tuple[str, str]]:
 
 @router.post("/route", summary="What a free-text request is asking for")
 def route_intent(body: RouteBody, principal=Depends(require_user)) -> Dict[str, Any]:
+    # It proposes only, but it looks supplier names up to do so: asked as reading a report, first.
+    gate("report.read", principal, agent="IntentRouter")
     return intent_router.route(body.text, supplier_lookup=_supplier_lookup)

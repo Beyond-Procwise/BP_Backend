@@ -19,6 +19,7 @@ def client(monkeypatch):
         return [("SUP-AcmeLtd", "Acme Ltd")] if "acme" in text.lower() else []
 
     monkeypatch.setattr(ir_router, "_supplier_lookup", lookup)
+    monkeypatch.setattr(ir_router, "gate", lambda *a, **k: None)   # about routing; tests/api/test_intent_route_gate.py covers the gate
     app = FastAPI()
     app.include_router(ir_router.router)
     app.dependency_overrides[ir_router.require_user] = lambda: _P()
