@@ -168,9 +168,13 @@ def post_review(opportunity_id: str, body: ReviewDecision,
 @router.post("/sync", summary="Sync miner JSON findings into proc.bp_opportunity")
 def post_sync(path: Optional[str] = None, principal=Depends(require_user)) -> dict[str, Any]:
     gate("opportunity.mine", principal, agent="opportunities_api")
-    findings_path = path or os.path.join(
+    findings_path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
         "opportunity_findings.json")
+    # The miner writes this one file; a caller-named path would let any permitted user make the
+    # server read, and try to load, whichever file they choose.
+    if path and os.path.realpath(path) != os.path.realpath(findings_path):
+        raise HTTPException(status_code=400, detail="path must be the miner's findings file")
     try:
         result = sync_findings_from_json(findings_path)
     except FileNotFoundError:

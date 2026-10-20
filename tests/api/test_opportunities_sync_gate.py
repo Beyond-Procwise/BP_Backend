@@ -39,9 +39,9 @@ def _refuse(*a, **k):
 
 def test_sync_asks_to_mine_opportunities(rig):
     http, asked, did, _mp = rig
-    assert http.post("/opportunities/sync", params={"path": "/x.json"}).status_code == 200
+    assert http.post("/opportunities/sync").status_code == 200
     assert asked == ["opportunity.mine"]
-    assert did == [("sync", "/x.json")]
+    assert [d[0] for d in did] == ["sync"]
 
 
 def test_sync_refused_reads_no_file_and_writes_nothing(rig):
@@ -63,3 +63,29 @@ def test_link_deals_refused_links_nothing(rig):
     mp.setattr(opp, "gate", _refuse)
     assert http.post("/opportunities/link-deals").status_code == 403
     assert did == []
+
+
+# --- the caller may not name an arbitrary file (audit RT-6b) -----------------------------------------
+@pytest.mark.parametrize("bad", ["/etc/passwd", "../../../etc/passwd", "/tmp/other.json",
+                                 "opportunity_findings.json/../../x.json"])
+def test_sync_refuses_a_path_outside_the_findings_file(rig, bad):
+    http, _asked, did, _mp = rig
+    assert http.post("/opportunities/sync", params={"path": bad}).status_code == 400
+    assert did == []
+
+
+def test_sync_accepts_the_findings_file_by_name_or_default(rig):
+    http, _asked, did, _mp = rig
+    assert http.post("/opportunities/sync").status_code == 200
+    default = did[0][1]
+    assert default.endswith("opportunity_findings.json")
+    assert http.post("/opportunities/sync", params={"path": default}).status_code == 200
+    assert did[1][1] == default
+
+
+def test_sync_accepts_the_bare_file_name_from_the_repo_root(rig):
+    http, _asked, did, mp = rig
+    mp.chdir(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+    assert http.post("/opportunities/sync", params={"path": "opportunity_findings.json"}).status_code == 200
+    mp.chdir("/tmp")
+    assert http.post("/opportunities/sync", params={"path": "opportunity_findings.json"}).status_code == 400
