@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from api.auth import require_user
+from api.endpoint_gate import require as gate
 from src.services.db import get_conn
 from src.services.extraction_feedback import apply, proposer
 
@@ -78,6 +79,9 @@ def get_proposal(proposal_id: int):
 
 @router.post("/proposals/{proposal_id}/approve")
 def approve_proposal(proposal_id: int, body: ReviewBody, principal=Depends(require_user)):
+    # Approving writes a versioned hint into proc.bp_prompt, live on reload: promoting a prompt.
+    gate("prompt.promote", principal, agent="ExtractionFeedbackRouter",
+         context={"proposal_id": proposal_id})
     try:
         return apply.approve(proposal_id, _approver(principal))
     except ValueError as exc:
@@ -86,6 +90,9 @@ def approve_proposal(proposal_id: int, body: ReviewBody, principal=Depends(requi
 
 @router.post("/proposals/{proposal_id}/reject")
 def reject_proposal(proposal_id: int, body: ReviewBody, principal=Depends(require_user)):
+    # The reviewer's decision on the same hint: asked as the same action as approving it.
+    gate("prompt.promote", principal, agent="ExtractionFeedbackRouter",
+         context={"proposal_id": proposal_id})
     try:
         apply.reject(proposal_id, _approver(principal), body.reason)
     except ValueError as exc:
@@ -97,5 +104,8 @@ def reject_proposal(proposal_id: int, body: ReviewBody, principal=Depends(requir
 def run_proposer(window_days: int = 14, draft: bool = True,
                  principal=Depends(require_user)):
     """Trigger the proposer on demand (ops/validation)."""
+    # It only creates draft proposals, nothing goes live: authoring a prompt.
+    gate("prompt.author", principal, agent="ExtractionFeedbackRouter",
+         context={"window_days": window_days, "draft": draft})
     ids = proposer.propose_all(window_days=window_days, draft=draft)
     return {"created": ids, "count": len(ids)}

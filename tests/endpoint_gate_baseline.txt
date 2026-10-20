@@ -23,9 +23,6 @@ src/api/routers/draft_assurance.py::POST router /{unique_id}/abandon::abandon
 src/api/routers/draft_assurance.py::POST router /{unique_id}/assumptions/confirm::confirm
 src/api/routers/draft_assurance.py::POST router /{unique_id}/preflight::preflight
 src/api/routers/email.py::POST router /emailwatcher::trigger_email_watcher
-src/api/routers/extraction_feedback.py::POST router /proposals/run::run_proposer
-src/api/routers/extraction_feedback.py::POST router /proposals/{proposal_id}/approve::approve_proposal
-src/api/routers/extraction_feedback.py::POST router /proposals/{proposal_id}/reject::reject_proposal
 src/api/routers/governance.py::POST router /govern::govern
 src/api/routers/i18n.py::POST router /languages/resolve::resolve
 src/api/routers/i18n.py::POST router /strings::strings

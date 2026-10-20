@@ -182,6 +182,7 @@ def test_without_a_principal_a_deal_is_confirmed_by_nobody(monkeypatch):
 def test_approving_a_hint_proposal_is_attributed_to_the_token(monkeypatch):
     from api.routers import extraction_feedback
 
+    monkeypatch.setattr(extraction_feedback, "gate", lambda *a, **k: None)  # attribution test; the gate has its own
     seen = {}
     monkeypatch.setattr(extraction_feedback.apply, "approve",
                         lambda pid, approver: seen.update(approver=approver) or {"prompt_id": 1, "version": 1})
@@ -197,6 +198,7 @@ def test_approving_a_hint_proposal_is_attributed_to_the_token(monkeypatch):
 def test_rejecting_a_hint_proposal_is_attributed_to_the_token(monkeypatch):
     from api.routers import extraction_feedback
 
+    monkeypatch.setattr(extraction_feedback, "gate", lambda *a, **k: None)  # attribution test; the gate has its own
     seen = {}
     monkeypatch.setattr(extraction_feedback.apply, "reject",
                         lambda pid, approver, reason=None: seen.update(approver=approver))
@@ -212,6 +214,7 @@ def test_without_a_principal_a_hint_is_not_approved_as_api(monkeypatch):
     """The model's default was the literal "api", written to bp_prompt.created_by."""
     from api.routers import extraction_feedback
 
+    monkeypatch.setattr(extraction_feedback, "gate", lambda *a, **k: None)  # attribution test; the gate has its own
     seen = {}
     monkeypatch.setattr(extraction_feedback.apply, "approve",
                         lambda pid, approver: seen.update(approver=approver) or {"prompt_id": 1, "version": 1})
