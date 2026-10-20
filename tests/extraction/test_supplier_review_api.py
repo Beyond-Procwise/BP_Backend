@@ -32,7 +32,7 @@ def around():
 
 
 @pytest.fixture
-def client():
+def client(monkeypatch):
     from api.auth import Principal, require_user
 
     app = FastAPI(); app.include_router(supplier_review.router)
@@ -42,6 +42,7 @@ def client():
     # reviewer, which is the only way the screen is reached: a token without a
     # subject is refused, and an alias cannot be saved without who made it.
     app.dependency_overrides[require_user] = lambda: Principal(subject=REVIEWER)
+    monkeypatch.setattr(supplier_review, "gate", lambda *a, **k: None)
     return TestClient(app)
 
 
@@ -95,7 +96,7 @@ def test_reject_creates_distinct_supplier(client):
     assert client.post(f"/suppliers/reviews/{rid}/reject", json={"reviewer": "t"}).status_code == 409
 
 
-def test_with_sign_in_off_a_decision_is_saved_and_says_nobody_was_identified():
+def test_with_sign_in_off_a_decision_is_saved_and_says_nobody_was_identified(monkeypatch):
     """require_user returns None only when auth is explicitly off. That used to
     reach the alias insert as a NULL author and come back as a 500. The body's
     'reviewer' still signs nothing."""
@@ -103,6 +104,7 @@ def test_with_sign_in_off_a_decision_is_saved_and_says_nobody_was_identified():
 
     app = FastAPI(); app.include_router(supplier_review.router)
     app.dependency_overrides[require_user] = lambda: None
+    monkeypatch.setattr(supplier_review, "gate", lambda *a, **k: None)
     anonymous = TestClient(app)
 
     name = f"{PFX} Nobody Signed Ltd"

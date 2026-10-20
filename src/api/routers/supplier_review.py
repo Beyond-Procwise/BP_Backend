@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from api.auth import require_user
+from api.endpoint_gate import require as gate
 from src.services.db import get_conn
 from src.services.extraction_v3 import supplier_resolver as SR
 
@@ -130,6 +131,7 @@ def list_reviews(status: str = "pending", limit: int = 100):
 @router.post("/reviews/sweep")
 def sweep_duplicates(min_score: float | None = None, principal=Depends(require_user)):
     """Scan existing suppliers for likely duplicates and flag them for review."""
+    gate("supplier.write", principal, agent="SupplierReviewRouter")
     with get_conn() as c:
         return SR.sweep_supplier_duplicates(c, min_score=min_score)
 
@@ -151,6 +153,8 @@ def _reviewer(principal) -> str:
 @router.post("/reviews/{review_id}/confirm")
 def confirm_review(review_id: int, body: ReviewBody, principal=Depends(require_user)):
     """The extracted name IS the candidate supplier — merge (alias to canonical)."""
+    gate("supplier.write", principal, agent="SupplierReviewRouter",
+         context={"review_id": review_id, "decision": "confirm"})
     with get_conn() as c:
         try:
             return SR.confirm_review(review_id, _reviewer(principal), c)
@@ -161,6 +165,8 @@ def confirm_review(review_id: int, body: ReviewBody, principal=Depends(require_u
 @router.post("/reviews/{review_id}/reject")
 def reject_review(review_id: int, body: ReviewBody, principal=Depends(require_user)):
     """The extracted name is a DISTINCT supplier — keep it separate (alias to its own id)."""
+    gate("supplier.write", principal, agent="SupplierReviewRouter",
+         context={"review_id": review_id, "decision": "reject"})
     with get_conn() as c:
         try:
             return SR.reject_review(review_id, _reviewer(principal), c)
