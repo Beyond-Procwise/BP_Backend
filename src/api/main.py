@@ -86,6 +86,7 @@ from api.routers import sales as sales_router
 from api.routers import quote_builder as quote_builder_router
 from api.routers import reports as reports_router
 from api.routers import triage as triage_router
+from api.routers import compliance as compliance_router
 from api.routers import atb as atb_router
 from api.routers import i18n as i18n_router
 from api.routers import agent_policies as agent_policies_router
@@ -559,6 +560,8 @@ app.include_router(ws_router_mod.router)
 # so they are NOT in _AUTHENTICATED_ROUTERS: the browser never calls them directly.
 app.include_router(agent_policies_router.router)
 app.include_router(agent_policies_router.orchestrator_router)
+# Gateway-only, like the agent-policy routes above: key + verified identity, not a bearer token.
+app.include_router(compliance_router.router)
 app.include_router(prompts_router.router)
 
 # The one signed-out translation path: the sign-in screens' text, from cache only. It takes
