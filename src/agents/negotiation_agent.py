@@ -1687,10 +1687,14 @@ class NegotiationAgent(BaseAgent):
 
         return identifier
 
-    def execute(self, context: AgentContext) -> AgentOutput:
-        """Execute the negotiation agent and persist consolidated email drafts."""
+    def execute(self, context: AgentContext, **kwargs: Any) -> AgentOutput:
+        """Execute the negotiation agent and persist consolidated email drafts.
 
-        result = super().execute(context)
+        ``kwargs`` (``tool_loop``) go straight to ``BaseAgent.execute``: a derived agent backed by
+        this class is run in tool-loop mode by the workflow engine and the agent-as-tool path.
+        """
+
+        result = super().execute(context, **kwargs)
         try:
             self._flush_email_draft_actions(context, result)
         except Exception:  # pragma: no cover - defensive logging of email actions

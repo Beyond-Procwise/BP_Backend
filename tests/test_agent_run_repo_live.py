@@ -31,10 +31,16 @@ def slug():
     repo.ensure_schema()
     name = f"test-agent-{repo.new_run_id()[:10]}"
     yield name
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute("DELETE FROM proc.bp_agent_run WHERE agent_slug = %s", (name,))
-        cur.close()
+    # Once proc.bp_agent_run is append-only (deploy/sql/2026-10-20_bp_agent_run_immutable.sql) a
+    # run is never tidied away, so this clean-up is best effort: the rows are labelled
+    # ``test-agent-*`` and every assertion above is scoped to this test's own slug.
+    try:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM proc.bp_agent_run WHERE agent_slug = %s", (name,))
+            cur.close()
+    except Exception:  # noqa: BLE001 - append-only refuses the delete
+        pass
 
 
 def _record(slug, run_id, *, at, error=None, user="u1", tokens=(2300, 180, 3)):
