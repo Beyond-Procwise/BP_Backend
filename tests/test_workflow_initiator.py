@@ -221,8 +221,11 @@ _STARTS = [
 ]
 
 
-def _started(module_name, path, body, subject):
+def _started(module_name, path, body, subject, monkeypatch):
     module = __import__(f"api.routers.{module_name}", fromlist=["*"])
+    # About who the run is attributed to, not the gate (each gated route has its own gate tests).
+    if hasattr(module, "gate"):
+        monkeypatch.setattr(module, "gate", lambda *a, **k: None)
     orch = _Orchestrator()
     client = _app(module.router, subject=subject,
                   overrides={module.get_orchestrator: lambda: orch})
@@ -232,8 +235,8 @@ def _started(module_name, path, body, subject):
 
 @pytest.mark.parametrize("module_name,path,body", _STARTS, ids=[p for _, p, _ in _STARTS])
 def test_a_workflow_started_through_the_api_is_started_by_the_token(
-        module_name, path, body):
-    r, orch = _started(module_name, path, body, CALLER)
+        module_name, path, body, monkeypatch):
+    r, orch = _started(module_name, path, body, CALLER, monkeypatch)
 
     assert orch.calls, f"{path} never reached the orchestrator ({r.status_code}: {r.text[:200]})"
     assert orch.calls[-1][1] == CALLER, (
@@ -241,8 +244,8 @@ def test_a_workflow_started_through_the_api_is_started_by_the_token(
 
 
 @pytest.mark.parametrize("module_name,path,body", _STARTS[:2], ids=[p for _, p, _ in _STARTS[:2]])
-def test_without_a_principal_the_workflow_is_started_by_nobody(module_name, path, body):
-    r, orch = _started(module_name, path, body, None)
+def test_without_a_principal_the_workflow_is_started_by_nobody(module_name, path, body, monkeypatch):
+    r, orch = _started(module_name, path, body, None, monkeypatch)
 
     assert orch.calls and orch.calls[-1][1] is None, orch.calls
 

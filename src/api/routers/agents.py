@@ -83,6 +83,8 @@ async def agent_nick_reason(req: ReasonRequest, agent_nick=Depends(get_agent_nic
     which agent ran, which governed policy was fetched, and which corpus figures
     the answer was built from.
     """
+    # AgentNick plans and calls tools on a free-text task: asked as running an agent.
+    gate("agent.run", principal, agent="AgentsRouter")
     try:
         result = agent_nick.reason(
             req.task,
@@ -1363,6 +1365,8 @@ def process_document(
     principal=Depends(require_user),
 ):
     """Convenience endpoint to run the document extraction workflow."""
+    gate("workflow.run", principal, agent="AgentsRouter",
+         context={"workflow": "document_extraction"})
     payload = {"s3_prefix": req.s3_prefix, "s3_object_key": req.s3_object_key}
     return orchestrator.execute_workflow(
         "document_extraction", payload,

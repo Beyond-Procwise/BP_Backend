@@ -4,8 +4,6 @@ src/api/routers/agent_groups.py::POST router ::create_group
 src/api/routers/agent_groups.py::PUT router /{group_id}::update_group
 src/api/routers/agent_workflows.py::POST router /runs/{run_id}/input::submit_input
 src/api/routers/agents.py::POST router /execute::execute_agent
-src/api/routers/agents.py::POST router /process-document::process_document
-src/api/routers/agents.py::POST router /reason::agent_nick_reason
 src/api/routers/analysis.py::POST router ::post_analysis
 src/api/routers/benchmark.py::POST router /preview::benchmark_preview
 src/api/routers/deal_proposals.py::PATCH router /proposals/{proposal_id}/members::patch_members
