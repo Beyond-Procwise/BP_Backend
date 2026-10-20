@@ -289,9 +289,11 @@ def test_without_a_principal_the_process_names_no_user():
     assert orch.routing.logged.get("created_by") is None, orch.routing.logged
 
 
-def test_a_run_started_through_the_api_is_modified_by_the_token():
+def test_a_run_started_through_the_api_is_modified_by_the_token(monkeypatch):
     from api.routers import run
 
+    # About attribution, not the gate (tests/test_run_endpoint.py covers that).
+    monkeypatch.setattr(run, "gate", lambda *a, **k: None)
     orch = _Orchestrator()
     r = _app(run.router, overrides={run.get_orchestrator: lambda: orch}).post(
         "/run", json={"process_id": 5})

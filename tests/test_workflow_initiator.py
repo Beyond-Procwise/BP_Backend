@@ -262,9 +262,11 @@ def test_a_requirements_workflow_is_started_by_the_token(monkeypatch):
     assert orch.calls == [("requirements_to_ranking", CALLER)]
 
 
-def test_a_flow_run_is_started_by_the_token():
+def test_a_flow_run_is_started_by_the_token(monkeypatch):
     from api.routers import run
 
+    # About who the run is attributed to, not about the gate (tests/test_run_endpoint.py covers that).
+    monkeypatch.setattr(run, "gate", lambda *a, **k: None)
     orch = _Orchestrator()
     client = _app(run.router, overrides={run.get_orchestrator: lambda: orch})
     r = client.post("/run", json={"process_id": 5})

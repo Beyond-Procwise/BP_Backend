@@ -7,6 +7,7 @@ import threading
 import asyncio
 import inspect
 from api.auth import require_user
+from api.endpoint_gate import require as gate
 from orchestration.orchestrator import Orchestrator
 from utils.gpu import configure_gpu
 
@@ -43,6 +44,8 @@ def run_agents(
     principal=Depends(require_user),
 ):
     """Execute an agent flow fetched from the routing table."""
+    # Running a stored workflow: ask the same gate (workflow.run) as the canvas workflow runner.
+    gate("workflow.run", principal, agent="RunRouter", context={"process_id": req.process_id})
     prs = getattr(orchestrator.agent_nick, "process_routing_service", None)
     if not prs:
         raise HTTPException(

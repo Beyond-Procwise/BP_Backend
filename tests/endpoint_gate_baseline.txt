@@ -49,7 +49,6 @@ src/api/routers/reports.py::POST router /jobs/{job_id}/versions::save_version
 src/api/routers/reports.py::POST router /presentation-mode::presentation_set
 src/api/routers/requirements.py::POST router /message::post_message
 src/api/routers/requirements.py::POST router /run-workflow::post_run_workflow
-src/api/routers/run.py::POST router /run::run_agents
 src/api/routers/stream.py::POST router /plan::stream_plan
 src/api/routers/summary.py::POST router /precompute::post_precompute
 src/api/routers/summary.py::POST router ::post_summary

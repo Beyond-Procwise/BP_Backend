@@ -87,6 +87,16 @@ def create_client(prs=None):
     return create_client_with_orchestrator(DummyOrchestrator(prs))
 
 
+@pytest.fixture(autouse=True)
+def _gate_open(monkeypatch):
+    """These tests are about the flow; the gate has its own tests below. Record what it was asked."""
+    import api.routers.run as run_mod
+
+    asked = []
+    monkeypatch.setattr(run_mod, "gate", lambda action, *a, **k: asked.append((action, k)))
+    return asked
+
+
 def create_client_with_orchestrator(orchestrator):
     from api.auth import require_user
 
@@ -276,3 +286,27 @@ def test_run_endpoint_failure_does_not_inject_error():
     assert final["status"] == "failed"
     assert "error" not in final
     assert set(final.keys()) == {"status", "agents"}
+
+
+def test_run_asks_the_gate_to_run_a_workflow(_gate_open):
+    client, _orchestrator = create_client()
+    resp = client.post("/run", json={"process_id": 5})
+    assert resp.status_code == 200
+    assert [a for a, _k in _gate_open] == ["workflow.run"]
+    assert _gate_open[0][1]["context"] == {"process_id": 5}
+
+
+def test_run_refused_by_the_gate_starts_nothing(monkeypatch):
+    import api.routers.run as run_mod
+    from api.endpoint_gate import NotPermitted
+
+    def refuse(action, *a, **k):
+        raise NotPermitted("not allowed")
+
+    monkeypatch.setattr(run_mod, "gate", refuse)
+    prs = DummyPRS()
+    client, orchestrator = create_client(prs)
+    resp = client.post("/run", json={"process_id": 5, "payload": {"x": 1}})
+    assert resp.status_code == 403
+    assert not prs.details_updates and not prs.status_updates
+    assert not hasattr(orchestrator, "received_flow")
