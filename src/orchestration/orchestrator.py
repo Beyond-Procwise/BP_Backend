@@ -490,6 +490,7 @@ class Orchestrator:
         context: Optional[AgentContext] = None
         enriched_input: Dict[str, Any] = {}
         trail_id: Optional[int] = None
+        engine_state = None  # the declarative engine's final state, when that path ran
 
         try:
             # Create initial context
@@ -624,14 +625,20 @@ class Orchestrator:
             if governance_applied and isinstance(result, dict):
                 result.setdefault("governance_applied", governance_applied)
 
-            self._close_run_trail(trail_id, "completed")
+            # A run the engine itself ended as "failed" (a required node failed) is a failed
+            # run: it is closed, published, remembered and learned from as one. It used to be
+            # reported "completed" here whatever the engine had said.
+            run_failed = engine_state is not None and engine_state.status == "failed"
+            final_status = "failed" if run_failed else "completed"
+
+            self._close_run_trail(trail_id, final_status)
 
             self._publish_workflow_complete(
                 workflow_name=workflow_name,
                 workflow_id=workflow_id,
                 context=context,
                 result=result,
-                status="completed",
+                status=final_status,
             )
 
             self._finalise_workflow_memory(
@@ -639,19 +646,29 @@ class Orchestrator:
                 workflow_name=workflow_name,
                 context=context,
                 result=result,
-                success=True,
+                success=not run_failed,
             )
 
             self._learn_from_workflow(
-                workflow_id, workflow_name, context, result, success=True
+                workflow_id, workflow_name, context, result, success=not run_failed
             )
 
-            return {
-                "status": "completed",
+            response = {
+                "status": final_status,
                 "workflow_id": workflow_id,
                 "result": result,
                 "execution_path": context.routing_history,
             }
+            if run_failed:
+                response["error"] = "; ".join(
+                    f"{e.get('node')}: {e.get('error')}" for e in engine_state.errors
+                ) or "the workflow failed"
+                response["errors"] = engine_state.errors
+            elif engine_state is not None and engine_state.degraded:
+                # It finished, but a step the run could do without did not: say which.
+                response["degraded"] = True
+                response["failed_nodes"] = engine_state.failed_nodes
+            return response
 
         except GovernanceUnavailable as exc:
             # Not a crash and not a completion: the governance that was supposed

@@ -15,7 +15,9 @@ edges, conditions, and data mappings.
 
 from __future__ import annotations
 
+import contextvars
 import json
+import threading
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -40,6 +42,40 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Workflow State (12-Factor #5: unified execution + business state)
 # ---------------------------------------------------------------------------
+
+class NodeTimeout(Exception):
+    """A node ran past its ``timeout_seconds``."""
+
+    def __init__(self, seconds: float):
+        super().__init__(f"timed out after {seconds}s")
+        self.seconds = seconds
+
+
+def _call_with_timeout(fn: Callable[[], Any], seconds: float, name: str) -> Any:
+    """Run ``fn`` and give up on it after ``seconds``.
+
+    On a thread of its own, daemon so a hung agent cannot keep the process alive, carrying the
+    caller's context variables (the trace, the caller identity). A thread cannot be killed:
+    on timeout it is abandoned and its eventual result ignored.
+    """
+    box: Dict[str, Any] = {}
+    ctx = contextvars.copy_context()
+
+    def target() -> None:
+        try:
+            box["value"] = ctx.run(fn)
+        except BaseException as exc:  # noqa: BLE001 - handed back to the caller's thread
+            box["error"] = exc
+
+    worker = threading.Thread(target=target, name=f"node-{name}", daemon=True)
+    worker.start()
+    worker.join(seconds)
+    if worker.is_alive():
+        raise NodeTimeout(seconds)
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
+
 
 class NodeStatus(str, Enum):
     PENDING = "pending"
@@ -81,6 +117,20 @@ class WorkflowState:
     # checkpoint so a resumed run updates the SAME row instead of creating
     # a duplicate.
     execution_id: Optional[int] = None
+    # Why a node was skipped, when the cause was a failure (not a condition that simply was
+    # not met), and the node that actually failed. A skip with no entry here was a plain
+    # "this branch does not apply".
+    skip_reasons: Dict[str, str] = field(default_factory=dict)
+    skip_roots: Dict[str, str] = field(default_factory=dict)
+
+    @property
+    def failed_nodes(self) -> List[str]:
+        return [n for n, st in self.node_statuses.items() if st == NodeStatus.FAILED]
+
+    @property
+    def degraded(self) -> bool:
+        """True when any node failed, even one the run was allowed to carry on without."""
+        return bool(self.failed_nodes)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -97,6 +147,11 @@ class WorkflowState:
             "started_at": self.started_at,
             "completed_at": self.completed_at,
             "execution_id": self.execution_id,
+            "failed_nodes": self.failed_nodes,
+            "degraded": self.degraded,
+            "skip_reasons": dict(self.skip_reasons),
+            "skip_roots": dict(self.skip_roots),
+            "skipped_due_to_failure": list(self.skip_reasons),
         }
 
     @classmethod
@@ -118,6 +173,8 @@ class WorkflowState:
         state.started_at = data.get("started_at")
         state.completed_at = data.get("completed_at")
         state.execution_id = data.get("execution_id")
+        state.skip_reasons = dict(data.get("skip_reasons") or {})
+        state.skip_roots = dict(data.get("skip_roots") or {})
         return state
 
     def checkpoint(self) -> Dict[str, Any]:
@@ -439,7 +496,8 @@ class WorkflowEngine:
         # Execute nodes in topological order
         execution_order = graph.topological_order()
 
-        for node_name in execution_order:
+        stopped_after: Optional[int] = None
+        for position, node_name in enumerate(execution_order):
             node = graph.nodes[node_name]
 
             # Check if already completed (for resume scenarios)
@@ -458,7 +516,17 @@ class WorkflowEngine:
                 any_edge_traversable = False
                 for edge in predecessors:
                     source_status = state.node_statuses.get(edge.source)
-                    if source_status in (NodeStatus.COMPLETED, NodeStatus.SKIPPED) and edge.should_traverse(state):
+                    # A node skipped because something failed upstream is not "nothing to do
+                    # here": what it should have produced is missing, so what follows it must
+                    # not run on the gap. (A node skipped by a branch condition still passes.)
+                    skipped_by_failure = (
+                        source_status == NodeStatus.SKIPPED and edge.source in state.skip_roots
+                    )
+                    if (
+                        source_status in (NodeStatus.COMPLETED, NodeStatus.SKIPPED)
+                        and not skipped_by_failure
+                        and edge.should_traverse(state)
+                    ):
                         any_edge_traversable = True
                         # Apply data mappings from this edge
                         mapped_data = edge.map_data(state)
@@ -466,7 +534,15 @@ class WorkflowEngine:
 
                 if not any_edge_traversable:
                     state.node_statuses[node_name] = NodeStatus.SKIPPED
-                    logger.info("Skipping node '%s' - no traversable edges", node_name)
+                    root = self._failed_upstream(state, predecessors)
+                    if root is not None:
+                        # Skipped BECAUSE something failed: say so, here and in the run trail.
+                        state.skip_roots[node_name] = root
+                        state.skip_reasons[node_name] = f"upstream node '{root}' failed"
+                        logger.warning("Skipping node '%s': %s", node_name,
+                                       state.skip_reasons[node_name])
+                    else:
+                        logger.info("Skipping node '%s' - no traversable edges", node_name)
                     self._persist_node_result(state, node_name, duration_ms=0)
                     continue
 
@@ -491,7 +567,20 @@ class WorkflowEngine:
                     graph.name,
                     node_name,
                 )
+                stopped_after = position
                 break
+
+        # The nodes a required failure kept from running are recorded, not left without a row.
+        if stopped_after is not None:
+            failed_name = execution_order[stopped_after]
+            for name in execution_order[stopped_after + 1:]:
+                if state.node_statuses.get(name) == NodeStatus.COMPLETED:
+                    continue
+                self._persist_node_created(state, graph.nodes[name])
+                state.node_statuses[name] = NodeStatus.SKIPPED
+                state.skip_roots[name] = failed_name
+                state.skip_reasons[name] = f"workflow stopped: required node '{failed_name}' failed"
+                self._persist_node_result(state, name, duration_ms=0)
 
         # Finalize
         if state.status == "running":
@@ -511,8 +600,27 @@ class WorkflowEngine:
             state.workflow_id,
             state.status,
         )
+        if state.degraded:
+            logger.warning(
+                "Workflow '%s' [%s] finished with failed node(s) %s; skipped because of them: %s",
+                graph.name, state.workflow_id, state.failed_nodes, list(state.skip_reasons),
+            )
 
         return state
+
+    @staticmethod
+    def _failed_upstream(state: WorkflowState, predecessors: List["WorkflowEdge"]) -> Optional[str]:
+        """The node whose failure is why none of ``predecessors`` led here, or None.
+
+        A predecessor that FAILED is the cause itself; one that was skipped because of a failure
+        passes the same root on, so a long chain names the node that actually failed."""
+        for edge in predecessors:
+            status = state.node_statuses.get(edge.source)
+            if status == NodeStatus.FAILED:
+                return edge.source
+            if status == NodeStatus.SKIPPED and edge.source in state.skip_roots:
+                return state.skip_roots[edge.source]
+        return None
 
     def _execute_node(
         self,
@@ -565,15 +673,21 @@ class WorkflowEngine:
 
         # Execute with retry support
         result: Optional[AgentOutput] = None
+        timed_out = False
         attempts = node.retry_count + 1
         for attempt in range(attempts):
             try:
                 # The keyword is passed only when set, so an agent whose
                 # ``execute(context)`` predates the flag keeps working.
-                result = (
-                    agent.execute(context, tool_loop=True)
+                call = (
+                    (lambda: agent.execute(context, tool_loop=True))
                     if node.tool_loop
-                    else agent.execute(context)
+                    else (lambda: agent.execute(context))
+                )
+                result = (
+                    _call_with_timeout(call, node.timeout_seconds, node.name)
+                    if node.timeout_seconds
+                    else call()
                 )
                 if result.status == AgentStatus.SUCCESS:
                     break
@@ -583,6 +697,17 @@ class WorkflowEngine:
                         node.name,
                         attempt + 1,
                     )
+            except NodeTimeout as exc:
+                # Not retried: the agent may still be running, and a second run could repeat
+                # what it already did (an email sent, a record written).
+                logger.error("Node '%s' timed out after %ss", node.name, exc.seconds)
+                timed_out = True
+                result = AgentOutput(
+                    status=AgentStatus.FAILED,
+                    data={},
+                    error=f"timed out after {exc.seconds}s; the agent may still be running",
+                )
+                break
             except Exception as exc:
                 logger.exception("Node '%s' execution error", node.name)
                 result = AgentOutput(
@@ -645,6 +770,7 @@ class WorkflowEngine:
                 "agent": node.agent_type,
                 "error": result.error or "Unknown error",
                 "data": result.data,
+                **({"timed_out": True} if timed_out else {}),
             })
 
         return state
@@ -707,7 +833,11 @@ class WorkflowEngine:
             for entry in reversed(state.errors):
                 if entry.get("node") == node_name:
                     error = entry.get("error")
+                    if entry.get("timed_out"):
+                        status = "timed_out"  # proc.node_execution allows it
                     break
+        elif status == "skipped":
+            error = state.skip_reasons.get(node_name)
         self._safe_persist(
             "record_node_result",
             lambda: self._state_manager.record_node_result(
