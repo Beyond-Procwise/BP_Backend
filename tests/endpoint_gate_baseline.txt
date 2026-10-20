@@ -30,8 +30,6 @@ src/api/routers/i18n.py::POST router /translate::translate
 src/api/routers/i18n.py::PUT router /preference::put_preference
 src/api/routers/negotiate.py::DELETE router /{deal_id}/advice/fact/{fact_key}::delete_negotiate_advice_fact
 src/api/routers/negotiate.py::POST router /{deal_id}/advice/message::post_negotiate_advice_message
-src/api/routers/opportunities.py::POST router /link-deals::post_link_deals
-src/api/routers/opportunities.py::POST router /sync::post_sync
 src/api/routers/opportunities.py::POST router /{opportunity_id}/stage::post_stage
 src/api/routers/playbooks.py::POST router /proposals/{proposal_id}/reject::reject_proposal
 src/api/routers/promotion.py::POST router /canonicalize-po::post_canonicalize_po

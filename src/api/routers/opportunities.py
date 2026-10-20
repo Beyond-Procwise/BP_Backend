@@ -119,6 +119,7 @@ def get_opportunities_by_deal(deal_id: str) -> dict:
 
 @router.post("/link-deals", summary="Link opportunities to their deal via anchoring quote")
 def post_link_deals(principal=Depends(require_user)) -> dict[str, Any]:
+    gate("opportunity.mine", principal, agent="opportunities_api")
     try:
         n = link_opportunities_to_deals()
     except Exception as exc:  # noqa: BLE001
@@ -166,6 +167,7 @@ def post_review(opportunity_id: str, body: ReviewDecision,
 
 @router.post("/sync", summary="Sync miner JSON findings into proc.bp_opportunity")
 def post_sync(path: Optional[str] = None, principal=Depends(require_user)) -> dict[str, Any]:
+    gate("opportunity.mine", principal, agent="opportunities_api")
     findings_path = path or os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
         "opportunity_findings.json")
