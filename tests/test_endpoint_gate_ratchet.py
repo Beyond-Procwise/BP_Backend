@@ -1,0 +1,160 @@
+"""No new ungated write endpoint (a ratchet, modelled on test_gateway_boundary).
+
+Every route that changes state (POST / PUT / PATCH / DELETE) under ``src/api`` must consult the
+gate -- ``endpoint_gate.require``, ``guardrail.authorize``, or one of the router-local role/permit
+helpers -- inside its own handler. ``require_user`` alone only proves the caller is *someone* in the
+pool; it does not decide whether they may do this (audit findings RT-1..RT-8).
+
+``tests/endpoint_gate_baseline.txt`` lists every write handler that does NOT consult the gate today.
+The list may only shrink:
+  * a NEW write handler that does not consult the gate fails the first test (add the gate, or -- only
+    for something genuinely public such as a webhook or login callback -- add the handler to PUBLIC);
+  * a handler that has since been gated must be deleted from the baseline (second test), so the
+    ratchet tightens.
+Regenerate only when gating routes:  python tests/test_endpoint_gate_ratchet.py --write
+"""
+import ast
+import os
+import re
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASELINE = os.path.join(ROOT, "tests", "endpoint_gate_baseline.txt")
+WRITE_METHODS = {"post", "put", "patch", "delete"}
+
+# A handler counts as gated only if it CALLS one of these (found in the syntax tree, so a mention in a
+# comment, docstring or string never counts, and neither does merely reading the caller's role).
+GATE_CALLS = {"endpoint_gate.require", "guardrail.authorize", "rbac.may"}
+# Router-local helpers that refuse (raise) when the caller may not: sales._require_margin_permit,
+# approvals._require_capability, agents._require_role, agent_policies._require, email_learning._gate.
+GATE_HELPER = re.compile(r"^(_gate|_require|_require_\w+|require_role\w*)$")
+
+# Deliberately public write endpoints (no signed-in user exists yet). Keep this tiny and justified.
+PUBLIC: dict = {}
+
+# Registration styles the scanner cannot see. None exists today; if one appears the scan must be taught it.
+UNSEEN_REGISTRATION = re.compile(r"\.api_route\(|\.add_api_route\(|\.mount\(|\.add_websocket_route\(")
+
+
+def _dotted(node):
+    """'a.b.c' for a Name/Attribute chain, else ''."""
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+        return ".".join(reversed(parts))
+    return ""
+
+
+def _file_gate_names(tree):
+    """How THIS file spells endpoint_gate.require: ``require as gate`` -> {'gate'}; ``import ... as eg`` -> {'eg.require'}."""
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").endswith("endpoint_gate"):
+            for alias in node.names:
+                if alias.name == "require":
+                    names.add(alias.asname or "require")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.endswith("endpoint_gate") and alias.asname:
+                    names.add(alias.asname + ".require")
+    return names
+
+
+def _calls_a_gate(func, file_names):
+    for node in ast.walk(func):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _dotted(node.func)
+        if not name:
+            continue
+        if name in GATE_CALLS or name in file_names or GATE_HELPER.match(name.rsplit(".", 1)[-1]):
+            return True
+    return False
+
+
+def _py_files():
+    api = os.path.join(ROOT, "src", "api")
+    for base, _dirs, files in os.walk(api):
+        if "__pycache__" in base:
+            continue
+        for name in sorted(files):
+            if name.endswith(".py"):
+                yield os.path.join(base, name)
+
+
+def _handlers():
+    """Yield (relative file, METHOD, 'router.var' + path literal, function name, gated?) for every write route."""
+    for path in _py_files():
+        rel = os.path.relpath(path, ROOT).replace(os.sep, "/")
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            src = fh.read()
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            continue
+        file_names = _file_gate_names(tree)
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for dec in node.decorator_list:
+                if not (isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)):
+                    continue
+                method = dec.func.attr.lower()
+                if method not in WRITE_METHODS:
+                    continue
+                route = ""
+                if dec.args and isinstance(dec.args[0], ast.Constant) and isinstance(dec.args[0].value, str):
+                    route = dec.args[0].value
+                # The router variable is part of the key: `router` and `orchestrator_router` can serve the same
+                # path and function name with different prefixes.
+                owner = _dotted(dec.func.value) or "?"
+                yield rel, method.upper(), f"{owner} {route}", node.name, _calls_a_gate(node, file_names)
+
+
+def _ungated():
+    return sorted(f"{rel}::{m} {route}::{fn}" for rel, m, route, fn, gated in _handlers() if not gated)
+
+
+def _baseline():
+    with open(BASELINE, encoding="utf-8") as fh:
+        return sorted(line.strip() for line in fh if line.strip() and not line.startswith("#"))
+
+
+def test_no_new_write_endpoint_skips_the_gate():
+    new = sorted(set(_ungated()) - set(_baseline()) - set(PUBLIC))
+    assert not new, (
+        "write endpoints that never consult the gate (endpoint_gate.require / guardrail.authorize / a router "
+        f"role helper): {new}. Gate them; require_user only proves identity."
+    )
+
+
+def test_baseline_only_lists_handlers_that_are_still_ungated():
+    stale = sorted(set(_baseline()) - set(_ungated()))
+    assert not stale, f"these handlers are now gated or gone; remove them from the baseline: {stale}"
+
+
+def test_no_route_is_registered_in_a_way_the_scan_cannot_see():
+    seen = []
+    for path in _py_files():
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            if UNSEEN_REGISTRATION.search(fh.read()):
+                seen.append(os.path.relpath(path, ROOT).replace(os.sep, "/"))
+    assert not seen, f"routes registered without a decorator the ratchet reads: {seen}. Teach tests/test_endpoint_gate_ratchet.py about them."
+
+
+def test_the_scan_actually_finds_routes():
+    # A scanner that silently finds nothing would pass both tests above forever.
+    handlers = list(_handlers())
+    assert len(handlers) > 50
+    assert any(gated for *_rest, gated in handlers), "no handler recognised as gated: GATE pattern is stale"
+
+
+if __name__ == "__main__":
+    if "--write" in sys.argv:
+        with open(BASELINE, "w", encoding="utf-8") as fh:
+            fh.write("# Write handlers under src/api that never consult the gate. May only shrink. See tests/test_endpoint_gate_ratchet.py\n")
+            fh.write("\n".join(_ungated()) + "\n")
+        print(f"wrote {len(_ungated())} entries")
