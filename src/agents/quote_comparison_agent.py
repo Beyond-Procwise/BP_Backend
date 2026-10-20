@@ -43,7 +43,9 @@ class QuoteComparisonAgent(BaseAgent):
     def __init__(self, agent_nick):
         super().__init__(agent_nick)
         self.device = configure_gpu()
-        self._fx_to_gbp: Dict[str, float] = {"GBP": 1.0, "USD": 0.79}
+        # Sterling is the identity; every other rate comes from the live batch.
+        self._fx_to_gbp: Dict[str, float] = {"GBP": 1.0}
+        self._fx_loaded = False
         self._resolved_metric_weights: Dict[str, float] = {}
 
     def _instruction_sources_from_prompt(self, prompt: Dict[str, Any]) -> List[Any]:
@@ -593,41 +595,45 @@ class QuoteComparisonAgent(BaseAgent):
             return pd.DataFrame()
 
     def _load_fx_rates(self) -> None:
-        if self._fx_to_gbp:
+        """Fill GBP-per-unit rates from the live ``proc.bp_fx_rates`` batch.
+
+        The batch is USD-quoted (units of a currency per 1 USD), so one unit of
+        ``ccy`` is ``GBP-per-USD / ccy-per-USD`` pounds. Nothing is invented: if
+        the batch is unavailable no non-GBP rate is known.
+        """
+        if self._fx_loaded:
             return
+        try:
+            from repositories import fx_rate_repo
 
-        rates: Dict[str, float] = {"GBP": 1.0, "USD": 0.79}
-        for table in ("proc.currency_rates", "proc.fx_rates", "proc.indices"):
-            df = self._read_table(table)
-            if df.empty:
+            batch = fx_rate_repo.get_or_refresh_rates()
+        except Exception:
+            logger.exception("QuoteComparisonAgent could not read the FX rate batch")
+            return  # not marked loaded: a later quote may retry
+        rates: Dict[str, float] = {}
+        for ccy, rate in ((batch or {}).get("rates") or {}).items():
+            try:
+                value = float(rate)
+            except (TypeError, ValueError):
                 continue
-            currency_col = next(
-                (col for col in ("currency", "from_currency", "code") if col in df.columns),
-                None,
-            )
-            value_col = next(
-                (col for col in ("rate_to_gbp", "gbp_rate", "value", "rate") if col in df.columns),
-                None,
-            )
-            if not currency_col or not value_col:
-                continue
-            for _, row in df.iterrows():
-                currency = row.get(currency_col)
-                if not currency:
-                    continue
-                try:
-                    rate = float(row.get(value_col))
-                except (TypeError, ValueError):
-                    continue
-                if rate and rate > 0:
-                    rates[str(currency).strip().upper()] = rate
-        self._fx_to_gbp = rates
+            if value > 0:
+                rates[str(ccy).strip().upper()] = value
+        gbp_per_usd = rates.get("GBP")
+        if gbp_per_usd:
+            for ccy, per_usd in rates.items():
+                self._fx_to_gbp[ccy] = gbp_per_usd / per_usd
+            self._fx_to_gbp["GBP"] = 1.0
+        self._fx_loaded = True
 
-    def _rate_to_gbp(self, currency: Optional[str]) -> float:
-        self._load_fx_rates()
-        if not currency:
+    def _rate_to_gbp(self, currency: Optional[str]) -> Optional[float]:
+        """Pounds per one unit of ``currency``, or ``None`` when no rate is known."""
+        code = str(currency or "").strip().upper()
+        if not code:
+            return None
+        if code == "GBP":
             return 1.0
-        return self._fx_to_gbp.get(str(currency).strip().upper(), 1.0)
+        self._load_fx_rates()
+        return self._fx_to_gbp.get(code)
 
     def _augment_currency_fields(self, entry: Dict[str, Any]) -> None:
         if entry.get("name", "").lower() == "weighting":
@@ -644,21 +650,33 @@ class QuoteComparisonAgent(BaseAgent):
             .upper()
         )
         rate = self._rate_to_gbp(currency_code)
-        usd_rate = self._rate_to_gbp("USD")
         entry["currency"] = currency_code
 
         total_cost = self._to_float(entry.get("total_cost"))
         total_spend = self._to_float(entry.get("total_spend"))
 
+        if rate is None:
+            # No rate: the figures cannot be compared with the other quotes, and
+            # are left empty rather than assumed 1:1.
+            entry["fx_status"] = "not_assessed"
+            entry["fx_note"] = (
+                f"No exchange rate available for {currency_code}; "
+                "cost not converted or compared."
+            )
+            for key in ("total_cost_gbp", "total_spend_gbp", "total_cost_usd", "total_spend_usd"):
+                entry[key] = None
+            return
+
         entry["total_cost_gbp"] = total_cost * rate
         entry["total_spend_gbp"] = total_spend * rate
 
-        if usd_rate > 0:
+        usd_rate = self._rate_to_gbp("USD")
+        if usd_rate:
             entry["total_cost_usd"] = entry["total_cost_gbp"] / usd_rate
             entry["total_spend_usd"] = entry["total_spend_gbp"] / usd_rate
         else:
-            entry["total_cost_usd"] = total_cost
-            entry["total_spend_usd"] = total_spend
+            entry["total_cost_usd"] = None
+            entry["total_spend_usd"] = None
 
     def _prune_redundant_spend_fields(self, entry: Dict[str, Any]) -> None:
         spend = self._to_float(entry.get("total_spend"))
@@ -877,6 +895,16 @@ class QuoteComparisonAgent(BaseAgent):
             self._augment_currency_fields(entry)
             self._prune_redundant_spend_fields(entry)
         supplier_entries = [entry for entry in rows if entry.get("name") != "weighting"]
+        # A quote with no exchange rate has no comparable cost: it is shown, but
+        # never scored or recommended against the quotes that can be compared.
+        unassessed = [e for e in supplier_entries if e.get("fx_status") == "not_assessed"]
+        for entry in unassessed:
+            entry["weighting_score"] = None
+            entry["recommendation"] = {
+                "ticker": "NOT_ASSESSED",
+                "justification": entry.get("fx_note"),
+            }
+        supplier_entries = [e for e in supplier_entries if e.get("fx_status") != "not_assessed"]
         stats = self._calculate_weighting_scores(supplier_entries, metric_weights)
         resolved_weights = self._resolved_metric_weights or metric_weights
         recommended = self._apply_recommendations(supplier_entries, stats, resolved_weights)
