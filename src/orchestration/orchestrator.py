@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 import os
 from functools import lru_cache
-from jinja2 import Template
+from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 from orchestration.procurement_workflow import (
     MockDatabaseConnection,
@@ -43,6 +43,8 @@ from utils.gpu import configure_gpu
 from services.redis_client import get_workflow_redis_client
 
 logger = logging.getLogger(__name__)
+
+_FLOW_SANDBOX = ImmutableSandboxedEnvironment()
 
 # Ensure GPU is enabled when available
 os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
@@ -1302,7 +1304,7 @@ class Orchestrator:
         def _render(value: Any) -> Any:
             if isinstance(value, str):
                 try:
-                    rendered = Template(value).render(ctx=run_ctx, payload=payload)
+                    rendered = _FLOW_SANDBOX.from_string(value).render(ctx=run_ctx, payload=payload)
                     if rendered.isdigit():
                         return int(rendered)
                     try:

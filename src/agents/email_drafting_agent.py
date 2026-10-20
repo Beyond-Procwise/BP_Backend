@@ -23,7 +23,7 @@ from html import escape
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
-from jinja2 import Template
+from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 from agents.base_agent import BaseAgent, AgentContext, AgentOutput, AgentStatus
 from utils.email_markers import attach_hidden_marker, extract_rfq_id, split_hidden_marker
@@ -37,6 +37,8 @@ from src.services.ollama_client import (
 )
 
 logger = logging.getLogger(__name__)
+
+_TEMPLATE_SANDBOX = ImmutableSandboxedEnvironment()
 
 configure_gpu()
 
@@ -3344,7 +3346,8 @@ class EmailDraftingAgent(BaseAgent):
 
     def _render_template_string(self, template: str, args: Dict[str, Any]) -> str:
         if "{{" in template or "{%" in template:
-            return Template(template).render(**args)
+            # Sandboxed: the template can come from a request payload.
+            return _TEMPLATE_SANDBOX.from_string(template).render(**args)
         try:
             return template.format(**args)
         except KeyError:

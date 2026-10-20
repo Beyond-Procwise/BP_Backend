@@ -39,11 +39,11 @@ SYSTEM_PROMPT = (
 
 # DB connection config
 DB_CONFIG = {
-    "host": "procwisemvpdb01.cluster-cpae0sg4mrk8.eu-west-1.rds.amazonaws.com",
-    "dbname": "uicanvas",
-    "user": "procwisedb123",
-    "password": "Pr0cw!5edb001",
-    "port": 5432,
+    "host": os.environ["DB_HOST"],
+    "dbname": os.environ.get("DB_NAME", "uicanvas"),
+    "user": os.environ["DB_USER"],
+    "password": os.environ["DB_PASSWORD"],
+    "port": int(os.environ.get("DB_PORT", "5432")),
 }
 
 
