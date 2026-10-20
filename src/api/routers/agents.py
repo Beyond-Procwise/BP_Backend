@@ -85,19 +85,33 @@ async def agent_nick_reason(req: ReasonRequest, agent_nick=Depends(get_agent_nic
     """
     # AgentNick plans and calls tools on a free-text task: asked as running an agent.
     gate("agent.run", principal, agent="AgentsRouter")
+
+    from datetime import datetime
+
+    from repositories import agent_run_repo
+    from services.tool_runtime import count_tokens
+
+    user_id = getattr(principal, "subject", None) or None
+    started_at = datetime.utcnow()
     try:
-        result = agent_nick.reason(
-            req.task,
-            max_rounds=req.max_rounds,
-            require_tool_use=req.require_tool_use,
-            agent="agent_nick",
-            # the requester, so an approval this call triggers is never decided by them
-            user_id=getattr(principal, "subject", None) or None,
-        )
+        with count_tokens() as usage:
+            result = agent_nick.reason(
+                req.task,
+                max_rounds=req.max_rounds,
+                require_tool_use=req.require_tool_use,
+                agent="agent_nick",
+                # the requester, so an approval this call triggers is never decided by them
+                user_id=user_id,
+            )
     except Exception as exc:  # noqa: BLE001
         logger.exception("AgentNick.reason failed")
         raise HTTPException(status_code=500, detail=str(exc))
-    return result.to_dict()
+    # The trace is kept, not only returned: which tools ran, with what arguments, what they
+    # returned, for whom. A record that cannot be written never fails the run.
+    run_id, recorded = agent_run_repo.record_result(
+        result, agent_slug="agent_nick", task=req.task, user_id=user_id,
+        started_at=started_at, usage=usage)
+    return {**result.to_dict(), "run_id": run_id if recorded else None, "run_recorded": recorded}
 
 
 @router.get("/status/{agent_name}")

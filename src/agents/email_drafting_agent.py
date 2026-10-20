@@ -5004,8 +5004,10 @@ class EmailDraftingAgent(BaseAgent):
         workflow_hint = self._normalise_tracking_value(workflow_id)
         return self._generate_unique_identifier(workflow_hint, supplier_id)
 
-    def execute(self, context: AgentContext) -> AgentOutput:
-        result = super().execute(context)
+    def execute(self, context: AgentContext, **kwargs: Any) -> AgentOutput:
+        # ``kwargs`` (``tool_loop``) pass through: a derived agent backed by this class is run in
+        # tool-loop mode by the workflow engine and the agent-as-tool path.
+        result = super().execute(context, **kwargs)
         try:
             self._synchronise_draft_records(result)
         except Exception:  # pragma: no cover - defensive sync

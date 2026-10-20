@@ -133,6 +133,37 @@ def record(
         cur.close()
 
 
+def record_result(
+    result: Any, *, agent_slug: str, task: str, user_id: Optional[str],
+    started_at: datetime, workflow_id: Optional[str] = None,
+    usage: Optional[Dict[str, int]] = None,
+) -> "tuple[str, bool]":
+    """Store a finished tool-loop run (a ``ToolRunResult``). Returns its id and whether it was written.
+
+    A record that cannot be written does not fail the run: the work is done and the answer
+    stands. It is logged as an error and the caller says it was not recorded.
+    """
+    run_id = new_run_id()
+    try:
+        record(
+            run_id=run_id, agent_slug=agent_slug, workflow_id=workflow_id, user_id=user_id,
+            model=getattr(result, "model", "") or None,
+            system_prompt=getattr(result, "system", "") or "",
+            task=task, tools_offered=list(getattr(result, "tools_offered", []) or []),
+            calls=list(result.calls), answer=result.answer, rounds=result.rounds,
+            error=result.error,
+            prompt_tokens=(usage or {}).get("prompt_tokens", 0),
+            completion_tokens=(usage or {}).get("completion_tokens", 0),
+            model_calls=(usage or {}).get("model_calls", 0),
+            started_at=started_at, finished_at=datetime.utcnow(),
+        )
+        return run_id, True
+    except Exception:  # noqa: BLE001
+        logger.error("reasoning run %s of %s could not be recorded", run_id, agent_slug,
+                     exc_info=True)
+        return run_id, False
+
+
 _COLUMNS = (
     "run_id", "agent_slug", "workflow_id", "user_id", "model", "system_prompt",
     "system_sha256", "task", "tools_offered", "calls", "answer", "outputs", "rounds",
