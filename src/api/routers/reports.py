@@ -56,6 +56,8 @@ _PUBLIC = ("job_id", "report_type", "scope", "as_of", "status", "requested_by",
 
 #: Report types asked for by deal rather than by period (the board paper, 2026-09-25).
 _DEAL_SCOPED = {"board_paper"}
+#: Report types written about one supplier over a period (the supplier business review, 2026-10-20).
+_SUPPLIER_SCOPED = {"supplier_qbr"}
 
 
 class GenerateBody(BaseModel):
@@ -68,6 +70,8 @@ class GenerateBody(BaseModel):
     # SpendIQ (the source carries none; the approval route is derived from it).
     deal_id: Optional[str] = Field(default=None, max_length=100)
     category: Optional[str] = Field(default=None, max_length=100)
+    # A supplier-scoped report: which supplier. Read only for those report types.
+    supplier_id: Optional[str] = Field(default=None, max_length=100)
     # Which approved style pack the report is laid out on, for the builder pages. Absent means the
     # deck and the printable page only, exactly as before. NOT part of scope(): the scope is hashed
     # into the Fact Pack id and the dedup key, and a style changes none of a report's facts.
@@ -86,6 +90,8 @@ class GenerateBody(BaseModel):
             if not (self.deal_id or "").strip():
                 raise ValueError("a board paper is written for one deal: give deal_id")
             return self
+        if self.report_type in _SUPPLIER_SCOPED and not (self.supplier_id or "").strip():
+            raise ValueError("a supplier review is written for one supplier: give supplier_id")
         if self.period_start is None or self.period_end is None:
             raise ValueError("give period_start and period_end")
         if self.period_start > self.period_end:
@@ -100,9 +106,12 @@ class GenerateBody(BaseModel):
                 out["category"] = self.category.strip()
             return out
         start, end = self.period_start.isoformat(), self.period_end.isoformat()
-        return {"period_start": start, "period_end": end,
-                "period_label": self.period_label or f"{start} to {end}",
-                "currency": self.currency}
+        out = {"period_start": start, "period_end": end,
+               "period_label": self.period_label or f"{start} to {end}",
+               "currency": self.currency}
+        if self.report_type in _SUPPLIER_SCOPED:
+            out = {"supplier_id": self.supplier_id.strip(), **out}
+        return out
 
 
 def _deal_exists(deal_id: str) -> bool:
@@ -110,6 +119,15 @@ def _deal_exists(deal_id: str) -> bool:
 
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT 1 FROM proc.bp_deal_overview WHERE deal_id = %s LIMIT 1", (deal_id,))
+        return cur.fetchone() is not None
+
+
+def _supplier_exists(supplier_id: str) -> bool:
+    from src.services.db import get_conn
+
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM proc.bp_deal_overview WHERE supplier_id = %s LIMIT 1",
+                    (supplier_id,))
         return cur.fetchone() is not None
 
 
@@ -169,6 +187,9 @@ def generate(body: GenerateBody, principal=Depends(require_user)):
     scope = body.scope()
     if body.report_type in _DEAL_SCOPED and not _deal_exists(scope["deal_id"]):
         raise HTTPException(status_code=404, detail=f"no deal {scope['deal_id']!r} on the record")
+    if body.report_type in _SUPPLIER_SCOPED and not _supplier_exists(scope["supplier_id"]):
+        raise HTTPException(status_code=404,
+                            detail=f"no supplier {scope['supplier_id']!r} on the record")
     decision = gate("report.generate", principal, agent=_AGENT,
                     context={"report_type": body.report_type, "scope": scope})
     subject = getattr(principal, "subject", None) or None

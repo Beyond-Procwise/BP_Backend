@@ -10,6 +10,7 @@ from src.services.rga.builders import exec_procurement_summary  # noqa: F401
 from src.services.rga.builders import supplier_criticality_review  # noqa: F401
 from src.services.rga.builders import board_paper  # noqa: F401
 from src.services.rga.builders import sales_quote  # noqa: F401
+from src.services.rga.builders import supplier_qbr  # noqa: F401
 
 __all__ = ["exec_procurement_summary", "supplier_criticality_review", "board_paper",
-           "sales_quote"]
+           "sales_quote", "supplier_qbr"]

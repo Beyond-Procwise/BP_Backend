@@ -87,6 +87,7 @@ from api.routers import quote_builder as quote_builder_router
 from api.routers import reports as reports_router
 from api.routers import triage as triage_router
 from api.routers import compliance as compliance_router
+from api.routers import intent as intent_router_api
 from api.routers import atb as atb_router
 from api.routers import i18n as i18n_router
 from api.routers import agent_policies as agent_policies_router
@@ -642,6 +643,7 @@ _AUTHENTICATED_ROUTERS = [
     quote_builder_router.router,
     reports_router.router,
     triage_router.router,
+    intent_router_api.router,
     i18n_router.router,
     atb_router.router,
     demand_intake_router.router,
