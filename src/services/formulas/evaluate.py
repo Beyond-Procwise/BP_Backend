@@ -21,7 +21,7 @@ from . import audit as _audit
 from .audit import EvaluationRecord, Provenance
 from .contract import Finding, Severity, validate
 from .registry import FormulaKind, FormulaSpec, get
-from .unassessed import UNASSESSED, Confidence, UnassessedError, weakest
+from .unassessed import UNASSESSED, Confidence, UnassessedError, take_decline_reason, weakest
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +179,7 @@ def evaluate(
             _audit.emit(result.record)
         return result
 
+    take_decline_reason()  # a reason left by an earlier body must not be read as this one's
     try:
         value = _call(spec, resolved)
     except UnassessedError:
@@ -206,7 +207,7 @@ def evaluate(
                 formula=spec.name,
                 term=None,
                 code="refused_by_body",
-                detail="the formula declined to produce a value on the evidence supplied",
+                detail=take_decline_reason() or "the formula declined to produce a value on the evidence supplied",
             )
         ]
         result = _refuse(spec, resolved, findings, prov_ids, started, context)

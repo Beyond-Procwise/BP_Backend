@@ -17,7 +17,7 @@ from ..contract import (
     BOOLEAN, COUNT, CURRENCY_CODE, DATE, FACTOR, LABEL, MONEY, PERCENT, RATIO, RECORD, ROWS, Output, Term,
 )
 from ..registry import GoldenVector, formula
-from ..unassessed import UNASSESSED
+from ..unassessed import UNASSESSED, decline
 
 _FROM = date(2026, 10, 20)
 
@@ -255,5 +255,5 @@ def cost_should_cost(
             sensitivity_pct=10.0 if sensitivity_pct is None else sensitivity_pct,
             monte_carlo_n=int(monte_carlo_n or 0), seed=None if seed is None else int(seed),
             distributions=distributions, quote_breakdown=quote_breakdown)
-    except _sc.ShouldCostError:
-        return UNASSESSED
+    except _sc.ShouldCostError as exc:
+        return decline(str(exc))

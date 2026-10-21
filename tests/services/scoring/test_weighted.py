@@ -216,3 +216,15 @@ def test_what_is_not_computed_is_said():
 def test_single_supplier_is_ranked_first_without_error():
     out = run(scores=[s for s in SCORES if s["supplier_id"] == "A"], metrics=[METRICS[0]])
     assert out["ranking"][0]["rank"] == 1
+
+
+@pytest.mark.parametrize("bad,needle", [
+    ({"criteria": [{"name": "quality", "weight": 1}]}, "criterion_id"),
+    ({"scores": [{"supplier": "A", "criterion": "quality", "score": 4}]}, "supplier_id"),
+    ({"metrics": [{"supplier_id": "A", "criterion_id": "price", "price": 100}]}, "value"),
+    ({"criteria": [dict(CRITERIA[0], type="rating"), CRITERIA[1], CRITERIA[2]]}, "type"),
+])
+def test_rows_in_the_wrong_shape_say_which_field_is_missing(bad, needle):
+    with pytest.raises(w.ScoringError) as e:
+        run(**bad)
+    assert needle in str(e.value) and "expected" in str(e.value)

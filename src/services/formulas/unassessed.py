@@ -16,8 +16,9 @@ input, so the ladder exists to be taken a minimum over.
 """
 from __future__ import annotations
 
+from contextvars import ContextVar
 from enum import Enum
-from typing import Any, Iterable
+from typing import Any, Iterable, Optional
 
 
 class UnassessedError(TypeError):
@@ -152,3 +153,23 @@ __all__ = [
     "Confidence",
     "weakest",
 ]
+
+
+_DECLINE_REASON: ContextVar[Optional[str]] = ContextVar("decline_reason", default=None)
+
+
+def decline(reason: str):
+    """Return UNASSESSED and say why, so the caller can fix the input instead of guessing.
+
+    The reason travels to ``evaluate`` through a context variable and is read once; it is
+    never part of the value.
+    """
+    _DECLINE_REASON.set(str(reason))
+    return UNASSESSED
+
+
+def take_decline_reason() -> Optional[str]:
+    """The reason the last body gave for declining, cleared so it cannot leak into another call."""
+    reason = _DECLINE_REASON.get()
+    _DECLINE_REASON.set(None)
+    return reason

@@ -76,3 +76,12 @@ def test_should_cost_is_registered_and_runs_through_run_calculation():
     assert out["assessed"] is True, out
     v = out["value"] if "value" in out else out["result"]
     assert v["unit_cost"] == pytest.approx(2.214959, abs=1e-6) and v["label"] == "modelled estimate"
+
+
+def test_should_cost_declines_with_the_reason():
+    out = run_calculation("cost.should_cost", {
+        "bom": [{"material_id": "PP", "net_weight": 0.5, "price_per_kg": 2.0}],
+        "routing": [{"process": "x", "cycle_time_s": 36, "cavities": 0, "oee": 0.8, "operators_per_machine": 1,
+                     "machine_rate": 80.0, "labour_rate": 20.0}],
+        "batch_size": 1000, "overhead_pct": 0.1, "sga_pct": 0.05, "margin_pct": 0.08})
+    assert out["assessed"] is False and "cavities" in out["why"], out

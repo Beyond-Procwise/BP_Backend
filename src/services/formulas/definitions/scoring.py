@@ -13,7 +13,7 @@ from src.services.scoring import weighted as _w
 
 from ..contract import COUNT, FACTOR, LABEL, MONEY, ROWS, Output, Term
 from ..registry import GoldenVector, formula
-from ..unassessed import UNASSESSED
+from ..unassessed import UNASSESSED, decline
 
 log = logging.getLogger(__name__)
 
@@ -42,14 +42,14 @@ _CASE = dict(criteria=_CRITERIA, scale_min=0, scale_max=5, scores=_SCORES, metri
             "normalisation, consistency flags and weight sensitivity",
     effective_from=date(2026, 10, 21),
     inputs=[
-        Term("criteria", ROWS, "criterion_id, parent_id, weight (decimal string), type "
-             "(scored, price, numeric_metric, gate_pass_fail, group), direction"),
+        Term("criteria", ROWS, "rows like {criterion_id, parent_id (null at top level), weight (decimal string), "
+             "type: scored | price | numeric_metric | gate_pass_fail | group, direction: lower_better | higher_better}"),
         Term("scale_min", FACTOR, "lowest score an evaluator may give"),
         Term("scale_max", FACTOR, "highest score an evaluator may give"),
-        Term("scores", ROWS, "supplier_id, criterion_id, evaluator_id, score (gates: 1 pass, 0 fail)"),
-        Term("metrics", ROWS, "supplier_id, criterion_id, value for price and numeric criteria",
+        Term("scores", ROWS, "rows like {supplier_id, criterion_id, evaluator_id, score}; gates: 1 pass, 0 fail"),
+        Term("metrics", ROWS, "rows like {supplier_id, criterion_id, value} for price and numeric criteria",
              required=False),
-        Term("consensus_scores", ROWS, "supplier_id, criterion_id, score agreed by the panel",
+        Term("consensus_scores", ROWS, "rows like {supplier_id, criterion_id, score} agreed by the panel",
              required=False),
         Term("normalisation", LABEL, "how price and numeric criteria become 0-1", required=False,
              allowed=_w.NORMALISATIONS),
@@ -103,7 +103,7 @@ def scoring_weighted_total(
             seed=None if seed is None else int(seed))
     except _w.ScoringError as exc:
         log.info("scoring.weighted_total could not score: %s", exc)
-        return UNASSESSED
+        return decline(str(exc))
     top = out["ranking"][0] if out["ranking"] else None
     out["top_supplier"] = top["supplier_id"] if top else None
     out["top_total"] = top["total"] if top else None
