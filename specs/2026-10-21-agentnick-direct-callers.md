@@ -52,9 +52,26 @@ and a test that proves what changes; it is not part of "route through the driver
    first and is never traded for anything. Any change here needs a golden-set before and after. The decision for
    you: should the model's extraction output be treated as a proposal that a verifier accepts (as the grounding
    guard already does), or stay as it is?
-2. **Unify the two import paths of `ollama_client`** as a deliberate change with a test that shows the foreground
-   counter and refusal memory are shared afterwards. Until then a driver `generate()` would split state.
+2. **DONE 2026-10-21: the two import paths of `ollama_client` are unified.** `src/services/__init__.py` lists
+   `_SHARED_STATE_MODULES = ("ollama_client",)`; when the package is loaded as `services`, an import hook answers
+   `services.ollama_client` with the one real `src.services.ollama_client`. No caller changed. Tests in
+   `tests/test_import_unification.py` (fresh interpreters, both import orders) show identity and shared foreground
+   count and refusal memory. The 139 test files touching these callers fail identically before and after (10 each).
 3. **Then** add `agentnick_driver.generate()` delegating to the unified client, and move the wording/propose-only
    callers onto it (they change only an import). The baseline then shrinks file by file.
 4. **Mark outputs as proposals** where they become stored data, one family at a time, starting with
    `agent_policy/extractor.py` and `extraction_feedback/proposer.py`, which already go to a human.
+
+## Other modules loaded as two copies (found while doing this; NOT changed)
+
+41 modules under `src/services` are imported both as `services.X` and `src.services.X`. Most hold no state of
+consequence. The ones that do, and are split, in order of concern:
+
+- `event_bus` (10 importers as `services`, 1 as `src.services`): a process-wide singleton, so two buses. The
+  mail-intake sweep in `backend_scheduler.py` publishes `DOCUMENT_INGESTED` on the `src` copy; every subscriber is on
+  the `services` copy. **Latent, not active:** nothing subscribes to `DOCUMENT_INGESTED` today. It would be lost the
+  day something does.
+- `db` (98 / 206): holds a fake store for tests and connection helpers; check the pool before unifying.
+- `egress`, `model_selector`, `backend_scheduler`, `email_watcher`: some module-level state each.
+
+Add a module to `_SHARED_STATE_MODULES` only after checking what state it holds and what depends on it.
