@@ -18,6 +18,11 @@ def _known_tools():
     return {t.name for t in control.build_tools(nick)}
 
 
+def _known_calculations():
+    from src.services.calculation_tools import _formulas
+    return set(_formulas().REGISTRY)
+
+
 @pytest.mark.parametrize("folder", FOLDERS, ids=lambda p: p.name)
 def test_skill_passes_every_rule(folder):
-    assert checks.check_skill(folder, known_tools=_known_tools()) == []
+    assert checks.check_skill(folder, known_tools=_known_tools(), known_calculations=_known_calculations()) == []

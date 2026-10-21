@@ -82,3 +82,16 @@ def test_eval_scenarios_need_count_kinds_and_expert_grading(tmp_path):
 def test_trigger_eval_needs_ten_and_ten(tmp_path):
     t = good_triggers(); t["should_not_trigger"] = t["should_not_trigger"][:9]
     assert any("should_not_trigger" in p for p in problems(build(tmp_path, triggers=t)))
+
+
+def test_a_calculation_name_that_is_not_registered_is_named(tmp_path):
+    d = build(tmp_path, text=skill_text(extra="Run `deal.realised_saving` first."))
+    found = checks.check_skill(d, known_tools=KNOWN, known_calculations={"deal.realised_savings", "tco.total_cost"})
+    assert any("deal.realised_saving" in p and "not a registered calculation" in p for p in found)
+    ok = build(tmp_path / "b", text=skill_text(extra="Run `deal.realised_savings` first. See `config.thresholds.x`."))
+    assert checks.check_skill(ok, known_tools=KNOWN, known_calculations={"deal.realised_savings"}) == []
+
+
+def test_names_outside_a_known_calculation_family_are_not_mistaken_for_calculations(tmp_path):
+    d = build(tmp_path, text=skill_text(extra="Use `memo.md` and `config.yaml` and `some.thing`."))
+    assert checks.check_skill(d, known_tools=KNOWN, known_calculations={"deal.realised_savings"}) == []

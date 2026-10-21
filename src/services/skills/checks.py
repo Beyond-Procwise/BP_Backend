@@ -145,7 +145,17 @@ def _eval_problems(path: Path) -> List[str]:
     return out
 
 
-def check_skill(path: Path, *, known_tools) -> List[str]:
+def _calculation_problems(body: str, known_calculations) -> List[str]:
+    """A `family.name` that sits in a registered family must be a registered calculation."""
+    families = {n.split(".", 1)[0] for n in known_calculations}
+    out = []
+    for name in sorted(set(re.findall(r"`([a-z_]+\.[a-z_]+)`", body))):
+        if name.split(".", 1)[0] in families and name not in known_calculations:
+            out.append(f"{name} is not a registered calculation")
+    return out
+
+
+def check_skill(path: Path, *, known_tools, known_calculations=None) -> List[str]:
     """Everything check_structure does, plus the rules that keep a skill honest."""
     path = Path(path)
     problems = check_structure(path)
@@ -153,5 +163,6 @@ def check_skill(path: Path, *, known_tools) -> List[str]:
         return problems
     _, body = split_frontmatter((path / "SKILL.md").read_text())
     config = _load_yaml(path / "config.yaml") or {}
+    calc = _calculation_problems(body, set(known_calculations)) if known_calculations is not None else []
     return (_tool_problems(body, config, set(known_tools)) + _config_problems(body, config)
-            + _eval_problems(path))
+            + calc + _eval_problems(path))

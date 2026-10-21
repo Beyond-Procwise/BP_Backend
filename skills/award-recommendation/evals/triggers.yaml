@@ -1,0 +1,22 @@
+should_trigger:
+- Who should we award this tender to?
+- Prepare the award recommendation for the packaging bids
+- Should we split the award between two suppliers?
+- Write the award memo for the evaluation committee
+- Is this a close decision between the top two bidders?
+- Which bidder wins on total cost and score?
+- What approval does this award need?
+- Recommend a winner now that the bids are scored
+- Draft the decision paper for awarding the contract
+- Compare the award options for this sourcing event
+should_not_trigger:
+- Design the RFx for this category
+- Negotiate the price with the supplier
+- Check this PO against approval limits
+- Which Incoterm should we use?
+- Validate this savings claim
+- Draft a supplier email
+- Screen the supplier for sanctions
+- Extract the lines from this quote
+- Summarise last month's spend
+- Sign the contract electronically

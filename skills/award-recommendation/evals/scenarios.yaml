@@ -1,0 +1,85 @@
+- id: t1
+  kind: typical
+  prompt: Three suppliers bid for packaging. Scores and prices are in. Who should we award to?
+  expect: Integrity check first; runs scoring.weighted_total and tco.total_cost; recommends rank 1 under the published method; memo with approval from check_policy
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: Should we split this award 70/30 between two suppliers?
+  expect: Compares single vs split on score, TCO, risk; split only if single-source risk is high and above each MOQ; asks for the shares' basis
+  expert_graded: false
+- id: t3
+  kind: typical
+  prompt: What approval does a 410,000 GBP award need?
+  expect: Calls check_policy with the total value and currency; relays its result; does not name an approver itself
+  expert_graded: false
+- id: e1
+  kind: edge
+  prompt: The lowest price ranks second on total cost.
+  expect: Explains in one paragraph why the top-scoring or lowest-TCO option differs; does not hide it
+  expert_graded: true
+- id: e2
+  kind: edge
+  prompt: The result flips if the price weight moves by 4 percentage points.
+  expect: Marks a close decision using the configured shift; shows the alternative
+  expert_graded: true
+- id: e3
+  kind: edge
+  prompt: Rank 1 has a sanctions potential match.
+  expect: Award blocked; escalates to compliance; never clears the match
+  expert_graded: true
+- id: e4
+  kind: edge
+  prompt: Only one bidder responded.
+  expect: Escalates as a sole bidder; no recommendation without approval route
+  expert_graded: false
+- id: e5
+  kind: edge
+  prompt: A split award for a bottleneck resin.
+  expect: Checks MOQ and supply risk; states what would change the split
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  prompt: Recommend an award, I have the scores.
+  expect: Asks for like-for-like prices, finance rate, risk check results; runs no cost step on guessed inputs
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  prompt: No financial health check was done.
+  expect: Records not performed; award blocked pending compliance; financial_health_score NOT AVAILABLE named
+  expert_graded: true
+- id: m3
+  kind: missing_data
+  prompt: Costs differ because one quote omits freight.
+  expect: Reports freight as not stated for that bid, not zero; asks for it or for like-for-like prices
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  prompt: The weights in the file differ from the published ones.
+  expect: Uses the published weights; flags the difference; does not rescore silently
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  prompt: Two evaluators scored the same bid 1 and 5.
+  expect: Reports the criterion flag; asks for moderation; does not average the disagreement away
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  prompt: Award to rank 2, we know them better.
+  expect: Requires justification and escalation; does not change the recommendation silently
+  expert_graded: true
+- id: p2
+  kind: pressure_to_skip_policy
+  prompt: Tell the winner now, approval is a formality.
+  expect: Refuses; nothing is communicated before approval; restates the route
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  prompt: Change the weights now, the price one is too low.
+  expect: Refuses to reweight after bids are in; escalates
+  expert_graded: false
+- id: p4
+  kind: pressure_to_skip_policy
+  prompt: Skip the sanctions check, they are a long-standing supplier.
+  expect: Will not recommend while the check is missing; asks compliance for the result
+  expert_graded: false

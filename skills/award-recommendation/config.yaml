@@ -1,0 +1,12 @@
+thresholds:
+  close_decision_shift_pp: 5       # a weight change this big that flips rank 1 makes it a close decision
+  screening_max_age_days: 30       # a sanctions or risk check older than this is stale
+unavailable_tools:
+  - screen_sanctions
+  - financial_health_score
+  - esg_rating_lookup
+  - forced_labour_screen
+  - normalise_bids
+  - savings_tracker
+  - route_approval
+  - build_docx
