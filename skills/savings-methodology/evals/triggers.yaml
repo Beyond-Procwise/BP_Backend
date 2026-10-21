@@ -1,0 +1,22 @@
+should_trigger:
+- Is this a hard saving or cost avoidance?
+- Validate the savings claim for this initiative
+- Which baseline should we use?
+- Can I book this price reduction as a saving?
+- Neutralise the index movement in this saving
+- Prepare this saving for finance sign-off
+- Are these two savings double counted?
+- How do we treat payment terms savings?
+- Review our savings pipeline
+- Is the realised saving in line with plan?
+should_not_trigger:
+- Check this order against approval limits
+- Plan the negotiation with the supplier
+- Which Incoterm should we use?
+- Draft a supplier email
+- Screen for sanctions
+- Extract invoice lines
+- Classify spend by category
+- Create a purchase requisition
+- What is the landed cost?
+- Rank our suppliers

@@ -1,0 +1,85 @@
+- id: t1
+  kind: typical
+  prompt: Which Incoterm should we use for air freight from Germany to the UK?
+  expect: Valid any-mode rules only; recommends with named place; asks for who controls freight
+  expert_graded: false
+- id: t2
+  kind: typical
+  prompt: Compare FCA and DAP for pallets Rotterdam to Milan by road.
+  expect: Runs landed_cost.total_cost once per rule on same lane; labels user-supplied freight
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: What does CIP cover for insurance?
+  expect: ICC (A) minimum, 110 percent of contract value, seller insures; uses config
+  expert_graded: false
+- id: e1
+  kind: edge
+  prompt: FOB requested for 40 foot containers from Shenzhen.
+  expect: Redirects to FCA with reason; does not draft FOB
+  expert_graded: true
+- id: e2
+  kind: edge
+  prompt: EXW from India but our buyer cannot export.
+  expect: Says EXW is wrong; recommends FCA
+  expert_graded: false
+- id: e3
+  kind: edge
+  prompt: DDP into the EU by a non-EU seller.
+  expect: Checks seller can be importer of record and recover VAT; warns if not
+  expert_graded: true
+- id: e4
+  kind: edge
+  prompt: CIF requested for air freight.
+  expect: Invalid for air; recommends CIP
+  expert_graded: false
+- id: e5
+  kind: edge
+  prompt: Bulk grain, FAS.
+  expect: Valid sea rule; transfer point alongside ship
+  expert_graded: false
+- id: e6
+  kind: edge
+  prompt: Letter of credit payment needing an on-board bill of lading.
+  expect: Notes transport document need; FCA with on-board option or a sea rule
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  prompt: Which Incoterm for our import?
+  expect: Asks for the transport mode first; no recommendation yet
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  prompt: Compare landed cost for FOB and CIF, no duty rate known.
+  expect: Duty reported as not stated, not zero; asks for rate
+  expert_graded: true
+- id: m3
+  kind: missing_data
+  prompt: What is the freight cost on this lane?
+  expect: NOT AVAILABLE get_freight_quote; asks the user for the figure
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  prompt: User cites Incoterms 2010 DAT.
+  expect: Maps to DPU in Incoterms 2020
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  prompt: Supplier insists on CIF but we have our own cargo policy.
+  expect: Prefers CFR or CPT to avoid double insurance; explains
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  prompt: Just say DDP, legal does not need to check.
+  expect: Still checks importer-of-record; routes policy check; does not skip
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  prompt: Put the landed cost at 5 percent over price, no need to calculate.
+  expect: Refuses to invent; runs the calculation or asks for inputs
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  prompt: The Incoterm decides when we own the goods, confirm.
+  expect: 'Corrects: Incoterms do not transfer title'
+  expert_graded: false

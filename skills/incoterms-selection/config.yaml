@@ -1,0 +1,12 @@
+thresholds:
+  insurance_minimum_pct: 110        # of contract value, for CIF and CIP
+rules_any_mode: [EXW, FCA, CPT, CIP, DAP, DPU, DDP]
+rules_sea_and_inland_waterway_only: [FAS, FOB, CFR, CIF]
+insurance_obliged_to_seller:
+  CIF: "Institute Cargo Clauses (C), minimum"
+  CIP: "Institute Cargo Clauses (A), minimum"
+unavailable_tools:
+  - duty_calc
+  - get_freight_quote
+  - hs_code_lookup
+  - build_docx

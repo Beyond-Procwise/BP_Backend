@@ -1,0 +1,12 @@
+thresholds:
+  realised_vs_plan_variance_pct: 10     # above this, re-review the saving
+  baseline_window_months: 12            # trailing window for a weighted-average baseline
+  last_price_max_age_months: 18
+  finance_review_min_annualised: 100000 # in the reporting currency, per initiative
+  escalate_above_annualised: 1000000
+unavailable_tools:
+  - savings_tracker
+  - commodity_index_lookup
+  - build_spend_cube
+  - build_xlsx
+  - build_docx

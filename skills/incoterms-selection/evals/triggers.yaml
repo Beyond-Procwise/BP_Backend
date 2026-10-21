@@ -1,0 +1,22 @@
+should_trigger:
+- Which Incoterm should we use for this shipment?
+- Is FOB right for containers?
+- Compare the landed cost of FCA and DAP
+- Who pays for insurance under CIF?
+- Can we use EXW if we cannot export?
+- What does DDP mean for import VAT?
+- Where does risk transfer under FCA?
+- Our supplier wants CIF for air freight, is that valid?
+- Choose the right Incoterm for sea freight from Shenzhen
+- What is the difference between DAP and DPU?
+should_not_trigger:
+- Check this PO against approval limits
+- Draft a negotiation plan for the steel contract
+- Find the HS code for this product
+- Book a container with a carrier
+- Summarise spend by supplier
+- Extract the lines from this invoice
+- Classify savings as hard or soft
+- Write a termination clause
+- Screen the supplier for sanctions
+- Plot monthly spend

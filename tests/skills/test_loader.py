@@ -53,3 +53,9 @@ def test_config_that_is_not_a_mapping_is_a_problem(make_skill):
     d = make_skill()
     (d / "config.yaml").write_text("- a\n- b\n")
     assert any("config.yaml" in p for p in checks.check_structure(d))
+
+
+def test_a_colon_in_the_description_is_a_named_problem_not_a_crash(make_skill):
+    text = skill_text(description="Does a thing. Review-gated: someone signs.")
+    problems = checks.check_structure(make_skill(text=text))
+    assert any("frontmatter" in p for p in problems), problems

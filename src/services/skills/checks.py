@@ -21,7 +21,10 @@ def split_frontmatter(text: str):
     m = _FRONT.match(text)
     if not m:
         return None, text
-    meta = yaml.safe_load(m.group(1))
+    try:
+        meta = yaml.safe_load(m.group(1))
+    except yaml.YAMLError:
+        return None, text[m.end():]
     return (meta if isinstance(meta, dict) else None), text[m.end():]
 
 
@@ -34,7 +37,7 @@ def check_structure(path: Path) -> List[str]:
     text = md.read_text()
     meta, body = split_frontmatter(text)
     if meta is None:
-        problems.append("SKILL.md has no YAML frontmatter")
+        problems.append("SKILL.md has no valid YAML frontmatter (a colon followed by a space inside the description breaks it)")
     else:
         if not meta.get("name"):
             problems.append("frontmatter: name is missing")

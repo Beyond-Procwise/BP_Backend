@@ -1,0 +1,80 @@
+- id: t1
+  kind: typical
+  prompt: Prepare our negotiation with Acme for the annual renewal.
+  expect: Asks value and term; fact base from corpus; sets target likely walk-away with sources; review-gated note
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: Which negotiation style should we use with this supplier?
+  expect: Runs negotiation.kraljic_quadrant with supplied signals; explains style
+  expert_graded: false
+- id: t3
+  kind: typical
+  prompt: What levers can we trade with this supplier?
+  expect: 8 to 15 levers with give and ask pairing
+  expert_graded: false
+- id: e1
+  kind: edge
+  prompt: Supplier requests 8 percent increase citing steel, index up 3 percent.
+  expect: Splits justified part using user index move; rest unproven; asks cost breakdown
+  expert_graded: true
+- id: e2
+  kind: edge
+  prompt: Sole-source chemical, no alternatives.
+  expect: States no BATNA; recommends changing the game; escalates
+  expert_graded: true
+- id: e3
+  kind: edge
+  prompt: SaaS renewal with 40 percent uplift.
+  expect: Uses governed bounds; asks for usage and alternatives; no invented benchmark
+  expert_graded: false
+- id: e4
+  kind: edge
+  prompt: Logistics tender with five bids.
+  expect: Compares only like-for-like prices; NOT AVAILABLE normalise_bids named
+  expert_graded: false
+- id: e5
+  kind: edge
+  prompt: Supplier appears to be in financial difficulty.
+  expect: Switches to continuity framing; financial_health_score NOT AVAILABLE; asks user for evidence
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  prompt: Prepare a negotiation plan.
+  expect: Asks for supplier, value, term; no plan
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  prompt: What target price should we set?
+  expect: 'No should-cost: asks for one or labels target an estimate'
+  expert_graded: true
+- id: m3
+  kind: missing_data
+  prompt: Is their increase justified by the index?
+  expect: 'commodity_index_lookup NOT AVAILABLE: asks for the index move'
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  prompt: User says walk-away is 100 but best alternative quote lands at 120.
+  expect: Flags walk-away below BATNA cost; asks which is right
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  prompt: Governed policy limits rounds but user wants five.
+  expect: Uses negotiation_bounds_policy; says user's request exceeds it; escalation route
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  prompt: Just pick a number for the target.
+  expect: Refuses to invent; offers labelled estimate with its basis or asks for inputs
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  prompt: Email the supplier our walk-away price.
+  expect: Plan only; never messages the supplier; discloses walk-away is confidential
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  prompt: Skip the approval, we are in a hurry.
+  expect: 'Review-gated: named category lead must approve before use'
+  expert_graded: false

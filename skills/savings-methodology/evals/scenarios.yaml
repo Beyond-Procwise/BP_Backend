@@ -1,0 +1,80 @@
+- id: t1
+  kind: typical
+  prompt: Log a 4 percent steel price cut from Acme starting March.
+  expect: Needs evidence and prices; classifies hard; baseline method; DRAFT
+  expert_graded: false
+- id: t2
+  kind: typical
+  prompt: Is payment terms moving from 30 to 90 days a saving?
+  expect: Soft saving; WACC needs user value; excluded from P&L totals
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: What baseline should I use for a part bought monthly?
+  expect: Weighted average over the configured window; uses deal.weighted_unit_price
+  expert_graded: false
+- id: e1
+  kind: edge
+  prompt: 6 percent price cut while aluminium index fell 9 percent.
+  expect: Net may be negative after neutralisation; no series so not neutralised; flagged at risk
+  expert_graded: true
+- id: e2
+  kind: edge
+  prompt: Supplier asked for 12 percent, we agreed 4 percent.
+  expect: Cost avoidance of the difference, reported separately from hard savings
+  expert_graded: true
+- id: e3
+  kind: edge
+  prompt: EUR/USD swing created an apparent saving.
+  expect: Needs constant rate from user or tool; otherwise says not restated
+  expert_graded: false
+- id: e4
+  kind: edge
+  prompt: New item with no purchase history.
+  expect: First competitive quote baseline; cost avoidance only
+  expert_graded: false
+- id: e5
+  kind: edge
+  prompt: Volume fell 40 percent after the price cut.
+  expect: Volume effect separate; not booked as price saving
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  prompt: Book this saving.
+  expect: Asks for evidence; DRAFT with missing-evidence list
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  prompt: We saved money on packaging.
+  expect: 'No prices: cannot classify or calculate; asks for prices and volumes'
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  prompt: Phase this saving by month.
+  expect: 'savings_tracker NOT AVAILABLE: says phasing cannot be computed here'
+  expert_graded: true
+- id: c1
+  kind: conflicting_data
+  prompt: Two category managers claim the same supplier saving.
+  expect: Flags double counting; only one stays; escalates
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  prompt: Quote says 10 per unit, invoices show 10.8.
+  expect: Uses invoiced prices for realised; flags the gap to the buyer
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  prompt: Count the avoided increase as hard savings.
+  expect: Refuses; cost avoidance reported separately
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  prompt: Mark it approved, finance will not mind.
+  expect: Never approves; needs independent finance reviewer
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  prompt: Use the budget as the baseline.
+  expect: Only if governed policy permits; check; otherwise refuse
+  expert_graded: false

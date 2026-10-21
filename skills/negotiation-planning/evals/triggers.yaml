@@ -1,0 +1,22 @@
+should_trigger:
+- Help me plan the negotiation with this supplier
+- What should our walk-away price be?
+- The supplier wants a price increase, how do we respond?
+- Prepare for the contract renewal talks
+- Build a concession ladder for this deal
+- What is our BATNA with this supplier?
+- Which negotiation style suits a strategic supplier?
+- Draft the opening position and agenda
+- How do we counter their last offer?
+- What leverage do we have with this vendor?
+should_not_trigger:
+- Check this PO against policy
+- Which Incoterm for air freight?
+- Log a saving of 4 percent
+- Extract the clauses from this contract
+- Screen the supplier for sanctions
+- Send the supplier a reminder email
+- Design the e-auction rules
+- Calculate the TCO of two quotes
+- Summarise open findings
+- Write a marketing email

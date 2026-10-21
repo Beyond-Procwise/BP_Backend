@@ -1,5 +1,6 @@
 """Every skill folder in the repo must pass every rule. Adding a skill adds a test."""
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,7 +12,10 @@ FOLDERS = sorted(p for p in ROOT.iterdir() if p.is_dir()) if ROOT.is_dir() else 
 
 
 def _known_tools():
-    return {t.name for t in control.build_tools(None)}
+    # The saving-lever tools only exist when the Opportunity Miner is registered, so build the
+    # set with a stand-in that has one. Handlers are never called here, only the names read.
+    nick = SimpleNamespace(agents={"opportunity_miner": SimpleNamespace()})
+    return {t.name for t in control.build_tools(nick)}
 
 
 @pytest.mark.parametrize("folder", FOLDERS, ids=lambda p: p.name)
