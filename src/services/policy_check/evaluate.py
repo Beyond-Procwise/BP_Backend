@@ -36,6 +36,15 @@ def _num(value: Any) -> Optional[float]:
     return out if out == out and abs(out) != float("inf") else None
 
 
+_PLACEHOLDERS = {"", "unknown", "none", "null", "n/a", "na", "tbd", "?", "-", "not provided", "not known"}
+
+
+def _identity(value: Any) -> Optional[str]:
+    """A person's id, or None when the caller passed a placeholder instead of a fact."""
+    text = str(value).strip() if value is not None else ""
+    return None if text.lower() in _PLACEHOLDERS else text
+
+
 def _money(x: float, currency: str) -> str:
     text = f"{x:,.0f}" if float(x).is_integer() else f"{x:,.2f}"
     return f"{text} {currency}"
@@ -125,16 +134,17 @@ def evaluate(request: Dict[str, Any], governance: Dict[str, Any], config: Dict[s
     sig = {"performed": performed, "fired": False, "reason_not_performed": ""}
     if not performed:
         sig["reason_not_performed"] = "Order history was not checked, so earlier orders could not be included."
-    if len(amounts) >= 2:
-        each_under = all(a <= limit for a in amounts)
-        band = [a for a in amounts if limit * (1 - pct / 100) <= a <= limit]
-        if (each_under and sum(amounts) > limit) or len(band) >= min_orders:
+    # Only orders that are individually within the limit can be a split of a bigger one.
+    small = [a for a in amounts if a <= limit]
+    if len(small) >= 2:
+        band = [a for a in small if a >= limit * (1 - pct / 100)]
+        if sum(small) > limit or len(band) >= min_orders:
             sig["fired"] = True
-            sig["combined"] = round(sum(amounts), 2)
+            sig["combined"] = round(sum(small), 2)
             severity = "blocking" if placed else "warning"
             violations.append({
                 "rule": "split orders", "severity": severity,
-                "message": (f"{len(amounts)} orders totalling {_money(sum(amounts), policy_currency)} sit at or under the "
+                "message": (f"{len(small)} orders totalling {_money(sum(small), policy_currency)} sit at or under the "
                             f"limit of {_money(limit, policy_currency)} one by one."),
                 "remediation": "Submit them as one request and have the combined value approved."})
             actions.append("Have the combined value approved as one request.")
@@ -143,7 +153,7 @@ def evaluate(request: Dict[str, Any], governance: Dict[str, Any], config: Dict[s
     if orders and not any("date" in o for o in orders):
         assumptions.append("No order dates were given, so every listed order was treated as inside the window.")
 
-    req, appr = request.get("requester"), request.get("approver")
+    req, appr = _identity(request.get("requester")), _identity(request.get("approver"))
     if req and appr and req == appr:
         violations.append({"rule": "separation of duties", "severity": "blocking",
                            "message": "The requester is also the approver.",
@@ -169,7 +179,7 @@ def evaluate(request: Dict[str, Any], governance: Dict[str, Any], config: Dict[s
             evaluated.append({"rule": name, "outcome": "not_governed", "evidence": "No governed policy covers this rule."})
 
     waivers: List[str] = []
-    if request.get("waiver_id"):
+    if _identity(request.get("waiver_id")):
         assumptions.append(f"The waiver {request['waiver_id']} was not applied: there is no waiver policy to verify it against.")
 
     if any(v["severity"] == "blocking" for v in violations):

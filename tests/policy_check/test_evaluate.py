@@ -152,3 +152,21 @@ def test_same_facts_same_policy_same_verdict():
     r = {"total_commitment": 25000, "currency": "GBP"}
     a, b = run(r, now="2026-10-21T00:00:00Z"), run(r, now="2026-10-21T00:00:00Z")
     assert a == b
+
+
+def test_one_large_order_among_small_ones_does_not_hide_the_split():
+    orders = [{"amount": 25000, "source": "planned"}] + [{"amount": 6000, "source": "planned"}] * 4
+    v = run({"total_commitment": 49000, "currency": "GBP", "orders": orders, "history_checked": True})
+    assert v["split_signal"]["fired"] is True and v["split_signal"]["combined"] == 24000
+    assert v["verdict"] == "COMPLIANT_WITH_CONDITIONS"
+
+
+def test_junk_placeholder_values_are_ignored_not_trusted():
+    v = run({"total_commitment": 5000, "currency": "GBP", "requester": "unknown", "approver": "unknown",
+             "waiver_id": "", "fx_rate_to_policy_currency": 1})
+    assert v["verdict"] == "COMPLIANT" and v["violations"] == []
+
+
+def test_a_single_order_is_never_a_split():
+    v = run({"total_commitment": 9000, "currency": "GBP", "orders": [{"amount": 9000, "source": "planned"}]})
+    assert v["split_signal"]["fired"] is False
