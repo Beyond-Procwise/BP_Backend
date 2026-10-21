@@ -16,7 +16,6 @@ unavailable_tools:
   - commodity_index_lookup
   - financial_health_score
   - monitor_risk_events
-  - extract_clauses
   - supplier_discovery
   - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)

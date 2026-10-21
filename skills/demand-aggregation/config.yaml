@@ -12,7 +12,6 @@ thresholds:
 unavailable_tools:
   - build_spend_cube
   - classify_spend
-  - search_contracts
   - landed_cost_calc
   - build_xlsx
   - build_pptx

@@ -26,6 +26,9 @@ FIXED_TOOLS = {
     "use_skill": ["name", "part"],
     "check_policy": ["action_type", "annual_value", "approver", "currency", "fx_rate_to_policy_currency",
                      "history_checked", "orders", "requester", "term_months", "total_commitment", "waiver_id"],
+    "search_contracts": ["query", "supplier", "status", "expires_within_days", "limit"],
+    "extract_clauses": ["document_id", "clause_type", "containing"],
+    "redline_compare": ["original", "revised"],
 }
 
 # Tools the two older tool loops offer (services/governance_tools/governed_reasoning.py and

@@ -677,6 +677,55 @@ def _policy_check_tools() -> List[Tool]:
     ]
 
 
+def _contract_tools() -> List[Tool]:
+    """Find contracts, read their stored clauses, compare two wordings. All read-only."""
+    from src.services.contract_tools import clauses as CL
+    from src.services.contract_tools import redline as RL
+    from src.services.contract_tools import search as SE
+
+    return [
+        Tool(
+            name="search_contracts",
+            description=(
+                "Find contracts in the register by words in the title or type, supplier name, status, or "
+                "expiring within N days. Returns dates, value, auto-renewal, renewal term, governing law and "
+                "payment terms as stored. Covers only contracts that were uploaded: no match does not mean "
+                "no contract exists. If it says the register could not be read, say so."
+            ),
+            parameters={"type": "object", "properties": {
+                "query": {"type": "string"}, "supplier": {"type": "string"}, "status": {"type": "string"},
+                "expires_within_days": {"type": "integer"}, "limit": {"type": "integer"}}},
+            handler=SE.search,
+        ),
+        Tool(
+            name="extract_clauses",
+            description=(
+                "Read the clauses already extracted from one uploaded contract, quoted word for word with "
+                "clause number, type and parties. Pass the document_id (or contract_id). Optionally filter by "
+                "clause_type (must_perform, entitled_to, triggered_by, penalised_by, risk_transfer) or by words "
+                "the clause contains. Quote clauses as returned; a clause not listed may still be in the "
+                "contract, so say 'not checked', not 'absent'."
+            ),
+            parameters={"type": "object", "properties": {
+                "document_id": {"type": "string"}, "clause_type": {"type": "string"},
+                "containing": {"type": "string"}}, "required": ["document_id"]},
+            handler=CL.extract,
+        ),
+        Tool(
+            name="redline_compare",
+            description=(
+                "Compare two wordings of a clause or contract and list what was added, removed or replaced, in "
+                "reading order. Pass both texts exactly as the user gave them. It reports wording differences "
+                "only; it does not say whether a change is acceptable."
+            ),
+            parameters={"type": "object", "properties": {
+                "original": {"type": "string"}, "revised": {"type": "string"}},
+                "required": ["original", "revised"]},
+            handler=RL.compare,
+        ),
+    ]
+
+
 def build_tools(
     agent_nick: Any,
     *,
@@ -704,6 +753,7 @@ def build_tools(
         + _calculation_tools(workflow_id=workflow_id)
         + _skill_tools()
         + _policy_check_tools()
+        + _contract_tools()
     )
     if exclude:
         blocked = set(exclude)

@@ -25,7 +25,7 @@ Not for building a whole category strategy, not for clean-up of one-off tail pur
 
 NOT AVAILABLE: build_spend_cube. There is no spend cube tool. Ask the user for a spend extract, or use only what `tool:get_corpus_facts` returns and label the scope as partial.
 NOT AVAILABLE: classify_spend. Ask the user for category codes. Where spend is unclassified, use the user's labels, mark them "draft classification", and state the classified share against `config.thresholds.min_classified_coverage_pct`.
-NOT AVAILABLE: search_contracts. Ask the user for contract end dates, lock-ins and minimum commitments; where unknown, write "contract position not available".
+Use `tool:search_contracts` to find contracts by supplier, text or expiry window, and `tool:extract_clauses` for the stored clauses (minimum commitments, exclusivity). It covers only contracts that were uploaded; if it finds none, or cannot be read, ask the user for end dates, lock-ins and minimum commitments and write "contract position not available" for what stays unknown.
 NOT AVAILABLE: landed_cost_calc. Use `tool:run_calculation` with `landed_cost.total_cost` when the user supplies freight, duty and other cost inputs; otherwise say logistics cost is not normalised.
 NOT AVAILABLE: build_xlsx. Give the opportunity register as a table.
 NOT AVAILABLE: build_pptx. Give the wave plan as text.

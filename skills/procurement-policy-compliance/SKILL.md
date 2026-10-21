@@ -28,7 +28,7 @@ Use `tool:get_corpus_facts` for order history and supplier facts the user did no
 
 NOT AVAILABLE: supplier_lookup. Ask the user for the supplier's legal name and status, or use `tool:get_corpus_facts`; say which you used.
 NOT AVAILABLE: query_erp. Use `tool:get_corpus_facts` for order history; if it returns nothing, say the history check was not performed.
-NOT AVAILABLE: search_contracts. Ask whether a framework agreement covers the request; record the answer as the user's statement.
+Use `tool:search_contracts` to look for a framework agreement with the supplier. A match is evidence, not a ruling; if it finds none or cannot be read, ask whether a framework covers the request and record the answer as the user's statement.
 NOT AVAILABLE: build_docx. Give the verdict as text using the template in templates/verdict.json.
 
 ## Workflow
