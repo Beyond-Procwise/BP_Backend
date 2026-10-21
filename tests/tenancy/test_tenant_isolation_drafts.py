@@ -38,6 +38,7 @@ def _lines(name):
 TABLES = _lines("proc_tables_2026-10-21.txt")
 ALREADY = set(_lines("proc_tables_already_labelled_2026-10-21.txt"))
 WITH_DEFAULT = _lines("proc_tables_label_default_2026-10-21.txt")
+WAS_REQUIRED = _lines("proc_tables_label_notnull_2026-10-21.txt")
 FILES = gen.files()
 
 
@@ -100,11 +101,13 @@ def test_every_policy_fails_closed_when_no_tenant_is_set():
     assert "app.tenant_id', false" not in sql    # the erroring form would break jobs instead of closing
 
 
-def test_part_1_drops_the_default_it_adds():
+def test_part_1_keeps_the_default_so_nothing_written_before_part_6_is_unlabelled():
+    """Dropping it in part 1 left NULL rows in the tamper-proof tables, which refuse the fix-up UPDATE
+    (found by practising on a copy of the real database)."""
     sql = FILES["2026-10-21_tenant_isolation_1_add_label.sql"]
     added = len(cls.OWNED) - len(set(cls.OWNED) & ALREADY)
     assert sql.count("ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default'") == added
-    assert sql.count("ALTER COLUMN tenant_id DROP DEFAULT") == added
+    assert "DROP DEFAULT" not in sql
 
 
 def test_part_1_never_touches_a_column_that_already_existed():
@@ -124,16 +127,15 @@ def test_part_6_puts_a_stamp_trigger_on_every_owned_table():
     assert sql.count("CREATE TRIGGER tr_bp_stamp_tenant BEFORE INSERT") == len(cls.OWNED)
 
 
-def test_part_6_drops_an_old_default_in_the_same_transaction_as_its_trigger():
+def test_part_6_drops_each_default_in_the_same_transaction_as_its_trigger():
     sql = FILES["2026-10-21_tenant_isolation_6_stamp_on_insert.sql"]
-    blocks = [b for b in sql.split("BEGIN;")[1:]]
     dropped = set()
-    for b in blocks:
+    for b in sql.split("BEGIN;")[1:]:
         m = re.search(r"ALTER TABLE proc\.([a-z0-9_]+) ALTER COLUMN tenant_id DROP DEFAULT", b)
-        if m:
-            assert "CREATE TRIGGER tr_bp_stamp_tenant" in b and "COMMIT;" in b
-            dropped.add(m.group(1))
-    assert dropped == set(WITH_DEFAULT)
+        assert m, "every block must drop its table's default"
+        assert "CREATE TRIGGER tr_bp_stamp_tenant" in b and "COMMIT;" in b
+        dropped.add(m.group(1))
+    assert dropped == set(cls.OWNED)
 
 
 def test_the_stamp_trigger_never_overwrites_and_never_guesses():
@@ -143,9 +145,11 @@ def test_the_stamp_trigger_never_overwrites_and_never_guesses():
     assert "coalesce" not in fn.lower() and "'default'" not in fn   # nothing bound stays NULL
 
 
-def test_part_6_rollback_restores_the_old_defaults():
+def test_part_6_rollback_restores_the_state_after_part_1_exactly():
     sql = FILES["2026-10-21_tenant_isolation_6_stamp_on_insert_rollback.sql"]
-    assert sql.count("SET DEFAULT 'default'") == len(WITH_DEFAULT)
+    expected = {t for t in cls.OWNED if t in set(WITH_DEFAULT) or t not in ALREADY}
+    restored = set(re.findall(r"ALTER TABLE proc\.([a-z0-9_]+) ALTER COLUMN tenant_id SET DEFAULT", sql))
+    assert restored == expected
 
 
 def test_identifiers_fit_and_are_unique():
@@ -160,3 +164,12 @@ def test_every_forward_file_has_a_rollback_where_one_can_exist():
 
 def test_every_file_says_it_is_a_draft():
     assert all(b.startswith("-- DRAFT FOR REVIEW. NOT APPLIED.") for b in FILES.values())
+
+
+def test_rolling_back_part_3_keeps_the_columns_that_were_mandatory_before():
+    """Found by a full forward-and-back cycle on a copy of the real database: the rollback stripped the
+    original NOT NULL from ten tables."""
+    sql = FILES["2026-10-21_tenant_isolation_3_not_null_rollback.sql"]
+    dropped = set(re.findall(r"ALTER TABLE proc\.([a-z0-9_]+) ALTER COLUMN tenant_id DROP NOT NULL", sql))
+    assert WAS_REQUIRED and set(WAS_REQUIRED) <= set(cls.OWNED)
+    assert dropped == set(cls.OWNED) - set(WAS_REQUIRED)

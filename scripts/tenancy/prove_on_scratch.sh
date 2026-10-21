@@ -23,15 +23,18 @@ python3 - <<'PY' > /tmp/tenancy_fixture.sql
 T=[l.strip() for l in open("tests/tenancy/proc_tables_2026-10-21.txt")]
 L={l.strip() for l in open("tests/tenancy/proc_tables_already_labelled_2026-10-21.txt")}
 D={l.strip() for l in open("tests/tenancy/proc_tables_label_default_2026-10-21.txt")}
+NN={l.strip() for l in open("tests/tenancy/proc_tables_label_notnull_2026-10-21.txt")}
 V=[l.strip() for l in open("tests/tenancy/proc_views_2026-10-21.txt")]
 print("CREATE ROLE owner_r NOLOGIN; CREATE ROLE app_r LOGIN PASSWORD 'x' IN ROLE owner_r; CREATE ROLE procwise_readonly LOGIN PASSWORD 'x';")
 print("CREATE SCHEMA proc AUTHORIZATION owner_r; GRANT USAGE ON SCHEMA proc TO procwise_readonly; SET ROLE owner_r;")
 for t in T:
     lab = t in L
-    col = ", tenant_id text NOT NULL DEFAULT 'default'" if t in D else (", tenant_id text" if lab else "")
+    col = ", tenant_id text NOT NULL DEFAULT 'default'" if t in D else (", tenant_id text NOT NULL" if t in NN else (", tenant_id text" if lab else ""))
     print(f"CREATE TABLE proc.{t} (id serial primary key, v text{col});")
     if t in D:
         print(f"INSERT INTO proc.{t}(v) VALUES ('a'),('b');")
+    elif t in NN:
+        print(f"INSERT INTO proc.{t}(v, tenant_id) VALUES ('a','default'),('b','default');")
     else:
         print(f"INSERT INTO proc.{t}(v{', tenant_id' if lab else ''}) VALUES ('a'{', NULL' if lab else ''}),('b'{', chr(100)||chr(101)||chr(102)||chr(97)||chr(117)||chr(108)||chr(116)' if lab else ''});")
     print(f"GRANT SELECT ON proc.{t} TO procwise_readonly;")
@@ -42,14 +45,16 @@ su -f /tmp/tenancy_fixture.sql || { echo "fixture failed"; exit 2; }
 echo "part 1 (add label)"
 as_owner $SQL"_1_add_label.sql"; as_owner $SQL"_1_add_label.sql"   # twice: must be repeatable
 ok "every owned table has tenant_id"      "$(su -Atc "select count(*) from information_schema.columns where table_schema='proc' and column_name='tenant_id'")" 215
-ok "part 1 leaves the 7 pre-existing defaults alone" "$(su -Atc "select count(*) from information_schema.columns where table_schema='proc' and column_name='tenant_id' and column_default is not null")" 7
+ok "part 1 leaves every owned table with the default label (195 added + 7 old)" "$(su -Atc "select count(*) from information_schema.columns where table_schema='proc' and column_name='tenant_id' and column_default is not null")" 202
+ok "a row written between part 1 and part 6 is labelled, not NULL" "$(printf "SET ROLE owner_r; INSERT INTO proc.bp_invoice_raw(v) VALUES ('window'); select tenant_id from proc.bp_invoice_raw where v='window';\n" | su -f - 2>&1 | tail -1)" default
+su -c "delete from proc.bp_invoice_raw where v='window'" >/dev/null
 ok "pre-existing NOT NULL tables still take an insert" "$(printf "SET ROLE owner_r; INSERT INTO proc.bp_value_outcome(v) VALUES ('still-works'); select tenant_id from proc.bp_value_outcome where v='still-works';\n" | su -f - 2>&1 | tail -1)" default
 su -c "delete from proc.bp_value_outcome where v='still-works'" >/dev/null
 echo "part 6 (stamp on insert)"
 as_owner $SQL"_6_stamp_on_insert.sql"; as_owner $SQL"_6_stamp_on_insert.sql"   # twice: must be repeatable
 one(){ printf "SET ROLE owner_r;\n%s\n" "$1" | su -f - 2>&1 | tail -1 | cut -c1-90; }
 ok "a stamp trigger on every owned table"  "$(su -Atc "select count(*) from pg_trigger where tgname='tr_bp_stamp_tenant'")" 213
-ok "the 7 old defaults are gone"           "$(su -Atc "select count(*) from information_schema.columns where table_schema='proc' and column_name='tenant_id' and column_default is not null")" 0
+ok "every default is gone (the trigger replaces them)"           "$(su -Atc "select count(*) from information_schema.columns where table_schema='proc' and column_name='tenant_id' and column_default is not null")" 0
 ok "bound tenant is stamped"               "$(one "select set_config('app.tenant_id','acme',false); insert into proc.bp_account(v) values ('s1'); select tenant_id from proc.bp_account where v='s1';")" acme
 ok "bound tenant stamped on a NOT NULL table" "$(one "select set_config('app.tenant_id','acme',false); insert into proc.bp_value_outcome(v) values ('s2'); select tenant_id from proc.bp_value_outcome where v='s2';")" acme
 ok "a named tenant is kept, never overwritten" "$(one "select set_config('app.tenant_id','acme',false); insert into proc.bp_account(v,tenant_id) values ('s3','beta'); select tenant_id from proc.bp_account where v='s3';")" beta
@@ -94,8 +99,9 @@ ok "no policies left"                     "$(su -Atc "select count(*) from pg_po
 ok "no RLS left"                          "$(su -Atc "select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname='proc' and c.relrowsecurity")" 0
 ok "label columns back to the original 20" "$(su -Atc "select count(*) from information_schema.columns where table_schema='proc' and column_name='tenant_id'")" 20
 ok "row data intact"                      "$(su -Atc "select count(*) from proc.bp_invoice_raw")" 3
+ok "tables that were NOT NULL before are still NOT NULL after rollback" "$(su -Atc "select count(*) from information_schema.columns where table_schema='proc' and column_name='tenant_id' and is_nullable='NO'")" 10
 ok "no stamp triggers or function left"   "$(su -Atc "select (select count(*) from pg_trigger where tgname='tr_bp_stamp_tenant')+(select count(*) from pg_proc where proname='bp_stamp_tenant')")" 0
-ok "the 7 old defaults are back"          "$(su -Atc "select count(*) from information_schema.columns where table_schema='proc' and column_name='tenant_id' and column_default is not null")" 7
+ok "after all rollbacks only the 7 original defaults remain" "$(su -Atc "select count(*) from information_schema.columns where table_schema='proc' and column_name='tenant_id' and column_default is not null")" 7
 ok "support objects removed"              "$(su -Atc "select (select count(*) from pg_proc where proname='bp_support_begin')+(select count(*) from pg_tables where tablename='bp_support_access_log')")" 0
 [ $FAIL -eq 0 ] && echo "ALL ASSERTIONS HELD" || echo "SOME ASSERTIONS FAILED"
 exit $FAIL

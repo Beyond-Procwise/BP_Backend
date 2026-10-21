@@ -3,9 +3,11 @@
 -- second wall; BP staff get read-only, logged support access.
 -- Part 1: add the tenant label to every customer-owned table
 -- Safe on a live database: ADD COLUMN with a constant DEFAULT is metadata-only in PostgreSQL 16, so it
--- labels every existing row 'default' instantly without rewriting the table. The DEFAULT is dropped
--- straight away (existing rows keep their label), so a future insert that forgets the label gets NULL
--- and is caught, instead of silently landing in 'default'.
+-- labels every existing row 'default' instantly without rewriting the table. The DEFAULT STAYS until
+-- part 6 replaces it with the stamping trigger (in one transaction per table): every row written in
+-- between is labelled 'default', which is correct while there is one customer. Dropping it here would
+-- leave unlabelled rows in the tamper-proof (append-only) tables, which refuse the later fix-up UPDATE
+-- (found when practising on a copy of the real database, 2026-10-21).
 -- Each table is its own short transaction with a lock timeout: if a table is busy the statement fails
 -- and the file can be re-run (every statement is idempotent).
 -- Tables that already carry tenant_id (20) keep it; part 2 relabels any NULL rows.
@@ -14,7 +16,6 @@
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.agent_plan ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.agent_plan ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 -- proc.bp_account: already has tenant_id; its default (if any) is left alone here -- part 6 replaces it.
@@ -22,13 +23,11 @@ COMMIT;
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_account_contact ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_account_contact ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_account_history_scope ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_account_history_scope ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 -- proc.bp_account_price: already has tenant_id; its default (if any) is left alone here -- part 6 replaces it.
@@ -36,145 +35,121 @@ COMMIT;
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_action ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_action ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_admin_config ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_admin_config ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_agent_actions ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_agent_actions ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_agent_definition ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_agent_definition ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_agent_definition_version ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_agent_definition_version ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_agent_group ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_agent_group ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_agent_policy ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_agent_policy ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_agent_policy_conflict ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_agent_policy_conflict ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_agent_policy_conflict_rule ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_agent_policy_conflict_rule ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_agent_policy_person ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_agent_policy_person ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_agent_policy_second_review ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_agent_policy_second_review ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_agent_policy_suggestion ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_agent_policy_suggestion ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_agent_policy_version ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_agent_policy_version ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_agent_run ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_agent_run ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_agent_workflow ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_agent_workflow ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_analysis ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_analysis ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_analysis_deal ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_analysis_deal ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_analysis_document ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_analysis_document ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_analysis_summary ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_analysis_summary ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_approval ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_approval ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_artifact_derivation ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_artifact_derivation ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_brand_logo ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_brand_logo ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_business_area ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_business_area ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_catalog_cost_tier ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_catalog_cost_tier ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 -- proc.bp_catalog_item: already has tenant_id; its default (if any) is left alone here -- part 6 replaces it.
@@ -182,19 +157,16 @@ COMMIT;
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_catalog_item_match ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_catalog_item_match ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_catalog_item_relation ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_catalog_item_relation ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_catalog_mapping ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_catalog_mapping ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 -- proc.bp_catalog_source: already has tenant_id; its default (if any) is left alone here -- part 6 replaces it.
@@ -204,7 +176,6 @@ COMMIT;
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_category ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_category ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 -- proc.bp_commercial_fact: already has tenant_id; its default (if any) is left alone here -- part 6 replaces it.
@@ -216,97 +187,81 @@ COMMIT;
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_contract_expiry_alert ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_contract_expiry_alert ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_contract_line_items ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_contract_line_items ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_contract_line_items_raw ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_contract_line_items_raw ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_contract_obligation ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_contract_obligation ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_contract_obligation_party ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_contract_obligation_party ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_contract_obligation_run ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_contract_obligation_run ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_contract_raw ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_contract_raw ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_contracts ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_contracts ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_deal ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_deal ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_deal_document_map ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_deal_document_map ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_deal_proposal ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_deal_proposal ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_deal_proposal_member ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_deal_proposal_member ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_decision ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_decision ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_demand ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_demand ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_detection_finding ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_detection_finding ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_doc_number_counter ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_doc_number_counter ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 -- proc.bp_egress_event: already has tenant_id; its default (if any) is left alone here -- part 6 replaces it.
@@ -316,73 +271,61 @@ COMMIT;
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_extraction_discrepancy ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_extraction_discrepancy ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_extraction_discrepancy_bkp ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_extraction_discrepancy_bkp ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_extraction_hallucination_audit ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_extraction_hallucination_audit ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_extraction_health_metrics ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_extraction_health_metrics ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_extraction_hint_proposal ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_extraction_hint_proposal ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_extraction_observation ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_extraction_observation ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_extraction_provenance ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_extraction_provenance ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_extraction_provenance_v3 ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_extraction_provenance_v3 ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_extraction_retry_log ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_extraction_retry_log ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_extraction_telemetry ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_extraction_telemetry ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_extraction_template ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_extraction_template ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_extraction_verdict ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_extraction_verdict ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 -- proc.bp_fact_provenance: already has tenant_id; its default (if any) is left alone here -- part 6 replaces it.
@@ -394,445 +337,371 @@ COMMIT;
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_gateway_write ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_gateway_write ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_goods_receipt_line_items_raw ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_goods_receipt_line_items_raw ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_goods_receipt_line_items_stg ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_goods_receipt_line_items_stg ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_goods_receipt_line_items_trgt ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_goods_receipt_line_items_trgt ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_goods_receipt_raw ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_goods_receipt_raw ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_goods_receipt_stg ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_goods_receipt_stg ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_goods_receipt_trgt ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_goods_receipt_trgt ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_ingest_arrival ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_ingest_arrival ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_ingest_artifact ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_ingest_artifact ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_ingest_bundle ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_ingest_bundle ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_ingest_sender_auth ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_ingest_sender_auth ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_internal_email ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_internal_email ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_invoice_line_items_raw ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_invoice_line_items_raw ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_invoice_line_items_stg ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_invoice_line_items_stg ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_invoice_line_items_trgt ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_invoice_line_items_trgt ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_invoice_line_items_trgt_bkp ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_invoice_line_items_trgt_bkp ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_invoice_raw ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_invoice_raw ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_invoice_raw_bkp ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_invoice_raw_bkp ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_invoice_raw_bkp_june12 ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_invoice_raw_bkp_june12 ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_invoice_stg ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_invoice_stg ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_invoice_stg_bkp_june12 ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_invoice_stg_bkp_june12 ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_invoice_stg_trgt_june12 ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_invoice_stg_trgt_june12 ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_invoice_trgt ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_invoice_trgt ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_invoice_trgt_bkp ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_invoice_trgt_bkp ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_link_rejection ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_link_rejection ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_mailbox_binding ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_mailbox_binding ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_negotiation_advice ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_negotiation_advice ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_negotiation_advice_fact ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_negotiation_advice_fact ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_opportunity ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_opportunity ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_opportunity_critique ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_opportunity_critique ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_opportunity_gap ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_opportunity_gap ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_page_layout ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_page_layout ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_playbook ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_playbook ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_playbook_proposal ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_playbook_proposal ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_po_line_items_raw ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_po_line_items_raw ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_po_line_items_stg ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_po_line_items_stg ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_po_line_items_trgt ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_po_line_items_trgt ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_po_line_items_trgt_bkp ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_po_line_items_trgt_bkp ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_po_raw_june12 ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_po_raw_june12 ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_po_stg_june12 ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_po_stg_june12 ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_po_trgt_june12 ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_po_trgt_june12 ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_policy_document ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_policy_document ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_policy_document_version ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_policy_document_version ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_policy_extraction_item ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_policy_extraction_item ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_policy_extraction_run ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_policy_extraction_run ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_policy_firing ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_policy_firing ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_policy_firing_reversal ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_policy_firing_reversal ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_policy_notification ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_policy_notification ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_policy_observation ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_policy_observation ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_presentation_log ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_presentation_log ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_prompt_render ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_prompt_render ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_prompt_render_use ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_prompt_render_use ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_purchase_order_raw ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_purchase_order_raw ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_purchase_order_stg ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_purchase_order_stg ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_purchase_order_trgt ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_purchase_order_trgt ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_purchase_order_trgt_bkp ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_purchase_order_trgt_bkp ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_quote_evaluation ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_quote_evaluation ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_quote_line_items_raw ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_quote_line_items_raw ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_quote_line_items_stg ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_quote_line_items_stg ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_quote_line_items_trgt ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_quote_line_items_trgt ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_quote_line_items_trgt_bkp ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_quote_line_items_trgt_bkp ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_quote_raw ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_quote_raw ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_quote_raw_june12 ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_quote_raw_june12 ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_quote_stg ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_quote_stg ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_quote_stg_june12 ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_quote_stg_june12 ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_quote_trgt ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_quote_trgt ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_quote_trgt_bkp ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_quote_trgt_bkp ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_quote_trgt_june12 ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_quote_trgt_june12 ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_report_job ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_report_job ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_report_version ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_report_version ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_reports ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_reports ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_requirement ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_requirement ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_role_assignment ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_role_assignment ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_sales_justification ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_sales_justification ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 -- proc.bp_sales_opportunity: already has tenant_id; its default (if any) is left alone here -- part 6 replaces it.
@@ -842,187 +711,156 @@ COMMIT;
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_sales_quote_internal ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_sales_quote_internal ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_sales_quote_line ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_sales_quote_line ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_sales_quote_line_internal ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_sales_quote_line_internal ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_sales_quote_outcome ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_sales_quote_outcome ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_sales_quote_template ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_sales_quote_template ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_standin_actor_backfill ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_standin_actor_backfill ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_style_divergence ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_style_divergence ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_style_exemplar ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_style_exemplar ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_style_ingest_staging ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_style_ingest_staging ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_style_intent ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_style_intent ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_style_pack ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_style_pack ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_style_profile ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_style_profile ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_style_recompile_suggestion ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_style_recompile_suggestion ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_summary ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_summary ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_supplier ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_supplier ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_supplier_alias ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_supplier_alias ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_supplier_enrichment ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_supplier_enrichment ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_supplier_id_crosswalk ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_supplier_id_crosswalk ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_supplier_info_request ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_supplier_info_request ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_supplier_name_reject ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_supplier_name_reject ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_supplier_ranking ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_supplier_ranking ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_supplier_review ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_supplier_review ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_support_ticket ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_support_ticket ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_tprm_supplier ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_tprm_supplier ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_triage_deal_state ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_triage_deal_state ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_triage_finding ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_triage_finding ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_triage_result ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_triage_result ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_triage_run ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_triage_run ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_user_buyer_scope ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_user_buyer_scope ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_user_preference ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_user_preference ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_user_reseller_link ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_user_reseller_link ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 -- proc.bp_value_outcome: already has tenant_id; its default (if any) is left alone here -- part 6 replaces it.
@@ -1034,185 +872,154 @@ COMMIT;
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_vendor_extraction_profiles ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_vendor_extraction_profiles ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_workflow_input_request ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_workflow_input_request ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_workflow_run ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.bp_workflow_run ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.deal_document_id_map ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.deal_document_id_map ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.draft_rfq_emails ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.draft_rfq_emails ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.email_dispatch ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.email_dispatch ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.email_dispatch_chains ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.email_dispatch_chains ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.email_thread_map ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.email_thread_map ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.extraction_review_queue ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.extraction_review_queue ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.negotiation_session_state ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.negotiation_session_state ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.negotiation_sessions ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.negotiation_sessions ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.node_execution ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.node_execution ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.opportunity_feedback ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.opportunity_feedback ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.process_monitor ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.process_monitor ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.process_monitor_bkp ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.process_monitor_bkp ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.procurement_flow ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.procurement_flow ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.rag_feedback ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.rag_feedback ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.raw_contracts ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.raw_contracts ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.raw_invoice ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.raw_invoice ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.raw_purchase_order ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.raw_purchase_order ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.raw_quotes ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.raw_quotes ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.routing ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.routing ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.session_document_outcome ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.session_document_outcome ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.supplier_response ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.supplier_response ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.supplier_risk_scores ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.supplier_risk_scores ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.supplier_risk_signals ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.supplier_risk_signals ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.workflow_email_tracking ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.workflow_email_tracking ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.workflow_events ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.workflow_events ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.workflow_execution ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.workflow_execution ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.workflow_lifecycle ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.workflow_lifecycle ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.workflow_round_responses ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default';
-ALTER TABLE proc.workflow_round_responses ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;

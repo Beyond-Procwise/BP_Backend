@@ -64,9 +64,11 @@ def header(part: int, title: str, notes: str) -> str:
 def p1_add_label() -> str:
     out = [header(1, "add the tenant label to every customer-owned table", f"""
 -- Safe on a live database: ADD COLUMN with a constant DEFAULT is metadata-only in PostgreSQL 16, so it
--- labels every existing row '{LABEL}' instantly without rewriting the table. The DEFAULT is dropped
--- straight away (existing rows keep their label), so a future insert that forgets the label gets NULL
--- and is caught, instead of silently landing in '{LABEL}'.
+-- labels every existing row '{LABEL}' instantly without rewriting the table. The DEFAULT STAYS until
+-- part 6 replaces it with the stamping trigger (in one transaction per table): every row written in
+-- between is labelled '{LABEL}', which is correct while there is one customer. Dropping it here would
+-- leave unlabelled rows in the tamper-proof (append-only) tables, which refuse the later fix-up UPDATE
+-- (found when practising on a copy of the real database, 2026-10-21).
 -- Each table is its own short transaction with a lock timeout: if a table is busy the statement fails
 -- and the file can be re-run (every statement is idempotent).
 -- Tables that already carry tenant_id (20) keep it; part 2 relabels any NULL rows.
@@ -79,7 +81,6 @@ def p1_add_label() -> str:
         out.append(f"""BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.{t} ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT '{LABEL}';
-ALTER TABLE proc.{t} ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 """)
     return "\n".join(out)
@@ -146,9 +147,9 @@ def p6_stamp() -> str:
 --     still refuses a name that is not the caller's);
 --   * an insert that names none and has no tenant on the connection stays NULL: part 2 relabels it
 --     until part 3, and part 3's NOT NULL refuses it after -- it is never guessed into '{LABEL}'.
--- {len(withdefault)} owned tables already carried tenant_id NOT NULL DEFAULT '{LABEL}'. That default would
--- fill the label BEFORE this trigger ran, so for those tables the default is dropped in the same
--- transaction that creates the trigger (no moment with neither).
+-- Every owned table has DEFAULT '{LABEL}' at this point (part 1 added it; {len(withdefault)} tables already had
+-- it). A default fills the label BEFORE this trigger runs, so each table's default is dropped in the same
+-- transaction that creates its trigger (no moment with neither). Existing rows keep their label.
 -- Reversible: 6_stamp_on_insert_rollback.sql (puts the default back).""")]
     out.append("""CREATE OR REPLACE FUNCTION proc.bp_stamp_tenant() RETURNS trigger
 LANGUAGE plpgsql AS $$
@@ -160,7 +161,7 @@ BEGIN
 END $$;
 """)
     for t in owned():
-        drop = f"ALTER TABLE proc.{t} ALTER COLUMN tenant_id DROP DEFAULT;\n" if t in withdefault else ""
+        drop = f"ALTER TABLE proc.{t} ALTER COLUMN tenant_id DROP DEFAULT;\n"
         out.append(f"""BEGIN;
 SET LOCAL lock_timeout = '3s';
 DROP TRIGGER IF EXISTS tr_bp_stamp_tenant ON proc.{t};
@@ -246,7 +247,9 @@ def rollbacks(views: List[str]) -> Dict[str, str]:
         else:
             r1.append(f"DROP INDEX IF EXISTS proc.{ident('ix_bp', t, 'tenant')};   -- column kept: it existed before")
     r3 = [header(3, "ROLLBACK of not_null", "")]
-    r3 += [f"ALTER TABLE proc.{t} ALTER COLUMN tenant_id DROP NOT NULL;" for t in owned()]
+    # only where part 3 made it mandatory: ten tables were already NOT NULL before and must stay so
+    was_required = set(_read_lines(_snap("proc_tables_label_notnull_2026-10-21.txt")))
+    r3 += [f"ALTER TABLE proc.{t} ALTER COLUMN tenant_id DROP NOT NULL;" for t in owned() if t not in was_required]
     r4 = [header(4, "ROLLBACK of row_level_security", "")]
     for t in owned():
         r4.append(f"DROP POLICY IF EXISTS bp_tenant_isolation ON proc.{t};\n"
@@ -262,9 +265,10 @@ DROP TABLE IF EXISTS proc.bp_support_access_log;
 COMMIT;
 """
     withdefault = _read_lines(_snap("proc_tables_label_default_2026-10-21.txt"))
-    r6 = [header(6, "ROLLBACK of stamp_on_insert", f"-- Removes the trigger and restores the old DEFAULT '{LABEL}' on the {len(withdefault)} tables that had it.")]
+    r6 = [header(6, "ROLLBACK of stamp_on_insert", f"-- Removes the trigger and puts DEFAULT '{LABEL}' back wherever part 1 left it (the state after part 1).")]
     for t in owned():
-        restore = f"ALTER TABLE proc.{t} ALTER COLUMN tenant_id SET DEFAULT '{LABEL}';\n" if t in withdefault else ""
+        had = t in withdefault or t not in _already_labelled()      # the state after part 1, exactly
+        restore = f"ALTER TABLE proc.{t} ALTER COLUMN tenant_id SET DEFAULT '{LABEL}';\n" if had else ""
         r6.append(f"BEGIN;\nDROP TRIGGER IF EXISTS tr_bp_stamp_tenant ON proc.{t};\n{restore}COMMIT;")
     r6.append("DROP FUNCTION IF EXISTS proc.bp_stamp_tenant();")
     return {"6_stamp_on_insert_rollback.sql": "\n".join(r6) + "\n", "5_support_access_rollback.sql": r5, "1_add_label_rollback.sql": "\n".join(r1) + "\n", "3_not_null_rollback.sql": "\n".join(r3) + "\n",
