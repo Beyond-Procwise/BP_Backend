@@ -1,6 +1,7 @@
 import sys; sys.path.insert(0,'/home/muthu/PycharmProjects/BP_Backend')
 from dotenv import load_dotenv; load_dotenv('/home/muthu/PycharmProjects/BP_Backend/.env')
 from src.services.db import get_conn
+from src.services.tenant_context import enter_system; enter_system()  # operator tool: acts across every company (D-47)
 
 def q(cur, label, sql, args=None):
     print(f"\n### {label}")

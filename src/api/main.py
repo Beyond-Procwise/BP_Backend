@@ -52,6 +52,7 @@ from agents.supplier_interaction_agent import SupplierInteractionAgent
 from api.routers import agents as agents_router_mod, documents, email, metrics, run, stream, system, training, vendors, workflows, deal_summary, deal_proposals, promotion, summary, negotiate, opportunities,session
 from api.routers import permission_settings as permission_settings_router_mod
 from api.routers import deal_visibility as deal_visibility_router_mod
+from services import tenant_context as _tenant_context
 from api.routers import ws as ws_router_mod
 # Imported here, not further down, because every router below is mounted with
 # require_user as a dependency and that reference is resolved at mount time.
@@ -159,6 +160,9 @@ def _optional(name: str, build, *, default=None):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("API starting up...")
+    # Everything started here (scheduler, watchers, listeners) is platform work across all customers; the
+    # threads it starts inherit this. It ends before the first request is served.
+    _system_token = _tenant_context.enter_system()
     state = cast(ProcwiseAppState, app.state)
 
     # Make formula evaluation records durable, BEFORE the initialisation block
@@ -483,6 +487,7 @@ async def lifespan(app: FastAPI):
         state.process_monitor_watcher = None
         state.extraction_v3_schemas = {}
         state.session_notify_listener = None
+    _tenant_context.leave_system(_system_token)
     yield
     if hasattr(state, "agent_nick"):
         state.agent_nick = None
@@ -906,6 +911,8 @@ from config.settings import settings as _settings  # noqa: E402
 _ASK_AUTH_MODE = _ask_auth.configure(_settings)
 
 app.add_middleware(OutputSafetyMiddleware)
+from api.tenant_middleware import TenantContextMiddleware  # noqa: E402
+app.add_middleware(TenantContextMiddleware)
 
 
 # NOTE: do not add @app.on_event("startup") handlers to this app. It is constructed with

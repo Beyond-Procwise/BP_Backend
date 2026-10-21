@@ -299,6 +299,8 @@ def backlog_metrics(cur) -> dict[str, int]:
 
 
 def main() -> None:
+    from src.services import tenant_context as _tc
+    _tc.enter_system()  # a platform process: no signed-in user, spans every customer
     started = time.time()
     try:
         conn = _conn()

@@ -10,7 +10,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, Optional
 
-DEFAULT_TENANT = "default"     # the extraction tables carry no tenant column: one tenant today
+from ..tenant_context import company_label  # the extraction tables carry no tenant column: one company today
 
 
 @dataclass
@@ -39,7 +39,7 @@ class DocumentsLoader:
     def load(self, cur: Any, tenant_id: str, source_id: str) -> Optional[SourceDoc]:
         raw_tables, pk_fields = self._tables()
         doc_type, _, doc_pk = source_id.partition(":")
-        if tenant_id != DEFAULT_TENANT or doc_type not in raw_tables or not doc_pk:
+        if tenant_id != company_label() or doc_type not in raw_tables or not doc_pk:
             return None
         cur.execute(f"SELECT parser_snapshot FROM {raw_tables[doc_type]} WHERE {pk_fields[doc_type]} = %s AND parser_snapshot ? 'full_text' "
                     "ORDER BY raw_id DESC LIMIT 1", (doc_pk,))
@@ -48,7 +48,7 @@ class DocumentsLoader:
         return SourceDoc(text, {"record_id": doc_pk, "document_type": doc_type}) if text.strip() else None
 
     def enumerate(self, cur: Any, tenant_id: str) -> Iterable[str]:
-        if tenant_id != DEFAULT_TENANT:
+        if tenant_id != company_label():
             return
         raw_tables, pk_fields = self._tables()
         for doc_type, table in raw_tables.items():

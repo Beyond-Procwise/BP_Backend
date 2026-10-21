@@ -17,6 +17,7 @@ from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from src.services import agent_actions
+from src.services.tenant_context import company_label
 from src.services.sell_side import numbering, pricing_checks
 from src.services.sell_side._db import NotFound, StateConflict, dict_cursor
 from src.services.sell_side.costing import cost_at
@@ -34,8 +35,8 @@ _QUOTE_COLS = ("sales_quote_id", "tenant_id", "quote_ref", "quote_number", "acco
                "currency", "quote_date", "valid_until", "total_ex_tax", "phase_id",
                "subprocess_id", "status", "supersedes_id", "approved_by", "approved_at",
                "issued_at", "created_by", "created_date", "last_modified_date")
-# There is one tenant. Named, not NULL, so UNIQUE (tenant_id, quote_ref) is enforced.
-TENANT = "default"
+# There is one company. Named, not NULL, so UNIQUE (tenant_id, quote_ref) is enforced.
+# The label comes from tenant_context.company_label(), not a literal.
 # The series a quote's number is taken from, and how the number is written. quote_ref
 # (SQ-...) is the internal draft reference and is not this.
 NUMBER_SERIES = "sales_quote"
@@ -187,7 +188,7 @@ def create_draft(conn: Any, *, account_id: str, currency: str, valid_until: dt.d
             "contact_id, currency, quote_date, valid_until, total_ex_tax, phase_id, "
             "subprocess_id, status, supersedes_id, created_by) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'draft', %s, %s)",
-            (quote_id, TENANT, quote_ref, account_id, contact_id, currency, quote_date, valid_until,
+            (quote_id, company_label(), quote_ref, account_id, contact_id, currency, quote_date, valid_until,
              totals.total_ex_tax, phase, sub, supersedes_id, created_by))
         cur.execute(
             "INSERT INTO proc.bp_sales_quote_internal (sales_quote_id, total_cost, "

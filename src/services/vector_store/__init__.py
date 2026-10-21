@@ -4,7 +4,7 @@ from .pgvector_store import PgVectorStore
 from .profiles import EmbeddingProfile, PROFILES, active_profile
 from .types import TenantRequired, VectorHit
 
-DEFAULT_TENANT = "default"      # one tenant today (the same constant the sell-side tables use); the seam where a real tenant is resolved
+from ..tenant_context import LEGACY_LABEL as DEFAULT_TENANT  # old name, kept for imports; code calls company_label()
 
 
 def get_vector_store() -> VectorStore:

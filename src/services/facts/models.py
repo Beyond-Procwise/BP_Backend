@@ -26,6 +26,8 @@ from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from src.services.tenant_context import company_label
+
 from src.services.facts.concept_codes import is_known
 
 
@@ -170,7 +172,7 @@ class CommercialFact(BaseModel):
 
     # --- identity -----------------------------------------------------------
     fact_id: str
-    tenant_id: str = "default"
+    tenant_id: str = Field(default_factory=company_label)
     fact_type: str
     concept_code: Optional[str] = None
     source_doc_type: Optional[str] = None
@@ -336,7 +338,7 @@ class Constraint(BaseModel):
 
     # --- identity -----------------------------------------------------------
     constraint_id: str
-    tenant_id: str = "default"
+    tenant_id: str = Field(default_factory=company_label)
     constraint_type: str
     concept_code: Optional[str] = None
 
