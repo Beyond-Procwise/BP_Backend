@@ -32,7 +32,6 @@ src/api/routers/negotiate.py::DELETE router /{deal_id}/advice/fact/{fact_key}::d
 src/api/routers/negotiate.py::POST router /{deal_id}/advice/message::post_negotiate_advice_message
 src/api/routers/opportunities.py::POST router /{opportunity_id}/stage::post_stage
 src/api/routers/playbooks.py::POST router /proposals/{proposal_id}/reject::reject_proposal
-src/api/routers/promotion.py::POST router /canonicalize-po::post_canonicalize_po
 src/api/routers/promotion.py::POST router /link-proposals/{doc_type}/{doc_pk}/confirm::post_confirm_link
 src/api/routers/promotion.py::POST router /link-proposals/{doc_type}/{doc_pk}/reject::post_reject_link
 src/api/routers/reports.py::POST router /jobs/{job_id}/preview::preview_edit
