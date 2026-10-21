@@ -17,6 +17,8 @@ Not for negotiation strategy or targets (use negotiation-planning), for a one-of
 
 ## Inputs and preconditions
 
+Ask for the missing items in order of importance, at most four at a time, and say what you can already explain without them. When the user asks what cap or floor to use, explain how one is set and from what evidence, and say you cannot give the numbers until the contract and index history are supplied.
+
 Ask for what is missing; do not assume it.
 
 - Annual spend and a volume forecast, the contract term and the current price.

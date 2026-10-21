@@ -335,10 +335,16 @@ def _numbers(text: str) -> Set[Decimal]:
     return {n for n in found if n is not None}
 
 
+# "ISO 9001", "ISO/IEC 27001", "BS EN 1090": the number names a standard, it does not state a quantity.
+_STANDARD_BEFORE = re.compile(r"\b(?:ISO|IEC|EN|BS|PAS|GS1|OHSAS)[\s/:-]*(?:IEC[\s/:-]*)?$")
+
+
 def _is_figure(text: str, start: int, end: int, token: str) -> bool:
-    """A number that states an amount, a rate or a measure — not "round 2" or
-    "3 suppliers". Marked as money or a percentage, carrying a decimal part, or
-    four digits and more."""
+    """A number that states an amount, a rate or a measure — not "round 2",
+    "3 suppliers" or "ISO 9001". Marked as money or a percentage, carrying a
+    decimal part, or four digits and more."""
+    if _STANDARD_BEFORE.search(text[max(0, start - 14):start]):
+        return False
     if "." in token or len(token.replace(",", "")) >= 4:
         return True
     return bool(_MONEY_BEFORE.search(text[max(0, start - 4):start])

@@ -14,6 +14,7 @@ from . import (  # noqa: F401
     cost,
     critic,
     deal,
+    demand,
     duplicates,
     extraction,
     linking,
@@ -28,7 +29,7 @@ from . import (  # noqa: F401
 )
 
 __all__ = [
-    "benchmarking", "bids", "clustering", "cost", "critic", "deal", "duplicates", "extraction",
+    "benchmarking", "bids", "clustering", "cost", "critic", "deal", "demand", "duplicates", "extraction",
     "linking", "negotiation", "opportunity", "performance", "price_outlier", "ranking", "risk",
     "rivalry", "scoring",
 ]
