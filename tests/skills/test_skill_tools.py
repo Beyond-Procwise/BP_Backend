@@ -55,3 +55,50 @@ def test_a_real_skill_outside_the_skills_folder_cannot_be_reached(make_skill, mo
     monkeypatch.setenv("SKILLS_DIR", str(root))
     out = {t.name: t for t in control._skill_tools()}["use_skill"].handler(name="../outside/secret-skill")
     assert out["found"] is False
+
+
+def _long_skill(make_skill, monkeypatch):
+    from tests.skills.conftest import SECTIONS, skill_text
+    body = "\n\n".join(f"## {s}\n\n" + ("word " * 400) for s in SECTIONS)
+    text = "---\nname: long-skill\ndescription: A long one. Use when long.\n---\n\n# Long\n\n" + body + "\n"
+    make_skill(name="long-skill", text=text)
+    monkeypatch.setenv("SKILLS_DIR", str(make_skill.root))
+    return {t.name: t for t in control._skill_tools()}["use_skill"], text
+
+
+def test_a_long_playbook_comes_in_parts_that_each_fit_the_result_cap(make_skill, monkeypatch):
+    from src.services import tool_runtime
+    use, _ = _long_skill(make_skill, monkeypatch)
+    first = use.handler(name="long-skill")
+    assert first["parts_total"] > 1 and first["part"] == 1 and "read all" in first["note"].lower()
+    for n in range(1, first["parts_total"] + 1):
+        out = use.handler(name="long-skill", part=n)
+        assert len(tool_runtime._render_result(out)) <= tool_runtime._MAX_RESULT_CHARS, n
+
+
+def test_the_parts_together_are_the_whole_playbook_in_order(make_skill, monkeypatch):
+    from src.services.skills import checks
+    use, text = _long_skill(make_skill, monkeypatch)
+    n = use.handler(name="long-skill")["parts_total"]
+    joined = "".join(use.handler(name="long-skill", part=i)["playbook"] for i in range(1, n + 1))
+    assert joined == checks.split_frontmatter(text)[1]
+
+
+def test_a_part_out_of_range_is_refused(make_skill, monkeypatch):
+    use, _ = _long_skill(make_skill, monkeypatch)
+    assert use.handler(name="long-skill", part=99)["found"] is False
+
+
+def test_every_real_skill_fits_in_parts(monkeypatch):
+    from pathlib import Path
+    from src.services import tool_runtime
+    monkeypatch.setenv("SKILLS_DIR", str(Path(__file__).resolve().parents[2] / "skills"))
+    use = {t.name: t for t in control._skill_tools()}["use_skill"]
+    for s in use_names(control):
+        first = use.handler(name=s)
+        for n in range(1, first["parts_total"] + 1):
+            assert len(tool_runtime._render_result(use.handler(name=s, part=n))) <= tool_runtime._MAX_RESULT_CHARS
+
+
+def use_names(control):
+    return [x["name"] for x in {t.name: t for t in control._skill_tools()}["list_skills"].handler()["skills"]]

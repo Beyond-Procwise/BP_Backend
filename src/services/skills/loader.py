@@ -69,3 +69,27 @@ def load_skill(name: str) -> Skill:
         config=yaml.safe_load((folder / "config.yaml").read_text()), references=refs,
         eval_files=sorted(f.name for f in (folder / "evals").glob("*.yaml")),
     )
+
+
+def split_parts(body: str, limit: int = 3500) -> List[str]:
+    """Cut a playbook into pieces of at most ``limit`` characters that rejoin to exactly ``body``.
+
+    Cuts fall on a section heading where one fits, else a paragraph break, else anywhere.
+    A tool result longer than the runtime's cap is truncated, and a truncated playbook is
+    one the model follows only halfway.
+    """
+    parts: List[str] = []
+    rest = body
+    while len(rest) > limit:
+        window = rest[:limit]
+        cut = window.rfind("\n## ")
+        if cut <= 0:
+            cut = window.rfind("\n\n")
+        if cut <= 0:
+            cut = limit
+        else:
+            cut += 1  # keep the newline that precedes the heading with the earlier part
+        parts.append(rest[:cut])
+        rest = rest[cut:]
+    parts.append(rest)
+    return parts

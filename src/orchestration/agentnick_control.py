@@ -530,7 +530,7 @@ def _skill_tools() -> List[Tool]:
     def _list() -> Dict[str, Any]:
         return {"skills": [{"name": s.name, "description": s.description} for s in SK.list_skills()]}
 
-    def _use(name: Any = None) -> Dict[str, Any]:
+    def _use(name: Any = None, part: Any = 1) -> Dict[str, Any]:
         if not isinstance(name, str):
             return _refuse("Give the skill name as text. Pick one from 'available'.")
         try:
@@ -539,8 +539,22 @@ def _skill_tools() -> List[Tool]:
             return _refuse(f"No skill named '{name}'. Pick one from 'available'.")
         except SK.SkillInvalid as exc:
             return _refuse(f"Skill '{name}' is not usable: {exc}")
-        return {"found": True, "name": skill.name, "playbook": skill.body, "config": skill.config,
-                "references_available": sorted(skill.references)}
+        pieces = SK.split_parts(skill.body)
+        try:
+            number = int(part)
+        except (TypeError, ValueError):
+            number = 0
+        if not 1 <= number <= len(pieces):
+            return _refuse(f"'{name}' has parts 1 to {len(pieces)}; part {part!r} does not exist.")
+        out: Dict[str, Any] = {"found": True, "name": skill.name, "part": number,
+                               "parts_total": len(pieces), "playbook": pieces[number - 1]}
+        if number == 1:
+            out["config"] = skill.config
+            out["references_available"] = sorted(skill.references)
+        if len(pieces) > 1:
+            out["note"] = (f"This is part {number} of {len(pieces)}. Read all parts, in order, "
+                           "before acting: call use_skill again with the next part number.")
+        return out
 
     return [
         Tool(
@@ -560,7 +574,10 @@ def _skill_tools() -> List[Tool]:
             ),
             parameters={
                 "type": "object",
-                "properties": {"name": {"type": "string", "description": "A name from list_skills."}},
+                "properties": {
+                    "name": {"type": "string", "description": "A name from list_skills."},
+                    "part": {"type": "integer", "description": "Which part to read; start at 1."},
+                },
                 "required": ["name"],
             },
             handler=_use,
