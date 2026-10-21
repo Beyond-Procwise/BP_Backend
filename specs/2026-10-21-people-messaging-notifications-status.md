@@ -123,3 +123,9 @@ Suppression: a pair proposed once is never proposed again in any state (rejected
 Tests: 16 (pure ranking + live queue/confirm); 12 guards each proven red by mutation (three weak tests found and fixed that way).
 CAVEAT: the seeded corpus has no real supplier structure (each supplier buys a random mix), so it cannot show the proposals are USEFUL — only that noise doesn't pass. Today there are 0 stubs/decisions in the graph, so
 a first run proposes nothing. Usefulness needs real decision history. Not done: re-ordering of recipient suggestions by meaning (the other permitted use), category proposals (no category_key is produced yet), UI for the review queue.
+
+## Update — SQL applied to bp_sqldb (2026-10-21, on the user's explicit yes)
+bp_people.sql, bp_notification.sql, bp_messaging.sql, bp_graph.sql applied to bp_sqldb in that order, in ONE transaction (committed). 9 tables created: bp_person, bp_routing_rule, bp_domain_event,
+bp_notification, bp_conversation, bp_conversation_participant, bp_message, bp_activity, bp_proposed_edge (+ bp_person.title). All additive (CREATE ... IF NOT EXISTS / ADD COLUMN IF NOT EXISTS); nothing existing was altered.
+Verified against bp_testdb: columns (99), indexes (23), constraints (17) and grants identical; all 9 tables empty. Reversible per the file headers (DROP the tables / the title column).
+Consequence: code from this branch is now safe to deploy against bp_sqldb. bp_person is EMPTY, so nobody is notified until the org chart is entered (PUT /admin/people). The branch itself is still unmerged/unpushed.
