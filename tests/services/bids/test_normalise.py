@@ -216,3 +216,20 @@ def test_every_adjustment_has_a_source_and_assumptions_are_listed():
 def test_a_zero_negative_or_junk_rate_is_a_missing_rate_not_one_to_one(bad):
     c = cell(run(fx_rates={"EUR": bad, "GBP": 1.0}), "L1", "A")
     assert c["comparable"] is False and "no_fx_rate" in c["flags"]
+
+
+def test_every_shape_problem_is_reported_at_once_with_an_example():
+    with pytest.raises(nb.NormaliseError) as e:
+        run(line_master=[{"id": "L1", "volume": 1000}],
+            bids=[{"bidder": "Acme", "currency": "EUR", "price": 10},
+                  {"supplier_id": "B", "lines": [{"unit_price": 9.5}, {"description": "x"}]}])
+    msg = str(e.value)
+    for needle in ("line_id", "qty", "supplier_id", "lines", "unit_price", "line_id or description", "expected like"):
+        assert needle in msg, (needle, msg)
+
+
+def test_bids_and_master_that_are_not_lists_are_named():
+    with pytest.raises(nb.NormaliseError, match="line_master"):
+        run(line_master="L1")
+    with pytest.raises(nb.NormaliseError, match="bids"):
+        run(bids={"A": 1})

@@ -94,6 +94,47 @@ def _uom_factor(line: Mapping[str, Any], master_uom: str, conversions: Sequence[
     return None
 
 
+def _shape_problems(line_master: Any, bids: Any) -> List[str]:
+    """Every problem with the shape of the rows, once each, so a caller can fix them in one go."""
+    out: List[str] = []
+    if not isinstance(line_master, (list, tuple)):
+        out.append("line_master must be a list of rows like "
+                   '{"line_id": "L1", "description": "Steel bracket", "uom": "EA", "qty": 1000}')
+    if not isinstance(bids, (list, tuple)):
+        out.append("bids must be a list with one entry per supplier, like "
+                   '{"supplier_id": "A", "currency": "EUR", "lines": [{"line_id": "L1", "unit_price": 10.0, "uom": "EA"}]}')
+    if out:
+        return out
+    seen = set()
+
+    def need(row: Any, keys: Sequence[str], what: str, example: str) -> None:
+        if not isinstance(row, Mapping):
+            out.append(f"{what} must be an object, expected like {example}")
+            return
+        missing = tuple(k for k in keys if row.get(k) is None)
+        if missing and (what, missing) not in seen:
+            seen.add((what, missing))
+            out.append(f"{what} {dict(row)} has no {', '.join(missing)}; expected like {example}")
+
+    for m in line_master:
+        need(m, ("line_id", "uom", "qty"), "a line_master row",
+             '{"line_id": "L1", "description": "Steel bracket", "uom": "EA", "qty": 1000}')
+    for b in bids:
+        need(b, ("supplier_id", "lines"), "a bid",
+             '{"supplier_id": "A", "currency": "EUR", "lines": [{"line_id": "L1", "unit_price": 10.0, "uom": "EA"}]}')
+        if isinstance(b, Mapping) and isinstance(b.get("lines"), (list, tuple)):
+            for line in b["lines"]:
+                need(line, ("unit_price",), "a bid line", '{"line_id": "L1", "unit_price": 10.0, "uom": "EA"}')
+                if isinstance(line, Mapping) and line.get("line_id") is None and not line.get("description") \
+                        and ("a bid line", ("line_id or description",)) not in seen:
+                    seen.add(("a bid line", ("line_id or description",)))
+                    out.append(f"a bid line {dict(line)} has no line_id or description; expected like "
+                               '{"line_id": "L1", "unit_price": 10.0, "uom": "EA"}')
+        elif isinstance(b, Mapping) and b.get("lines") is not None:
+            out.append(f"the lines of bid {b.get('supplier_id')} must be a list")
+    return out
+
+
 def normalise_bids(
     line_master: Sequence[Mapping[str, Any]], bids: Sequence[Mapping[str, Any]], base_currency: str,
     fx_rates: Mapping[str, Any], fx_type: Optional[str] = None, fx_date: Optional[str] = None,
@@ -103,6 +144,9 @@ def normalise_bids(
     award_date: Optional[str] = None, sealed: bool = False, opened_at: Optional[str] = None,
     as_of: Optional[str] = None,
 ) -> Dict[str, Any]:
+    problems = _shape_problems(line_master, bids)
+    if problems:
+        raise NormaliseError(" | ".join(problems))
     if missing_line_policy not in POLICIES:
         raise NormaliseError(f"missing_line_policy must be one of {', '.join(POLICIES)}")
     if sealed:
