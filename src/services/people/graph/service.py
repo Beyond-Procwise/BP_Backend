@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from services.people.admin import PeopleError, TENANT
-from services.people.graph import activity, derive, legacy_link, sync
+from services.people.graph import activity, derive, embed_propose, legacy_link, sync
 from services.people.graph.model import DEFAULT_TENANT
 from services.people.graph.store import GraphStore, Neo4jGraph
 from services.people.graph.writer import GraphWriter
@@ -53,6 +53,12 @@ def refresh(conn, store: Optional[GraphStore] = None, *, event_days: int = 30, n
     except Exception:
         logger.warning("linking stubs to existing nodes failed", exc_info=True)
         out["legacy_links"] = {"error": True}
+    if embed_propose.enabled():                # off unless PEOPLE_GRAPH_PROPOSER=on: loads an embedding model
+        try:
+            out["proposals"] = embed_propose.run(conn, store, embed_propose.default_embedder(), now=now)
+        except Exception:
+            logger.warning("embedding proposer failed", exc_info=True)
+            out["proposals"] = {"error": True}
     out["pruned_activity"] = activity.prune(conn, retention_days, now)
     return out
 

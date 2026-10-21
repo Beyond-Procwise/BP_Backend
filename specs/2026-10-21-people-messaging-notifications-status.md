@@ -109,3 +109,17 @@ blank doc ids, system:/agent: actors and still-open rows produce nothing.
 escalated_to = "findings_queue": the model requires it, but the action records no person (the finding stays open in the queue it was raised into); it is not read by any query.
 ESCALATED edges stay out of ACTIVE_IN derivation (escalating is not expertise). Today bp_testdb has 0 human escalations on POs (test actions were on invoices), so a first refresh adds no po: stubs until a real one happens.
 Tests: tests/services/people/graph/test_finding_escalation.py (3 pure + 1 live SQL); each filter and the derivation exclusion proven red by mutation; end-to-end on real PO000001 under a throwaway tenant, counts restored.
+
+## Update — embedding proposer built (same day)
+src/services/people/graph/embed_propose.py; runs inside the daily `people-graph-refresh` ONLY when PEOPLE_GRAPH_PROPOSER=on (default off: it loads bge-large; device via PEOPLE_GRAPH_PROPOSER_DEVICE, default cpu). Result under `proposals`.
+What it does: for each active person with >= 3 suppliers on their approve/reject/sign decision edges (180 days, 6-week half-life), it embeds a short description of every
+supplier (name + its most common PO line descriptions, item codes stripped; the 600 busiest + the person's own) and queues `ACTIVE_IN` proposals in bp_proposed_edge for suppliers they never
+decided on whose description is closest to their history. Evidence names the 3 nearest suppliers they DID handle. Nothing is written to the graph; a person confirms (-> one edge, source=inferred, confirmed_by).
+Content embedded = supplier/PO business data only. No message text, activity rows or anything a person wrote.
+The bar: a fixed similarity cut-off is meaningless (on this corpus a RANDOM 3-supplier profile scores median 0.85, max 0.92 against any supplier). The bar is "best match chance can reach
+for a profile of this person's size, at the 95th percentile" (best of all candidates, so it corrects for comparing against hundreds). `confidence` on a proposal = cosine similarity, NOT a probability (evidence.score_kind says so).
+Real-model check: 200 simulated people with random histories over 300 real suppliers -> 9 (4.5%) got any proposal, target 5%. Cost: 300 descriptions embed in ~160-190 s on CPU (cached in-process afterwards); ranking 200 people ~11 s.
+Suppression: a pair proposed once is never proposed again in any state (rejected sticks, even under a new model version); max 5 pending per person; inactive people skipped; no history -> model not loaded.
+Tests: 16 (pure ranking + live queue/confirm); 12 guards each proven red by mutation (three weak tests found and fixed that way).
+CAVEAT: the seeded corpus has no real supplier structure (each supplier buys a random mix), so it cannot show the proposals are USEFUL — only that noise doesn't pass. Today there are 0 stubs/decisions in the graph, so
+a first run proposes nothing. Usefulness needs real decision history. Not done: re-ordering of recipient suggestions by meaning (the other permitted use), category proposals (no category_key is produced yet), UI for the review queue.
