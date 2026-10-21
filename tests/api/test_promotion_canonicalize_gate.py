@@ -32,7 +32,7 @@ def rig(monkeypatch):
 def test_canonicalize_asks_to_promote_documents(rig):
     http, asked, did, _mp = rig
     assert http.post("/promotion/canonicalize-po").status_code == 200
-    assert asked == ["document.promote"]
+    assert asked == ["document.renumber"]
     assert did == ["canon"]
 
 
