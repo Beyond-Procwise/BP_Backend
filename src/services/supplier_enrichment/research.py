@@ -32,13 +32,13 @@ from urllib.parse import urlparse
 
 from src.services.governed_limits import limit as _governed_limit
 
-from src.services import egress
+from src.services import agentnick_driver as _driver
+from src.services.tool_runtime import gate_refusal
 
 from src.services.supplier_enrichment.web_tools import fetch_url, web_search
 
 log = logging.getLogger(__name__)
 
-_OLLAMA_CHAT = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/") + "/api/chat"
 _MODEL = os.getenv("SUPPLIER_RESEARCH_MODEL", "BeyondProcwise/AgentNick:unified")
 def _MAX_ROUNDS() -> int:
     """AgentReachPolicy (P9): how many tool rounds one research run may take."""
@@ -126,22 +126,7 @@ def _host(url: str) -> str:
 
 
 def _chat(messages: list[dict]) -> dict:
-    r = egress.post(
-        _OLLAMA_CHAT,
-        purpose=egress.Purpose.MODEL_INFERENCE,
-        json={
-            "model": _MODEL, "messages": messages, "tools": _TOOLS,
-            "stream": False, "think": False, "keep_alive": -1,
-            "options": {"temperature": 0, "num_predict": 2048},
-        },
-        timeout=180,
-        require_global=False,   # the model daemon is on localhost by design
-        raise_transport_errors=True,
-    )
-    if r is None:
-        return {}
-    r.raise_for_status()
-    return r.json().get("message", {})
+    return _driver.chat(messages, _TOOLS, model=_MODEL, timeout=180).message
 
 
 def _run_loop(supplier_name: str) -> tuple[str, dict[str, str]]:
@@ -175,7 +160,12 @@ def _run_loop(supplier_name: str) -> tuple[str, dict[str, str]]:
                     args = json.loads(args)
                 except Exception:  # noqa: BLE001
                     args = {}
-            if name == "web_search":
+            # The policy gate is asked before any web tool runs. A refused call is not run, leaves no
+            # evidence, and the model is told why.
+            refusal = gate_refusal(name, args, reason=msg.get("content")) if name in ("web_search", "fetch_url") else None
+            if refusal is not None:
+                content = json.dumps(refusal)
+            elif name == "web_search":
                 results = web_search(str(args.get("query", "")))
                 for r in results:
                     # Title+snippet IS text the model read, so it can legitimately ground a

@@ -6,6 +6,14 @@ from src.services.governance_tools import governed_reasoning as GR
 from src.services.governance_tools import tools as GT
 
 
+@pytest.fixture(autouse=True)
+def _gate_allows(monkeypatch):
+    """These tests are about the loop's bookkeeping. The policy gate has its own tests
+    (tests/agent_policy, tests/orchestration/test_legacy_loops_gated.py); with the fake database used
+    here it would correctly fail closed."""
+    monkeypatch.setattr(GR, "gate_refusal", lambda *a, **k: None)
+
+
 def _db_or_skip():
     try:
         with get_conn() as c, c.cursor() as cur:

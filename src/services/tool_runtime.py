@@ -226,6 +226,25 @@ def _policy_refusal(
     return verdict.to_agent or dict(gate.UNAVAILABLE)
 
 
+def gate_refusal(
+    name: str,
+    args: Dict[str, Any],
+    *,
+    agent: Optional[str] = None,
+    reason: Optional[str] = None,
+    workflow_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """The agent-policy gate for a tool loop that is not the executor's.
+
+    Returns what the model should be told instead of running the tool, or None to run it. An allow on
+    precedent is an allow. Like the gate itself it fails closed: if the gate cannot be reached, the call
+    is refused.
+    """
+    out = _policy_refusal(name, args, agent=agent, reason=reason, workflow_id=workflow_id, user_id=user_id)
+    return None if out is None or isinstance(out, _RanOnPrecedent) else out
+
+
 def _chat(
     messages: List[Dict[str, Any]],
     schemas: List[Dict[str, Any]],

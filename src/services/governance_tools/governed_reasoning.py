@@ -12,13 +12,13 @@ from src.services.governed_limits import limit as _governed_limit
 import os
 import re
 
-from src.services import egress
+from src.services import agentnick_driver as _driver
+from src.services.tool_runtime import gate_refusal
 
 from src.services.governance_tools import tools as GT
 
 log = logging.getLogger(__name__)
 
-_OLLAMA_CHAT = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/") + "/api/chat"
 _MODEL = os.getenv("GOVERNED_REASONING_MODEL", "BeyondProcwise/AgentNick:unified")
 def _MAX_ROUNDS() -> int:
     """AgentReachPolicy (P9)."""
@@ -202,22 +202,10 @@ def _audit(result: dict, task: str, agent: str | None) -> dict:
 
 
 def _chat(messages: list[dict]) -> dict:
-    r = egress.post(
-        _OLLAMA_CHAT,
-        purpose=egress.Purpose.MODEL_INFERENCE,
-        json={
-            "model": _MODEL, "messages": messages, "tools": _TOOLS,
-            "stream": False, "think": False, "keep_alive": -1,
-            "options": {"temperature": 0, "num_predict": 2048},
-        },
-        timeout=180,
-        require_global=False,   # the model daemon is on localhost by design
-        raise_transport_errors=True,
-    )
-    if r is None:
-        return {}
-    r.raise_for_status()
-    return r.json().get("message", {})
+    return _driver.chat(messages, _TOOLS, model=_MODEL, timeout=180).message
+
+
+_KNOWN_TOOLS = ("list_governance", "get_policy", "get_prompt", "describe_platform")
 
 
 def govern(task: str, agent: str | None = None) -> dict:
@@ -274,7 +262,12 @@ def govern(task: str, agent: str | None = None) -> dict:
                     args = json.loads(args)
                 except Exception:  # noqa: BLE001
                     args = {}
-            if name == "list_governance":
+            # Whatever the model asks for, the policy gate is asked first. A refused call is not run and
+            # the model is told why; it is not recorded as governance that was used.
+            refusal = gate_refusal(name, args, agent=agent, reason=msg.get("content")) if name in _KNOWN_TOOLS else None
+            if refusal is not None:
+                res = refusal
+            elif name == "list_governance":
                 res = GT.list_governance(args.get("agent"))
                 # Names the model legitimately learned from the catalog listing. It
                 # may name them without having fetched their details, so the prose

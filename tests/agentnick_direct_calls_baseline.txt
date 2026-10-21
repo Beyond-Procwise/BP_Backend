@@ -9,7 +9,6 @@ src/services/extraction/context_layer.py
 src/services/extraction_feedback/proposer.py
 src/services/extraction_v3/judge/grounded_last_resort.py
 src/services/extraction_v3/judge/schema_coherence.py
-src/services/governance_tools/governed_reasoning.py
 src/services/i18n/adapters.py
 src/services/negotiation_advice/advisor.py
 src/services/obligations/agentnick.py
@@ -24,5 +23,4 @@ src/services/style/compiler.py
 src/services/style/drafting.py
 src/services/style/exemplars.py
 src/services/summary_agent.py
-src/services/supplier_enrichment/research.py
 src/training/eval_gate.py
