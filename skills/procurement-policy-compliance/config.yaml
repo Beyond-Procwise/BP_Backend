@@ -11,6 +11,7 @@ ungoverned_rules:                # no bp_policy row yet -> verdict INSUFFICIENT_
   - preferred_supplier_rules
   - conflict_of_interest_rules
   - waiver_rules
+authoritative_reply_tool: check_policy   # the verify step shows this tool's reply_text as the answer, unchanged
 unavailable_tools:
   - supplier_lookup
   - query_erp

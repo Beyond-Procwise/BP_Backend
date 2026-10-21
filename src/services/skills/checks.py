@@ -125,6 +125,18 @@ def _config_problems(body: str, config: dict) -> List[str]:
     return out
 
 
+def _routing_problems(config: dict, known: set) -> List[str]:
+    out: List[str] = []
+    strong = (config.get("routing") or {}).get("strong")
+    if not isinstance(strong, list) or len([x for x in strong if isinstance(x, str) and x.strip()]) < 3:
+        out.append("config.yaml needs routing.strong with at least 3 terms so the orchestrator can tell when the "
+                   "skill covers a request")
+    tool = config.get("authoritative_reply_tool")
+    if tool is not None and tool not in known:
+        out.append(f"authoritative_reply_tool {tool!r} is not a tool here")
+    return out
+
+
 def _eval_problems(path: Path) -> List[str]:
     out: List[str] = []
     sc = _load_yaml(path / "evals" / "scenarios.yaml")
@@ -165,4 +177,4 @@ def check_skill(path: Path, *, known_tools, known_calculations=None) -> List[str
     config = _load_yaml(path / "config.yaml") or {}
     calc = _calculation_problems(body, set(known_calculations)) if known_calculations is not None else []
     return (_tool_problems(body, config, set(known_tools)) + _config_problems(body, config)
-            + calc + _eval_problems(path))
+            + _routing_problems(config, set(known_tools)) + calc + _eval_problems(path))

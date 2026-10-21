@@ -17,8 +17,14 @@ def good_triggers():
             "should_not_trigger": [f"no {i}" for i in range(10)]}
 
 
-def build(tmp_path, text=None, config=None, scenarios=None, triggers=None):
-    d = write_skill(tmp_path, text=text, config=config)
+DEFAULT_ROUTING = {"strong": ["a", "b", "c"], "support": []}
+
+
+def build(tmp_path, text=None, config=None, scenarios=None, triggers=None, routing=True):
+    cfg = {"thresholds": {}} if config is None else dict(config)
+    if routing and "routing" not in cfg:
+        cfg["routing"] = DEFAULT_ROUTING
+    d = write_skill(tmp_path, text=text, config=cfg)
     (d / "evals" / "scenarios.yaml").write_text(yaml.safe_dump(good_scenarios() if scenarios is None else scenarios))
     (d / "evals" / "triggers.yaml").write_text(yaml.safe_dump(good_triggers() if triggers is None else triggers))
     return d
@@ -95,3 +101,19 @@ def test_a_calculation_name_that_is_not_registered_is_named(tmp_path):
 def test_names_outside_a_known_calculation_family_are_not_mistaken_for_calculations(tmp_path):
     d = build(tmp_path, text=skill_text(extra="Use `memo.md` and `config.yaml` and `some.thing`."))
     assert checks.check_skill(d, known_tools=KNOWN, known_calculations={"deal.realised_savings"}) == []
+
+
+def test_a_skill_must_declare_routing_terms_the_orchestrator_can_use(tmp_path):
+    d = build(tmp_path, config={"thresholds": {}}, routing=False)
+    assert any("routing" in p for p in problems(d))
+    few = build(tmp_path / "f", config={"thresholds": {}, "routing": {"strong": ["a", "b"], "support": []}})
+    assert any("at least 3" in p for p in problems(few))
+    ok = build(tmp_path / "ok", config={"thresholds": {}, "routing": {"strong": ["a", "b", "c"], "support": []}})
+    assert problems(ok) == []
+
+
+def test_an_authoritative_reply_tool_must_be_a_real_tool(tmp_path):
+    cfg = {"thresholds": {}, "routing": {"strong": ["a", "b", "c"]}, "authoritative_reply_tool": "made_up"}
+    assert any("authoritative_reply_tool" in p and "made_up" in p for p in problems(build(tmp_path, config=cfg)))
+    cfg["authoritative_reply_tool"] = "get_policy"
+    assert problems(build(tmp_path / "b", config=cfg)) == []

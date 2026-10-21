@@ -28,6 +28,7 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+import os
 import uuid
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -713,6 +714,51 @@ def build_tools(
     return tools
 
 
+def _on(switch: str) -> bool:
+    """A kill switch: on unless the environment says ``off``."""
+    return os.getenv(switch, "on").strip().lower() != "off"
+
+
+def _plan_context(task: str, tools: Sequence[Tool], extra_system: Optional[str]):
+    """Route the request to a skill if one clearly covers it, and build the prompt in layers.
+
+    Returns ``(context, skill_settings)``. It never raises: a router or loader fault just means no
+    skill is injected, and the model can still read one itself. A skill is injected only when this
+    agent was given every tool the skill tells it to call.
+    """
+    from . import context_builder, skill_router
+
+    skill = None
+    if _on("AGENT_SKILL_ROUTER") and tools:
+        try:
+            from src.services import skills as SK
+
+            match = skill_router.Router(skill_router.load_entries()).route(task)
+            if match is not None:
+                loaded = SK.load_skill(match.skill)
+                fits, why = context_builder.can_inject(loaded, {t.name for t in tools})
+                if fits:
+                    skill = loaded
+                else:
+                    log.info("skill %s not injected: %s", match.skill, why)
+        except Exception:  # noqa: BLE001
+            log.exception("skill routing failed; carrying on without a skill")
+    ctx = context_builder.build(base=_SYSTEM, extra=extra_system, skill=skill)
+    if ctx.skipped:
+        log.info("skill not injected: %s", ctx.skipped)
+    return ctx, (dict(skill.config) if ctx.skill and skill is not None else None)
+
+
+def _verifier(task: str, skill_settings: Optional[Dict[str, Any]]):
+    """The verify step for one run: what it checks is in ``orchestration.verifier``."""
+    from . import verifier
+
+    def _verify(answer: str, result: Any, retried: bool):
+        return verifier.verify(answer, result.calls, task, skill_config=skill_settings, retried=retried)
+
+    return _verify
+
+
 def reason(
     agent_nick: Any,
     task: str,
@@ -747,7 +793,11 @@ def reason(
         # An agent given no tools has nothing to consult; insisting that it
         # consult something would only buy a wasted round and a nudge.
         require_tool_use = False
-    system = _SYSTEM if not extra_system else f"{_SYSTEM}\n\n{extra_system}"
+    context, skill_settings = _plan_context(task, tools, extra_system)
+    if context.skill:
+        # The playbook is already in the prompt, so reading it again would only spend rounds.
+        tools = [t for t in tools if t.name not in ("list_skills", "use_skill")]
+    system = context.system
     result = run_tools(
         task,
         tools,
@@ -758,7 +808,9 @@ def reason(
         agent=agent,
         workflow_id=workflow_id,
         user_id=user_id,
+        verify=_verifier(task, skill_settings) if _on("AGENT_VERIFY") else None,
     )
+    result.context = context.describe()
     # The record of a run needs what it was actually given. The loop fills
     # these; anything that stands in for the loop may not.
     if not result.system:
@@ -766,9 +818,11 @@ def reason(
     if not result.tools_offered:
         result.tools_offered = [t.name for t in tools]
     log.info(
-        "AgentNick.reason rounds=%s tools=%s error=%s",
+        "AgentNick.reason rounds=%s tools=%s error=%s layers=%s verification=%s",
         result.rounds,
         result.tools_used,
         result.error,
+        [l["layer"] for l in result.context],
+        result.verification,
     )
     return result
