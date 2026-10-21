@@ -16,3 +16,9 @@ unavailable_tools:
   - query_erp
   - search_contracts
   - build_docx
+rule_policy_keywords:            # a rule counts as governed when an active policy slug contains one of these
+  competitive_bid_thresholds: [bid, tender, quote_threshold]
+  delegation_of_authority_by_category: [delegation, authority_matrix, doa]
+  preferred_supplier_rules: [preferred_supplier, mandated_supplier]
+  conflict_of_interest_rules: [conflict_of_interest, coi]
+  waiver_rules: [waiver]

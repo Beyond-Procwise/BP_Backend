@@ -585,6 +585,82 @@ def _skill_tools() -> List[Tool]:
     ]
 
 
+def _policy_check_tools() -> List[Tool]:
+    """The procurement policy verdict, computed in code from the governed policy.
+
+    The model supplies the facts of the request. It never supplies the limit, the role that
+    approves or the verdict: those come from the policy row read here. Any failure to read
+    governance gives "insufficient information", never a pass.
+    """
+    from src.services import policy_check as PC
+    from src.services import skills as SK
+
+    def _check(total_commitment: Any = None, currency: Any = None, annual_value: Any = None,
+               term_months: Any = None, orders: Any = None, history_checked: Any = None,
+               requester: Any = None, approver: Any = None, waiver_id: Any = None,
+               fx_rate_to_policy_currency: Any = None, action_type: Any = None) -> Dict[str, Any]:
+        request = {
+            "total_commitment": total_commitment, "currency": currency, "annual_value": annual_value,
+            "term_months": term_months, "orders": orders if isinstance(orders, list) else [],
+            "history_checked": bool(history_checked), "requester": requester, "approver": approver,
+            "waiver_id": waiver_id, "fx_rate_to_policy_currency": fx_rate_to_policy_currency,
+            "action_type": action_type,
+        }
+        try:
+            config = SK.load_skill("procurement-policy-compliance").config
+        except Exception as exc:  # noqa: BLE001
+            log.warning("check_policy: skill config unavailable: %s", exc)
+            return PC.evaluate.evaluate(request, {"available": False}, {}, now=None)
+        governance: Dict[str, Any] = {"available": False}
+        try:
+            from services.governance_tools import tools as GT
+
+            GT.refresh(strict=True)
+            if GT.active_policy_count() > 0:
+                slug = (config.get("governed_policies") or {}).get("approval_limit", "approval_threshold_policy")
+                catalogue = GT.list_governance(None) or {}
+                row = GT.get_policy(slug) or None
+                if row and row.get("slug") == slug:
+                    governance = {"available": True, "approval_policy": row,
+                                  "slugs": [p.get("slug") for p in (catalogue.get("policies") or [])]}
+        except Exception as exc:  # noqa: BLE001 - an unreadable store is an outage, not "no rules"
+            log.warning("check_policy: governance unreadable: %s", exc)
+            governance = {"available": False}
+        return PC.evaluate.evaluate(request, governance, config)
+
+    return [
+        Tool(
+            name="check_policy",
+            description=(
+                "Check a procurement action (requisition, PO, award, contract, payment) against the "
+                "governed approval policy and get a verdict, the required approver and any split-order or "
+                "self-approval problem. Pass only the facts of the request: total_commitment over the whole "
+                "term including renewals, currency, any orders (each {amount, source: planned or history}), "
+                "history_checked true only if you actually looked at order history, requester and approver. "
+                "The limit, the approving role and the verdict come from the policy, never from you. Relay "
+                "reply_text to the user as it is: do not change a number, add a policy version, name an "
+                "approver, or call it approved. If it says information is needed, ask for exactly that."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "total_commitment": {"type": "number", "description": "Total over the full term, not the annual value."},
+                    "currency": {"type": "string", "description": "ISO 4217 code, e.g. GBP."},
+                    "orders": {"type": "array", "items": {"type": "object"},
+                               "description": "Related orders: {amount, source: planned|history}."},
+                    "history_checked": {"type": "boolean"},
+                    "requester": {"type": "string"}, "approver": {"type": "string"},
+                    "fx_rate_to_policy_currency": {"type": "number", "description": "Only if the user gave one."},
+                    "waiver_id": {"type": "string"},
+                    "action_type": {"type": "string"},
+                    "annual_value": {"type": "number"}, "term_months": {"type": "integer"},
+                },
+            },
+            handler=_check,
+        ),
+    ]
+
+
 def build_tools(
     agent_nick: Any,
     *,
@@ -611,6 +687,7 @@ def build_tools(
         + _opportunity_tools(agent_nick, workflow_id=workflow_id, user_id=user_id)
         + _calculation_tools(workflow_id=workflow_id)
         + _skill_tools()
+        + _policy_check_tools()
     )
     if exclude:
         blocked = set(exclude)
