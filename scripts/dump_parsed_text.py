@@ -64,6 +64,13 @@ def main(file_path: str) -> int:
 
 
 if __name__ == "__main__":
+    # An operator tool acts for the platform across every company; with row-level security on, a tool
+    # that names no company would otherwise see no rows (D-47).
+    import sys as _sys
+    from pathlib import Path as _Path
+    _sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+    from src.services.tenant_context import enter_system as _enter_system
+    _enter_system()
     if len(sys.argv) < 2:
         print("Usage: python scripts/dump_parsed_text.py <file_path>", file=sys.stderr)
         sys.exit(1)
