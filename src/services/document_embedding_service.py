@@ -167,7 +167,8 @@ class DocumentEmbeddingService:
 
         One source per chunk keeps the semantic chunking and the per-chunk metadata exactly as they were stored before.
         """
-        from src.services.vector_store import DEFAULT_TENANT, active_profile, sources
+        from src.services.tenant_context import company_label
+        from src.services.vector_store import active_profile, sources
 
         logical = self._vector_collection()
         ids: List[str] = []
@@ -177,11 +178,11 @@ class DocumentEmbeddingService:
             payload.update({"chunk_id": idx, "chunk_index": idx, "embedding_model": active_profile().model})
             payload.pop("content", None)
             source_id = f"{document_id}:{idx}"
-            sources.put_source(DEFAULT_TENANT, logical, source_id, chunk.content, payload)
+            sources.put_source(company_label(), logical, source_id, chunk.content, payload)
             ids.append(source_id)
         self._propagate_to_rag(chunks, metadata_payload)
         for collection in (logical, "documents"):
-            if sources.wait_until_embedded(DEFAULT_TENANT, collection, ids, timeout_s=30.0) != "done":
+            if sources.wait_until_embedded(company_label(), collection, ids, timeout_s=30.0) != "done":
                 logger.warning("Document %s is still being embedded (%s); it will be searchable shortly", document_id, collection)
         return EmbeddedDocument(document_id=document_id, collection=self.collection_name, chunk_count=len(chunks), metadata=metadata_payload)
 

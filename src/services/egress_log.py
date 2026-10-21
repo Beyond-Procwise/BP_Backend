@@ -25,9 +25,8 @@ The cost of that choice, stated rather than discovered later:
 
 WHAT THE ROWS DO NOT YET CARRY, and why the columns exist anyway
 
-  tenant_id       always 'default'. There is no tenant dimension in this
-                  product (see api/auth.py). The column exists so the rows do
-                  not need rewriting when there is one.
+  tenant_id       the one company label (tenant_context.company_label), not
+                  taken from a request: this writer serves every caller.
   policy_version  always NULL. No policy model keyed on
                   (destination, purpose, classification) exists to have a
                   version. egress._evaluate is the seam that will supply it.
@@ -48,7 +47,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from services.tenant_context import as_system as _as_system
+from services.tenant_context import as_system as _as_system, company_label as _company_label
 
 logger = logging.getLogger(__name__)
 
@@ -206,7 +205,7 @@ def _drain(limit: int = _BATCH) -> list[dict]:
 
 def _row(event: dict) -> tuple:
     return (
-        event["occurred_at"], "default", event["purpose"], event["destination"],
+        event["occurred_at"], _company_label(), event["purpose"], event["destination"],
         event["method"], event["outcome"], event["detail"],
         event["payload_sha256"], event["payload_bytes"],
         None,      # policy_version — no policy model yet

@@ -6401,7 +6401,8 @@ class DataExtractionAgent(BaseAgent):
         indexed); the vector worker embeds them."""
         if not full_text:
             return
-        from src.services.vector_store import DEFAULT_TENANT, sources
+        from src.services.tenant_context import company_label
+        from src.services.vector_store import sources
         try:
             chunks = self._chunk_text(full_text, doc_type=doc_type)
         except TypeError:
@@ -6412,18 +6413,19 @@ class DataExtractionAgent(BaseAgent):
                 continue
             payload = {"record_id": record_id, "document_type": _normalize_label(doc_type), "product_type": _normalize_label(product_type),
                        "chunk_id": idx, "summary": chunk.strip()[:240]}
-            sources.put_source(DEFAULT_TENANT, "documents", f"{record_id}_{idx}", chunk, payload)
+            sources.put_source(company_label(), "documents", f"{record_id}_{idx}", chunk, payload)
 
     def _vectorize_structured_data(self, header: Dict[str, Any], line_items: List[Dict[str, Any]], doc_type: str, pk_value: str,
                                    product_type: Any) -> None:
         """Header and line-item content for retrieval: a header source and one source per line item; the vector worker embeds them."""
         if not pk_value:
             return
-        from src.services.vector_store import DEFAULT_TENANT, sources
+        from src.services.tenant_context import company_label
+        from src.services.vector_store import sources
         base = {"record_id": pk_value, "document_type": _normalize_label(doc_type), "product_type": _normalize_label(product_type)}
         header_text = _dict_to_text(header)
         if header_text:
-            sources.put_source(DEFAULT_TENANT, "documents", f"{pk_value}_header", header_text, {**base, "data_type": "header"})
+            sources.put_source(company_label(), "documents", f"{pk_value}_header", header_text, {**base, "data_type": "header"})
         for idx, item in enumerate(line_items, start=1):
             if isinstance(item, str):
                 try:
@@ -6434,7 +6436,7 @@ class DataExtractionAgent(BaseAgent):
                 continue
             item_text = _dict_to_text(item)
             if item_text:
-                sources.put_source(DEFAULT_TENANT, "documents", f"{pk_value}_line_{idx}", item_text,
+                sources.put_source(company_label(), "documents", f"{pk_value}_line_{idx}", item_text,
                                    {**base, "data_type": "line_item", "line_number": idx})
 
     def _chunk_text(

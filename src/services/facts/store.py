@@ -12,9 +12,10 @@ and a fact whose provenance failed to insert must never be committed alone.
 from __future__ import annotations
 
 import logging
-from typing import Iterable, List, Sequence, Tuple
+from typing import Iterable, List, Optional, Sequence, Tuple
 
 from src.services.facts.models import CommercialFact, Constraint
+from src.services.tenant_context import company_label
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +128,7 @@ def persist_facts(cur, facts: Sequence[CommercialFact]) -> int:
 
 def link_facts_to_finding(
     cur, opportunity_ref_id: str, facts: Iterable[CommercialFact], role: str,
-    tenant_id: str = "default",
+    tenant_id: Optional[str] = None,
 ) -> int:
     """Attach facts to an opportunity with a stated role.
 
@@ -142,7 +143,7 @@ def link_facts_to_finding(
     )
     linked = 0
     for fact in facts:
-        cur.execute(sql, (opportunity_ref_id, fact.fact_id, role, tenant_id))
+        cur.execute(sql, (opportunity_ref_id, fact.fact_id, role, tenant_id or company_label()))
         linked += 1
     return linked
 

@@ -1976,8 +1976,9 @@ class AgentNick:
         so an unreachable store is an ERROR in the log and /health reports the count, and an empty one is a warning.
         """
         try:
-            from src.services.vector_store import DEFAULT_TENANT, get_vector_store
-            n = get_vector_store().count(DEFAULT_TENANT, collection="documents")
+            from src.services.tenant_context import company_label
+            from src.services.vector_store import get_vector_store
+            n = get_vector_store().count(company_label(), collection="documents")
             if n == 0:
                 logger.warning("The vector store holds no document vectors; run the rebuild if documents have been extracted")
             else:

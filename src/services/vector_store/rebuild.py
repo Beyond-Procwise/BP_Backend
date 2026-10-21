@@ -14,7 +14,8 @@ import logging
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from . import outbox
-from .loaders import DEFAULT_TENANT, default_loaders, GenericSourceLoader, source_collections
+from ..tenant_context import company_label
+from .loaders import default_loaders, GenericSourceLoader, source_collections
 from .profiles import PROFILES, EmbeddingProfile
 from .worker import VectorWorker
 
@@ -25,7 +26,7 @@ def _tenants(cur: Any, tenant: Optional[str]) -> List[str]:
     if tenant:
         return [tenant]
     cur.execute("SELECT DISTINCT tenant_id FROM proc.bp_vector_source")
-    return sorted({DEFAULT_TENANT} | {r[0] for r in cur.fetchall()})
+    return sorted({company_label()} | {r[0] for r in cur.fetchall()})
 
 
 def rebuild(connect: Callable[[], Any], store_factory: Callable[[Optional[EmbeddingProfile]], Any],
@@ -67,7 +68,10 @@ def rebuild(connect: Callable[[], Any], store_factory: Callable[[Optional[Embedd
 
 
 def main(argv: Optional[list] = None) -> int:
-    from services import tenant_context as _tc
+    try:
+        from services import tenant_context as _tc
+    except ImportError:
+        from src.services import tenant_context as _tc
     _tc.enter_system()  # a platform process: no signed-in user, spans every customer
     import argparse
     ap = argparse.ArgumentParser(description="Rebuild vectors from their source rows (Postgres is the source of truth).")

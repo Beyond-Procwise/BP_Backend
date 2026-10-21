@@ -125,6 +125,20 @@ def platform_label() -> Optional[str]:
     return clean(os.environ.get(PLATFORM_LABEL_ENV, "").strip())
 
 
+LEGACY_LABEL = "default"   # what the data written before tenant labels carries (D-37 Q1)
+
+
+def company_label() -> str:
+    """The company label for code that writes or searches by company and has no better source (D-49).
+
+    While exactly one customer exists this is the configured platform label, else the legacy label that
+    all existing rows carry. Reads only the environment, never the request, so it behaves the same under
+    either import name and does not change what a running service does today. Before a second customer
+    is added, callers must take the company from the record or request they serve instead.
+    """
+    return platform_label() or LEGACY_LABEL
+
+
 def connection_settings() -> Optional[tuple]:
     """(tenant, system) to apply to a new connection, or None when there is nothing to say."""
     tenant, system_on = _tenant.get(), _system.get()

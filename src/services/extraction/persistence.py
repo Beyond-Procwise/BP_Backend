@@ -171,10 +171,11 @@ def _enqueue_embedding(cur, doc_type: str, doc_pk, parser_snapshot: Mapping[str,
     if not doc_pk or not str((parser_snapshot or {}).get("full_text") or "").strip():
         return
     try:
-        from src.services.vector_store import DEFAULT_TENANT, outbox
+        from src.services.tenant_context import company_label
+        from src.services.vector_store import outbox
         cur.execute("SAVEPOINT vector_outbox")
         try:
-            outbox.enqueue(cur, DEFAULT_TENANT, "documents", f"{doc_type}:{doc_pk}")
+            outbox.enqueue(cur, company_label(), "documents", f"{doc_type}:{doc_pk}")
             cur.execute("RELEASE SAVEPOINT vector_outbox")
         except Exception:  # noqa: BLE001
             cur.execute("ROLLBACK TO SAVEPOINT vector_outbox")

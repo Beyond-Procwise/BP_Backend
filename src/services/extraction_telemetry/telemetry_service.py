@@ -238,7 +238,10 @@ def capture_new(conn) -> int:
 
 
 def main() -> int:
-    from services import tenant_context as _tc
+    try:
+        from services import tenant_context as _tc
+    except ImportError:
+        from src.services import tenant_context as _tc
     _tc.enter_system()  # a platform process: no signed-in user, spans every customer
     logging.basicConfig(
         level=logging.INFO,

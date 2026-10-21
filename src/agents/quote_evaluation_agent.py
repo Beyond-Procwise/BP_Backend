@@ -313,9 +313,10 @@ class QuoteEvaluationAgent(BaseAgent):
             return models.Filter(must=filters)
 
         def list_quotes(q_filter: models.Filter):
-            from src.services.vector_store import DEFAULT_TENANT, get_vector_store
+            from src.services.tenant_context import company_label
+            from src.services.vector_store import get_vector_store
             from src.services.vector_store.filters import to_store_filter
-            return get_vector_store().list(DEFAULT_TENANT, collection="documents", filters=to_store_filter(q_filter), limit=100), None
+            return get_vector_store().list(company_label(), collection="documents", filters=to_store_filter(q_filter), limit=100), None
 
         try:
             points, _ = list_quotes(build_filter())

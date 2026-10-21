@@ -11,7 +11,8 @@ def search_hits(query_embedding: Sequence[float], collection: str, k: int, *, fi
 
     Raises on a store failure; callers keep their own best-effort handling.
     """
-    from . import DEFAULT_TENANT, get_vector_store
+    from ..tenant_context import company_label
+    from . import get_vector_store
     store = store or get_vector_store()
-    hits = store.search(DEFAULT_TENANT, [float(x) for x in query_embedding], dict(filters or {}), int(k), collection=collection)
+    hits = store.search(company_label(), [float(x) for x in query_embedding], dict(filters or {}), int(k), collection=collection)
     return [SimpleNamespace(id=h.id, score=h.score, payload=dict(h.payload or {}), vector=None) for h in hits]

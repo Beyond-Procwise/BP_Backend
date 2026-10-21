@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, Sequence
 import psycopg2
 
 from src.services.sell_side import pricing_checks, quotes
+from src.services.tenant_context import company_label
 from src.services.sell_side._db import NotFound, StateConflict, dict_cursor
 from src.services.sell_side.ladder import QUOTE_RUNG
 from src.services.sell_side.money import builder_line, iso_currency, total_builder
@@ -444,7 +445,7 @@ def _insert(cur: Any, d: Dict[str, Any], *, deal_id: Optional[str], created_by: 
         "tax_rate_pct) VALUES (%s, %s, "
         "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, 'draft', %s, %s, "
         "%s, %s::jsonb, %s, %s)",
-        (quote_id, quotes.TENANT, quote_ref, account_id, deal_id, version, d["currency"],
+        (quote_id, company_label(), quote_ref, account_id, deal_id, version, d["currency"],
          d["quote_date"], d["valid_until"], d["category"], d["prepared_by"], d["customer_name"],
          d["customer_contact"], d["scope_html"], d["assumptions_html"], json.dumps(d["terms"]),
          phase, sub, supersedes_id, created_by, template_key,

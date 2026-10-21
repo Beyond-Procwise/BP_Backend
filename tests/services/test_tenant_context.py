@@ -416,3 +416,32 @@ def test_the_web_apps_startup_runs_as_platform_work_and_ends_before_requests():
     body = text[start:text.index("# Release CUDA memory", start)]
     assert body.index("enter_system()") < body.index("SessionNotifyListener")
     assert body.index("leave_system(") < body.index("\n    yield\n")
+
+
+# --- the company label is asked for, never typed in (D-49) -----------------------
+def test_company_label_is_the_legacy_label_when_nothing_is_configured(monkeypatch):
+    monkeypatch.delenv(tc.PLATFORM_LABEL_ENV, raising=False)
+    assert tc.company_label() == "default"
+
+
+def test_company_label_follows_the_one_setting_and_ignores_a_bad_value(monkeypatch):
+    monkeypatch.setenv(tc.PLATFORM_LABEL_ENV, "acme")
+    assert tc.company_label() == "acme"
+    monkeypatch.setenv(tc.PLATFORM_LABEL_ENV, "a b;drop")
+    assert tc.company_label() == "default"
+
+
+def test_models_and_the_gateway_context_take_their_label_from_it(monkeypatch):
+    from src.services.facts.models import Constraint  # noqa: F401
+    from src.services.gateway.context import CallerContext
+    monkeypatch.setenv(tc.PLATFORM_LABEL_ENV, "acme")
+    assert CallerContext(principal_subject="u", role="Admin").tenant_id == "acme"
+
+
+def test_no_source_file_types_the_default_label_into_a_tenant():
+    import pathlib, re
+    root = pathlib.Path(__file__).resolve().parents[2] / "src"
+    pat = re.compile(r"""tenant\w*\s*(?::\s*[\w\[\], ]+)?=\s*['"]default['"]|\bTENANT\s*=\s*['"]default['"]""")
+    hits = [f"{p.relative_to(root)}:{n}" for p in root.rglob("*.py") if p.name != "tenant_context.py"
+            for n, line in enumerate(p.read_text(errors="ignore").splitlines(), 1) if pat.search(line)]
+    assert not hits, hits
