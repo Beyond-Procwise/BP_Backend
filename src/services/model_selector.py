@@ -27,7 +27,7 @@ from src.services.vector_store.filter_models import models
 from agents.base_agent import AgentStatus
 from agents.rag_agent import RAGAgent
 from services.redis_client import get_redis_client
-from . import corpus_facts
+from . import corpus_facts, source_labels
 from .analytics import ask as analytics_ask
 from . import ask_routing
 from . import ask_compare, ask_condense, ask_dates, ask_exact_id, ask_flags, ask_grade, ask_input_guard, ask_output_check, ask_po_status, ask_router, ask_trace
@@ -1521,7 +1521,7 @@ class RAGPipeline:
             return "Uploaded reference"
         static_policy_collection = getattr(self.rag, "static_policy_collection", None)
         if collection == static_policy_collection:
-            return "Procurement policy"
+            return source_labels.POLICY_DOCUMENTATION
         if collection == "static_procurement_qa":
             return "Static procurement guidance"
         return collection.replace("_", " ").title()
@@ -1531,6 +1531,7 @@ class RAGPipeline:
         for hit in hits:
             payload = getattr(hit, "payload", {}) or {}
             payload = dict(payload)
+            original_payload = payload
             collection = payload.get("collection_name", self.rag.primary_collection)
             if self._is_internal_payload(payload, collection):
                 continue
@@ -1555,7 +1556,13 @@ class RAGPipeline:
                 or payload.get("document_type")
                 or "Procurement reference"
             )
-            document_label = self._redact_identifiers(str(document_label))
+            policy_file = (
+                source_labels.document_name(original_payload)
+                if collection == getattr(self.rag, "static_policy_collection", None) else ""
+            )
+            # A quoted policy excerpt is named for the library file it came from, as stored: redaction would strip
+            # the extension, and these are the organisation's own policy documents, not record identifiers.
+            document_label = policy_file or self._redact_identifiers(str(document_label))
             items.append(
                 {
                     "payload": payload,
@@ -1640,6 +1647,8 @@ class RAGPipeline:
         ad_hoc_context: str,
         corpus_context: str = "",
         comparison_note: str = "",
+        corpus_intent: str = "",
+        has_policy_docs: bool = False,
     ) -> str:
         redacted_query = self._redact_identifiers(query)
         lines: List[str] = [f"User question: {redacted_query}"]
@@ -1652,7 +1661,11 @@ class RAGPipeline:
         # figures. These are the numbers, they are not up for paraphrase, and where they
         # disagree with anything the vector store returned, they win — retrieval finds text
         # that reads like an answer, which is not the same as the answer.
-        if corpus_context:
+        enforced_policy = corpus_intent == "policies"
+        if corpus_context and enforced_policy:
+            # The governed policy rows are rules the system applies, not figures read from the customer's documents.
+            lines.append(source_labels.ENFORCED_POLICY_HEADING + corpus_context)
+        elif corpus_context:
             lines.append(
                 "Verified data from the customer's own documents (authoritative — these are "
                 "counted records, not retrieved text). Answer the question from these figures, "
@@ -1694,6 +1707,11 @@ class RAGPipeline:
                 "User supplied context: "
                 + self._redact_identifiers(ad_hoc_context)
             )
+
+        if has_policy_docs:
+            lines.append(source_labels.DOCUMENTATION_NOTE)
+            if corpus_context and enforced_policy:
+                lines.append(source_labels.PRECEDENCE_NOTE)
 
         if context:
             lines.append("Knowledge snippets:\n" + context)
@@ -3366,6 +3384,7 @@ class RAGPipeline:
         # reason the ask bar invented suppliers: with no facts to ground it, the nearest text
         # in Qdrant won by default. These rows are counted, not retrieved, so they go in first.
         corpus_context = ""
+        corpus_intent = ""
         if not restrict_to_uploaded:
             try:
                 corpus = self._corpus_facts(query, caller)
@@ -3376,17 +3395,19 @@ class RAGPipeline:
                 rendered = corpus_facts.render_facts(corpus)
                 if rendered.strip():
                     corpus_context = rendered
+                    corpus_intent = str(corpus.get("intent") or "")
+                    fact_label, fact_document = corpus_facts.fact_source(corpus_intent)
                     knowledge_items.insert(0, {
                         "payload": {
                             "source": "corpus_facts",
                             "intent": corpus.get("intent"),
                             "answer": rendered,
                             "collection_name": "corpus_facts",
-                            "source_label": "Your extracted documents",
+                            "source_label": fact_label,
                         },
                         "collection": "corpus_facts",
-                        "source_label": "Your extracted documents",
-                        "document": "Extracted documents (live)",
+                        "source_label": fact_label,
+                        "document": fact_document,
                         "summary": rendered,
                     })
 
@@ -3537,6 +3558,11 @@ class RAGPipeline:
         compose_extra: Dict[str, Any] = {}
         if comparison is not None:
             compose_extra["comparison_note"] = ask_compare.instruction(comparison, comparison_missing)
+        # How the model treats a source depends on its kind; only say so when policy information is in play.
+        if corpus_intent == "policies":
+            compose_extra["corpus_intent"] = corpus_intent
+        if any(item.get("collection") == getattr(self.rag, "static_policy_collection", None) for item in knowledge_items):
+            compose_extra["has_policy_docs"] = True
         prompt = self._compose_llm_prompt(
             query,
             context_body,

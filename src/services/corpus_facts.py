@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, List, Optional
+import threading
+from typing import Any, Callable, Dict, List, Optional
 from src.services.version_collapse import latest_quote_pred
+from src.services import source_labels
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +32,15 @@ logger = logging.getLogger(__name__)
 # Intent -> the facts that answer it. Order matters: the first match wins, so the more
 # specific patterns (findings, spend) sit above the broader ones (suppliers).
 _INTENTS: List[tuple[str, re.Pattern]] = [
-    ("policies", re.compile(r"\b(polic|rule|governance|complian|threshold|approval limit|mandate)\w*\b", re.I)),
+    # Who may approve something is a policy question even when the thing is a purchase order or an
+    # invoice, so the approval/authority *phrases* are named here. Bare approv*/authori*/limit are
+    # not: "approved suppliers" and "who approved PO-2025-0270" are questions about records.
+    ("policies", re.compile(
+        r"\b(polic|rule|governance|complian|threshold|approval limit|mandate)\w*\b"
+        r"|\bdelegat\w*\s+(?:of\s+)?authorit\w*"
+        r"|\b(?:approval|authori[sz]ation|signing|sign[- ]?off|spend(?:ing)?|authority)\s+(?:limit|level|matrix|authority)s?\b"
+        r"|\bwho\s+(?:can|may|must|should|has\s+to|have\s+to|is\s+allowed\s+to|is\s+authori[sz]ed\s+to)\s+(?:approve|sign[- ]?off|authori[sz]e)\b",
+        re.I)),
     ("deals", re.compile(r"\b(deal|linked|quote to (po|invoice)|end[- ]to[- ]end|lifecycle)\w*\b", re.I)),
     ("findings", re.compile(r"\b(finding|discrepanc|exception|issue|problem|flag|over[- ]?bill|mismatch|risk)\w*\b", re.I)),
     ("spend", re.compile(r"\b(spend|spent|cost|total|invoiced|value|amount|money)\w*\b", re.I)),
@@ -111,6 +121,75 @@ def detect_intent(query: str) -> Optional[str]:
     return winner
 
 
+def fact_source(intent: Optional[str]) -> tuple[str, str]:
+    """(source label, document name) the answer shows for facts of this intent.
+
+    The governed policy rows are the rules the system applies, not figures read out of the customer's documents,
+    so they must not be presented under the extracted-records name.
+    """
+    if intent == "policies":
+        return source_labels.ENFORCED_POLICY, source_labels.ENFORCED_POLICY
+    return source_labels.EXTRACTED_RECORDS, "Extracted documents (live)"
+
+
+_POLICY_LOOKUP_ROWS = 200
+_POLICY_TOP = 5
+_policy_vectors: Dict[str, List[float]] = {}     # embedding per policy text; policies change rarely and embedding is the slow part
+
+
+def _policy_text(row: Dict[str, Any]) -> str:
+    return f"{row.get('policy_name') or ''} ({row.get('policy_type') or ''}): {row.get('policy_desc') or ''}".strip()
+
+
+_policy_warming: Optional[threading.Thread] = None
+_policy_warm_lock = threading.Lock()
+
+
+def _warm_policy_vectors(texts: List[str], embed: Callable[[List[str]], Any]) -> None:
+    try:
+        _policy_vectors.update(zip(texts, (list(map(float, v)) for v in embed(texts))))
+    except Exception:
+        logger.exception("Embedding the policies failed; they will be listed in table order")
+
+
+def _start_warming(texts: List[str], embed: Callable[[List[str]], Any]) -> None:
+    """Embed the policies off the request path: on a CPU that is tens of seconds for the whole set."""
+    global _policy_warming
+    with _policy_warm_lock:
+        if _policy_warming is not None and _policy_warming.is_alive():
+            return
+        _policy_warming = threading.Thread(target=_warm_policy_vectors, args=(texts, embed), daemon=True, name="policy-vectors")
+        _policy_warming.start()
+
+
+def relevant_policies(rows: List[Dict[str, Any]], query: str, embed: Optional[Callable[[List[str]], Any]] = None) -> List[Dict[str, Any]]:
+    """The policies the question is about, best match first. Without a query or an embedder, the first rows as before.
+
+    The lookup used to return the first ten policies in table order. There are dozens in force, so a question about
+    approval limits was shown agent-lifecycle and mailbox rules and never saw the approval policy. Word overlap was
+    tried and is no good here: a policy's type ("limit", "authority") outweighs what it actually governs. Meaning is
+    what matters, so the question and each policy are embedded with the model the app already holds and the closest
+    few are kept.
+
+    Embedding every policy is slow on a CPU, so it happens in the background: until the vectors exist (the first
+    question after a start) the old list is returned, and the cache then serves every later question.
+    """
+    if not (query or "").strip() or embed is None or len(rows) <= _POLICY_TOP:
+        return rows[:_MAX_ROWS]
+    missing = [t for t in dict.fromkeys(_policy_text(r) for r in rows) if t not in _policy_vectors]
+    if missing:
+        _start_warming(missing, embed)
+        return rows[:_MAX_ROWS]
+    try:
+        q = [float(x) for x in embed([query])[0]]
+        scored = [(sum(a * b for a, b in zip(q, _policy_vectors[_policy_text(r)])), i) for i, r in enumerate(rows)]
+    except Exception:
+        logger.exception("Policy relevance ranking failed; listing policies in table order")
+        return rows[:_MAX_ROWS]
+    scored.sort(key=lambda t: (-t[0], t[1]))
+    return [rows[i] for _, i in scored[:_POLICY_TOP]]
+
+
 def _rows(cur, sql: str, limit: int = _MAX_ROWS) -> List[Dict[str, Any]]:
     cur.execute(sql, (limit,))
     cols = [d[0] for d in cur.description]
@@ -124,19 +203,19 @@ def _one(cur, sql: str) -> List[Dict[str, Any]]:
     return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
-def _fetch(cur, intent: str) -> Dict[str, Any]:
+def _fetch(cur, intent: str, query: str = "", embed: Optional[Callable[[List[str]], Any]] = None) -> Dict[str, Any]:
     if intent == "policies":
         # The governed policy set (proc.bp_policy) is what the agents are actually held to.
         # The ask bar used to answer policy questions from a demo fixture, so it described
         # rules this organisation had never adopted.
         return {
             # policy_status is a smallint flag, not a word: 1 = in force.
-            "policies_in_force": _rows(cur, """
+            "policies_in_force": relevant_policies(_rows(cur, """
                 SELECT policy_name, policy_type, policy_desc, version
                   FROM proc.bp_policy
                  WHERE policy_status IS NULL OR policy_status = 1
                  ORDER BY policy_type, policy_name
-                 LIMIT %s"""),
+                 LIMIT %s""", _POLICY_LOOKUP_ROWS), query, embed),
         }
 
     if intent == "deals":
@@ -340,7 +419,9 @@ def fetch_facts(agent_nick, query: str) -> Optional[Dict[str, Any]]:
         try:
             with agent_nick.get_db_connection() as conn:
                 with conn.cursor() as cur:
-                    facts = _fetch(cur, intent)
+                    embedder = getattr(agent_nick, "embedding_model", None)
+                    embed = (lambda texts: embedder.encode(texts, normalize_embeddings=True, show_progress_bar=False)) if embedder else None
+                    facts = _fetch(cur, intent, query, embed)
         except Exception:
             # A question is better answered from the vector store than not at all.
             logger.exception("Corpus fact lookup failed for intent %s", intent)
