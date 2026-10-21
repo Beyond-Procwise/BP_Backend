@@ -65,3 +65,90 @@ def check_structure(path: Path) -> List[str]:
         if not (path / "evals" / f).is_file():
             problems.append(f"evals/{f} is missing")
     return problems
+
+
+SCENARIO_KINDS = ["typical", "edge", "missing_data", "conflicting_data", "pressure_to_skip_policy"]
+MIN_SCENARIOS, MIN_EXPERT, MIN_TRIGGERS = 15, 3, 10
+# A skill advises; it never sends, signs, awards or commits. These are named in prose at most.
+DENIED_TOOL = re.compile(r"^(commit_.*|send_message|send_esg_survey|e_signature|run_email_dispatch|"
+                         r"run_e_auction|book_shipment|onboard_supplier)$")
+_TOOL_REF = re.compile(r"`tool:([a-z_0-9]+)`")
+_NOT_AVAILABLE = re.compile(r"NOT AVAILABLE: ([a-z_0-9]+)")
+
+
+def _load_yaml(path: Path):
+    try:
+        return yaml.safe_load(path.read_text())
+    except (OSError, yaml.YAMLError):
+        return None
+
+
+def _tool_problems(text: str, config: dict, known: set) -> List[str]:
+    out: List[str] = []
+    unavailable = set(config.get("unavailable_tools") or [])
+    declared_missing = set(_NOT_AVAILABLE.findall(text))
+    for tool in sorted(set(_TOOL_REF.findall(text))):
+        if DENIED_TOOL.match(tool):
+            out.append(f"advisory only: SKILL.md tells the agent to call {tool}")
+        elif tool not in known and tool not in unavailable:
+            out.append(f"{tool} is not a tool here; add it to unavailable_tools or remove it")
+    for tool in sorted(unavailable):
+        if tool in known:
+            out.append(f"{tool} now exists; remove it from unavailable_tools and use it")
+        elif tool not in declared_missing:
+            out.append(f"add a line 'NOT AVAILABLE: {tool}. <what the agent does instead>' to SKILL.md")
+    return out
+
+
+def _threshold_leaves(node, prefix=""):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            yield from _threshold_leaves(v, f"{prefix}{k}.")
+    else:
+        yield prefix.rstrip("."), node
+
+
+def _config_problems(body: str, config: dict) -> List[str]:
+    out: List[str] = []
+    thresholds = config.get("thresholds") or {}
+    prose = re.sub(r"(?ms)^## Worked example\b.*?(?=^## |\Z)", "", body)
+    for dotted, value in _threshold_leaves(thresholds):
+        key = dotted.split(".")[-1]
+        if key not in body:
+            out.append(f"threshold {dotted} is not referenced in SKILL.md")
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and (abs(value) >= 10 or value != int(value)):
+            if re.search(rf"(?<![\w.]){re.escape(str(value))}(?!\w|\.\d)", prose):
+                out.append(f"threshold {dotted} = {value} is repeated in prose; refer to config.thresholds.{key}")
+    return out
+
+
+def _eval_problems(path: Path) -> List[str]:
+    out: List[str] = []
+    sc = _load_yaml(path / "evals" / "scenarios.yaml")
+    sc = sc if isinstance(sc, list) else []
+    if len(sc) < MIN_SCENARIOS:
+        out.append(f"evals/scenarios.yaml has {len(sc)} scenarios; at least {MIN_SCENARIOS} needed")
+    kinds = {s.get("kind") for s in sc if isinstance(s, dict)}
+    for kind in SCENARIO_KINDS:
+        if kind not in kinds:
+            out.append(f"evals/scenarios.yaml has no '{kind}' scenario")
+    if sum(1 for s in sc if isinstance(s, dict) and s.get("expert_graded")) < MIN_EXPERT:
+        out.append(f"evals/scenarios.yaml needs at least {MIN_EXPERT} scenarios with expert_graded: true")
+    tr = _load_yaml(path / "evals" / "triggers.yaml")
+    tr = tr if isinstance(tr, dict) else {}
+    for key in ("should_trigger", "should_not_trigger"):
+        if len(tr.get(key) or []) < MIN_TRIGGERS:
+            out.append(f"evals/triggers.yaml: {key} needs {MIN_TRIGGERS} prompts")
+    return out
+
+
+def check_skill(path: Path, *, known_tools) -> List[str]:
+    """Everything check_structure does, plus the rules that keep a skill honest."""
+    path = Path(path)
+    problems = check_structure(path)
+    if problems:
+        return problems
+    _, body = split_frontmatter((path / "SKILL.md").read_text())
+    config = _load_yaml(path / "config.yaml") or {}
+    return (_tool_problems(body, config, set(known_tools)) + _config_problems(body, config)
+            + _eval_problems(path))
