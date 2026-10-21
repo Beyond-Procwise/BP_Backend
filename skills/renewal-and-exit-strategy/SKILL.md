@@ -32,7 +32,7 @@ NOT AVAILABLE: commodity_index_lookup. Ask the user for the market price or inde
 NOT AVAILABLE: financial_health_score. Ask the user for a credit view, or say supplier financial health is not assessed.
 NOT AVAILABLE: monitor_risk_events. Ask the user about known risk events, or say none were checked.
 Use `tool:search_contracts` to find the contract and `tool:extract_clauses` to read its stored clauses, quoted word for word (try `containing` with "exit", "terminate", "data" or "exclusive"). If the contract has not been read, or a clause is not listed, ask the user to quote it and label anything unquoted "not checked".
-NOT AVAILABLE: supplier_discovery. Ask the user for alternative suppliers, or state that availability is unknown.
+Use `tool:supplier_discovery` to list suppliers this organisation already deals with for the item. It is not a market scan: ask the user for other candidates and say availability beyond these is unknown.
 NOT AVAILABLE: build_docx. Give the recommendation, evidence pack, timeline and notice draft as text sections.
 
 ## Workflow

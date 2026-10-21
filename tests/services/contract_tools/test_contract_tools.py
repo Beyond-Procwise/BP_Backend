@@ -1,4 +1,6 @@
 import datetime as dt
+import json
+from decimal import Decimal
 
 from src.services.contract_tools import clauses, redline, search, store
 
@@ -104,3 +106,9 @@ def test_clauses_refuse_a_missing_id_or_unknown_type():
 def test_filter_that_matches_nothing_still_says_clauses_exist():
     out = clauses.extract("1520", containing="zzz", rows=_rows)
     assert out["found"] is False and out["read"] is True and out["clauses_stored"] == 3
+
+
+def test_search_output_is_plain_json_even_with_decimal_value():
+    row = ("C1", "t", "msa", "Acme", dt.date(2025, 1, 1), dt.date(2026, 1, 1), "active", "GBP",
+           Decimal("100000.50"), True, None, None, None)
+    json.dumps(search.search(query="x", rows=lambda s, p: [row]))

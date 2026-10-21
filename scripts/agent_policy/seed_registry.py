@@ -30,6 +30,8 @@ FIXED_TOOLS = {
     "extract_clauses": ["document_id", "clause_type", "containing"],
     "redline_compare": ["original", "revised"],
     "savings_tracker": ["since", "until"],
+    "supplier_discovery": ["item", "country", "preferred_only", "limit"],
+    "supplier_lookup": ["supplier"],
     "build_spend_cube": ["by", "start", "end", "currency", "top_n"],
 }
 

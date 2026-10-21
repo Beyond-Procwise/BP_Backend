@@ -1,6 +1,7 @@
 """search_contracts: find contracts by words, supplier, status or expiry window."""
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from . import store
@@ -57,7 +58,8 @@ def search(query: Any = None, supplier: Any = None, status: Any = None, expires_
     except store.StoreUnavailable:
         return {"found": False, "available": False,
                 "note": "The contract register could not be read just now. This does not mean there are no contracts."}
-    contracts = [{k: (str(v) if hasattr(v, "isoformat") else v) for k, v in zip(_COLUMNS, r)} for r in found[:n]]
+    contracts = [{k: (str(v) if hasattr(v, "isoformat") else float(v) if isinstance(v, Decimal) else v)
+                  for k, v in zip(_COLUMNS, r)} for r in found[:n]]
     out: Dict[str, Any] = {"found": bool(contracts), "contracts": contracts, "count": len(contracts)}
     if len(found) > n:
         out["note"] = f"More than {n} match; narrow the search to see the rest."

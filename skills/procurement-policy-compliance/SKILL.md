@@ -26,7 +26,7 @@ Gather these before evaluating. Ask for any that change the verdict; do not defa
 
 Use `tool:get_corpus_facts` for order history and supplier facts the user did not supply. The policy itself is read by `tool:check_policy`, not by you.
 
-NOT AVAILABLE: supplier_lookup. Ask the user for the supplier's legal name and status, or use `tool:get_corpus_facts`; say which you used.
+Use `tool:supplier_lookup` for the supplier's recorded status, preferred flag, country and insurance. It is the master record, not an outside check; if it finds nothing, ask the user for the legal name and status.
 NOT AVAILABLE: query_erp. Use `tool:get_corpus_facts` for order history; if it returns nothing, say the history check was not performed.
 Use `tool:search_contracts` to look for a framework agreement with the supplier. A match is evidence, not a ruling; if it finds none or cannot be read, ask whether a framework covers the request and record the answer as the user's statement.
 NOT AVAILABLE: build_docx. Give the verdict as text using the template in templates/verdict.json.

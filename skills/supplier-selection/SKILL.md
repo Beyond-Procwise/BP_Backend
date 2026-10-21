@@ -27,7 +27,7 @@ Ask for these; do not guess any of them.
 
 If no longlist exists, ask the user for candidates or a source.
 
-NOT AVAILABLE: supplier_discovery. Ask the user for the longlist or a source for candidates; do not name suppliers from memory as if they were verified.
+Use `tool:supplier_discovery` to build the known-supplier part of the longlist from the organisation's own orders, invoices and quotes, and `tool:supplier_lookup` for a supplier's recorded profile. It is not a market scan: ask the user for any other source of candidates, and do not name suppliers from memory as if they were verified.
 NOT AVAILABLE: screen_sanctions. Ask compliance for the result and date for each legal entity, owner and director. If none is supplied, record "not performed"; that supplier cannot be shortlisted.
 NOT AVAILABLE: forced_labour_screen. Ask for the result and date where the geography or material is high risk; if none, record "not performed".
 NOT AVAILABLE: conflict_minerals_check. Ask for the result and date where tin, tantalum, tungsten or gold is in scope; if none, record "not performed".

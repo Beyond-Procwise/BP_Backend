@@ -772,6 +772,39 @@ def _spend_tools() -> List[Tool]:
     ]
 
 
+def _supplier_tools() -> List[Tool]:
+    """What the platform itself knows about suppliers. Read-only; no bank details or personal contacts."""
+    from src.services import supplier_tools as ST
+
+    return [
+        Tool(
+            name="supplier_discovery",
+            description=(
+                "List suppliers this organisation already deals with that have a PO, invoice or quote line "
+                "matching an item or service, with the evidence counts, preferred flag, country, certifications "
+                "on file and insurance status. It is NOT a market scan: suppliers it does not return may exist. "
+                "Never present a result as a complete market view."
+            ),
+            parameters={"type": "object", "properties": {
+                "item": {"type": "string", "description": "The item or service, e.g. 'laptop'."},
+                "country": {"type": "string"}, "preferred_only": {"type": "boolean"},
+                "limit": {"type": "integer"}}, "required": ["item"]},
+            handler=ST.discover,
+        ),
+        Tool(
+            name="supplier_lookup",
+            description=(
+                "A supplier's recorded profile by name or supplier_id: legal details, preferred flag, risk "
+                "score (or 'not scored'), certifications on file, insurance, currency, Incoterms, lead time. "
+                "It is the master record, not an outside check. If several suppliers match, ask which one."
+            ),
+            parameters={"type": "object", "properties": {"supplier": {"type": "string"}},
+                        "required": ["supplier"]},
+            handler=ST.lookup,
+        ),
+    ]
+
+
 def build_tools(
     agent_nick: Any,
     *,
@@ -802,6 +835,7 @@ def build_tools(
         + _contract_tools()
         + _ledger_tools()
         + _spend_tools()
+        + _supplier_tools()
     )
     if exclude:
         blocked = set(exclude)

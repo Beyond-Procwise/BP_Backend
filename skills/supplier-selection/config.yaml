@@ -18,7 +18,6 @@ qualification_criteria:                # the five parts of the qualification sco
   risk: null
   esg: null
 unavailable_tools:
-  - supplier_discovery
   - screen_sanctions
   - forced_labour_screen
   - conflict_minerals_check
