@@ -171,3 +171,12 @@ def test_inactive_recipient_dropped():
     rs = resolver(s).resolve(s.get("default", "buyer"), "requisition.submitted",
                              EntityRef("requisition", "R", amount=D(100)))
     assert "cm" not in subjects(rs)
+
+
+def test_actor_excluded_when_they_qualify_unless_configured():
+    s = org(); buyer = s.get("default", "buyer")
+    e = EntityRef("po", "P1", requester="buyer", owner="cm")
+    rs = resolver(s, {("default", "po.changed"): (["requester", "entity_owner"], False)}).resolve(buyer, "po.changed", e)
+    assert subjects(rs) == ["cm"]
+    rs = resolver(s, {("default", "po.changed"): (["requester", "entity_owner"], True)}).resolve(buyer, "po.changed", e)
+    assert set(subjects(rs)) == {"cm", "buyer"}
