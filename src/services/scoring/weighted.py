@@ -44,6 +44,8 @@ def _dec(value: Any, what: str) -> Decimal:
         raise ScoringError(f"{what} is not a number") from None
 
 
+_DIRECTIONS = {"lower_better": "lower_better", "lower_is_better": "lower_better",
+               "higher_better": "higher_better", "higher_is_better": "higher_better"}
 _CRITERION_TYPES = ("scored", "price", "numeric_metric", _GATE, _GROUP)
 
 
@@ -71,6 +73,9 @@ def _shape_problems(criteria, scores, metrics, consensus) -> List[str]:
                            + ", ".join(_CRITERION_TYPES))
             elif c["type"] != _GATE:
                 need(c, ("weight",), "a criteria row", crit_ex)
+            d = c.get("direction")
+            if d is not None and str(d).strip().lower() not in _DIRECTIONS:
+                out.append(f"criterion {c['criterion_id']} has direction {d!r}; expected lower_better or higher_better")
             types[str(c["criterion_id"])] = str(c["type"])
     for r in scores:
         if need(r, ("supplier_id", "criterion_id", "evaluator_id", "score"), "a scores row",
@@ -293,7 +298,9 @@ def weighted_scoring(
         missing = [s for s in alive if s not in have]
         if missing:
             raise ScoringError(f"no value for {', '.join(missing)} on {c}")
-        direction = byid[c].get("direction") or ("lower_better" if byid[c].get("type") == "price" else "higher_better")
+        given = byid[c].get("direction")
+        direction = _DIRECTIONS[str(given).strip().lower()] if given is not None else (
+            "lower_better" if byid[c].get("type") == "price" else "higher_better")
         per = _normalise_metric({s: have[s] for s in alive}, normalisation, direction, price_reference, c, warnings)
         for s in alive:
             norm[s][c] = per[s]

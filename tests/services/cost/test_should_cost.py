@@ -120,3 +120,11 @@ def test_every_rate_used_is_listed_with_its_source():
     out = run()
     assert {"machine_rate", "labour_rate"} <= {a["name"] for a in out["rates_used"]}
     assert all(a["source"] for a in out["rates_used"])
+
+
+def test_scrap_with_no_recovery_share_is_valued_at_nothing_and_says_so():
+    line = {k: v for k, v in BOM[0].items() if k != "scrap_recovery_price_pct"}
+    out = run(bom=[line])
+    assert out["per_unit"]["material"] == pytest.approx(0.625 * 2.0)
+    assert any("scrap" in a and "no recovery" in a for a in out["assumptions"])
+    assert not any("no recovery" in a for a in run()["assumptions"])

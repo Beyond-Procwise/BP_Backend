@@ -243,3 +243,25 @@ def test_a_price_given_as_a_score_is_pointed_at_metrics():
     sc = SCORES + [{"supplier_id": "A", "criterion_id": "price", "evaluator_id": "e1", "score": 100000}]
     with pytest.raises(w.ScoringError, match="metrics"):
         run(scores=sc)
+
+
+def test_an_unrecognised_direction_is_refused_never_read_as_higher_is_better():
+    crit = [CRITERIA[0], dict(CRITERIA[1], direction="cheaper_is_better"), CRITERIA[2]]
+    with pytest.raises(w.ScoringError, match="direction"):
+        run(criteria=crit)
+
+
+@pytest.mark.parametrize("spelling", ["lower_is_better", "lower_better", "LOWER_IS_BETTER"])
+def test_the_plain_english_spelling_means_the_same_thing(spelling):
+    crit = [CRITERIA[0], dict(CRITERIA[1], direction=spelling), CRITERIA[2]]
+    assert total(run(criteria=crit), "A") == pytest.approx(0.88)
+
+
+def test_a_price_with_no_direction_is_lower_is_better():
+    crit = [CRITERIA[0], {k: v for k, v in CRITERIA[1].items() if k != "direction"}, CRITERIA[2]]
+    assert total(run(criteria=crit), "A") == pytest.approx(0.88)
+
+
+def test_a_numeric_metric_with_no_direction_is_higher_is_better():
+    crit = [CRITERIA[0], {"criterion_id": "price", "parent_id": None, "weight": "0.4", "type": "numeric_metric"}, CRITERIA[2]]
+    assert total(run(criteria=crit), "B") == pytest.approx(0.6 * 0.6 + 0.4 * 1.0)
