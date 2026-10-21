@@ -144,7 +144,7 @@ def should_cost(
     for j, line in enumerate(bom):
         if line.get("bought_in_price") is None and float(line.get("scrap_rate", 0.0)) > 0 \
                 and line.get("scrap_recovery_price_pct") is None:
-            assumptions.append(f"Scrap on bill of materials line {j + 1} is valued at nothing: no recovery share was given.")
+            assumptions.append(f"The scrap on bill of materials line {j + 1} is valued at nothing: no recovery share was given.")
     rates = [_machine_rate(op, i, assumptions) for i, op in enumerate(routing)]
     one = {d: 1.0 for d in DRIVERS}
     elements, total, ops_out = _cost(bom, routing, batch, oh, sga, margin, logistics, margin_base, one, rates, assumptions)
