@@ -1,0 +1,22 @@
+should_trigger:
+- Is this PO allowed under our policy?
+- Who needs to approve a 40k purchase?
+- Check this requisition against policy before I submit it
+- Does this need competitive bids?
+- Am I allowed to approve my own request?
+- Is this order split to avoid approval?
+- Do we need a waiver for sole sourcing this supplier?
+- What approval does a 3-year contract at 20k a year need?
+- Run a compliance check on this award
+- Is this payment within my authority?
+should_not_trigger:
+- Draft a clause for payment terms
+- Screen this supplier for sanctions
+- What is the landed cost of this shipment?
+- Write a negotiation plan for the steel renewal
+- Summarise last month's spend
+- Translate this quote into French
+- Which supplier is cheapest for bearings?
+- Extract the line items from this invoice
+- What is the weather in Hamburg?
+- Create a chart of spend by category

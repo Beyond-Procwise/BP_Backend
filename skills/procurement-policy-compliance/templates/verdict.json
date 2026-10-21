@@ -1,0 +1,11 @@
+{
+  "verdict": "COMPLIANT | COMPLIANT_WITH_CONDITIONS | NON_COMPLIANT | INSUFFICIENT_INFO",
+  "policy_versions": {"<policy slug>": "<version or updated_at the tool returned>"},
+  "evaluated_at": "<ISO 8601 timestamp>",
+  "rules_evaluated": [{"rule": "<governed policy slug or ungoverned rule name>", "outcome": "pass | fail | n/a | waived | not_governed", "evidence": "<tool result or user statement>"}],
+  "violations": [{"rule": "", "severity": "blocking | warning", "message": "", "remediation": ""}],
+  "required_approvals": [{"role": "", "reason_rule": ""}],
+  "required_actions": [],
+  "split_signal": {"performed": false, "reason_not_performed": ""},
+  "assumptions": []
+}

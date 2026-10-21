@@ -1,0 +1,18 @@
+# Org-tunable settings for procurement-policy-compliance. SKILL.md refers to these by key.
+thresholds:
+  split_window_days: 30          # rolling window for split-order detection
+  split_near_threshold_pct: 10   # "just below a limit" band, percent
+  split_min_orders: 3            # orders inside the band that raise the signal
+governed_policies:
+  approval_limit: approval_threshold_policy   # the only governed approval limit that exists today
+ungoverned_rules:                # no bp_policy row yet -> verdict INSUFFICIENT_INFO, never a guess
+  - competitive_bid_thresholds
+  - delegation_of_authority_by_category
+  - preferred_supplier_rules
+  - conflict_of_interest_rules
+  - waiver_rules
+unavailable_tools:
+  - supplier_lookup
+  - query_erp
+  - search_contracts
+  - build_docx
