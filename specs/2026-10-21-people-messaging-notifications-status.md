@@ -85,3 +85,9 @@ Governing principle + admission rule are verbatim in the module docstring of gra
 - NOT done: embedding-based proposer (the queue + confirm flow exist; nothing writes proposals yet); linking Entity stubs to legacy Supplier/PO nodes; Team nodes
   (no source table); WATCHES/OWNS/ASSIGNED/SIGNED/ESCALATED have a validated write path but no product action emits them yet; RBAC via Cognito groups; UI
   ("My network", reason chips); docs/people_knowledge_graph.md (docs/ is gitignored); bp_sqldb migrations.
+
+## Update — email channel built (same day)
+src/services/people/email_channel.py; wired in people/wiring.build_service. OFF unless NOTIFICATION_EMAIL=on (first outward-facing piece).
+Sends via EmailService/SES from ses_default_sender to bp_person.email, only for users whose preferences list "email"; text = value-free event sentence + reason,
+link only when APP_BASE_URL is set. No address -> status skipped_no_address (recorded, never retried); mail refusal -> failed + retried (MAX_ATTEMPTS). Quiet hours defer as before.
+6 tests; skip handler and already-sent guard each proven red by mutation. NOT done: no live send (needs a yes + SES sender check), no digest/coalescing, M365 company mailbox not used (that path is supplier-only).
