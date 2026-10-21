@@ -283,3 +283,87 @@ def test_tool_runtime_no_longer_runs_tool_handlers_itself():
     import os
     src = open(os.path.join(ROOT, "src", "services", "tool_runtime.py"), encoding="utf-8").read()
     assert ".handler(" not in src and "range(max_rounds)" not in src
+
+
+# ---- the verify step -------------------------------------------------------------------------------
+
+def _with_verify(script, fn):
+    w = script.wiring()
+    return ex.Wiring(**{**w.__dict__, "verify": fn})
+
+
+class V:
+    def __init__(self, action, answer="", untraced=(), retry_message=None):
+        self.action, self.answer, self.untraced, self.retry_message = action, answer, list(untraced), retry_message
+
+
+@pytest.mark.parametrize("fn_name", ["run", "run_stream"])
+def test_with_no_verifier_nothing_changes(fn_name):
+    s = Script([{"role": "assistant", "content": "draft"}])
+    assert getattr(ex, fn_name)(s.wiring(), "t", [], "s", model="m", max_rounds=3, timeout_s=1).answer == "draft"
+
+
+@pytest.mark.parametrize("fn_name", ["run", "run_stream"])
+def test_a_verifier_can_replace_the_answer_after_the_output_check(fn_name):
+    s = Script([{"role": "assistant", "content": "model wording"}], safety=lambda c: "checked wording")
+    seen = {}
+
+    def verify(answer, result, retried):
+        seen["answer"], seen["retried"] = answer, retried
+        return V("replace", "authoritative text")
+
+    res = getattr(ex, fn_name)(_with_verify(s, verify), "t", [], "s", model="m", max_rounds=3, timeout_s=1)
+    assert res.answer == "authoritative text" and seen == {"answer": "checked wording", "retried": False}
+
+
+@pytest.mark.parametrize("fn_name", ["run", "run_stream"])
+def test_a_retry_sends_the_model_back_once_with_the_instruction_and_then_releases_the_second_answer(fn_name):
+    s = Script([{"role": "assistant", "content": "first, with 40,000"}, {"role": "assistant", "content": "second"}])
+    asked = []
+
+    def verify(answer, result, retried):
+        asked.append((answer, retried))
+        return V("retry", answer, ["40,000"], "remove 40,000") if not retried else V("keep", answer)
+
+    sent = []
+    w = _with_verify(s, verify)
+    orig = w.propose_turn, w.propose_stream
+    w = ex.Wiring(**{**w.__dict__,
+                     "propose_turn": lambda m, *r: (sent.append(list(m)), orig[0](m, *r))[1],
+                     "propose_stream": lambda m, *r: (sent.append(list(m)), orig[1](m, *r))[1]})
+    res = getattr(ex, fn_name)(w, "t", [], "s", model="m", max_rounds=4, timeout_s=1)
+    assert res.answer == "second" and asked == [("first, with 40,000", False), ("second", True)]
+    assert sent[1][-1] == {"role": "user", "content": "remove 40,000"}
+    assert sent[1][-2] == {"role": "assistant", "content": "first, with 40,000"}
+
+
+@pytest.mark.parametrize("fn_name", ["run", "run_stream"])
+def test_the_model_is_sent_back_at_most_once(fn_name):
+    s = Script([{"role": "assistant", "content": "a"}, {"role": "assistant", "content": "b"}, {"role": "assistant", "content": "c"}])
+    verify = lambda answer, result, retried: V("retry", answer, ["1"], "again") if not retried else V("caution", answer + " (unverified)", ["1"])
+    res = getattr(ex, fn_name)(_with_verify(s, verify), "t", [], "s", model="m", max_rounds=5, timeout_s=1)
+    assert res.answer == "b (unverified)" and res.rounds == 2
+
+
+@pytest.mark.parametrize("fn_name", ["run", "run_stream"])
+def test_what_the_verifier_found_is_recorded_on_the_result(fn_name):
+    s = Script([{"role": "assistant", "content": "x"}])
+    res = getattr(ex, fn_name)(_with_verify(s, lambda a, r, t: V("caution", a, ["7"])), "t", [], "s", model="m",
+                               max_rounds=3, timeout_s=1)
+    assert res.verification == {"action": "caution", "untraced": ["7"]}
+
+
+def test_the_stream_still_reports_the_final_answer_through_on_delta_after_verification():
+    s = Script([{"role": "assistant", "content": "model wording"}])
+    got = []
+    ex.run_stream(_with_verify(s, lambda a, r, t: V("replace", "authoritative")), "t", [], "s", model="m",
+                  max_rounds=3, timeout_s=1, on_delta=got.append)
+    assert got == ["authoritative"]
+
+
+@pytest.mark.parametrize("fn_name", ["run", "run_stream"])
+def test_even_a_verifier_that_always_asks_for_a_retry_cannot_loop_the_model(fn_name):
+    s = Script([{"role": "assistant", "content": "a"}, {"role": "assistant", "content": "b"}, {"role": "assistant", "content": "c"}])
+    always = lambda answer, result, retried: V("retry", answer, ["1"], "again")
+    res = getattr(ex, fn_name)(_with_verify(s, always), "t", [], "s", model="m", max_rounds=6, timeout_s=1)
+    assert res.rounds == 2 and res.answer == "b"

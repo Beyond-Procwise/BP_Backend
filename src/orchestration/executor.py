@@ -40,6 +40,9 @@ class Wiring:
     render_result: Callable[[Any], str]
     with_note: Callable[[str, Any], str]
     log: Any
+    # (answer, result, already_retried) -> something with .action .answer .untraced .retry_message.
+    # Optional: with none, an answer is released as the output check left it.
+    verify: Optional[Callable[[str, Any, bool], Any]] = None
 
 
 def _act(w: Wiring, call: Dict[str, Any], by_name: Dict[str, Any], *, agent, reason, workflow_id, user_id,
@@ -91,6 +94,17 @@ def _observation(w: Wiring, record: Any, refusal: Any, allowed: Any) -> Dict[str
     }
 
 
+def _release(w: Wiring, answer: str, result: Any, retried: bool):
+    """Verify a final answer. Returns (answer, retry_message): a retry message means send the model back."""
+    if w.verify is None:
+        return answer, None
+    verdict = w.verify(answer, result, retried)
+    result.verification = {"action": verdict.action, "untraced": list(verdict.untraced)}
+    if verdict.action == "retry" and not retried:
+        return answer, verdict.retry_message
+    return verdict.answer, None
+
+
 def run_stream(w: Wiring, task: str, tools: Sequence[Any], system: str, *, model: str, max_rounds: int,
                timeout_s: int, on_tool: Optional[Callable[[Any], None]] = None,
                on_delta: Optional[Callable[[str], None]] = None, agent: Optional[str] = None,
@@ -105,6 +119,7 @@ def run_stream(w: Wiring, task: str, tools: Sequence[Any], system: str, *, model
     schemas = [t.schema() for t in tools]
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system}, {"role": "user", "content": task}]
     result = w.ToolRunResult(model=model, system=system, tools_offered=[t.name for t in tools])
+    retried = False
 
     for _ in range(max_rounds):
         result.rounds += 1
@@ -123,7 +138,14 @@ def run_stream(w: Wiring, task: str, tools: Sequence[Any], system: str, *, model
             # answer is assembled, checked, re-framed if it was describing the machine, and only then
             # released. The cost is the typing effect on the final answer; the user still watches the
             # tool stages tick over live, so nothing looks frozen.
-            result.answer = w.safety_gate(content, messages, schemas, model, timeout_s, result)
+            answer = w.safety_gate(content, messages, schemas, model, timeout_s, result)
+            answer, again = _release(w, answer, result, retried)
+            if again is not None:
+                retried = True
+                messages.append({"role": "assistant", "content": content})
+                messages.append({"role": "user", "content": again})
+                continue
+            result.answer = answer
             if on_delta and result.answer:
                 on_delta(result.answer)
             return result
@@ -156,6 +178,7 @@ def run(w: Wiring, task: str, tools: Sequence[Any], system: str, *, model: str, 
     result = w.ToolRunResult(model=model, system=system, tools_offered=[t.name for t in tools])
     nudged = False
     any_tool_call = False
+    retried = False
 
     for _ in range(max_rounds):
         result.rounds += 1
@@ -182,7 +205,13 @@ def run(w: Wiring, task: str, tools: Sequence[Any], system: str, *, model: str, 
                         "you need to establish the facts, then answer from what they return."),
                 })
                 continue
-            result.answer = w.safety_gate(content, messages, schemas, model, timeout_s, result)
+            answer = w.safety_gate(content, messages, schemas, model, timeout_s, result)
+            answer, again = _release(w, answer, result, retried)
+            if again is not None:
+                retried = True
+                messages.append({"role": "user", "content": again})
+                continue
+            result.answer = answer
             return result
 
         any_tool_call = True

@@ -112,6 +112,10 @@ class ToolRunResult:
     safety_retry: bool = False
     # …and the second attempt did it too, so the user got the safe reply instead.
     safety_blocked: bool = False
+    # What the orchestrator told the model (layers) and what its verify step found. Not part of
+    # ``to_dict``: this is the record of a run, not what a caller is shown.
+    context: List[Dict[str, Any]] = field(default_factory=list)
+    verification: Optional[Dict[str, Any]] = None
 
     @property
     def tools_used(self) -> List[str]:
@@ -300,7 +304,7 @@ def _gate(
     return osafe.SAFE_REPLY
 
 
-def _wiring():
+def _wiring(verify: Optional[Callable[[str, Any, bool], Any]] = None):
     """What the orchestrator's executor loop needs, taken from this module's own names at call time.
 
     The loop itself lives in ``orchestration.executor``; it owns the state of a run and the order of
@@ -322,6 +326,7 @@ def _wiring():
         render_result=_render_result,
         with_note=_with_note,
         log=log,
+        verify=verify,
     )
 
 
@@ -338,6 +343,7 @@ def run_tools_stream(
     agent: Optional[str] = None,
     workflow_id: Optional[str] = None,
     user_id: Optional[str] = None,
+    verify: Optional[Callable[[str, Any, bool], Any]] = None,
 ) -> ToolRunResult:
     """Same loop, but the FINAL answer is streamed out through ``on_delta``.
 
@@ -347,7 +353,7 @@ def run_tools_stream(
     from orchestration import executor
 
     return executor.run_stream(
-        _wiring(), task, tools, system, model=model or _DEFAULT_MODEL, max_rounds=max_rounds,
+        _wiring(verify), task, tools, system, model=model or _DEFAULT_MODEL, max_rounds=max_rounds,
         timeout_s=timeout_s, on_tool=on_tool, on_delta=on_delta, agent=agent, workflow_id=workflow_id,
         user_id=user_id)
 
@@ -365,6 +371,7 @@ def run_tools(
     agent: Optional[str] = None,
     workflow_id: Optional[str] = None,
     user_id: Optional[str] = None,
+    verify: Optional[Callable[[str, Any, bool], Any]] = None,
 ) -> ToolRunResult:
     """Run AgentNick over ``task``, letting it call ``tools`` until it answers.
 
@@ -377,6 +384,6 @@ def run_tools(
     from orchestration import executor
 
     return executor.run(
-        _wiring(), task, tools, system, model=model or _DEFAULT_MODEL, max_rounds=max_rounds,
+        _wiring(verify), task, tools, system, model=model or _DEFAULT_MODEL, max_rounds=max_rounds,
         timeout_s=timeout_s, require_tool_use=require_tool_use, nudge=nudge, agent=agent,
         workflow_id=workflow_id, user_id=user_id)
