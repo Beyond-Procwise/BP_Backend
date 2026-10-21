@@ -1111,6 +1111,21 @@ def _use_fake_conn(dsn: Optional[str]) -> bool:
     return allowed not in ("1", "true", "yes", "on")
 
 
+def _apply_tenant(conn) -> None:
+    """Tell the database which customer this connection acts for (``app.tenant_id``, ``app.system``).
+
+    Row-level security compares tenant_id with these. A connection with nothing bound sets nothing, so
+    it sees no rows once that wall is on. Until then no query reads the settings.
+    """
+    from services import tenant_context
+
+    say = tenant_context.connection_settings()
+    if say is None or isinstance(conn, _FakeConnection):
+        return
+    with conn.cursor() as cur:
+        cur.execute("SELECT set_config('app.tenant_id', %s, false), set_config('app.system', %s, false)", say)
+
+
 @contextmanager
 def get_conn():
     """Yield a PostgreSQL connection using environment derived DSN."""
@@ -1144,6 +1159,15 @@ def get_conn():
             conn = _FakeConnection()
         else:
             raise
+
+    try:
+        _apply_tenant(conn)
+    except Exception:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        raise
 
     try:
         yield conn

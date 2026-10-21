@@ -906,6 +906,8 @@ from config.settings import settings as _settings  # noqa: E402
 _ASK_AUTH_MODE = _ask_auth.configure(_settings)
 
 app.add_middleware(OutputSafetyMiddleware)
+from api.tenant_middleware import TenantContextMiddleware  # noqa: E402
+app.add_middleware(TenantContextMiddleware)
 
 
 # NOTE: do not add @app.on_event("startup") handlers to this app. It is constructed with
