@@ -175,6 +175,21 @@ def current(conn=None) -> List[Dict[str, Any]]:
     return out
 
 
+def minimum_role(key: str, conn=None, fallback: str = "Admin") -> str:
+    """The role now required by setting ``key``; ``fallback`` if the row cannot be read.
+
+    Callers that gate on it use the strictest role as the fallback: an outage must not look
+    like "anyone may".
+    """
+    try:
+        for row in current(conn):
+            if row["key"] == key:
+                return str(row["role"])
+    except Exception:  # noqa: BLE001
+        pass
+    return fallback
+
+
 def seed_defaults(by: str, conn=None, roles: Optional[Dict[str, Any]] = None) -> Dict[str, List[str]]:
     """Create a row for every setting that has none. Never touches one that exists."""
     if conn is None:

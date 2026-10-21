@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 
 from api.auth import Principal
 from repositories import agent_policy_repo as repo
-from services import agent_actions, rbac
+from services import agent_actions, permission_settings, rbac
 from services.agent_policy import (approval_views, approvals, conditions, conflict_cases, conflict_detect,
                                    conflict_history, conflict_views, contract, documents, learning, live_policies, people,
                                    readiness, run_runner,
@@ -89,6 +89,13 @@ def _require(principal: Principal, minimum: str, action: str, details: Dict[str,
     if action != "agent_policy.read":
         _remember(principal)          # a write by a signed-in person: who they are, for the screens
     return role
+
+
+def _activation_minimum() -> str:
+    """Who may activate or retire an agent policy: the ``agent_policy_use`` onboarding setting.
+    An unknown or unreadable role means Admin, never a lower one."""
+    role = permission_settings.minimum_role("agent_policy_use")
+    return role if role in _RANK else "Admin"
 
 
 def _remember(principal: Principal) -> None:
@@ -894,7 +901,7 @@ def create(body: CreateBody, p: Principal = Depends(gateway_principal)):
 
 @router.post("/{key}/versions")
 def save(key: str, body: VersionBody, p: Principal = Depends(gateway_principal)):
-    minimum, action = ("Approver", "agent_policy.activate") if body.intent == "activate" else ("Buyer", "agent_policy.write")
+    minimum, action = (_activation_minimum(), "agent_policy.activate") if body.intent == "activate" else ("Buyer", "agent_policy.write")
     _require(p, minimum, action, {"policy": key, "intent": body.intent, "baseVersion": body.baseVersion})
     try:
         with _conn() as conn:
@@ -942,7 +949,7 @@ def agent_fix(key: str, body: FixBody, p: Principal = Depends(gateway_principal)
 
 @router.post("/{key}/retire")
 def retire(key: str, body: RetireBody, p: Principal = Depends(gateway_principal)):
-    _require(p, "Approver", "agent_policy.activate", {"policy": key, "intent": "retire"})
+    _require(p, _activation_minimum(), "agent_policy.activate", {"policy": key, "intent": "retire"})
     try:
         with _conn() as conn:
             try:
