@@ -41,10 +41,11 @@ def test_snapshot_answers_availability():
 
 
 def test_seed_matches_the_tools_the_agent_loop_really_offers():
-    """Guard: the registry must name exactly the tools build_tools() hands AgentNick."""
+    """Guard: the registry must name exactly the tools build_tools() hands AgentNick, plus the older loops' tools."""
     from agents.auto_registry import AutoRegistry
     reg = AutoRegistry.from_json()
-    real = {s["function"]["name"] for s in reg.tool_schemas()} | set(seed_registry.FIXED_TOOLS)
+    real = {s["function"]["name"] for s in reg.tool_schemas()} | set(seed_registry.FIXED_TOOLS) \
+        | set(seed_registry.LEGACY_LOOP_TOOLS)
     seeded = {r["name"] for r in seed_registry.registry_rows()
               if r["kind"] == "action" and r["checkpoint"] == "tool.call.before"}
     assert seeded == real
@@ -66,3 +67,20 @@ def test_fixed_tools_match_what_build_tools_really_builds():
     built = {t.name: sorted(((t.parameters or {}).get("properties") or {}).keys())
              for t in build_tools(object())}
     assert built == {k: sorted(v) for k, v in seed_registry.FIXED_TOOLS.items()}
+
+
+def test_legacy_loop_tools_match_what_the_two_loops_really_offer():
+    """The older loops' tools are hand-listed too, so check names AND arguments against their own schemas."""
+    from services.governance_tools import governed_reasoning
+    from services.supplier_enrichment import research
+    offered = {}
+    for t in list(governed_reasoning._TOOLS) + list(research._TOOLS):
+        fn = t["function"]
+        offered[fn["name"]] = sorted(fn["parameters"]["properties"])
+    offered = {k: v for k, v in offered.items() if k not in seed_registry.FIXED_TOOLS}
+    assert offered == {k: sorted(v) for k, v in seed_registry.LEGACY_LOOP_TOOLS.items()}
+
+
+def test_legacy_loop_tools_are_in_the_seeded_rows():
+    names = {r["name"] for r in seed_registry.registry_rows() if r["kind"] == "action"}
+    assert {"web_search", "fetch_url", "describe_platform"} <= names

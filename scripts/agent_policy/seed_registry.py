@@ -28,6 +28,14 @@ FIXED_TOOLS = {
                      "history_checked", "orders", "requester", "term_months", "total_commitment", "waiver_id"],
 }
 
+# Tools the two older tool loops offer (services/governance_tools/governed_reasoning.py and
+# services/supplier_enrichment/research.py). Both now ask the policy gate before each of these runs.
+LEGACY_LOOP_TOOLS = {
+    "web_search": ["query"],
+    "fetch_url": ["url"],
+    "describe_platform": ["topic"],
+}
+
 CHECKPOINTS = [
     ("tool.call.before", "before a tool runs", "live"),
     ("message.send.before", "before a message is sent", "planned"),
@@ -57,7 +65,7 @@ def registry_rows() -> List[Dict[str, Any]]:
     for name, plain, status in CHECKPOINTS:
         rows.append({"kind": "checkpoint", "name": name, "checkpoint": None, "plain": plain,
                      "value_type": None, "source": None, "status": status})
-    tools = {**_agent_tools(), **FIXED_TOOLS}
+    tools = {**_agent_tools(), **FIXED_TOOLS, **LEGACY_LOOP_TOOLS}
     cp = "tool.call.before"
     for field_name, plain, vtype in COMMON_INPUTS:
         rows.append({"kind": "input", "name": field_name, "checkpoint": cp, "plain": plain,
