@@ -487,10 +487,32 @@ class BackendScheduler:
         self._register_email_text_retention_job()
         self._register_email_draft_sweep_job()
         self._register_agent_policy_approvals_job()
+        self._register_domain_event_drain_job()
         self._register_agent_policy_conflict_scan_job()
         self._register_agent_policy_learning_scan_job()
 
     AGENT_POLICY_APPROVALS_JOB_NAME = "agent-policy-approval-sweep"
+    DOMAIN_EVENT_DRAIN_JOB_NAME = "domain-event-drain"
+
+    def _register_domain_event_drain_job(self) -> None:
+        """Turn outbox events into notifications (every 15 s). ON unless DOMAIN_EVENTS=off.
+        Run ONE of these: a second worker is safe (notifications are unique per event+user) but wasteful."""
+        import os
+        if os.environ.get("DOMAIN_EVENTS", "on").strip().lower() == "off":
+            return
+        if self.DOMAIN_EVENT_DRAIN_JOB_NAME in self._jobs:
+            return
+        self.register_job(self.DOMAIN_EVENT_DRAIN_JOB_NAME, self._run_domain_event_drain,
+                          interval=timedelta(seconds=15), initial_delay=timedelta(seconds=30))
+
+    def _run_domain_event_drain(self) -> None:
+        try:
+            from services.people.wiring import drain_once
+            stats = drain_once()
+            if stats.get("retry") or stats.get("gave_up"):
+                logger.warning("domain event drain: %s", stats)
+        except Exception:
+            logger.exception("domain event drain failed")
 
     def _register_agent_policy_approvals_job(self) -> None:
         """Escalate or reject agent-policy approval cases nobody answered in time (every 60 s).

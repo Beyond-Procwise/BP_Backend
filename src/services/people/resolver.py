@@ -23,9 +23,12 @@ TARGETS = {"manager", "chain_of_command", "approver", "entity_owner", "requester
 #: reaches the owner. A rules-source failure falls back to this plus admins, never to "nobody".
 DEFAULT_TARGETS = {
     "requisition.submitted": ["manager", "approver"],
-    "approval.requested": ["approver"],
-    "approval.approved": ["requester", "manager"],
-    "approval.rejected": ["requester", "manager"],
+    # The named deciders of a policy approval are already told by bp_policy_notification, and the
+    # hierarchy may not agree with who the decider map names, so a request tells the requester's
+    # manager only. A decision tells the requester (the actor here is the decider).
+    "approval.requested": ["manager"],
+    "approval.approved": ["requester"],
+    "approval.rejected": ["requester"],
 }
 FALLBACK_TARGETS = ["entity_owner"]
 

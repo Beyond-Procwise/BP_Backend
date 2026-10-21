@@ -57,13 +57,17 @@ def emit(conn, event: DomainEvent) -> bool:
     """Write the event to the outbox. Call inside the SAME transaction as the action itself, so
     an action that rolls back never announces itself. Returns False if the id was already seen."""
     with conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO proc.bp_domain_event (event_id, event_type, tenant_id, actor_id, entity_type,"
-            " entity_id, summary, data, occurred_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)"
-            " ON CONFLICT (event_id) DO NOTHING",
-            (event.event_id, event.type, event.tenant_id, event.actor_id, event.entity_type,
-             event.entity_id, event.summary, json.dumps(event.data, default=_json), event.occurred_at))
-        return cur.rowcount == 1
+        return emit_on_cursor(cur, event)
+
+
+def emit_on_cursor(cur, event: DomainEvent) -> bool:
+    cur.execute(
+        "INSERT INTO proc.bp_domain_event (event_id, event_type, tenant_id, actor_id, entity_type,"
+        " entity_id, summary, data, occurred_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)"
+        " ON CONFLICT (event_id) DO NOTHING",
+        (event.event_id, event.type, event.tenant_id, event.actor_id, event.entity_type,
+         event.entity_id, event.summary, json.dumps(event.data, default=_json), event.occurred_at))
+    return cur.rowcount == 1
 
 
 def _json(o):

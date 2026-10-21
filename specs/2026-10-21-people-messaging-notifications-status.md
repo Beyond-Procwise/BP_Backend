@@ -11,3 +11,16 @@ Decisions taken (user: "go with your recommendations"): single-tenant with tenan
 - Wiring: nothing emits events yet; no worker scheduled; PgRuleSource for bp_routing_rule; can_view permission adapter; bp_policy_notification -> bp_notification unification; per-user WS channel.
 - Admin endpoints to edit bp_person / routing rules / notification prefs; notification list/read APIs.
 - Phase 2 messaging, Phase 4 graph/activity/derivation/queries, Phase 5 UI (other repos) + seed org chart + docs.
+
+## Update — approvals wired (same day)
+- Hooks (src/services/agent_policy/approvals.py `_announce`, via people/wiring.emit_safe: savepoint + swallow, DOMAIN_EVENTS=off disables):
+  `approval.requested` from open_case (not _insert_case, which is pinned byte-for-byte — replay/live-conflict cases do NOT announce),
+  `approval.approved|rejected` from act(), both inside the approval's own transaction. Value-free sentences.
+- Worker: BackendScheduler job `domain-event-drain` every 15 s (people/wiring.drain_once). In-app only; email channel not wired.
+- Routing defaults changed: requested -> requester's manager (named deciders already get bp_policy_notification); approved/rejected -> requester.
+- Proven live on bp_testdb: open_case -> manager notified; act(approve) -> requester notified; rows cleaned up.
+- NOT hooked: approval_store.record_approval / record_report_refusal (human dispatch/round/report sign-offs — no requester on record),
+  revoke, timeouts (sweep), and REQUISITIONS: there is no requisition-submission code in this backend (only an extracted doc type),
+  so `requisition.submitted` has no emitter until a requisition entry point exists (gateway/UI or a new endpoint).
+- can_view is same-tenant-active only (TODO real visibility). bp_person is empty on every DB until populated, so nobody is notified in practice yet.
+- Baseline: 5 agent_policy tests fail with or without this branch (scheduler lane + 4 scrub-through-app).

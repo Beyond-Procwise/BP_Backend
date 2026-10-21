@@ -123,6 +123,17 @@ def _action_text(facts: Dict[str, Any]) -> str:
     return f"{what[:1].upper()}{what[1:]}" + (f" (policy {key})" if key else "")
 
 
+def _announce(cur, event_type: str, decision_id: int, actor: str, summary: str, *, event_key: str = "",
+              **data) -> None:
+    """Record a domain event in the same transaction; the sentence is value-free like _action_text.
+    Never raises (emit_safe), so announcing can not undo or block a decision."""
+    from services.people.events import DomainEvent
+    from services.people.wiring import emit_safe
+    emit_safe(cur, DomainEvent(
+        type=event_type, actor_id=actor, entity_type="approval", entity_id=str(decision_id), summary=summary,
+        event_id=f"{event_type}:{decision_id}{event_key}", data={"link": "/approvals", **data}))
+
+
 # ---------------------------------------------------------------------------- open
 def open_case(conn, *, policy_doc: Dict[str, Any], firing_id: int, action: Dict[str, Any],
               requested_by: Optional[str], now: datetime,
@@ -138,9 +149,17 @@ def open_case(conn, *, policy_doc: Dict[str, Any], firing_id: int, action: Dict[
         mapping = deciders.load_map(conn)
     with _tx(conn):
         with conn.cursor() as cur:
-            return _insert_case(cur, policy_doc=policy_doc, firing_id=firing_id, action=action,
-                                requested_by=requested_by, now=now, extra_facts=extra_facts,
-                                default_response_time=default_response_time, mapping=mapping)
+            decision_id = _insert_case(cur, policy_doc=policy_doc, firing_id=firing_id, action=action,
+                                       requested_by=requested_by, now=now, extra_facts=extra_facts,
+                                       default_response_time=default_response_time, mapping=mapping)
+            # Announced here, not inside _insert_case, which is pinned byte-for-byte to its stage-3
+            # behaviour. Cases opened by replay or a live conflict therefore do not announce.
+            plain = ((policy_doc.get("context") or {}).get("actions") or {}).get("plain")
+            _announce(cur, "approval.requested", decision_id, requested_by or f"agent:{action.get('agent')}",
+                      _action_text({"action": action, "actionPlain": plain,
+                                    "policy": {"id": policy_doc.get("id")}}),
+                      requester=requested_by, policy=str(policy_doc.get("id") or ""))
+            return decision_id
 
 
 def _insert_case(cur, *, policy_doc: Dict[str, Any], firing_id: int, action: Dict[str, Any],
@@ -454,6 +473,9 @@ def act(conn, decision_id: int, *, principal, verb: str, reason: Optional[str], 
                            decision_id=decision_id)
             group = _close_group(cur, case, refused=None if verb == "approve" else "rejected",
                                  actor=actor, now=now, reason=reason, level=level)
+            _announce(cur, "approval.approved" if verb == "approve" else "approval.rejected", decision_id,
+                      actor, f"{_action_text(facts)} was {'approved' if verb == 'approve' else 'rejected'}",
+                      event_key=f":{level}", requester=facts.get("requestedBy"))
 
     out = {"decisionId": decision_id, "actionId": action_id, "verb": verb,
            "result": "approved" if verb == "approve" else "rejected",

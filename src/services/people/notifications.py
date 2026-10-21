@@ -110,7 +110,7 @@ class NotificationService:
         Raises if a channel is down so the worker retries; rows already written stay (idempotent)."""
         actor = self._person_for(event.tenant_id, event.actor_id)
         if actor is None:
-            logger.warning("event %s: unknown actor %s, nobody notified", event.event_id, event.actor_id)
+            logger.info("event %s: actor %s is not in bp_person, nobody notified", event.event_id, event.actor_id)
             return 0
         recipients = self._resolver.resolve(actor, event.type, self._entity_for(event))
         created, failed = 0, []
