@@ -367,3 +367,60 @@ def test_even_a_verifier_that_always_asks_for_a_retry_cannot_loop_the_model(fn_n
     always = lambda answer, result, retried: V("retry", answer, ["1"], "again")
     res = getattr(ex, fn_name)(_with_verify(s, always), "t", [], "s", model="m", max_rounds=6, timeout_s=1)
     assert res.rounds == 2 and res.answer == "b"
+
+
+# ---- step 3b: the figures a model passes into a tool ---------------------------------------------
+
+def _with_args_check(script, fn):
+    w = script.wiring()
+    return ex.Wiring(**{**w.__dict__, "check_arguments": fn})
+
+
+@pytest.mark.parametrize("fn_name", ["run", "run_stream"])
+def test_a_call_with_an_unsourced_figure_is_refused_before_the_gate_and_the_handler(fn_name):
+    ran = []
+    refusal = {"result": "blocked", "reasonCode": "figure_not_sourced", "reason": "x was not run"}
+    s = Script([{"role": "assistant", "content": "", "tool_calls": [tc("a", rate=0.08)]}, FINAL])
+    res = getattr(ex, fn_name)(_with_args_check(s, lambda name, args, result: refusal), "t", [tool("a", record=ran)],
+                               "s", model="m", max_rounds=4, timeout_s=1)
+    assert ran == [] and ("gate", "a") not in s.events
+    assert res.calls[0].ok is False and res.calls[0].result == refusal and res.answer == "Done."
+
+
+@pytest.mark.parametrize("fn_name", ["run", "run_stream"])
+def test_a_call_that_passes_the_check_still_goes_to_the_gate_and_runs(fn_name):
+    ran = []
+    s = Script([{"role": "assistant", "content": "", "tool_calls": [tc("a", x=1)]}, FINAL])
+    res = getattr(ex, fn_name)(_with_args_check(s, lambda n, a, r: None), "t", [tool("a", record=ran)], "s",
+                               model="m", max_rounds=4, timeout_s=1)
+    assert ran == [("a", {"x": 1})] and ("gate", "a") in s.events and res.calls[0].ok
+
+
+@pytest.mark.parametrize("fn_name", ["run", "run_stream"])
+def test_the_check_sees_the_arguments_and_the_calls_made_so_far(fn_name):
+    seen = []
+    s = Script([{"role": "assistant", "content": "", "tool_calls": [tc("a", n=1)]},
+                {"role": "assistant", "content": "", "tool_calls": [tc("b", n=2)]}, FINAL])
+
+    def check(name, args, result):
+        seen.append((name, dict(args), [c.name for c in result.calls]))
+
+    getattr(ex, fn_name)(_with_args_check(s, check), "t", [tool("a"), tool("b")], "s", model="m", max_rounds=5, timeout_s=1)
+    assert seen == [("a", {"n": 1}, []), ("b", {"n": 2}, ["a"])]
+
+
+@pytest.mark.parametrize("fn_name", ["run", "run_stream"])
+def test_an_unknown_tool_is_never_run_through_the_check(fn_name):
+    seen = []
+    s = Script([{"role": "assistant", "content": "", "tool_calls": [tc("nope", n=1)]}, FINAL])
+    getattr(ex, fn_name)(_with_args_check(s, lambda *a: seen.append(a)), "t", [tool("a")], "s", model="m",
+                         max_rounds=3, timeout_s=1)
+    assert seen == []
+
+
+@pytest.mark.parametrize("fn_name", ["run", "run_stream"])
+def test_with_no_argument_check_nothing_changes(fn_name):
+    ran = []
+    s = Script([{"role": "assistant", "content": "", "tool_calls": [tc("a", rate=0.08)]}, FINAL])
+    getattr(ex, fn_name)(s.wiring(), "t", [tool("a", record=ran)], "s", model="m", max_rounds=4, timeout_s=1)
+    assert ran == [("a", {"rate": 0.08})]

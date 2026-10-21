@@ -94,3 +94,21 @@ def test_without_a_skill_a_figure_from_nowhere_sends_the_model_back(captured):
 def test_what_the_orchestrator_did_is_logged_on_the_result_even_when_the_loop_is_faked(captured):
     res = control.reason(nick(), POLICY_ASK)
     assert res.context and all({"layer", "chars", "source"} <= set(l) for l in res.context)
+
+
+def test_the_argument_check_is_handed_to_the_loop_and_refuses_an_invented_rate(captured):
+    control.reason(nick(), "Compare two bids, quality weight 0.6, price weight 0.4.")
+    check = captured["kw"]["check_arguments"]
+    assert callable(check)
+    r = check("run_calculation", {"inputs": {"cost_of_capital": 0.08}}, SimpleNamespace(calls=[]))
+    assert r and r["reasonCode"] == "figure_not_sourced"
+    assert check("run_calculation", {"inputs": {"criteria": [{"weight": "0.6"}]}}, SimpleNamespace(calls=[])) is None
+
+
+def test_the_argument_check_uses_the_request_and_can_be_switched_off(captured, monkeypatch):
+    control.reason(nick(), "Our cost of capital is 8 percent.")
+    assert captured["kw"]["check_arguments"]("run_calculation", {"inputs": {"cost_of_capital": 0.08}},
+                                              SimpleNamespace(calls=[])) is None
+    monkeypatch.setenv("AGENT_VERIFY", "off")
+    control.reason(nick(), PLAIN_ASK)
+    assert captured["kw"]["check_arguments"] is None

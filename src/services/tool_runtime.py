@@ -304,7 +304,8 @@ def _gate(
     return osafe.SAFE_REPLY
 
 
-def _wiring(verify: Optional[Callable[[str, Any, bool], Any]] = None):
+def _wiring(verify: Optional[Callable[[str, Any, bool], Any]] = None,
+            check_arguments: Optional[Callable[[str, Dict[str, Any], Any], Optional[Dict[str, Any]]]] = None):
     """What the orchestrator's executor loop needs, taken from this module's own names at call time.
 
     The loop itself lives in ``orchestration.executor``; it owns the state of a run and the order of
@@ -327,6 +328,7 @@ def _wiring(verify: Optional[Callable[[str, Any, bool], Any]] = None):
         with_note=_with_note,
         log=log,
         verify=verify,
+        check_arguments=check_arguments,
     )
 
 
@@ -344,6 +346,7 @@ def run_tools_stream(
     workflow_id: Optional[str] = None,
     user_id: Optional[str] = None,
     verify: Optional[Callable[[str, Any, bool], Any]] = None,
+    check_arguments: Optional[Callable[[str, Dict[str, Any], Any], Optional[Dict[str, Any]]]] = None,
 ) -> ToolRunResult:
     """Same loop, but the FINAL answer is streamed out through ``on_delta``.
 
@@ -353,7 +356,7 @@ def run_tools_stream(
     from orchestration import executor
 
     return executor.run_stream(
-        _wiring(verify), task, tools, system, model=model or _DEFAULT_MODEL, max_rounds=max_rounds,
+        _wiring(verify, check_arguments), task, tools, system, model=model or _DEFAULT_MODEL, max_rounds=max_rounds,
         timeout_s=timeout_s, on_tool=on_tool, on_delta=on_delta, agent=agent, workflow_id=workflow_id,
         user_id=user_id)
 
@@ -372,6 +375,7 @@ def run_tools(
     workflow_id: Optional[str] = None,
     user_id: Optional[str] = None,
     verify: Optional[Callable[[str, Any, bool], Any]] = None,
+    check_arguments: Optional[Callable[[str, Dict[str, Any], Any], Optional[Dict[str, Any]]]] = None,
 ) -> ToolRunResult:
     """Run AgentNick over ``task``, letting it call ``tools`` until it answers.
 
@@ -384,6 +388,6 @@ def run_tools(
     from orchestration import executor
 
     return executor.run(
-        _wiring(verify), task, tools, system, model=model or _DEFAULT_MODEL, max_rounds=max_rounds,
+        _wiring(verify, check_arguments), task, tools, system, model=model or _DEFAULT_MODEL, max_rounds=max_rounds,
         timeout_s=timeout_s, require_tool_use=require_tool_use, nudge=nudge, agent=agent,
         workflow_id=workflow_id, user_id=user_id)

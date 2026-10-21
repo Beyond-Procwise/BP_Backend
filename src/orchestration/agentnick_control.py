@@ -759,6 +759,13 @@ def _verifier(task: str, skill_settings: Optional[Dict[str, Any]]):
     return _verify
 
 
+def _argument_checker(task: str, skill_settings: Optional[Dict[str, Any]]):
+    """Step 3b: refuse a tool call whose assumptions (rates, horizons, thresholds) nobody supplied."""
+    from . import argument_check
+
+    return argument_check.make_checker(task, skill_settings)
+
+
 def reason(
     agent_nick: Any,
     task: str,
@@ -809,6 +816,7 @@ def reason(
         workflow_id=workflow_id,
         user_id=user_id,
         verify=_verifier(task, skill_settings) if _on("AGENT_VERIFY") else None,
+        check_arguments=_argument_checker(task, skill_settings) if _on("AGENT_VERIFY") else None,
     )
     result.context = context.describe()
     # The record of a run needs what it was actually given. The loop fills

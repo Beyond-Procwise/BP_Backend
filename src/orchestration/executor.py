@@ -43,10 +43,13 @@ class Wiring:
     # (answer, result, already_retried) -> something with .action .answer .untraced .retry_message.
     # Optional: with none, an answer is released as the output check left it.
     verify: Optional[Callable[[str, Any, bool], Any]] = None
+    # (tool_name, args, result_so_far) -> a refusal dict, or None to carry on. Optional. Runs BEFORE the
+    # policy gate, so a figure the model invented never reaches a tool.
+    check_arguments: Optional[Callable[[str, Dict[str, Any], Any], Optional[Dict[str, Any]]]] = None
 
 
-def _act(w: Wiring, call: Dict[str, Any], by_name: Dict[str, Any], *, agent, reason, workflow_id, user_id,
-         bad_arguments_wording: bool):
+def _act(w: Wiring, call: Dict[str, Any], by_name: Dict[str, Any], result: Any, *, agent, reason, workflow_id,
+         user_id, bad_arguments_wording: bool):
     """One proposed call: ask the gate, run the tool if allowed, return (record, refusal, allowed)."""
     fn = call.get("function") or {}
     name = fn.get("name") or ""
@@ -54,7 +57,9 @@ def _act(w: Wiring, call: Dict[str, Any], by_name: Dict[str, Any], *, agent, rea
     tool = by_name.get(name)
     started = time.monotonic()
     refusal = None
-    if tool is not None:
+    if tool is not None and w.check_arguments is not None:
+        refusal = w.check_arguments(name, args, result)
+    if tool is not None and refusal is None:
         refusal = w.policy_check(name, args, agent=agent, reason=reason, workflow_id=workflow_id, user_id=user_id)
     allowed = refusal if isinstance(refusal, w.RanOnPrecedent) else None
     if allowed is not None:
@@ -152,7 +157,7 @@ def run_stream(w: Wiring, task: str, tools: Sequence[Any], system: str, *, model
 
         messages.append({"role": "assistant", "content": content, "tool_calls": tool_calls})
         for call in tool_calls:
-            record, refusal, allowed = _act(w, call, by_name, agent=agent, reason=content,
+            record, refusal, allowed = _act(w, call, by_name, result, agent=agent, reason=content,
                                             workflow_id=workflow_id, user_id=user_id, bad_arguments_wording=False)
             result.calls.append(record)
             if on_tool:
@@ -216,7 +221,7 @@ def run(w: Wiring, task: str, tools: Sequence[Any], system: str, *, model: str, 
 
         any_tool_call = True
         for call in tool_calls:
-            record, refusal, allowed = _act(w, call, by_name, agent=agent, reason=message.get("content"),
+            record, refusal, allowed = _act(w, call, by_name, result, agent=agent, reason=message.get("content"),
                                             workflow_id=workflow_id, user_id=user_id, bad_arguments_wording=True)
             result.calls.append(record)
             messages.append(_observation(w, record, refusal, allowed))
