@@ -10,3 +10,28 @@ unavailable_tools:
   - build_spend_cube
   - build_xlsx
   - build_docx
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "saving*"
+    - "saved"
+    - "cost avoidance"
+    - "price freeze"
+    - "baseline*"
+    - "hard saving*"
+    - "soft saving*"
+    - "avoided increase*"
+    - "double count*"
+    - "savings claim*"
+  support:                       # 1 point each
+    - "finance"
+    - "claim"
+    - "claimed"
+    - "payment terms"
+    - "neutralis*"
+    - "index"
+    - "volume"
+    - "price"
+    - "realised"
+    - "validate"
+    - "count"
+    - "cost"

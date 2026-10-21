@@ -7,3 +7,38 @@ unavailable_tools:
   - supplier_lookup
   - savings_tracker
   - build_docx
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "negotiat*"
+    - "walk away"
+    - "walk-away"
+    - "concession*"
+    - "batna"
+    - "zopa"
+    - "price increase*"
+    - "price rise*"
+    - "opening position"
+    - "fallback"
+    - "fall back"
+    - "leverage"
+    - "levers"
+    - "counter offer*"
+    - "counteroffer*"
+    - "talks"
+    - "bargain*"
+    - "last offer"
+    - "their offer"
+    - "counter their"
+  support:                       # 1 point each
+    - "supplier"
+    - "vendor"
+    - "renewal"
+    - "target"
+    - "pricing"
+    - "meeting"
+    - "contract"
+    - "increase"
+    - "position"
+    - "conversation"
+    - "plan"
+    - "prepare"

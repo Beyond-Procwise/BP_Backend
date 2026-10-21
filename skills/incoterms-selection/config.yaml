@@ -10,3 +10,35 @@ unavailable_tools:
   - get_freight_quote
   - hs_code_lookup
   - build_docx
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "incoterm*"
+    - "fob"
+    - "fca"
+    - "cif"
+    - "cip"
+    - "cpt"
+    - "cfr"
+    - "dap"
+    - "ddp"
+    - "dpu"
+    - "exw"
+    - "fas"
+    - "delivery term*"
+    - "risk transfer*"
+    - "risk pass*"
+    - "named place"
+    - "landed cost*"
+  support:                       # 1 point each
+    - "freight"
+    - "insurance"
+    - "shipment"
+    - "container*"
+    - "customs"
+    - "import"
+    - "export"
+    - "shipping"
+    - "lane"
+    - "air freight"
+    - "sea freight"
+    - "duty"

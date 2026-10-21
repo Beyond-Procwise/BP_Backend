@@ -9,3 +9,32 @@ unavailable_tools:
   - savings_tracker
   - route_approval
   - build_docx
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "award*"
+    - "winning bidder*"
+    - "bidder*"
+    - "tender*"
+    - "winner*"
+    - "evaluation committee"
+    - "sourcing committee"
+    - "close call"
+    - "first and second place"
+    - "decision paper"
+    - "regret letter*"
+    - "who should win"
+  support:                       # 1 point each
+    - "bid"
+    - "bids"
+    - "score"
+    - "scored"
+    - "scoring"
+    - "contract"
+    - "recommend*"
+    - "split"
+    - "supplier"
+    - "committee"
+    - "quality"
+    - "price"
+    - "decision"
+    - "evaluat*"
