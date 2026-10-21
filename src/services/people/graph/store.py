@@ -14,6 +14,10 @@ from typing import Any, Dict, Iterable, List, Optional, Protocol
 from services.people.graph.model import (EDGE_RULES, NODE_LABELS, AdmissionError, Edge, NodeRef, utc, validate_edge)
 
 
+# Pre-existing node types a stub may be linked to, and the property each is keyed on elsewhere in the app.
+LEGACY_PROPS = {"Supplier": "supplier_id", "PurchaseOrder": "po_id"}
+
+
 class GraphStore(Protocol):
     def upsert_node(self, tenant: str, ref: NodeRef, props: Optional[dict] = None) -> None: ...
     def add_edge(self, edge: Edge) -> Edge: ...
@@ -25,6 +29,11 @@ class GraphStore(Protocol):
                      src: Optional[NodeRef] = None, dst: Optional[NodeRef] = None) -> int: ...
     def node(self, tenant: str, ref: NodeRef) -> Optional[dict]: ...
     def rename_node(self, tenant: str, ref: NodeRef, new_key: str, drop_props: Iterable[str] = ()) -> bool: ...
+    def entity_keys(self, tenant: str, prefix: str) -> List[str]:
+        """Keys of Entity stubs starting with prefix that are not yet linked to a pre-existing node."""
+    def link_legacy(self, tenant: str, ref: NodeRef, label: str, prop: str, value: str) -> str:
+        """Link a stub to the ONE pre-existing node with label.prop == value: 'linked' | 'missing' | 'ambiguous'.
+        Never creates or changes the pre-existing node."""
 
 
 def _match(e: Edge, src, type, dst, source) -> bool:
@@ -37,6 +46,8 @@ class InMemoryGraph:
         self._nodes: Dict[tuple, dict] = {}
         self._edges: Dict[str, Edge] = {}
         self._ids = itertools.count(1)
+        self.legacy: Dict[tuple, int] = {}          # (label, prop, value) -> how many such pre-existing nodes
+        self._links: Dict[tuple, tuple] = {}
 
     def upsert_node(self, tenant, ref, props=None):
         self._nodes.setdefault((tenant, ref), {}).update(props or {})
@@ -88,6 +99,22 @@ class InMemoryGraph:
                 if e.dst == ref:
                     e.dst = new
         return True
+
+    def entity_keys(self, tenant, prefix):
+        return sorted(r.key for (t, r) in self._nodes
+                      if t == tenant and r.label == "Entity" and r.key.startswith(prefix) and (t, r) not in self._links)
+
+    def link_legacy(self, tenant, ref, label, prop, value):
+        if label not in LEGACY_PROPS or LEGACY_PROPS[label] != prop:
+            raise AdmissionError(f"{label}.{prop} is not a linkable legacy key")
+        n = self.legacy.get((label, prop, value), 0)
+        if n != 1:
+            return "missing" if n == 0 else "ambiguous"
+        self._links[(tenant, ref)] = (label, prop, value)
+        return "linked"
+
+    def linked_to(self, tenant, ref):
+        return self._links.get((tenant, ref))
 
 
 _DT_KEYS = ("valid_from", "valid_to", "decided_at", "computed_at")
@@ -203,3 +230,18 @@ class Neo4jGraph:
         rows = self._run(f"MATCH (n:{self._lbl(ref)} {{pw_tenant:$t, pw_key:$k}}) SET n.pw_key = $new{drops} RETURN count(n) AS c",
                          t=tenant, k=ref.key, new=new_key)
         return bool(rows and rows[0]["c"])
+
+    def entity_keys(self, tenant, prefix):
+        rows = self._run("MATCH (e:Entity {pw_tenant:$t}) WHERE e.pw_key STARTS WITH $p AND NOT (e)-[:REPRESENTS]->() "
+                         "RETURN e.pw_key AS k ORDER BY k", t=tenant, p=prefix)
+        return [r["k"] for r in rows]
+
+    def link_legacy(self, tenant, ref, label, prop, value):
+        if LEGACY_PROPS.get(label) != prop:             # label/prop reach Cypher text only from this closed map
+            raise AdmissionError(f"{label}.{prop} is not a linkable legacy key")
+        n = self._run(f"MATCH (l:{label}) WHERE l.{prop} = $v RETURN count(l) AS c", v=value)[0]["c"]
+        if n != 1:
+            return "missing" if n == 0 else "ambiguous"
+        rows = self._run(f"MATCH (e:Entity {{pw_tenant:$t, pw_key:$k}}), (l:{label}) WHERE l.{prop} = $v "
+                         "MERGE (e)-[r:REPRESENTS]->(l) RETURN count(r) AS c", t=tenant, k=ref.key, v=value)
+        return "linked" if rows and rows[0]["c"] else "missing"

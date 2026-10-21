@@ -91,3 +91,11 @@ src/services/people/email_channel.py; wired in people/wiring.build_service. OFF 
 Sends via EmailService/SES from ses_default_sender to bp_person.email, only for users whose preferences list "email"; text = value-free event sentence + reason,
 link only when APP_BASE_URL is set. No address -> status skipped_no_address (recorded, never retried); mail refusal -> failed + retried (MAX_ATTEMPTS). Quiet hours defer as before.
 6 tests; skip handler and already-sent guard each proven red by mutation. NOT done: no live send (needs a yes + SES sender check), no digest/coalescing, M365 company mailbox not used (that path is supplier-only).
+
+## Update — graph stubs linked to existing Supplier / PurchaseOrder nodes (same day)
+src/services/people/graph/legacy_link.py + GraphStore.entity_keys/link_legacy; runs inside the daily `people-graph-refresh` (result under `legacy_links`).
+`(Entity "supplier:<id>")-[:REPRESENTS]->(:Supplier {supplier_id})` and `(Entity "po:<id>")-[:REPRESENTS]->(:PurchaseOrder {po_id})`.
+Older node is only matched, never created or changed; links only on exactly one match; zero = missing, several = ambiguous (reported, left alone, retried next run).
+The link carries no pw_tenant and the older node has none, so asserted-edge queries/deletes never see or touch it. Live graph has a uniqueness constraint on Supplier.supplier_id.
+Proven on real Neo4j: made-up ids reported missing, real SUP-CondorLogisticsUkLtd + PO000001 linked, then removed; Supplier/PO/relationship counts identical before/after. 10 tests (memory + Neo4j); ambiguity guard and closed-map check each proven red by mutation.
+NOTE: only `supplier:` stubs exist today (from approval history/derivation). Nothing creates `po:` stubs yet — PO linking is ready but idle until a PO-keyed fact is written. Not yet used by queries (e.g. who_knows_about a supplier -> its POs/invoices).

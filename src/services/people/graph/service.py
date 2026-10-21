@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from services.people.admin import PeopleError, TENANT
-from services.people.graph import activity, derive, sync
+from services.people.graph import activity, derive, legacy_link, sync
 from services.people.graph.model import DEFAULT_TENANT
 from services.people.graph.store import GraphStore, Neo4jGraph
 from services.people.graph.writer import GraphWriter
@@ -47,6 +47,11 @@ def refresh(conn, store: Optional[GraphStore] = None, *, event_days: int = 30, n
     since = now - timedelta(days=cfg.window_days)
     out["derived"] = derive.rebuild(w, derive.load_interactions(conn, TENANT, since),
                                     derive.load_decisions(store, TENANT, since), derive.load_dismissals(conn, TENANT, since), now, cfg)
+    try:                                       # a missing/ambiguous older node is reported, never fatal
+        out["legacy_links"] = legacy_link.link_all(store, TENANT)
+    except Exception:
+        logger.warning("linking stubs to existing nodes failed", exc_info=True)
+        out["legacy_links"] = {"error": True}
     out["pruned_activity"] = activity.prune(conn, retention_days, now)
     return out
 
