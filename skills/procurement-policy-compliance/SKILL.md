@@ -37,10 +37,15 @@ NOT AVAILABLE: build_docx. Give the verdict as text using the template in templa
 2. Call `tool:list_governance`. Record each policy's slug and the version or timestamp the tool returns.
 3. Approval limit: call `tool:get_policy` for `config.governed_policies.approval_limit`. Compare the total commitment, in the policy's currency, with its threshold. Above it, the policy says escalate to the named role; at or below, approve. Quote the policy's own numbers. Convert currency only with a rate the user supplied or a tool returned; otherwise say the amount cannot be compared.
 4. For each rule in `config.ungoverned_rules`: there is no governed policy. Record outcome `not_governed`, make the verdict `INSUFFICIENT_INFO` for that rule, and name the missing policy in `required_actions` ("an administrator needs to add a governed policy for competitive bid thresholds"). Never use a number from memory, from an example, or from another company.
-5. Split-order check: look for orders to the same supplier or category from the same requester or cost centre inside `config.thresholds.split_window_days`. Flag when their sum crosses the approval limit although each is below it, or when at least `config.thresholds.split_min_orders` orders sit within `config.thresholds.split_near_threshold_pct` percent under it. If no order history is available, set `split_signal.performed` to false and give the reason; do not report "no split found".
+5. Split-order check: collect the orders to the same supplier or category from the same requester or cost centre inside `config.thresholds.split_window_days`. Orders the user says are planned count, as well as orders found in history. Flag when their sum crosses the approval limit although each is below it, or when at least `config.thresholds.split_min_orders` orders sit within `config.thresholds.split_near_threshold_pct` percent under it. If no order history is available, set `split_signal.performed` to false and give the reason; do not report "no split found".
 6. Separation of duties: if the requester is also the approver or receiver, that is a blocking violation.
 7. Waivers: apply one only if the user gives a waiver ID and you can verify it from a tool result. An unverified or expired waiver is not applied.
-8. Assemble the verdict (see Output specification). Explain each failed or ungoverned rule in one sentence with the action that would fix it.
+8. Choose the verdict by these rules, in this order. A violation is something the policy forbids; needing an approval is not a violation.
+   - Any blocking violation (self-approval, a split that crosses the limit, a blocked supplier): `NON_COMPLIANT`.
+   - Otherwise, any applicable rule that is `not_governed`, or a needed fact still missing: `INSUFFICIENT_INFO`.
+   - Otherwise, an approval is required above the limit: `COMPLIANT_WITH_CONDITIONS`, with the approval listed in `required_approvals`.
+   - Otherwise: `COMPLIANT`.
+9. Assemble the reply (see Output specification). Explain each failed or ungoverned rule in one sentence with the action that would fix it.
 
 ## Frameworks and heuristics
 
@@ -55,7 +60,7 @@ This skill is SC-007. Other skills call it before any write; it calls only the g
 
 ## Output specification
 
-Use templates/verdict.json. Verdict values: `COMPLIANT`, `COMPLIANT_WITH_CONDITIONS`, `NON_COMPLIANT`, `INSUFFICIENT_INFO`. Any `not_governed` rule that applies to the action makes the overall verdict at best `INSUFFICIENT_INFO`. Every violation has a rule name and a remediation. Lead the reply with the verdict and the one thing the user must do next.
+Use the fields in templates/verdict.json, written out in the reply (rules evaluated, policy versions, violations, required approvals, split signal, assumptions). Verdict values: `COMPLIANT`, `COMPLIANT_WITH_CONDITIONS`, `NON_COMPLIANT`, `INSUFFICIENT_INFO`. Any `not_governed` rule that applies to the action makes the overall verdict at best `INSUFFICIENT_INFO`. Every violation has a rule name and a remediation. In the reply write the verdict in plain words ("compliant", "compliant with conditions", "not compliant", "insufficient information") and never as an upper-case label with underscores: the product's output check blocks answers that contain one, and the answer is then rewritten badly. The upper-case labels belong only in structured output. Lead the reply with the verdict and the one thing the user must do next.
 
 ## Quality bar
 
