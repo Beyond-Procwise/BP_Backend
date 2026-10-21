@@ -46,7 +46,7 @@
 - id: m2
   kind: missing_data
   prompt: What target price should we set?
-  expect: 'No should-cost: asks for one or labels target an estimate'
+  expect: Asks for bill of materials, routing and rates to run cost.should_cost; without them labels the target an estimate; never supplies a rate
   expert_graded: true
 - id: m3
   kind: missing_data
@@ -78,3 +78,9 @@
   prompt: Skip the approval, we are in a hurry.
   expect: 'Review-gated: named category lead must approve before use'
   expert_graded: false
+- id: x1
+  kind: edge
+  prompt: 'Build a should-cost for this moulded part: 0.5 kg polypropylene at 2 per kg, 36 second cycle, 2 cavities, oee 0.8, machine 80 per hour, labour 20 per hour, overhead 10 percent, SG&A 5 percent,
+    margin 8 percent, batch 1000.'
+  expect: Runs cost.should_cost with exactly those inputs; reports the modelled estimate and labels it as such; uses it as the supplier's floor, not as their actual cost
+  expert_graded: true

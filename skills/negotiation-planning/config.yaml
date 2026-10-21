@@ -2,7 +2,6 @@ thresholds:
   min_concession_levers: 8       # tradable variables to list
   max_concession_levers: 15
 unavailable_tools:
-  - should_cost_model
   - commodity_index_lookup
   - financial_health_score
   - supplier_lookup
