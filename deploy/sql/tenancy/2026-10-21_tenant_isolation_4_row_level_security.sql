@@ -85,6 +85,18 @@ DROP POLICY IF EXISTS bp_support_read ON proc.bp_action;
 CREATE POLICY bp_support_read ON proc.bp_action FOR SELECT TO procwise_readonly
   USING (nullif(current_setting('app.support_reason', true), '') IS NOT NULL);
 
+ALTER TABLE proc.bp_admin_config ENABLE ROW LEVEL SECURITY;
+ALTER TABLE proc.bp_admin_config FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS bp_tenant_isolation ON proc.bp_admin_config;
+CREATE POLICY bp_tenant_isolation ON proc.bp_admin_config
+  USING (tenant_id = current_setting('app.tenant_id', true)
+       OR current_setting('app.system', true) = 'on')
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true)
+       OR current_setting('app.system', true) = 'on');
+DROP POLICY IF EXISTS bp_support_read ON proc.bp_admin_config;
+CREATE POLICY bp_support_read ON proc.bp_admin_config FOR SELECT TO procwise_readonly
+  USING (nullif(current_setting('app.support_reason', true), '') IS NOT NULL);
+
 ALTER TABLE proc.bp_agent_actions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE proc.bp_agent_actions FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS bp_tenant_isolation ON proc.bp_agent_actions;
@@ -325,6 +337,18 @@ DROP POLICY IF EXISTS bp_support_read ON proc.bp_brand_logo;
 CREATE POLICY bp_support_read ON proc.bp_brand_logo FOR SELECT TO procwise_readonly
   USING (nullif(current_setting('app.support_reason', true), '') IS NOT NULL);
 
+ALTER TABLE proc.bp_business_area ENABLE ROW LEVEL SECURITY;
+ALTER TABLE proc.bp_business_area FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS bp_tenant_isolation ON proc.bp_business_area;
+CREATE POLICY bp_tenant_isolation ON proc.bp_business_area
+  USING (tenant_id = current_setting('app.tenant_id', true)
+       OR current_setting('app.system', true) = 'on')
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true)
+       OR current_setting('app.system', true) = 'on');
+DROP POLICY IF EXISTS bp_support_read ON proc.bp_business_area;
+CREATE POLICY bp_support_read ON proc.bp_business_area FOR SELECT TO procwise_readonly
+  USING (nullif(current_setting('app.support_reason', true), '') IS NOT NULL);
+
 ALTER TABLE proc.bp_catalog_cost_tier ENABLE ROW LEVEL SECURITY;
 ALTER TABLE proc.bp_catalog_cost_tier FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS bp_tenant_isolation ON proc.bp_catalog_cost_tier;
@@ -407,6 +431,18 @@ CREATE POLICY bp_tenant_isolation ON proc.bp_catalog_special_bid
        OR current_setting('app.system', true) = 'on');
 DROP POLICY IF EXISTS bp_support_read ON proc.bp_catalog_special_bid;
 CREATE POLICY bp_support_read ON proc.bp_catalog_special_bid FOR SELECT TO procwise_readonly
+  USING (nullif(current_setting('app.support_reason', true), '') IS NOT NULL);
+
+ALTER TABLE proc.bp_category ENABLE ROW LEVEL SECURITY;
+ALTER TABLE proc.bp_category FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS bp_tenant_isolation ON proc.bp_category;
+CREATE POLICY bp_tenant_isolation ON proc.bp_category
+  USING (tenant_id = current_setting('app.tenant_id', true)
+       OR current_setting('app.system', true) = 'on')
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true)
+       OR current_setting('app.system', true) = 'on');
+DROP POLICY IF EXISTS bp_support_read ON proc.bp_category;
+CREATE POLICY bp_support_read ON proc.bp_category FOR SELECT TO procwise_readonly
   USING (nullif(current_setting('app.support_reason', true), '') IS NOT NULL);
 
 ALTER TABLE proc.bp_commercial_fact ENABLE ROW LEVEL SECURITY;
@@ -779,6 +815,18 @@ CREATE POLICY bp_tenant_isolation ON proc.bp_extraction_telemetry
        OR current_setting('app.system', true) = 'on');
 DROP POLICY IF EXISTS bp_support_read ON proc.bp_extraction_telemetry;
 CREATE POLICY bp_support_read ON proc.bp_extraction_telemetry FOR SELECT TO procwise_readonly
+  USING (nullif(current_setting('app.support_reason', true), '') IS NOT NULL);
+
+ALTER TABLE proc.bp_extraction_template ENABLE ROW LEVEL SECURITY;
+ALTER TABLE proc.bp_extraction_template FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS bp_tenant_isolation ON proc.bp_extraction_template;
+CREATE POLICY bp_tenant_isolation ON proc.bp_extraction_template
+  USING (tenant_id = current_setting('app.tenant_id', true)
+       OR current_setting('app.system', true) = 'on')
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true)
+       OR current_setting('app.system', true) = 'on');
+DROP POLICY IF EXISTS bp_support_read ON proc.bp_extraction_template;
+CREATE POLICY bp_support_read ON proc.bp_extraction_template FOR SELECT TO procwise_readonly
   USING (nullif(current_setting('app.support_reason', true), '') IS NOT NULL);
 
 ALTER TABLE proc.bp_extraction_verdict ENABLE ROW LEVEL SECURITY;
@@ -1199,6 +1247,18 @@ CREATE POLICY bp_tenant_isolation ON proc.bp_opportunity_gap
        OR current_setting('app.system', true) = 'on');
 DROP POLICY IF EXISTS bp_support_read ON proc.bp_opportunity_gap;
 CREATE POLICY bp_support_read ON proc.bp_opportunity_gap FOR SELECT TO procwise_readonly
+  USING (nullif(current_setting('app.support_reason', true), '') IS NOT NULL);
+
+ALTER TABLE proc.bp_page_layout ENABLE ROW LEVEL SECURITY;
+ALTER TABLE proc.bp_page_layout FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS bp_tenant_isolation ON proc.bp_page_layout;
+CREATE POLICY bp_tenant_isolation ON proc.bp_page_layout
+  USING (tenant_id = current_setting('app.tenant_id', true)
+       OR current_setting('app.system', true) = 'on')
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true)
+       OR current_setting('app.system', true) = 'on');
+DROP POLICY IF EXISTS bp_support_read ON proc.bp_page_layout;
+CREATE POLICY bp_support_read ON proc.bp_page_layout FOR SELECT TO procwise_readonly
   USING (nullif(current_setting('app.support_reason', true), '') IS NOT NULL);
 
 ALTER TABLE proc.bp_playbook ENABLE ROW LEVEL SECURITY;
@@ -1789,6 +1849,18 @@ DROP POLICY IF EXISTS bp_support_read ON proc.bp_sales_quote_template;
 CREATE POLICY bp_support_read ON proc.bp_sales_quote_template FOR SELECT TO procwise_readonly
   USING (nullif(current_setting('app.support_reason', true), '') IS NOT NULL);
 
+ALTER TABLE proc.bp_standin_actor_backfill ENABLE ROW LEVEL SECURITY;
+ALTER TABLE proc.bp_standin_actor_backfill FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS bp_tenant_isolation ON proc.bp_standin_actor_backfill;
+CREATE POLICY bp_tenant_isolation ON proc.bp_standin_actor_backfill
+  USING (tenant_id = current_setting('app.tenant_id', true)
+       OR current_setting('app.system', true) = 'on')
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true)
+       OR current_setting('app.system', true) = 'on');
+DROP POLICY IF EXISTS bp_support_read ON proc.bp_standin_actor_backfill;
+CREATE POLICY bp_support_read ON proc.bp_standin_actor_backfill FOR SELECT TO procwise_readonly
+  USING (nullif(current_setting('app.support_reason', true), '') IS NOT NULL);
+
 ALTER TABLE proc.bp_style_divergence ENABLE ROW LEVEL SECURITY;
 ALTER TABLE proc.bp_style_divergence FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS bp_tenant_isolation ON proc.bp_style_divergence;
@@ -2125,6 +2197,18 @@ DROP POLICY IF EXISTS bp_support_read ON proc.bp_vector_source;
 CREATE POLICY bp_support_read ON proc.bp_vector_source FOR SELECT TO procwise_readonly
   USING (nullif(current_setting('app.support_reason', true), '') IS NOT NULL);
 
+ALTER TABLE proc.bp_vendor_extraction_profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE proc.bp_vendor_extraction_profiles FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS bp_tenant_isolation ON proc.bp_vendor_extraction_profiles;
+CREATE POLICY bp_tenant_isolation ON proc.bp_vendor_extraction_profiles
+  USING (tenant_id = current_setting('app.tenant_id', true)
+       OR current_setting('app.system', true) = 'on')
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true)
+       OR current_setting('app.system', true) = 'on');
+DROP POLICY IF EXISTS bp_support_read ON proc.bp_vendor_extraction_profiles;
+CREATE POLICY bp_support_read ON proc.bp_vendor_extraction_profiles FOR SELECT TO procwise_readonly
+  USING (nullif(current_setting('app.support_reason', true), '') IS NOT NULL);
+
 ALTER TABLE proc.bp_workflow_input_request ENABLE ROW LEVEL SECURITY;
 ALTER TABLE proc.bp_workflow_input_request FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS bp_tenant_isolation ON proc.bp_workflow_input_request;
@@ -2363,6 +2447,18 @@ CREATE POLICY bp_tenant_isolation ON proc.raw_quotes
        OR current_setting('app.system', true) = 'on');
 DROP POLICY IF EXISTS bp_support_read ON proc.raw_quotes;
 CREATE POLICY bp_support_read ON proc.raw_quotes FOR SELECT TO procwise_readonly
+  USING (nullif(current_setting('app.support_reason', true), '') IS NOT NULL);
+
+ALTER TABLE proc.routing ENABLE ROW LEVEL SECURITY;
+ALTER TABLE proc.routing FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS bp_tenant_isolation ON proc.routing;
+CREATE POLICY bp_tenant_isolation ON proc.routing
+  USING (tenant_id = current_setting('app.tenant_id', true)
+       OR current_setting('app.system', true) = 'on')
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true)
+       OR current_setting('app.system', true) = 'on');
+DROP POLICY IF EXISTS bp_support_read ON proc.routing;
+CREATE POLICY bp_support_read ON proc.routing FOR SELECT TO procwise_readonly
   USING (nullif(current_setting('app.support_reason', true), '') IS NOT NULL);
 
 ALTER TABLE proc.session_document_outcome ENABLE ROW LEVEL SECURITY;

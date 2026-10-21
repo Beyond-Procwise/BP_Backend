@@ -15,6 +15,8 @@ ALTER TABLE proc.bp_account_history_scope DROP COLUMN IF EXISTS tenant_id;
 DROP INDEX IF EXISTS proc.ix_bp_bp_account_price_tenant;   -- column kept: it existed before
 DROP INDEX IF EXISTS proc.ix_bp_bp_action_tenant;
 ALTER TABLE proc.bp_action DROP COLUMN IF EXISTS tenant_id;
+DROP INDEX IF EXISTS proc.ix_bp_bp_admin_config_tenant;
+ALTER TABLE proc.bp_admin_config DROP COLUMN IF EXISTS tenant_id;
 DROP INDEX IF EXISTS proc.ix_bp_bp_agent_actions_tenant;
 ALTER TABLE proc.bp_agent_actions DROP COLUMN IF EXISTS tenant_id;
 DROP INDEX IF EXISTS proc.ix_bp_bp_agent_definition_tenant;
@@ -55,6 +57,8 @@ DROP INDEX IF EXISTS proc.ix_bp_bp_artifact_derivation_tenant;
 ALTER TABLE proc.bp_artifact_derivation DROP COLUMN IF EXISTS tenant_id;
 DROP INDEX IF EXISTS proc.ix_bp_bp_brand_logo_tenant;
 ALTER TABLE proc.bp_brand_logo DROP COLUMN IF EXISTS tenant_id;
+DROP INDEX IF EXISTS proc.ix_bp_bp_business_area_tenant;
+ALTER TABLE proc.bp_business_area DROP COLUMN IF EXISTS tenant_id;
 DROP INDEX IF EXISTS proc.ix_bp_bp_catalog_cost_tier_tenant;
 ALTER TABLE proc.bp_catalog_cost_tier DROP COLUMN IF EXISTS tenant_id;
 DROP INDEX IF EXISTS proc.ix_bp_bp_catalog_item_tenant;   -- column kept: it existed before
@@ -66,6 +70,8 @@ DROP INDEX IF EXISTS proc.ix_bp_bp_catalog_mapping_tenant;
 ALTER TABLE proc.bp_catalog_mapping DROP COLUMN IF EXISTS tenant_id;
 DROP INDEX IF EXISTS proc.ix_bp_bp_catalog_source_tenant;   -- column kept: it existed before
 DROP INDEX IF EXISTS proc.ix_bp_bp_catalog_special_bid_tenant;   -- column kept: it existed before
+DROP INDEX IF EXISTS proc.ix_bp_bp_category_tenant;
+ALTER TABLE proc.bp_category DROP COLUMN IF EXISTS tenant_id;
 DROP INDEX IF EXISTS proc.ix_bp_bp_commercial_fact_tenant;   -- column kept: it existed before
 DROP INDEX IF EXISTS proc.ix_bp_bp_concept_tenant;   -- column kept: it existed before
 DROP INDEX IF EXISTS proc.ix_bp_bp_constraint_tenant;   -- column kept: it existed before
@@ -123,6 +129,8 @@ DROP INDEX IF EXISTS proc.ix_bp_bp_extraction_retry_log_tenant;
 ALTER TABLE proc.bp_extraction_retry_log DROP COLUMN IF EXISTS tenant_id;
 DROP INDEX IF EXISTS proc.ix_bp_bp_extraction_telemetry_tenant;
 ALTER TABLE proc.bp_extraction_telemetry DROP COLUMN IF EXISTS tenant_id;
+DROP INDEX IF EXISTS proc.ix_bp_bp_extraction_template_tenant;
+ALTER TABLE proc.bp_extraction_template DROP COLUMN IF EXISTS tenant_id;
 DROP INDEX IF EXISTS proc.ix_bp_bp_extraction_verdict_tenant;
 ALTER TABLE proc.bp_extraction_verdict DROP COLUMN IF EXISTS tenant_id;
 DROP INDEX IF EXISTS proc.ix_bp_bp_fact_provenance_tenant;   -- column kept: it existed before
@@ -190,6 +198,8 @@ DROP INDEX IF EXISTS proc.ix_bp_bp_opportunity_critique_tenant;
 ALTER TABLE proc.bp_opportunity_critique DROP COLUMN IF EXISTS tenant_id;
 DROP INDEX IF EXISTS proc.ix_bp_bp_opportunity_gap_tenant;
 ALTER TABLE proc.bp_opportunity_gap DROP COLUMN IF EXISTS tenant_id;
+DROP INDEX IF EXISTS proc.ix_bp_bp_page_layout_tenant;
+ALTER TABLE proc.bp_page_layout DROP COLUMN IF EXISTS tenant_id;
 DROP INDEX IF EXISTS proc.ix_bp_bp_playbook_tenant;
 ALTER TABLE proc.bp_playbook DROP COLUMN IF EXISTS tenant_id;
 DROP INDEX IF EXISTS proc.ix_bp_bp_playbook_proposal_tenant;
@@ -286,6 +296,8 @@ DROP INDEX IF EXISTS proc.ix_bp_bp_sales_quote_outcome_tenant;
 ALTER TABLE proc.bp_sales_quote_outcome DROP COLUMN IF EXISTS tenant_id;
 DROP INDEX IF EXISTS proc.ix_bp_bp_sales_quote_template_tenant;
 ALTER TABLE proc.bp_sales_quote_template DROP COLUMN IF EXISTS tenant_id;
+DROP INDEX IF EXISTS proc.ix_bp_bp_standin_actor_backfill_tenant;
+ALTER TABLE proc.bp_standin_actor_backfill DROP COLUMN IF EXISTS tenant_id;
 DROP INDEX IF EXISTS proc.ix_bp_bp_style_divergence_tenant;
 ALTER TABLE proc.bp_style_divergence DROP COLUMN IF EXISTS tenant_id;
 DROP INDEX IF EXISTS proc.ix_bp_bp_style_exemplar_tenant;
@@ -339,6 +351,8 @@ ALTER TABLE proc.bp_user_reseller_link DROP COLUMN IF EXISTS tenant_id;
 DROP INDEX IF EXISTS proc.ix_bp_bp_value_outcome_tenant;   -- column kept: it existed before
 DROP INDEX IF EXISTS proc.ix_bp_bp_vector_chunk_bge_large_v1_tenant;   -- column kept: it existed before
 DROP INDEX IF EXISTS proc.ix_bp_bp_vector_source_tenant;   -- column kept: it existed before
+DROP INDEX IF EXISTS proc.ix_bp_bp_vendor_extraction_profiles_tenant;
+ALTER TABLE proc.bp_vendor_extraction_profiles DROP COLUMN IF EXISTS tenant_id;
 DROP INDEX IF EXISTS proc.ix_bp_bp_workflow_input_request_tenant;
 ALTER TABLE proc.bp_workflow_input_request DROP COLUMN IF EXISTS tenant_id;
 DROP INDEX IF EXISTS proc.ix_bp_bp_workflow_run_tenant;
@@ -379,6 +393,8 @@ DROP INDEX IF EXISTS proc.ix_bp_raw_purchase_order_tenant;
 ALTER TABLE proc.raw_purchase_order DROP COLUMN IF EXISTS tenant_id;
 DROP INDEX IF EXISTS proc.ix_bp_raw_quotes_tenant;
 ALTER TABLE proc.raw_quotes DROP COLUMN IF EXISTS tenant_id;
+DROP INDEX IF EXISTS proc.ix_bp_routing_tenant;
+ALTER TABLE proc.routing DROP COLUMN IF EXISTS tenant_id;
 DROP INDEX IF EXISTS proc.ix_bp_session_document_outcome_tenant;
 ALTER TABLE proc.session_document_outcome DROP COLUMN IF EXISTS tenant_id;
 DROP INDEX IF EXISTS proc.ix_bp_supplier_response_tenant;

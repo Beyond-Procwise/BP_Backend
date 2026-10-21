@@ -36,7 +36,7 @@ su -f /tmp/tenancy_fixture.sql || { echo "fixture failed"; exit 2; }
 
 echo "part 1 (add label)"
 as_owner $SQL"_1_add_label.sql"; as_owner $SQL"_1_add_label.sql"   # twice: must be repeatable
-ok "every owned table has tenant_id"      "$(su -Atc "select count(*) from information_schema.columns where table_schema='proc' and column_name='tenant_id'")" 207
+ok "every owned table has tenant_id"      "$(su -Atc "select count(*) from information_schema.columns where table_schema='proc' and column_name='tenant_id'")" 215
 ok "no column DEFAULT left behind"        "$(su -Atc "select count(*) from information_schema.columns where table_schema='proc' and column_name='tenant_id' and column_default is not null")" 0
 ok "existing rows labelled 'default'"     "$(su -Atc "select count(*) from proc.bp_invoice_raw where tenant_id='default'")" 2
 echo "part 2 (relabel + index)"
@@ -44,15 +44,15 @@ printf "SET ROLE owner_r; INSERT INTO proc.bp_invoice_raw(v) VALUES ('forgot');\
 su -f - < <( echo "SET ROLE owner_r;"; cat $SQL"_2_backfill_and_index.sql" ) >/dev/null 2>&1
 ok "straggler row relabelled"             "$(su -Atc "select count(*) from proc.bp_invoice_raw where tenant_id is null")" 0
 ok "NULL in already-labelled owned table fixed" "$(su -Atc "select count(*) from proc.bp_account where tenant_id is null")" 0
-ok "review tables NOT touched (still NULL)" "$(su -Atc "select count(*) from proc.bp_document_type where tenant_id is null")" 1
-ok "205 indexes built"                    "$(su -Atc "select count(*) from pg_indexes where schemaname='proc' and indexname like 'ix_bp_%_tenant%'")" 205
+ok "shared tables NOT touched (still NULL)" "$(su -Atc "select count(*) from proc.bp_document_type where tenant_id is null")" 1
+ok "213 indexes built"                    "$(su -Atc "select count(*) from pg_indexes where schemaname='proc' and indexname like 'ix_bp_%_tenant%'")" 213
 echo "part 3 (not null)"
 as_owner $SQL"_3_not_null.sql"
-ok "205 columns NOT NULL"                 "$(su -Atc "select count(*) from information_schema.columns where table_schema='proc' and column_name='tenant_id' and is_nullable='NO'")" 205
+ok "213 columns NOT NULL"                 "$(su -Atc "select count(*) from information_schema.columns where table_schema='proc' and column_name='tenant_id' and is_nullable='NO'")" 213
 ok "unlabelled insert refused"            "$(printf "SET ROLE owner_r; INSERT INTO proc.bp_invoice_raw(v) VALUES ('x');\n" | su -f - 2>&1 | grep -c 'null value')" 1
 echo "parts 5 + 4 (support log, row-level security)"
 as_owner $SQL"_5_support_access.sql"; as_owner $SQL"_4_row_level_security.sql"
-ok "RLS forced on 205 tables"             "$(su -Atc "select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname='proc' and c.relrowsecurity and c.relforcerowsecurity")" 205
+ok "RLS forced on 213 tables"             "$(su -Atc "select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname='proc' and c.relrowsecurity and c.relforcerowsecurity")" 213
 ok "own tenant sees its rows"             "$(app "select set_config('app.tenant_id','default',false); select count(*) from proc.bp_invoice_raw;")" 3
 ok "other tenant sees nothing"            "$(app "select set_config('app.tenant_id','other-co',false); select count(*) from proc.bp_invoice_raw;")" 0
 ok "forgotten tenant sees nothing"        "$(app "select count(*) from proc.bp_invoice_raw;")" 0

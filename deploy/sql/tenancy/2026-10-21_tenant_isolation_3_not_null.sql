@@ -75,6 +75,17 @@ COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_admin_config ADD CONSTRAINT ck_bp_admin_config_tenant_nn CHECK (tenant_id IS NOT NULL) NOT VALID;
+COMMIT;
+ALTER TABLE proc.bp_admin_config VALIDATE CONSTRAINT ck_bp_admin_config_tenant_nn;
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_admin_config ALTER COLUMN tenant_id SET NOT NULL;
+ALTER TABLE proc.bp_admin_config DROP CONSTRAINT ck_bp_admin_config_tenant_nn;
+COMMIT;
+
+BEGIN;
+SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_agent_actions ADD CONSTRAINT ck_bp_agent_actions_tenant_nn CHECK (tenant_id IS NOT NULL) NOT VALID;
 COMMIT;
 ALTER TABLE proc.bp_agent_actions VALIDATE CONSTRAINT ck_bp_agent_actions_tenant_nn;
@@ -295,6 +306,17 @@ COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_business_area ADD CONSTRAINT ck_bp_business_area_tenant_nn CHECK (tenant_id IS NOT NULL) NOT VALID;
+COMMIT;
+ALTER TABLE proc.bp_business_area VALIDATE CONSTRAINT ck_bp_business_area_tenant_nn;
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_business_area ALTER COLUMN tenant_id SET NOT NULL;
+ALTER TABLE proc.bp_business_area DROP CONSTRAINT ck_bp_business_area_tenant_nn;
+COMMIT;
+
+BEGIN;
+SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_catalog_cost_tier ADD CONSTRAINT ck_bp_catalog_cost_tier_tenant_nn CHECK (tenant_id IS NOT NULL) NOT VALID;
 COMMIT;
 ALTER TABLE proc.bp_catalog_cost_tier VALIDATE CONSTRAINT ck_bp_catalog_cost_tier_tenant_nn;
@@ -368,6 +390,17 @@ BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_catalog_special_bid ALTER COLUMN tenant_id SET NOT NULL;
 ALTER TABLE proc.bp_catalog_special_bid DROP CONSTRAINT ck_bp_catalog_special_bid_tenant_nn;
+COMMIT;
+
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_category ADD CONSTRAINT ck_bp_category_tenant_nn CHECK (tenant_id IS NOT NULL) NOT VALID;
+COMMIT;
+ALTER TABLE proc.bp_category VALIDATE CONSTRAINT ck_bp_category_tenant_nn;
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_category ALTER COLUMN tenant_id SET NOT NULL;
+ALTER TABLE proc.bp_category DROP CONSTRAINT ck_bp_category_tenant_nn;
 COMMIT;
 
 BEGIN;
@@ -709,6 +742,17 @@ BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_extraction_telemetry ALTER COLUMN tenant_id SET NOT NULL;
 ALTER TABLE proc.bp_extraction_telemetry DROP CONSTRAINT ck_bp_extraction_telemetry_tenant_nn;
+COMMIT;
+
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_extraction_template ADD CONSTRAINT ck_bp_extraction_template_tenant_nn CHECK (tenant_id IS NOT NULL) NOT VALID;
+COMMIT;
+ALTER TABLE proc.bp_extraction_template VALIDATE CONSTRAINT ck_bp_extraction_template_tenant_nn;
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_extraction_template ALTER COLUMN tenant_id SET NOT NULL;
+ALTER TABLE proc.bp_extraction_template DROP CONSTRAINT ck_bp_extraction_template_tenant_nn;
 COMMIT;
 
 BEGIN;
@@ -1094,6 +1138,17 @@ BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_opportunity_gap ALTER COLUMN tenant_id SET NOT NULL;
 ALTER TABLE proc.bp_opportunity_gap DROP CONSTRAINT ck_bp_opportunity_gap_tenant_nn;
+COMMIT;
+
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_page_layout ADD CONSTRAINT ck_bp_page_layout_tenant_nn CHECK (tenant_id IS NOT NULL) NOT VALID;
+COMMIT;
+ALTER TABLE proc.bp_page_layout VALIDATE CONSTRAINT ck_bp_page_layout_tenant_nn;
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_page_layout ALTER COLUMN tenant_id SET NOT NULL;
+ALTER TABLE proc.bp_page_layout DROP CONSTRAINT ck_bp_page_layout_tenant_nn;
 COMMIT;
 
 BEGIN;
@@ -1637,6 +1692,17 @@ COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_standin_actor_backfill ADD CONSTRAINT ck_bp_standin_actor_backfill_tenant_nn CHECK (tenant_id IS NOT NULL) NOT VALID;
+COMMIT;
+ALTER TABLE proc.bp_standin_actor_backfill VALIDATE CONSTRAINT ck_bp_standin_actor_backfill_tenant_nn;
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_standin_actor_backfill ALTER COLUMN tenant_id SET NOT NULL;
+ALTER TABLE proc.bp_standin_actor_backfill DROP CONSTRAINT ck_bp_standin_actor_backfill_tenant_nn;
+COMMIT;
+
+BEGIN;
+SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_style_divergence ADD CONSTRAINT ck_bp_style_divergence_tenant_nn CHECK (tenant_id IS NOT NULL) NOT VALID;
 COMMIT;
 ALTER TABLE proc.bp_style_divergence VALIDATE CONSTRAINT ck_bp_style_divergence_tenant_nn;
@@ -1945,6 +2011,17 @@ COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_vendor_extraction_profiles ADD CONSTRAINT ck_bp_vendor_extraction_profiles_tenant_nn CHECK (tenant_id IS NOT NULL) NOT VALID;
+COMMIT;
+ALTER TABLE proc.bp_vendor_extraction_profiles VALIDATE CONSTRAINT ck_bp_vendor_extraction_profiles_tenant_nn;
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_vendor_extraction_profiles ALTER COLUMN tenant_id SET NOT NULL;
+ALTER TABLE proc.bp_vendor_extraction_profiles DROP CONSTRAINT ck_bp_vendor_extraction_profiles_tenant_nn;
+COMMIT;
+
+BEGIN;
+SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_workflow_input_request ADD CONSTRAINT ck_bp_workflow_input_request_tenant_nn CHECK (tenant_id IS NOT NULL) NOT VALID;
 COMMIT;
 ALTER TABLE proc.bp_workflow_input_request VALIDATE CONSTRAINT ck_bp_workflow_input_request_tenant_nn;
@@ -2161,6 +2238,17 @@ BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.raw_quotes ALTER COLUMN tenant_id SET NOT NULL;
 ALTER TABLE proc.raw_quotes DROP CONSTRAINT ck_raw_quotes_tenant_nn;
+COMMIT;
+
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.routing ADD CONSTRAINT ck_routing_tenant_nn CHECK (tenant_id IS NOT NULL) NOT VALID;
+COMMIT;
+ALTER TABLE proc.routing VALIDATE CONSTRAINT ck_routing_tenant_nn;
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.routing ALTER COLUMN tenant_id SET NOT NULL;
+ALTER TABLE proc.routing DROP CONSTRAINT ck_routing_tenant_nn;
 COMMIT;
 
 BEGIN;
