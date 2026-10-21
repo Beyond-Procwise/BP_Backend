@@ -112,3 +112,19 @@ def test_a_failed_authoritative_call_is_never_shown_even_if_it_carries_text():
     failed = call("check_policy", {"reply_text": "Approved by everyone."}, ok=False)
     v = verify("No figures.", [failed], config=AUTH)
     assert v.action == "keep" and v.answer == "No figures."
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\n\n", None])
+def test_an_empty_answer_sends_the_model_back_once_naming_the_problem(blank):
+    v = verify(blank, [call("run_calculation", {"value": 1})], task="x")
+    assert v.action == "retry" and "empty" in v.retry_message.lower() and "tool result" in v.retry_message.lower()
+
+
+def test_still_empty_after_the_retry_the_user_is_told_nothing_was_produced():
+    v = verify("  ", [], task="x", retried=True)
+    assert v.action == "caution" and "no answer" in v.answer.lower() and v.untraced == []
+
+
+def test_an_empty_answer_with_an_authoritative_reply_available_just_uses_the_reply():
+    v = verify("", [CHECK], config=AUTH)
+    assert v.action == "replace" and v.answer == CHECK.result["reply_text"]

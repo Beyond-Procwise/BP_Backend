@@ -2,6 +2,8 @@
 
 Two checks, in this order.
 
+0. **An empty answer** is never released as if it had been checked: one retry, then a plain statement
+   that nothing was produced.
 1. **An authoritative tool's reply.** A skill can declare that one tool's ``reply_text`` is the answer
    (``authoritative_reply_tool`` in its settings). The policy checker is one: its text is computed
    from the governed policy, so the model's rewording of it can only add error. When such a call
@@ -49,6 +51,16 @@ def verify(answer: str, calls: Sequence[Any], task: str, *, skill_config: Option
         reply = _authoritative(calls, str(tool))
         if reply is not None:
             return Verdict("replace", reply)
+
+    if not (answer or "").strip():
+        # An empty reply is not a checked answer. Ask once for a real one; if it is still empty,
+        # say so plainly rather than release nothing as though it had been verified.
+        if not retried:
+            return Verdict("retry", answer or "", [], (
+                "Your answer was empty. Write the answer now, using only the request and the tool "
+                "results above. If a step could not be done, say which and why."))
+        return Verdict("caution", "No answer was produced for this request, so nothing has been checked or "
+                                  "decided. Please try again or ask in a different way.", [])
 
     from services import calculation_tools
 
