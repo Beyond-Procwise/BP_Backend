@@ -1,0 +1,22 @@
+should_trigger:
+- Should we renew the Acme contract or re-tender?
+- This contract auto-renews next quarter, what are our options?
+- The notice deadline for our software licence is coming up
+- Build an exit plan for our logistics provider
+- Is it worth switching supplier at renewal given the switching costs?
+- Our contract expires in four months, what do we do?
+- Draft a non-renewal timeline for the cleaning contract
+- Should we renegotiate or let it roll over?
+- Plan the renewal decision for the packaging supplier
+- What are the exit costs if we leave this vendor?
+should_not_trigger:
+- Check this order against approval limits
+- Plan the negotiation tactics for tomorrow's meeting
+- Which Incoterm should we use?
+- Validate this savings claim
+- Draft the new contract clauses
+- Design the RFP evaluation criteria
+- Extract invoice lines
+- Rank our suppliers on price
+- What is the landed cost?
+- Create a purchase requisition

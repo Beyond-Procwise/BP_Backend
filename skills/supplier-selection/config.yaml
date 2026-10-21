@@ -1,0 +1,65 @@
+# Configurable defaults. They are starting points taken from the skill specification, not policy:
+# the category owner or compliance may change them, and the agent never states one as company policy.
+thresholds:
+  pd_drop_pct: 5                       # probability of default at 12 months above this drops the supplier
+  pd_flag_pct: 2                       # from this up to the drop level the supplier is kept but flagged
+  score_decline_flag_points: 15        # a financial-health score falling by more than this in 12 months is flagged
+  dependency_max_pct: 25               # our annual spend as a share of their revenue above this: we become their lifeline
+  irrelevance_min_pct: 0.5             # below this we will not matter to them, unless the supplier is strategic
+  rfp_shortlist_min: 3                 # shortlist size for an RFP
+  rfp_shortlist_max: 6
+  rfq_shortlist_min: 4                 # shortlist size for an RFQ or auction
+  rfq_shortlist_max: 8
+  min_independent_groups: 3            # separate parent groups, where policy requires competition
+qualification_criteria:                # the five parts of the qualification score; weights are set per category
+  capability_fit: null                 # no weight is assumed here; the user or category owner supplies them
+  quality_track_record: null
+  financial: null
+  risk: null
+  esg: null
+unavailable_tools:
+  - supplier_discovery
+  - screen_sanctions
+  - forced_labour_screen
+  - conflict_minerals_check
+  - financial_health_score
+  - esg_rating_lookup
+  - monitor_risk_events
+  - calc_supplier_scorecard
+  - build_xlsx
+  - build_docx
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "who should we invite"
+    - "invite to the rfp"
+    - "invite to the rfq"
+    - "really independent"
+    - "share a parent"
+    - "shared parent"
+    - "common parent"
+    - "independent suppliers"
+    - "shortlist*"
+    - "pre-qualif*"
+    - "prequalif*"
+    - "longlist*"
+    - "knockout*"
+    - "who to invite"
+    - "which suppliers to invite"
+    - "suppliers to invite"
+    - "qualified suppliers"
+    - "new sources"
+    - "supplier selection"
+  support:                       # 1 point each
+    - "supplier"
+    - "suppliers"
+    - "sanctions"
+    - "financial health"
+    - "esg"
+    - "capacity"
+    - "certification*"
+    - "invite"
+    - "rfp"
+    - "rfq"
+    - "sourcing event"
+    - "sources"
+    - "parent"

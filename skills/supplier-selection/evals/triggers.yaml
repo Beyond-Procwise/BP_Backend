@@ -1,0 +1,22 @@
+should_trigger:
+- Shortlist suppliers for the machining RFQ from this longlist
+- Pre-qualify these suppliers before we run the sourcing event
+- Who should we invite to the RFP for packaging?
+- Apply knockout criteria to our longlist of 40 suppliers
+- We need new sources for castings, which suppliers qualify?
+- Recommend which suppliers to invite and why the others were dropped
+- Check financial health and ESG and capacity for the longlist and give me a shortlist
+- Are these two suppliers really independent or do they share a parent?
+- Build the supplier selection funnel for the category
+- How many qualified suppliers do we have for this RFQ?
+should_not_trigger:
+- Who should we award this tender to?
+- Score the bids we received against the criteria
+- Negotiate the price with the supplier
+- Validate this savings claim
+- Which Incoterm should we use?
+- Check this PO against approval limits
+- Onboard this new supplier into the supplier master
+- Draft a supplier email
+- Summarise last month's spend
+- Sign the contract electronically

@@ -1,0 +1,22 @@
+should_trigger:
+- Design an index-linked price adjustment formula for this contract
+- Should we put a cap and floor on the aluminium price?
+- Set up volume tiers and a rebate for the renewal
+- How do I build a collar into a long-term supply agreement?
+- Check this pricing mechanism for fairness
+- What dead band should an indexation clause have?
+- Write a price review clause linked to the energy index
+- Is this rebate tier structure creating a cliff?
+- Design pricing mechanisms for a volatile commodity category
+- Choose an index for the steel price adjustment
+should_not_trigger:
+- Validate the savings claim for this initiative
+- Who should we award this tender to?
+- Plan the negotiation with the supplier
+- Which Incoterm should we use?
+- Check this order against approval limits
+- Draft a supplier email
+- Extract invoice lines
+- Screen for sanctions
+- Rank our suppliers
+- Create a purchase requisition
