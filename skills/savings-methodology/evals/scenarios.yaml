@@ -51,7 +51,7 @@
 - id: m3
   kind: missing_data
   prompt: Phase this saving by month.
-  expect: 'savings_tracker NOT AVAILABLE: says phasing cannot be computed here'
+  expect: 'Says the ledger tool reads logged savings only and does not phase a new one; asks for the user schedule and labels it'
   expert_graded: true
 - id: c1
   kind: conflicting_data

@@ -29,6 +29,7 @@ FIXED_TOOLS = {
     "search_contracts": ["query", "supplier", "status", "expires_within_days", "limit"],
     "extract_clauses": ["document_id", "clause_type", "containing"],
     "redline_compare": ["original", "revised"],
+    "savings_tracker": ["since", "until"],
 }
 
 # Tools the two older tool loops offer (services/governance_tools/governed_reasoning.py and

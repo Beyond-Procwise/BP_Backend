@@ -726,6 +726,27 @@ def _contract_tools() -> List[Tool]:
     ]
 
 
+def _ledger_tools() -> List[Tool]:
+    """Savings as the value ledger states them. Read-only: logging a saving is a person's act."""
+    from src.services import savings_tracker as ST
+
+    return [
+        Tool(
+            name="savings_tracker",
+            description=(
+                "Read what has been saved so far from the value ledger: saved (avoided + recovered + "
+                "realised), money still only claimed, and a month-by-month split, optionally between two "
+                "dates. It is the same figure the dashboards show. It logs nothing; do not say a saving "
+                "was recorded. If the ledger cannot be read, say so rather than reporting zero."
+            ),
+            parameters={"type": "object", "properties": {
+                "since": {"type": "string", "description": "YYYY-MM-DD, optional."},
+                "until": {"type": "string", "description": "YYYY-MM-DD, optional."}}},
+            handler=ST.track,
+        ),
+    ]
+
+
 def build_tools(
     agent_nick: Any,
     *,
@@ -754,6 +775,7 @@ def build_tools(
         + _skill_tools()
         + _policy_check_tools()
         + _contract_tools()
+        + _ledger_tools()
     )
     if exclude:
         blocked = set(exclude)

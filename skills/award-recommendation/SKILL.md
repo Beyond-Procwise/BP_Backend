@@ -26,11 +26,11 @@ Ask for these; stop if the integrity items are missing.
 - The current result and date of each risk check (sanctions, financial health, ESG, forced labour), supplied by compliance.
 - The procurement regime, if public, and the baseline price for savings.
 
+Use `tool:savings_tracker` only to show what the ledger already counts as saved; the saving on this award is worked out against the baseline and is not logged by this tool.
 NOT AVAILABLE: screen_sanctions. Ask for the result and date from compliance. If none is supplied, record "not performed" and do not recommend an award.
 NOT AVAILABLE: financial_health_score. Ask for the result and date; if none, record "not performed".
 NOT AVAILABLE: esg_rating_lookup. Ask for the result and date; if none, record "not performed".
 NOT AVAILABLE: forced_labour_screen. Ask for the result and date where it applies; if none, record "not performed".
-NOT AVAILABLE: savings_tracker. Work out the saving against the baseline as a percentage only and say it is not logged.
 NOT AVAILABLE: route_approval. Say which approval is needed; a person submits it.
 NOT AVAILABLE: build_docx. Give the memo as text using templates/memo.md.
 

@@ -23,7 +23,7 @@ Ask for evidence. No evidence means status stays DRAFT with a missing-evidence l
 - Before and after prices, currency, and volumes.
 - Whether the item has purchase history and how many purchases in the baseline window.
 
-NOT AVAILABLE: savings_tracker. There is no tool that records or phases savings: produce the validation sheet as text and leave the status DRAFT.
+Use `tool:savings_tracker` to read what the ledger already counts as saved (settled money, claims still open, by month). It logs nothing: say a saving is "validated, not logged" until a person records it with evidence. It does not phase a new saving over future months; give that as the user's own schedule, labelled.
 NOT AVAILABLE: commodity_index_lookup. Ask the user for the index series; without it say "not neutralised for index movement" and do not net anything.
 NOT AVAILABLE: build_spend_cube. Use `tool:get_corpus_facts` for invoiced prices and volumes, or ask the user.
 NOT AVAILABLE: build_xlsx. Give the validation sheet as a table.
