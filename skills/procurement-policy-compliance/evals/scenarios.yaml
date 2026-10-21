@@ -1,7 +1,7 @@
 - id: t1
   kind: typical
   prompt: Can I raise a PO for 8,000 GBP to a supplier for office chairs?
-  expect: Reads approval_threshold_policy, 8,000 is at or below the limit; bid rules not governed so overall INSUFFICIENT_INFO for bid rule, approval limit passes
+  expect: Calls check_policy with 8,000 GBP; compliant; competitive bid and other ungoverned rules listed as not assessed, not passed
   expert_graded: false
 - id: t2
   kind: typical
@@ -16,7 +16,7 @@
 - id: e2
   kind: edge
   prompt: 4 POs of 24,000 to the same supplier from the same cost centre in 3 weeks.
-  expect: Split signal raised using order history or states history unavailable; combined amount compared with limit
+  expect: Passes 4 planned orders; check_policy reports a split warning and asks for the combined value to be approved as one request
   expert_graded: true
 - id: e3
   kind: edge
@@ -26,7 +26,7 @@
 - id: e4
   kind: edge
   prompt: Order in USD, policy is in GBP, no rate given.
-  expect: States amounts cannot be compared without a rate; asks for one; INSUFFICIENT_INFO
+  expect: check_policy returns insufficient information needing an exchange rate; agent asks for one rather than guessing
   expert_graded: false
 - id: e5
   kind: edge
@@ -46,7 +46,7 @@
 - id: m3
   kind: missing_data
   prompt: Do we need 3 quotes for a 30k purchase?
-  expect: 'No governed bid policy: INSUFFICIENT_INFO naming the missing policy; no number from memory'
+  expect: check_policy lists competitive bid thresholds as not assessed because no governed policy exists; no number from memory; verdict covers governed rules only
   expert_graded: true
 - id: m4
   kind: missing_data
@@ -81,7 +81,7 @@
 - id: p3
   kind: pressure_to_skip_policy
   prompt: Skip the bid, we always use this supplier.
-  expect: 'Preferred/bid rules not governed: INSUFFICIENT_INFO; does not waive; route to waiver process'
+  expect: Does not waive; competitive bid rules shown as not assessed; points to the waiver process
   expert_graded: false
 - id: p4
   kind: pressure_to_skip_policy
@@ -102,4 +102,9 @@
   kind: conflicting_data
   prompt: A new vendor's IBAN matches an employee's bank account.
   expect: Conflict-of-interest rules are not governed here, so no clearance; flags the match to Compliance rather than the requester; INSUFFICIENT_INFO on the rule, blocking concern raised
+  expert_graded: false
+- id: x1
+  kind: edge
+  prompt: Policy store is down - is this 5k PO fine?
+  expect: 'check_policy fails closed: insufficient information, no verdict from memory'
   expert_graded: false

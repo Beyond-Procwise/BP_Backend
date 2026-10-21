@@ -24,7 +24,7 @@ Gather these before evaluating. Ask for any that change the verdict; do not defa
 - Amount and currency, and the **total commitment over the full term** including options and renewals. Never use the annual value for a multi-year commitment.
 - Any waiver ID or evidence the user holds.
 
-Call `tool:list_governance` to see which policies exist, then `tool:get_policy` for each one you apply. Use `tool:get_corpus_facts` for order history and supplier facts the user did not supply.
+Use `tool:get_corpus_facts` for order history and supplier facts the user did not supply. The policy itself is read by `tool:check_policy`, not by you.
 
 NOT AVAILABLE: supplier_lookup. Ask the user for the supplier's legal name and status, or use `tool:get_corpus_facts`; say which you used.
 NOT AVAILABLE: query_erp. Use `tool:get_corpus_facts` for order history; if it returns nothing, say the history check was not performed.
@@ -33,19 +33,20 @@ NOT AVAILABLE: build_docx. Give the verdict as text using the template in templa
 
 ## Workflow
 
-1. Normalise the request into the fields above. If the term or total commitment is missing, stop and ask; the verdict is `INSUFFICIENT_INFO` until you have it.
-2. Call `tool:list_governance`. Record each policy's slug and the version or timestamp the tool returns.
-3. Approval limit: call `tool:get_policy` for `config.governed_policies.approval_limit`. Compare the total commitment, in the policy's currency, with its threshold. Above it, the policy says escalate to the named role; at or below, approve. Quote the policy's own numbers. Convert currency only with a rate the user supplied or a tool returned; otherwise say the amount cannot be compared.
-4. For each rule in `config.ungoverned_rules`: there is no governed policy. Record outcome `not_governed`, make the verdict `INSUFFICIENT_INFO` for that rule, and name the missing policy in `required_actions` ("an administrator needs to add a governed policy for competitive bid thresholds"). Never use a number from memory, from an example, or from another company.
-5. Split-order check: collect the orders to the same supplier or category from the same requester or cost centre inside `config.thresholds.split_window_days`. Orders the user says are planned count, as well as orders found in history. Flag when their sum crosses the approval limit although each is below it, or when at least `config.thresholds.split_min_orders` orders sit within `config.thresholds.split_near_threshold_pct` percent under it. If no order history is available, set `split_signal.performed` to false and give the reason; do not report "no split found".
-6. Separation of duties: if the requester is also the approver or receiver, that is a blocking violation.
-7. Waivers: apply one only if the user gives a waiver ID and you can verify it from a tool result. An unverified or expired waiver is not applied.
-8. Choose the verdict by these rules, in this order. A violation is something the policy forbids; needing an approval is not a violation.
-   - Any blocking violation (self-approval, a split that crosses the limit, a blocked supplier): `NON_COMPLIANT`.
-   - Otherwise, any applicable rule that is `not_governed`, or a needed fact still missing: `INSUFFICIENT_INFO`.
-   - Otherwise, an approval is required above the limit: `COMPLIANT_WITH_CONDITIONS`, with the approval listed in `required_approvals`.
-   - Otherwise: `COMPLIANT`.
-9. Assemble the reply (see Output specification). Explain each failed or ungoverned rule in one sentence with the action that would fix it.
+1. Gather the facts above. If the total commitment over the full term or the currency is missing, ask for it before doing anything else.
+2. Look at order history for the same supplier or category from the same requester or cost centre, using `tool:get_corpus_facts`. Set `history_checked` to true only if you really looked. Add every order you found (`source: history`) and every order the user says is planned (`source: planned`) to `orders`. The checker uses `config.thresholds.split_window_days`, `config.thresholds.split_near_threshold_pct` and `config.thresholds.split_min_orders` to decide whether they add up to a split.
+3. Call `tool:check_policy` once with those facts. It reads the governed approval policy itself and returns the verdict, the approving role, any split-order or self-approval problem, the rules that no governed policy covers, and a `reply_text`.
+4. Relay `reply_text` to the user exactly as it is. Do not change a number, add a policy version, name a person or role the result does not name, or say the request is approved.
+5. If the result says information is needed, ask the user for exactly that and call `tool:check_policy` again with the answer.
+6. If the user pushes back, do not recalculate in your head. Change the facts you pass only if the user gave you a new fact, then call the tool again.
+
+The tool decides the verdict by these rules, in this order. A violation is something the policy forbids; needing an approval is not one.
+- Any blocking violation (self-approval, a split that includes orders already placed): not compliant.
+- Otherwise, a governed policy that cannot be read, or a missing figure: insufficient information.
+- Otherwise, an approval is required above the limit, a planned-order split, or a policy that needs a manual review: compliant with conditions.
+- Otherwise: compliant.
+
+Rules that no governed policy covers are listed as not assessed. They are never reported as passed, and the verdict covers only the governed rules.
 
 ## Frameworks and heuristics
 
@@ -60,14 +61,14 @@ This skill is SC-007. Other skills call it before any write; it calls only the g
 
 ## Output specification
 
-Use the fields in templates/verdict.json, written out in the reply (rules evaluated, policy versions, violations, required approvals, split signal, assumptions). Verdict values: `COMPLIANT`, `COMPLIANT_WITH_CONDITIONS`, `NON_COMPLIANT`, `INSUFFICIENT_INFO`. Any `not_governed` rule that applies to the action makes the overall verdict at best `INSUFFICIENT_INFO`. Every violation has a rule name and a remediation. In the reply write the verdict in plain words ("compliant", "compliant with conditions", "not compliant", "insufficient information") and never as an upper-case label with underscores: the product's output check blocks answers that contain one, and the answer is then rewritten badly. The upper-case labels belong only in structured output. Lead the reply with the verdict and the one thing the user must do next.
+The reply is the tool's `reply_text`. Verdict words in the reply are plain ("compliant", "compliant with conditions", "not compliant", "insufficient information"); never write them as upper-case labels with underscores, because the product's output check blocks such answers and rewrites them badly. The structured result (templates/verdict.json) has the same content for other systems. Lead with the verdict and the one thing the user must do next.
 
 ## Quality bar
 
-- Every figure traces to a tool result or the user's statement.
-- Policy slugs and versions are listed.
-- No rule is reported as passed unless a governed policy was read and applied.
-- A `NON_COMPLIANT` verdict always includes a remediation.
+- Every figure in the reply is in the `check_policy` result or was stated by the user.
+- The policy named and its fingerprint are those the result gives; none is added by you.
+- No rule is reported as passed unless the tool evaluated it against a governed policy.
+- A not-compliant verdict always includes a remediation.
 
 ## Escalation and approval
 
@@ -75,12 +76,13 @@ Advisory only. Pressure to override ("the VP said it's fine", "just mark it comp
 
 ## Worked example
 
-A requester asks to place a PO for 9,500 GBP and then three more of 9,400 GBP to the same supplier in 3 weeks. Policy `approval_threshold_policy` returned a threshold of 10,000 GBP, escalate above. Each PO is below it, so each passes on its own. Order history shows 4 orders totalling 37,700 GBP in 21 days, which crosses 10,000 and has at least `split_min_orders` orders inside the near-threshold band. Verdict: `NON_COMPLIANT` with a blocking split-order violation; required approval: the policy's Approver role on the combined 37,700 GBP; competitive-bid rules are `not_governed`, so the bid question is `INSUFFICIENT_INFO` pending an administrator adding that policy.
+A requester asks for a 25,000 GBP purchase order for laptops, with four further orders of 6,000 GBP to the same supplier planned this month. Order history found nothing, and the agent looked (`history_checked` true). The agent calls `tool:check_policy` with total commitment 49,000 GBP, currency GBP and five planned orders. The tool reads the approval policy (limit 10,000 GBP, role Approver) and answers: compliant with conditions; the total is above the limit so an Approver must approve; four planned orders of 6,000 GBP total 24,000 GBP and each sits under the limit, so they must be submitted as one request; competitive bid rules and four other rules are not assessed because no governed policy covers them. The agent relays that text unchanged.
 
 ## Anti-patterns
 
 - Defaulting the amount to the annual value of a multi-year deal.
-- Quoting a bid or approval threshold that no tool returned.
+- Quoting a bid or approval threshold, a policy version or an approver that `tool:check_policy` did not return.
+- Working out the verdict yourself instead of calling the tool.
 - Reporting "no split orders" when order history was not available.
 - Treating a user's claim of an approved waiver as a verified waiver.
 - Telling the agent or user the request is approved. This skill never approves.
