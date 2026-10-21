@@ -22,6 +22,10 @@ FIXED_TOOLS = {
     "get_corpus_facts": ["query"],
     "list_calculations": ["family", "name"],
     "run_calculation": ["name", "inputs", "rows"],
+    "list_skills": [],
+    "use_skill": ["name", "part"],
+    "check_policy": ["action_type", "annual_value", "approver", "currency", "fx_rate_to_policy_currency",
+                     "history_checked", "orders", "requester", "term_months", "total_commitment", "waiver_id"],
 }
 
 CHECKPOINTS = [

@@ -32,20 +32,20 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
+from src.services import agentnick_driver as _driver
 from src.services import egress
 
 log = logging.getLogger(__name__)
 
-_OLLAMA_CHAT = (
-    os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/") + "/api/chat"
-)
-# AgentNick is the only base model. Never repoint this at another family.
-_DEFAULT_MODEL = os.getenv("AGENTNICK_MODEL", "BeyondProcwise/AgentNick:unified")
+# The wire to the model, its default model and its timeout live in the driver (the one boundary to
+# AgentNick). These names stay so that modules which import them from here keep working.
+_OLLAMA_CHAT = _driver.OLLAMA_CHAT
+_DEFAULT_MODEL = _driver.DEFAULT_MODEL
 def _DEFAULT_MAX_ROUNDS() -> int:
     """AgentReachPolicy (P9): how far one agent may go before it must answer."""
     return _governed_limit("agent_reach", "tool_runtime_max_rounds",
                            env="TOOL_RUNTIME_MAX_ROUNDS", cast=int)
-_DEFAULT_TIMEOUT_S = int(os.getenv("TOOL_RUNTIME_TIMEOUT_S", "180"))
+_DEFAULT_TIMEOUT_S = _driver.DEFAULT_TIMEOUT_S
 
 # Results are fed back to the model as text. A tool that returns a huge blob
 # (e.g. a full document) would blow the context window and evict the task itself,
@@ -137,31 +137,8 @@ class ToolRunResult:
 # around it; every model call made inside notes what the model server reported.
 # Counts opened inside another add to both, so a run that starts another run
 # carries the whole cost. A call made outside any count is simply not counted.
-_COUNTS: contextvars.ContextVar[tuple] = contextvars.ContextVar("token_counts", default=())
-
-
-@contextlib.contextmanager
-def count_tokens():
-    usage = {"prompt_tokens": 0, "completion_tokens": 0, "model_calls": 0}
-    token = _COUNTS.set(_COUNTS.get() + (usage,))
-    try:
-        yield usage
-    finally:
-        _COUNTS.reset(token)
-
-
-def note_usage(body: Any) -> None:
-    """Add one model reply's token counts to every count that is open."""
-    counts = _COUNTS.get()
-    if not counts:
-        return
-    body = body if isinstance(body, dict) else {}
-    prompt = int(body.get("prompt_eval_count") or 0)
-    completion = int(body.get("eval_count") or 0)
-    for usage in counts:
-        usage["prompt_tokens"] += prompt
-        usage["completion_tokens"] += completion
-        usage["model_calls"] += 1
+count_tokens = _driver.count_tokens
+note_usage = _driver.note_usage
 
 
 def _coerce_args(raw: Any) -> Dict[str, Any]:
@@ -251,32 +228,7 @@ def _chat(
     model: str,
     timeout: int,
 ) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "stream": False,
-        # Reasoning-tuned models return an EMPTY `response`/content unless think is
-        # off. Leaving this on silently yields blank answers.
-        "think": False,
-        "keep_alive": -1,
-        "options": {"temperature": 0, "num_predict": 2048},
-    }
-    if schemas:
-        payload["tools"] = schemas
-    response = egress.post(
-        _OLLAMA_CHAT,
-        purpose=egress.Purpose.MODEL_INFERENCE,
-        json=payload,
-        timeout=timeout,
-        require_global=False,   # the model daemon is on localhost by design
-        raise_transport_errors=True,
-    )
-    if response is None:
-        return {}
-    response.raise_for_status()
-    body = response.json()
-    note_usage(body)
-    return body.get("message", {}) or {}
+    return _driver.chat(messages, schemas, model=model, timeout=timeout).message
 
 
 def structured(
@@ -293,55 +245,7 @@ def structured(
     constrained to it as it is generated rather than parsed out of prose
     afterwards. Raises when the model cannot be reached or answers nothing.
     """
-    from src.services import ollama_client
-
-    def _send() -> Any:
-        payload: Dict[str, Any] = {
-            "model": model or _DEFAULT_MODEL,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "stream": False,
-            "think": False,
-            "keep_alive": -1,
-            "format": schema,
-            # Every load-affecting option, as every other caller sends them. The
-            # model server keys a loaded model on these: a request that named
-            # none would ask for a runner of its own and evict the one everyone
-            # shares. Read afresh on each send, so a refusal just noted is honoured.
-            "options": {**ollama_client.load_options(), "temperature": 0, "num_predict": 2048},
-        }
-        return payload, egress.post(
-            _OLLAMA_CHAT,
-            purpose=egress.Purpose.MODEL_INFERENCE,
-            json=payload,
-            timeout=timeout_s or _DEFAULT_TIMEOUT_S,
-            require_global=False,   # the model daemon is on localhost by design
-            raise_transport_errors=True,
-        )
-
-    payload, response = _send()
-    asked = payload["options"].get("num_gpu")
-    if (response is not None and asked is not None
-            and getattr(response, "status_code", 200) >= 500
-            and ollama_client.is_layout_rejection(getattr(response, "text", ""))):
-        # The card will not take the whole model just now. Say so once, for
-        # every caller, and go again on the server's own split.
-        ollama_client.note_layout_rejection(asked)
-        payload, response = _send()
-    if response is None:
-        raise RuntimeError("the model could not be reached")
-    response.raise_for_status()
-    body = response.json()
-    note_usage(body)
-    content = (body.get("message") or {}).get("content") or ""
-    if not content.strip():
-        raise RuntimeError("the model answered nothing")
-    parsed = json.loads(content)
-    if not isinstance(parsed, dict):
-        raise RuntimeError("the model did not answer with an object")
-    return parsed
+    return _driver.structured(system, user, schema, model=model, timeout_s=timeout_s)
 
 
 def _gate(
@@ -431,50 +335,14 @@ def run_tools_stream(
     for _ in range(max_rounds):
         result.rounds += 1
         try:
-            payload: Dict[str, Any] = {
-                "model": model,
-                "messages": messages,
-                "stream": True,
-                "think": False,
-                "keep_alive": -1,
-                "options": {"temperature": 0, "num_predict": 2048},
-                "tools": schemas,
-            }
-            response = egress.post(
-                _OLLAMA_CHAT,
-                purpose=egress.Purpose.MODEL_INFERENCE,
-                json=payload,
-                timeout=timeout_s,
-                stream=True,
-                require_global=False,
-                raise_transport_errors=True,
-            )
-            if response is None:
-                result.error = "egress refused the model call"
-                return result
-            response.raise_for_status()
-
-            content_parts: List[str] = []
-            tool_calls: List[Dict[str, Any]] = []
-            for line in response.iter_lines():
-                if not line:
-                    continue
-                try:
-                    chunk = json.loads(line)
-                except Exception:  # noqa: BLE001
-                    continue
-                message = chunk.get("message") or {}
-                if message.get("tool_calls"):
-                    tool_calls.extend(message["tool_calls"])
-                fragment = message.get("content")
-                if fragment:
-                    content_parts.append(fragment)
+            proposal = _driver.chat_stream(messages, schemas, model=model, timeout=timeout_s)
         except Exception as exc:  # noqa: BLE001
             log.warning("tool_runtime stream failed: %s", exc)
             result.error = str(exc)[:300]
             return result
 
-        content = "".join(content_parts)
+        content = proposal.content
+        tool_calls = proposal.tool_calls
         if not tool_calls:
             # Tokens used to go straight out to the browser as they arrived. They no longer
             # do, and the reason is that a token cannot be un-sent: by the time a scanner

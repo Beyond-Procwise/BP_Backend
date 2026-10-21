@@ -100,7 +100,7 @@ def _run(monkeypatch, tools, replies, *, stream=False, agent="overcharge_hunter"
          user_id="req@example.test"):
     script = Script(replies)
     if stream:
-        monkeypatch.setattr(TR, "egress", script.egress())
+        monkeypatch.setattr(TR._driver, "egress", script.egress())   # the wire to the model is the driver's
         res = TR.run_tools_stream("task", tools, "system", max_rounds=4, agent=agent,
                                   workflow_id=workflow_id, user_id=user_id)
     else:
