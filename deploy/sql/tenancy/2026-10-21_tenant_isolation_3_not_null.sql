@@ -526,6 +526,28 @@ COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_conversation ADD CONSTRAINT ck_bp_conversation_tenant_nn CHECK (tenant_id IS NOT NULL) NOT VALID;
+COMMIT;
+ALTER TABLE proc.bp_conversation VALIDATE CONSTRAINT ck_bp_conversation_tenant_nn;
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_conversation ALTER COLUMN tenant_id SET NOT NULL;
+ALTER TABLE proc.bp_conversation DROP CONSTRAINT ck_bp_conversation_tenant_nn;
+COMMIT;
+
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_conversation_participant ADD CONSTRAINT ck_bp_conversation_participant_tenant_nn CHECK (tenant_id IS NOT NULL) NOT VALID;
+COMMIT;
+ALTER TABLE proc.bp_conversation_participant VALIDATE CONSTRAINT ck_bp_conversation_participant_tenant_nn;
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_conversation_participant ALTER COLUMN tenant_id SET NOT NULL;
+ALTER TABLE proc.bp_conversation_participant DROP CONSTRAINT ck_bp_conversation_participant_tenant_nn;
+COMMIT;
+
+BEGIN;
+SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_deal ADD CONSTRAINT ck_bp_deal_tenant_nn CHECK (tenant_id IS NOT NULL) NOT VALID;
 COMMIT;
 ALTER TABLE proc.bp_deal VALIDATE CONSTRAINT ck_bp_deal_tenant_nn;
@@ -610,6 +632,17 @@ BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_doc_number_counter ALTER COLUMN tenant_id SET NOT NULL;
 ALTER TABLE proc.bp_doc_number_counter DROP CONSTRAINT ck_bp_doc_number_counter_tenant_nn;
+COMMIT;
+
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_domain_event ADD CONSTRAINT ck_bp_domain_event_tenant_nn CHECK (tenant_id IS NOT NULL) NOT VALID;
+COMMIT;
+ALTER TABLE proc.bp_domain_event VALIDATE CONSTRAINT ck_bp_domain_event_tenant_nn;
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_domain_event ALTER COLUMN tenant_id SET NOT NULL;
+ALTER TABLE proc.bp_domain_event DROP CONSTRAINT ck_bp_domain_event_tenant_nn;
 COMMIT;
 
 BEGIN;
@@ -1087,6 +1120,17 @@ COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_message ADD CONSTRAINT ck_bp_message_tenant_nn CHECK (tenant_id IS NOT NULL) NOT VALID;
+COMMIT;
+ALTER TABLE proc.bp_message VALIDATE CONSTRAINT ck_bp_message_tenant_nn;
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_message ALTER COLUMN tenant_id SET NOT NULL;
+ALTER TABLE proc.bp_message DROP CONSTRAINT ck_bp_message_tenant_nn;
+COMMIT;
+
+BEGIN;
+SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_negotiation_advice ADD CONSTRAINT ck_bp_negotiation_advice_tenant_nn CHECK (tenant_id IS NOT NULL) NOT VALID;
 COMMIT;
 ALTER TABLE proc.bp_negotiation_advice VALIDATE CONSTRAINT ck_bp_negotiation_advice_tenant_nn;
@@ -1105,6 +1149,17 @@ BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_negotiation_advice_fact ALTER COLUMN tenant_id SET NOT NULL;
 ALTER TABLE proc.bp_negotiation_advice_fact DROP CONSTRAINT ck_bp_negotiation_advice_fact_tenant_nn;
+COMMIT;
+
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_notification ADD CONSTRAINT ck_bp_notification_tenant_nn CHECK (tenant_id IS NOT NULL) NOT VALID;
+COMMIT;
+ALTER TABLE proc.bp_notification VALIDATE CONSTRAINT ck_bp_notification_tenant_nn;
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_notification ALTER COLUMN tenant_id SET NOT NULL;
+ALTER TABLE proc.bp_notification DROP CONSTRAINT ck_bp_notification_tenant_nn;
 COMMIT;
 
 BEGIN;
@@ -1149,6 +1204,17 @@ BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_page_layout ALTER COLUMN tenant_id SET NOT NULL;
 ALTER TABLE proc.bp_page_layout DROP CONSTRAINT ck_bp_page_layout_tenant_nn;
+COMMIT;
+
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_person ADD CONSTRAINT ck_bp_person_tenant_nn CHECK (tenant_id IS NOT NULL) NOT VALID;
+COMMIT;
+ALTER TABLE proc.bp_person VALIDATE CONSTRAINT ck_bp_person_tenant_nn;
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_person ALTER COLUMN tenant_id SET NOT NULL;
+ALTER TABLE proc.bp_person DROP CONSTRAINT ck_bp_person_tenant_nn;
 COMMIT;
 
 BEGIN;
@@ -1600,6 +1666,17 @@ BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.bp_role_assignment ALTER COLUMN tenant_id SET NOT NULL;
 ALTER TABLE proc.bp_role_assignment DROP CONSTRAINT ck_bp_role_assignment_tenant_nn;
+COMMIT;
+
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_routing_rule ADD CONSTRAINT ck_bp_routing_rule_tenant_nn CHECK (tenant_id IS NOT NULL) NOT VALID;
+COMMIT;
+ALTER TABLE proc.bp_routing_rule VALIDATE CONSTRAINT ck_bp_routing_rule_tenant_nn;
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+ALTER TABLE proc.bp_routing_rule ALTER COLUMN tenant_id SET NOT NULL;
+ALTER TABLE proc.bp_routing_rule DROP CONSTRAINT ck_bp_routing_rule_tenant_nn;
 COMMIT;
 
 BEGIN;

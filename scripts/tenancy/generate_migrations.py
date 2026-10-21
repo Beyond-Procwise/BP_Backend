@@ -71,8 +71,21 @@ def p1_add_label() -> str:
 -- (found when practising on a copy of the real database, 2026-10-21).
 -- Each table is its own short transaction with a lock timeout: if a table is busy the statement fails
 -- and the file can be re-run (every statement is idempotent).
--- Tables that already carry tenant_id (20) keep it; part 2 relabels any NULL rows.
+-- Tables that already carry tenant_id keep it; part 2 relabels any NULL rows.
 -- Reversible: 1_add_label_rollback.sql drops the column ONLY on tables this file added it to.""")]
+    names = ", ".join(f"'{t}'" for t in owned())
+    out.append(f"""-- Refuse to start on a database that lacks a table this file names (the databases have drifted before:
+-- the messaging tables existed on bp_testdb only). Nothing has changed when this stops. Run with
+-- `psql -v ON_ERROR_STOP=1` so the rest of the file does not run after it.
+DO $$
+DECLARE missing text;
+BEGIN
+  SELECT string_agg(t, ', ') INTO missing FROM unnest(ARRAY[{names}]) AS t WHERE to_regclass('proc.' || t) IS NULL;
+  IF missing IS NOT NULL THEN
+    RAISE EXCEPTION 'tenant isolation part 1: these tables do not exist in this database (apply their own migration first): %', missing;
+  END IF;
+END $$;
+""")
     labelled = _already_labelled()
     for t in owned():
         if t in labelled:

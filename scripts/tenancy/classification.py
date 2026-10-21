@@ -16,6 +16,9 @@ tests/tenancy refuse to run -- so a new table cannot quietly ship without an iso
 from __future__ import annotations
 
 OWNED = frozenset({
+    # messaging module (exists on bp_testdb only so far; D-56)
+    "bp_conversation", "bp_conversation_participant", "bp_domain_event", "bp_message",
+    "bp_notification", "bp_person", "bp_routing_rule",
     "agent_plan", "bp_account", "bp_account_contact",
     "bp_account_history_scope", "bp_account_price", "bp_action",
     "bp_admin_config", "bp_agent_actions", "bp_agent_definition",

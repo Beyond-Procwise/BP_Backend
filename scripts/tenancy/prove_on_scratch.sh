@@ -44,8 +44,8 @@ su -f /tmp/tenancy_fixture.sql || { echo "fixture failed"; exit 2; }
 
 echo "part 1 (add label)"
 as_owner $SQL"_1_add_label.sql"; as_owner $SQL"_1_add_label.sql"   # twice: must be repeatable
-ok "every owned table has tenant_id"      "$(su -Atc "select count(*) from information_schema.columns where table_schema='proc' and column_name='tenant_id'")" 215
-ok "part 1 leaves every owned table with the default label (195 added + 7 old)" "$(su -Atc "select count(*) from information_schema.columns where table_schema='proc' and column_name='tenant_id' and column_default is not null")" 202
+ok "every owned table has tenant_id"      "$(su -Atc "select count(*) from information_schema.columns where table_schema='proc' and column_name='tenant_id'")" 222
+ok "part 1 leaves every owned table with the default label (197 added + 12 old)" "$(su -Atc "select count(*) from information_schema.columns where table_schema='proc' and column_name='tenant_id' and column_default is not null")" 209
 ok "a row written between part 1 and part 6 is labelled, not NULL" "$(printf "SET ROLE owner_r; INSERT INTO proc.bp_invoice_raw(v) VALUES ('window'); select tenant_id from proc.bp_invoice_raw where v='window';\n" | su -f - 2>&1 | tail -1)" default
 su -c "delete from proc.bp_invoice_raw where v='window'" >/dev/null
 ok "pre-existing NOT NULL tables still take an insert" "$(printf "SET ROLE owner_r; INSERT INTO proc.bp_value_outcome(v) VALUES ('still-works'); select tenant_id from proc.bp_value_outcome where v='still-works';\n" | su -f - 2>&1 | tail -1)" default
@@ -53,7 +53,7 @@ su -c "delete from proc.bp_value_outcome where v='still-works'" >/dev/null
 echo "part 6 (stamp on insert)"
 as_owner $SQL"_6_stamp_on_insert.sql"; as_owner $SQL"_6_stamp_on_insert.sql"   # twice: must be repeatable
 one(){ printf "SET ROLE owner_r;\n%s\n" "$1" | su -f - 2>&1 | tail -1 | cut -c1-90; }
-ok "a stamp trigger on every owned table"  "$(su -Atc "select count(*) from pg_trigger where tgname='tr_bp_stamp_tenant'")" 213
+ok "a stamp trigger on every owned table"  "$(su -Atc "select count(*) from pg_trigger where tgname='tr_bp_stamp_tenant'")" 220
 ok "every default is gone (the trigger replaces them)"           "$(su -Atc "select count(*) from information_schema.columns where table_schema='proc' and column_name='tenant_id' and column_default is not null")" 0
 ok "bound tenant is stamped"               "$(one "select set_config('app.tenant_id','acme',false); insert into proc.bp_account(v) values ('s1'); select tenant_id from proc.bp_account where v='s1';")" acme
 ok "bound tenant stamped on a NOT NULL table" "$(one "select set_config('app.tenant_id','acme',false); insert into proc.bp_value_outcome(v) values ('s2'); select tenant_id from proc.bp_value_outcome where v='s2';")" acme
@@ -72,14 +72,14 @@ su -f - < <( echo "SET ROLE owner_r;"; cat $SQL"_2_backfill_and_index.sql" ) >/d
 ok "straggler row relabelled"             "$(su -Atc "select count(*) from proc.bp_invoice_raw where tenant_id is null")" 0
 ok "NULL in already-labelled owned table fixed" "$(su -Atc "select count(*) from proc.bp_account where tenant_id is null")" 0
 ok "shared tables NOT touched (still NULL)" "$(su -Atc "select count(*) from proc.bp_document_type where tenant_id is null")" 1
-ok "213 indexes built"                    "$(su -Atc "select count(*) from pg_indexes where schemaname='proc' and indexname like 'ix_bp_%_tenant%'")" 213
+ok "220 indexes built"                    "$(su -Atc "select count(*) from pg_indexes where schemaname='proc' and indexname like 'ix_bp_%_tenant%'")" 220
 echo "part 3 (not null)"
 as_owner $SQL"_3_not_null.sql"
-ok "213 columns NOT NULL"                 "$(su -Atc "select count(*) from information_schema.columns where table_schema='proc' and column_name='tenant_id' and is_nullable='NO'")" 213
+ok "220 columns NOT NULL"                 "$(su -Atc "select count(*) from information_schema.columns where table_schema='proc' and column_name='tenant_id' and is_nullable='NO'")" 220
 ok "unlabelled insert refused"            "$(printf "SET ROLE owner_r; INSERT INTO proc.bp_invoice_raw(v) VALUES ('x');\n" | su -f - 2>&1 | grep -c 'null value')" 1
 echo "parts 5 + 4 (support log, row-level security)"
 as_owner $SQL"_5_support_access.sql"; as_owner $SQL"_4_row_level_security.sql"
-ok "RLS forced on 213 tables"             "$(su -Atc "select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname='proc' and c.relrowsecurity and c.relforcerowsecurity")" 213
+ok "RLS forced on 220 tables"             "$(su -Atc "select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname='proc' and c.relrowsecurity and c.relforcerowsecurity")" 220
 ok "own tenant sees its rows"             "$(app "select set_config('app.tenant_id','default',false); select count(*) from proc.bp_invoice_raw;")" 3
 ok "other tenant sees nothing"            "$(app "select set_config('app.tenant_id','other-co',false); select count(*) from proc.bp_invoice_raw;")" 0
 ok "forgotten tenant sees nothing"        "$(app "select count(*) from proc.bp_invoice_raw;")" 0
@@ -97,11 +97,11 @@ echo "rollbacks (4, 5, 3, 1)"
 for p in 4_row_level_security 5_support_access 3_not_null 6_stamp_on_insert 1_add_label; do as_owner $SQL"_${p}_rollback.sql"; done
 ok "no policies left"                     "$(su -Atc "select count(*) from pg_policies where schemaname='proc'")" 0
 ok "no RLS left"                          "$(su -Atc "select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname='proc' and c.relrowsecurity")" 0
-ok "label columns back to the original 20" "$(su -Atc "select count(*) from information_schema.columns where table_schema='proc' and column_name='tenant_id'")" 20
+ok "label columns back to the original 25" "$(su -Atc "select count(*) from information_schema.columns where table_schema='proc' and column_name='tenant_id'")" 25
 ok "row data intact"                      "$(su -Atc "select count(*) from proc.bp_invoice_raw")" 3
-ok "tables that were NOT NULL before are still NOT NULL after rollback" "$(su -Atc "select count(*) from information_schema.columns where table_schema='proc' and column_name='tenant_id' and is_nullable='NO'")" 10
+ok "tables that were NOT NULL before are still NOT NULL after rollback" "$(su -Atc "select count(*) from information_schema.columns where table_schema='proc' and column_name='tenant_id' and is_nullable='NO'")" 15
 ok "no stamp triggers or function left"   "$(su -Atc "select (select count(*) from pg_trigger where tgname='tr_bp_stamp_tenant')+(select count(*) from pg_proc where proname='bp_stamp_tenant')")" 0
-ok "after all rollbacks only the 7 original defaults remain" "$(su -Atc "select count(*) from information_schema.columns where table_schema='proc' and column_name='tenant_id' and column_default is not null")" 7
+ok "after all rollbacks only the 12 original defaults remain" "$(su -Atc "select count(*) from information_schema.columns where table_schema='proc' and column_name='tenant_id' and column_default is not null")" 12
 ok "support objects removed"              "$(su -Atc "select (select count(*) from pg_proc where proname='bp_support_begin')+(select count(*) from pg_tables where tablename='bp_support_access_log')")" 0
 [ $FAIL -eq 0 ] && echo "ALL ASSERTIONS HELD" || echo "SOME ASSERTIONS FAILED"
 exit $FAIL

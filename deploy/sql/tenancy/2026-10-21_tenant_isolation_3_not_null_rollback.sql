@@ -48,6 +48,7 @@ ALTER TABLE proc.bp_contract_obligation_party ALTER COLUMN tenant_id DROP NOT NU
 ALTER TABLE proc.bp_contract_obligation_run ALTER COLUMN tenant_id DROP NOT NULL;
 ALTER TABLE proc.bp_contract_raw ALTER COLUMN tenant_id DROP NOT NULL;
 ALTER TABLE proc.bp_contracts ALTER COLUMN tenant_id DROP NOT NULL;
+ALTER TABLE proc.bp_conversation_participant ALTER COLUMN tenant_id DROP NOT NULL;
 ALTER TABLE proc.bp_deal ALTER COLUMN tenant_id DROP NOT NULL;
 ALTER TABLE proc.bp_deal_document_map ALTER COLUMN tenant_id DROP NOT NULL;
 ALTER TABLE proc.bp_deal_proposal ALTER COLUMN tenant_id DROP NOT NULL;
@@ -95,6 +96,7 @@ ALTER TABLE proc.bp_invoice_trgt ALTER COLUMN tenant_id DROP NOT NULL;
 ALTER TABLE proc.bp_invoice_trgt_bkp ALTER COLUMN tenant_id DROP NOT NULL;
 ALTER TABLE proc.bp_link_rejection ALTER COLUMN tenant_id DROP NOT NULL;
 ALTER TABLE proc.bp_mailbox_binding ALTER COLUMN tenant_id DROP NOT NULL;
+ALTER TABLE proc.bp_message ALTER COLUMN tenant_id DROP NOT NULL;
 ALTER TABLE proc.bp_negotiation_advice ALTER COLUMN tenant_id DROP NOT NULL;
 ALTER TABLE proc.bp_negotiation_advice_fact ALTER COLUMN tenant_id DROP NOT NULL;
 ALTER TABLE proc.bp_opportunity ALTER COLUMN tenant_id DROP NOT NULL;

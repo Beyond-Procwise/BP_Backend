@@ -46,6 +46,8 @@ bp_contract_obligation_party
 bp_contract_obligation_run
 bp_contract_raw
 bp_contracts
+bp_conversation
+bp_conversation_participant
 bp_deal
 bp_deal_document_map
 bp_deal_proposal
@@ -55,6 +57,7 @@ bp_demand
 bp_detection_finding
 bp_doc_number_counter
 bp_document_type
+bp_domain_event
 bp_egress_event
 bp_embedding_job
 bp_extraction_discrepancy
@@ -103,14 +106,17 @@ bp_invoice_trgt_bkp
 bp_lifecycle_transition
 bp_link_rejection
 bp_mailbox_binding
+bp_message
 bp_model
 bp_negotiation_advice
 bp_negotiation_advice_fact
+bp_notification
 bp_opportunity
 bp_opportunity_critique
 bp_opportunity_gap
 bp_orchestrator_registry
 bp_page_layout
+bp_person
 bp_playbook
 bp_playbook_proposal
 bp_po_line_items_raw
@@ -158,6 +164,7 @@ bp_report_version
 bp_reports
 bp_requirement
 bp_role_assignment
+bp_routing_rule
 bp_rule
 bp_sales_justification
 bp_sales_opportunity

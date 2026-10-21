@@ -10,7 +10,7 @@
 --     still refuses a name that is not the caller's);
 --   * an insert that names none and has no tenant on the connection stays NULL: part 2 relabels it
 --     until part 3, and part 3's NOT NULL refuses it after -- it is never guessed into 'default'.
--- Every owned table has DEFAULT 'default' at this point (part 1 added it; 7 tables already had
+-- Every owned table has DEFAULT 'default' at this point (part 1 added it; 12 tables already had
 -- it). A default fills the label BEFORE this trigger runs, so each table's default is dropped in the same
 -- transaction that creates its trigger (no moment with neither). Existing rows keep their label.
 -- Reversible: 6_stamp_on_insert_rollback.sql (puts the default back).
@@ -402,6 +402,22 @@ COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
+DROP TRIGGER IF EXISTS tr_bp_stamp_tenant ON proc.bp_conversation;
+CREATE TRIGGER tr_bp_stamp_tenant BEFORE INSERT ON proc.bp_conversation
+  FOR EACH ROW EXECUTE FUNCTION proc.bp_stamp_tenant();
+ALTER TABLE proc.bp_conversation ALTER COLUMN tenant_id DROP DEFAULT;
+COMMIT;
+
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+DROP TRIGGER IF EXISTS tr_bp_stamp_tenant ON proc.bp_conversation_participant;
+CREATE TRIGGER tr_bp_stamp_tenant BEFORE INSERT ON proc.bp_conversation_participant
+  FOR EACH ROW EXECUTE FUNCTION proc.bp_stamp_tenant();
+ALTER TABLE proc.bp_conversation_participant ALTER COLUMN tenant_id DROP DEFAULT;
+COMMIT;
+
+BEGIN;
+SET LOCAL lock_timeout = '3s';
 DROP TRIGGER IF EXISTS tr_bp_stamp_tenant ON proc.bp_deal;
 CREATE TRIGGER tr_bp_stamp_tenant BEFORE INSERT ON proc.bp_deal
   FOR EACH ROW EXECUTE FUNCTION proc.bp_stamp_tenant();
@@ -462,6 +478,14 @@ DROP TRIGGER IF EXISTS tr_bp_stamp_tenant ON proc.bp_doc_number_counter;
 CREATE TRIGGER tr_bp_stamp_tenant BEFORE INSERT ON proc.bp_doc_number_counter
   FOR EACH ROW EXECUTE FUNCTION proc.bp_stamp_tenant();
 ALTER TABLE proc.bp_doc_number_counter ALTER COLUMN tenant_id DROP DEFAULT;
+COMMIT;
+
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+DROP TRIGGER IF EXISTS tr_bp_stamp_tenant ON proc.bp_domain_event;
+CREATE TRIGGER tr_bp_stamp_tenant BEFORE INSERT ON proc.bp_domain_event
+  FOR EACH ROW EXECUTE FUNCTION proc.bp_stamp_tenant();
+ALTER TABLE proc.bp_domain_event ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
@@ -810,6 +834,14 @@ COMMIT;
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';
+DROP TRIGGER IF EXISTS tr_bp_stamp_tenant ON proc.bp_message;
+CREATE TRIGGER tr_bp_stamp_tenant BEFORE INSERT ON proc.bp_message
+  FOR EACH ROW EXECUTE FUNCTION proc.bp_stamp_tenant();
+ALTER TABLE proc.bp_message ALTER COLUMN tenant_id DROP DEFAULT;
+COMMIT;
+
+BEGIN;
+SET LOCAL lock_timeout = '3s';
 DROP TRIGGER IF EXISTS tr_bp_stamp_tenant ON proc.bp_negotiation_advice;
 CREATE TRIGGER tr_bp_stamp_tenant BEFORE INSERT ON proc.bp_negotiation_advice
   FOR EACH ROW EXECUTE FUNCTION proc.bp_stamp_tenant();
@@ -822,6 +854,14 @@ DROP TRIGGER IF EXISTS tr_bp_stamp_tenant ON proc.bp_negotiation_advice_fact;
 CREATE TRIGGER tr_bp_stamp_tenant BEFORE INSERT ON proc.bp_negotiation_advice_fact
   FOR EACH ROW EXECUTE FUNCTION proc.bp_stamp_tenant();
 ALTER TABLE proc.bp_negotiation_advice_fact ALTER COLUMN tenant_id DROP DEFAULT;
+COMMIT;
+
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+DROP TRIGGER IF EXISTS tr_bp_stamp_tenant ON proc.bp_notification;
+CREATE TRIGGER tr_bp_stamp_tenant BEFORE INSERT ON proc.bp_notification
+  FOR EACH ROW EXECUTE FUNCTION proc.bp_stamp_tenant();
+ALTER TABLE proc.bp_notification ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
@@ -854,6 +894,14 @@ DROP TRIGGER IF EXISTS tr_bp_stamp_tenant ON proc.bp_page_layout;
 CREATE TRIGGER tr_bp_stamp_tenant BEFORE INSERT ON proc.bp_page_layout
   FOR EACH ROW EXECUTE FUNCTION proc.bp_stamp_tenant();
 ALTER TABLE proc.bp_page_layout ALTER COLUMN tenant_id DROP DEFAULT;
+COMMIT;
+
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+DROP TRIGGER IF EXISTS tr_bp_stamp_tenant ON proc.bp_person;
+CREATE TRIGGER tr_bp_stamp_tenant BEFORE INSERT ON proc.bp_person
+  FOR EACH ROW EXECUTE FUNCTION proc.bp_stamp_tenant();
+ALTER TABLE proc.bp_person ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
@@ -1182,6 +1230,14 @@ DROP TRIGGER IF EXISTS tr_bp_stamp_tenant ON proc.bp_role_assignment;
 CREATE TRIGGER tr_bp_stamp_tenant BEFORE INSERT ON proc.bp_role_assignment
   FOR EACH ROW EXECUTE FUNCTION proc.bp_stamp_tenant();
 ALTER TABLE proc.bp_role_assignment ALTER COLUMN tenant_id DROP DEFAULT;
+COMMIT;
+
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+DROP TRIGGER IF EXISTS tr_bp_stamp_tenant ON proc.bp_routing_rule;
+CREATE TRIGGER tr_bp_stamp_tenant BEFORE INSERT ON proc.bp_routing_rule
+  FOR EACH ROW EXECUTE FUNCTION proc.bp_stamp_tenant();
+ALTER TABLE proc.bp_routing_rule ALTER COLUMN tenant_id DROP DEFAULT;
 COMMIT;
 
 BEGIN;
