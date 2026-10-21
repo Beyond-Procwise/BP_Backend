@@ -24,3 +24,14 @@ Decisions taken (user: "go with your recommendations"): single-tenant with tenan
   so `requisition.submitted` has no emitter until a requisition entry point exists (gateway/UI or a new endpoint).
 - can_view is same-tenant-active only (TODO real visibility). bp_person is empty on every DB until populated, so nobody is notified in practice yet.
 - Baseline: 5 agent_policy tests fail with or without this branch (scheduler lane + 4 scrub-through-app).
+
+## Update — endpoints built (same day)
+src/api/routers/people.py (registered in the authenticated router list), logic in src/services/people/admin.py.
+- Admin (gate policy.read / policy.write): GET/PUT /admin/people[/{subject}], GET /admin/people/{subject}/approver?amount= (dry run),
+  GET/PUT/DELETE /admin/routing-rules[/{event_type}]. PUT changes only the fields sent; manager loops, self-manager,
+  unknown manager/delegate, bad limits, unknown targets/events are refused (422/404).
+- Own data (signed-in only, always the caller's subject): GET /notifications, /notifications/unread-count, POST /notifications/{id}/read
+  (someone else's id = 404), /notifications/read-all, GET/PUT /notifications/preferences (channels: email only; mandatory events cannot be muted),
+  GET /people/me, PUT /people/me/delegate (out of office).
+- No endpoint emits events or deletes people (deactivate with is_active=false). Roles in bp_person are a routing mirror, NOT authorisation.
+- Tests: 54 (services/people + tests/api/test_people_router.py); gate ratchet passes unchanged. Proven live on bp_testdb through TestClient (rows cleaned).
