@@ -10,10 +10,11 @@ from datetime import date
 from typing import Any, Mapping, Optional, Sequence
 
 from src.services.cost import landed_cost as _landed
+from src.services.cost import should_cost as _sc
 from src.services.cost import tco as _tco
 
 from ..contract import (
-    BOOLEAN, CURRENCY_CODE, DATE, LABEL, MONEY, RATIO, RECORD, ROWS, Output, Term,
+    BOOLEAN, COUNT, CURRENCY_CODE, DATE, FACTOR, LABEL, MONEY, PERCENT, RATIO, RECORD, ROWS, Output, Term,
 )
 from ..registry import GoldenVector, formula
 from ..unassessed import UNASSESSED
@@ -177,3 +178,82 @@ def tco_total_cost(
         landed=landed, cost_of_capital=cost_of_capital, horizon_years=horizon_years,
         payment_terms=payment_terms, ap_can_take_discount=ap_can_take_discount,
         lifetime_items=lifetime_items)
+
+
+_SC_BOM = [{"material_id": "PP", "net_weight": 0.5, "price_per_kg": 2.0, "scrap_rate": 0.2,
+            "scrap_recovery_price_pct": 0.5}]
+_SC_OP = {"process": "injection_moulding", "cycle_time_s": 36, "cavities": 2, "oee": 0.8, "setup_time_h": 2,
+          "operators_per_machine": 1, "machine_rate": 80.0, "labour_rate": 20.0}
+_SC_CASE = dict(bom=_SC_BOM, routing=[_SC_OP], batch_size=1000, overhead_pct=0.10, sga_pct=0.05,
+                margin_pct=0.08, logistics_per_unit=0.05, currency="GBP")
+
+
+@formula(
+    "cost.should_cost",
+    version="1.0.0",
+    owner="cost",
+    purpose="Bottom-up modelled estimate of what a manufactured part should cost: material, conversion, "
+            "labour, overhead, SG&A, logistics and margin per unit, with a tornado of drivers",
+    effective_from=_FROM,
+    inputs=[
+        Term("bom", ROWS, "per line: net_weight (kg), price_per_kg, scrap_rate, scrap_recovery_price_pct, "
+             "or bought_in_price for a bought-in part"),
+        Term("routing", ROWS, "per operation: cycle_time_s, cavities, oee, setup_time_h, operators_per_machine, "
+             "labour_rate, and machine_rate or the machine inputs to derive it"),
+        Term("batch_size", COUNT, "units per setup", minimum=1.0),
+        Term("overhead_pct", RATIO, "of conversion plus labour", minimum=0.0),
+        Term("sga_pct", RATIO, "of manufacturing cost", minimum=0.0),
+        Term("margin_pct", RATIO, "supplier margin", minimum=0.0),
+        Term("logistics_per_unit", MONEY, "packaging, freight and duty per unit", required=False),
+        Term("currency", CURRENCY_CODE, "all prices and rates are in this currency", required=False),
+        Term("margin_base", LABEL, "what the margin is applied to", required=False,
+             allowed=("value_add_only", "total_cost")),
+        Term("annual_volume", COUNT, required=False, minimum=0.0),
+        Term("sensitivity_pct", PERCENT, "tornado range either side", required=False, minimum=0.0),
+        Term("monte_carlo_n", COUNT, "0 = none", required=False, minimum=0.0),
+        Term("seed", COUNT, "required when monte_carlo_n is above 0", required=False),
+        Term("distributions", RECORD, "driver -> {min, mode, max} multipliers of the base", required=False),
+        Term("quote_breakdown", RECORD, "a supplier quote by element, to compare", required=False),
+    ],
+    output=Output("dict", FACTOR,
+                  "unit_cost, per_unit by element, shares, operations, annual, rates_used with source, "
+                  "assumptions, sensitivity (tornado, monte_carlo), quote_gap, label 'modelled estimate'; "
+                  "UNASSESSED if the inputs cannot be costed"),
+    notes=(
+        "yield = 1 - scrap; gross = net / yield; material = gross x price less scrap at the recovery share. "
+        "Conversion per unit = (cycle / 3600) / (cavities x oee) x machine rate + setup hours x rate / batch. "
+        "Labour per unit = the same hours x operators x labour rate. Overhead on conversion plus labour; SG&A on "
+        "manufacturing cost; margin on value-add only unless margin_base is total_cost. Every price and rate is "
+        "supplied by the caller and listed with its source: a missing labour rate, an oee outside (0, 1], cavities "
+        "below 1 or scrap of 1 or more make the whole estimate UNASSESSED. It is a modelled estimate, never a "
+        "supplier's actual cost."
+    ),
+    golden=[
+        GoldenVector(
+            inputs=_SC_CASE,
+            expected={"unit_cost": 2.214959, "label": "modelled estimate"},
+            tolerance=1e-6,
+            note="material 1.125, conversion 0.66, labour 0.125, overhead 0.0785, SG&A 0.099425, logistics 0.05, margin 0.077034",
+        ),
+        GoldenVector(
+            inputs={**_SC_CASE, "routing": [{**_SC_OP, "cavities": 0}]},
+            expected=UNASSESSED,
+            note="a tool with no cavities cannot be costed",
+        ),
+    ],
+)
+def cost_should_cost(
+    bom, routing, batch_size, overhead_pct, sga_pct, margin_pct, logistics_per_unit=None, currency=None,
+    margin_base=None, annual_volume=None, sensitivity_pct=None, monte_carlo_n=None, seed=None,
+    distributions=None, quote_breakdown=None,
+):
+    try:
+        return _sc.should_cost(
+            bom=bom, routing=routing, batch_size=batch_size, overhead_pct=overhead_pct, sga_pct=sga_pct,
+            margin_pct=margin_pct, logistics_per_unit=logistics_per_unit or 0.0, currency=currency or "GBP",
+            margin_base=margin_base or "value_add_only", annual_volume=annual_volume,
+            sensitivity_pct=10.0 if sensitivity_pct is None else sensitivity_pct,
+            monte_carlo_n=int(monte_carlo_n or 0), seed=None if seed is None else int(seed),
+            distributions=distributions, quote_breakdown=quote_breakdown)
+    except _sc.ShouldCostError:
+        return UNASSESSED
