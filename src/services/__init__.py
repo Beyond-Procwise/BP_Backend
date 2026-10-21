@@ -6,7 +6,8 @@ For a module that holds process-wide state it is not: ``ollama_client`` counts f
 background work yields to), queues requests, and remembers GPU layout refusals, so with two copies the work
 done through one is invisible through the other.
 
-``_SHARED_STATE_MODULES`` lists the modules that must exist once. When the package is loaded as ``services``,
+``_SHARED_STATE_MODULES`` lists the modules that must exist once (``event_bus`` holds the process-wide bus and
+the per-thread workflow context; ``ollama_client`` the foreground count and refusal memory). When the package is loaded as ``services``,
 a small import hook answers ``services.<name>`` with the one real ``src.services.<name>`` instead of loading
 a second copy. Callers change nothing, and every other module loads as it always did. (These modules already
 import their own neighbours as ``src.services...``, so they have always needed ``src`` on the path.)
@@ -19,7 +20,7 @@ import importlib.abc
 import importlib.util
 import sys
 
-_SHARED_STATE_MODULES = ("ollama_client",)
+_SHARED_STATE_MODULES = ("ollama_client", "event_bus")
 _CANONICAL = "src.services."
 
 

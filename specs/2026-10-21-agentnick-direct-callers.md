@@ -67,10 +67,11 @@ and a test that proves what changes; it is not part of "route through the driver
 41 modules under `src/services` are imported both as `services.X` and `src.services.X`. Most hold no state of
 consequence. The ones that do, and are split, in order of concern:
 
-- `event_bus` (10 importers as `services`, 1 as `src.services`): a process-wide singleton, so two buses. The
-  mail-intake sweep in `backend_scheduler.py` publishes `DOCUMENT_INGESTED` on the `src` copy; every subscriber is on
-  the `services` copy. **Latent, not active:** nothing subscribes to `DOCUMENT_INGESTED` today. It would be lost the
-  day something does.
+- `event_bus` (10 importers as `services`, 1 as `src.services`): a process-wide singleton, so two buses, plus a
+  per-thread workflow context that was also split. The mail-intake sweep in `backend_scheduler.py` publishes
+  `DOCUMENT_INGESTED` on the `src` copy; every subscriber was on the `services` copy. Latent, not active: nothing
+  subscribes to `DOCUMENT_INGESTED` today. **UNIFIED 2026-10-21** (added to `_SHARED_STATE_MODULES`); 129 test files
+  that touch it fail identically before and after (52 failures, 17 errors, all long-standing).
 - `db` (98 / 206): holds a fake store for tests and connection helpers; check the pool before unifying.
 - `egress`, `model_selector`, `backend_scheduler`, `email_watcher`: some module-level state each.
 

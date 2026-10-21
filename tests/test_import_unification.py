@@ -95,3 +95,60 @@ def test_callers_that_import_it_either_way_now_hold_the_same_function():
         from services.ollama_client import ollama_generate as g1
         from src.services.ollama_client import ollama_generate as g2
         print(g1 is g2 is a.ollama_generate is b.ollama_generate)""") == "True"
+
+
+# ---- event_bus ----------------------------------------------------------------------------------------
+
+def test_the_event_bus_is_one_module_and_one_bus_whichever_name_is_used():
+    assert run("""
+        import services.event_bus as a
+        import src.services.event_bus as b
+        print(a is b, a.get_event_bus() is b.get_event_bus())""") == "True True"
+    assert run("""
+        import src.services.event_bus as b
+        import services.event_bus as a
+        print(a is b, a.get_event_bus() is b.get_event_bus())""") == "True True"
+
+
+def test_a_subscriber_on_one_name_hears_an_event_published_through_the_other():
+    """The mail-intake sweep publishes through src.services.event_bus; subscribers used services.event_bus."""
+    assert run("""
+        import services.event_bus as a
+        import src.services.event_bus as b
+        heard = []
+        a.get_event_bus().subscribe("document.ingested", heard.append)
+        b.get_event_bus().publish("document.ingested", {"id": 7})
+        a.get_event_bus().publish("document.ingested", {"id": 8})
+        print(heard)""") == "[{'id': 7}, {'id': 8}]"
+
+
+def test_a_one_shot_subscriber_is_used_up_once_across_both_names():
+    assert run("""
+        import services.event_bus as a
+        import src.services.event_bus as b
+        heard = []
+        a.get_event_bus().subscribe("e", heard.append, once=True)
+        b.get_event_bus().publish("e", {"n": 1})
+        b.get_event_bus().publish("e", {"n": 2})
+        print(len(heard))""") == "1"
+
+
+def test_the_workflow_context_set_through_one_name_is_seen_through_the_other():
+    assert run("""
+        import services.event_bus as a
+        import src.services.event_bus as b
+        with a.workflow_scope(workflow_id="wf-1", agent_name="x"):
+            seen = b.get_current_workflow()
+        print(seen and seen.get("workflow_id"), b.get_current_workflow())""") == "wf-1 None"
+
+
+def test_a_handler_that_raises_does_not_stop_the_others_across_both_names():
+    assert run("""
+        import logging; logging.disable(logging.CRITICAL)
+        import services.event_bus as a
+        import src.services.event_bus as b
+        got = []
+        a.get_event_bus().subscribe("e", lambda p: 1 / 0)
+        b.get_event_bus().subscribe("e", got.append)
+        a.get_event_bus().publish("e", {"ok": True})
+        print(got)""") == "[{'ok': True}]"
