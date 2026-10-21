@@ -30,6 +30,11 @@ ASSUMPTION_ARGS = frozenset({
     "early_tolerance_days", "late_tolerance_days", "in_full_tolerance", "sensitivity_pct",
 })
 
+# Tools whose results describe what exists (inputs, ranges, playbooks), not what a value is. Their numbers
+# are never a source: "range [0, 1]" in a catalogue must not make a duty rate of 0 look supplied.
+NON_SOURCE_TOOLS = frozenset({"list_calculations", "list_governance", "list_skills", "use_skill", "get_prompt",
+                              "list_opportunity_levers"})
+
 _NUMBER = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s?(k|m|bn|thousand|million|billion)?\b", re.IGNORECASE)
 _SCALE = {"k": Decimal(1000), "thousand": Decimal(1000), "m": Decimal(1_000_000), "million": Decimal(1_000_000),
           "bn": Decimal(1_000_000_000), "billion": Decimal(1_000_000_000)}
@@ -109,7 +114,8 @@ def untraced_assumptions(args: Mapping[str, Any], *, task: str, calls: Sequence[
     now = today or date.today()
     texts = [task or "", now.isoformat(), str(now.year)]
     for c in calls:
-        if getattr(c, "ok", False) and getattr(c, "result", None) is not None:
+        if (getattr(c, "ok", False) and getattr(c, "result", None) is not None
+                and getattr(c, "name", None) not in NON_SOURCE_TOOLS):
             texts.append(json.dumps(c.result, default=str))
     if skill_config:
         texts.append(json.dumps(skill_config, default=str))

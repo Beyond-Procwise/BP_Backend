@@ -110,3 +110,19 @@ def test_checking_changes_nothing_it_was_given():
     before = copy.deepcopy(args)
     found(args)
     assert args == before
+
+
+CATALOGUE = {"calculations": [{"name": "landed_cost.total_cost",
+                               "inputs": [{"name": "duty_rate", "range": "[0, 1]", "description": "policy rate on 110% of goods"}]}]}
+
+
+@pytest.mark.parametrize("tool", ["list_calculations", "list_governance", "list_skills", "use_skill", "get_prompt"])
+def test_a_catalogue_or_playbook_describes_inputs_it_does_not_supply_values(tool):
+    prior = call(tool, CATALOGUE)
+    assert [p for p, _ in found({"inputs": {"duty_rate": 0, "default_insurance_rate": 0.01}}, calls=[prior])] == [
+        "inputs.duty_rate", "inputs.default_insurance_rate"]
+
+
+def test_a_governed_policy_a_calculation_and_the_corpus_do_supply_values():
+    for tool in ("get_policy", "run_calculation", "get_corpus_facts", "check_policy"):
+        assert found({"inputs": {"cost_of_capital": 0.12}}, calls=[call(tool, {"v": {"cost_of_capital": 0.12}})]) == []

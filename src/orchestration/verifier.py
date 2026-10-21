@@ -67,8 +67,11 @@ def verify(answer: str, calls: Sequence[Any], task: str, *, skill_config: Option
     now = today or date.today()
     # Today's date is known to the orchestrator, so a model that says when it checked is not inventing it.
     sources: List[Any] = [task, now.isoformat(), now.strftime("%d %b %Y"), now.strftime("%d %B %Y")]
+    from .argument_check import NON_SOURCE_TOOLS
+
     for c in calls:
-        if getattr(c, "ok", False) and getattr(c, "result", None) is not None:
+        if (getattr(c, "ok", False) and getattr(c, "result", None) is not None
+                and getattr(c, "name", None) not in NON_SOURCE_TOOLS):
             sources.append(c.result)
     if config:
         sources.append(json.dumps(config, default=str))

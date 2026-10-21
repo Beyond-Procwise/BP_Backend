@@ -128,3 +128,9 @@ def test_still_empty_after_the_retry_the_user_is_told_nothing_was_produced():
 def test_an_empty_answer_with_an_authoritative_reply_available_just_uses_the_reply():
     v = verify("", [CHECK], config=AUTH)
     assert v.action == "replace" and v.answer == CHECK.result["reply_text"]
+
+
+def test_figures_in_a_catalogue_of_calculations_are_not_a_source_for_an_answer():
+    catalogue = call("list_calculations", {"note": "the supplier floor is 12,500.50 in the catalogue example"})
+    assert verify("The floor is 12,500.50 GBP.", [catalogue], task="x").action == "retry"
+    assert verify("The floor is 12,500.50 GBP.", [call("get_corpus_facts", {"floor": 12500.50})], task="x").action == "keep"
