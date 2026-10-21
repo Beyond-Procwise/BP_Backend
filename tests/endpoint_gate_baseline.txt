@@ -44,10 +44,6 @@ src/api/routers/requirements.py::POST router /run-workflow::post_run_workflow
 src/api/routers/stream.py::POST router /plan::stream_plan
 src/api/routers/summary.py::POST router /precompute::post_precompute
 src/api/routers/summary.py::POST router ::post_summary
-src/api/routers/supplier_research.py::POST router /enrichment/{enrichment_id}/reject::reject
-src/api/routers/supplier_review.py::POST router /reviews/sweep::sweep_duplicates
-src/api/routers/supplier_review.py::POST router /reviews/{review_id}/confirm::confirm_review
-src/api/routers/supplier_review.py::POST router /reviews/{review_id}/reject::reject_review
 src/api/routers/support.py::POST router /contact/stream::contact_support_stream
 src/api/routers/support.py::POST router /contact::contact_support
 src/api/routers/support.py::POST router /{reference}/confirm::confirm_support

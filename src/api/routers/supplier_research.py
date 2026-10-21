@@ -110,6 +110,8 @@ def apply(enrichment_id: int, body: RejectBody, principal=Depends(require_user))
 @router.post("/enrichment/{enrichment_id}/reject")
 def reject(enrichment_id: int, body: RejectBody, principal=Depends(require_user)):
     """Reject a proposed enrichment. Signed by the token, not by `body.reviewer`."""
+    gate("supplier.write", principal, agent="SupplierResearchRouter",
+         context={"enrichment_id": enrichment_id, "decision": "reject"})
     with get_conn() as c:
         try:
             reviewer = getattr(principal, "subject", None) or None
