@@ -300,6 +300,31 @@ def _gate(
     return osafe.SAFE_REPLY
 
 
+def _wiring():
+    """What the orchestrator's executor loop needs, taken from this module's own names at call time.
+
+    The loop itself lives in ``orchestration.executor``; it owns the state of a run and the order of
+    things, and imports none of the model, the policy gate or the output check. Looking the names up
+    here, when a run starts, keeps them the ones this module currently has.
+    """
+    from orchestration import executor
+
+    return executor.Wiring(
+        ToolCall=ToolCall,
+        ToolRunResult=ToolRunResult,
+        RanOnPrecedent=_RanOnPrecedent,
+        propose_turn=lambda messages, schemas, model, timeout: _chat(messages, schemas, model, timeout),
+        propose_stream=lambda messages, schemas, model, timeout: _driver.chat_stream(
+            messages, schemas, model=model, timeout=timeout),
+        policy_check=lambda *a, **k: _policy_refusal(*a, **k),
+        safety_gate=lambda *a, **k: _gate(*a, **k),
+        coerce_args=_coerce_args,
+        render_result=_render_result,
+        with_note=_with_note,
+        log=log,
+    )
+
+
 def run_tools_stream(
     task: str,
     tools: Sequence[Tool],
@@ -316,94 +341,15 @@ def run_tools_stream(
 ) -> ToolRunResult:
     """Same loop, but the FINAL answer is streamed out through ``on_delta``.
 
-    Tool-calling rounds are not streamed — there is nothing to show while the model is
-    deciding which tool to call, and a half-formed tool call is not something a user
-    should ever see. ``on_tool`` fires once per call so the UI can say what is being
-    looked up. Only once the model stops calling tools and starts writing prose do the
-    tokens flow.
+    Tool-calling rounds are not streamed. ``on_tool`` fires once per call so the UI can say what is
+    being looked up. The loop is the orchestrator's (``orchestration.executor.run_stream``).
     """
-    model = model or _DEFAULT_MODEL
-    by_name = {t.name: t for t in tools}
-    schemas = [t.schema() for t in tools]
+    from orchestration import executor
 
-    messages: List[Dict[str, Any]] = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": task},
-    ]
-    result = ToolRunResult(model=model, system=system, tools_offered=[t.name for t in tools])
-
-    for _ in range(max_rounds):
-        result.rounds += 1
-        try:
-            proposal = _driver.chat_stream(messages, schemas, model=model, timeout=timeout_s)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("tool_runtime stream failed: %s", exc)
-            result.error = str(exc)[:300]
-            return result
-
-        content = proposal.content
-        tool_calls = proposal.tool_calls
-        if not tool_calls:
-            # Tokens used to go straight out to the browser as they arrived. They no longer
-            # do, and the reason is that a token cannot be un-sent: by the time a scanner
-            # sees `proc.` and `process_monitor` land in two separate fragments, the user has
-            # already read them. So the answer is assembled, checked, re-framed if it was
-            # describing the machine, and only then released.
-            #
-            # The cost is the typing effect on the final answer. The user still watches the
-            # tool stages tick over live, so nothing looks frozen — and an answer that
-            # appears half a second later is a much better trade than one that leaks.
-            result.answer = _gate(content, messages, schemas, model, timeout_s, result)
-            if on_delta and result.answer:
-                on_delta(result.answer)
-            return result
-
-        messages.append({"role": "assistant", "content": content, "tool_calls": tool_calls})
-        for call in tool_calls:
-            fn = call.get("function") or {}
-            name = fn.get("name") or ""
-            args = _coerce_args(fn.get("arguments"))
-            tool = by_name.get(name)
-            started = time.monotonic()
-            refusal = None
-            if tool is not None:
-                refusal = _policy_refusal(name, args, agent=agent, reason=content,
-                                          workflow_id=workflow_id, user_id=user_id)
-            allowed = refusal if isinstance(refusal, _RanOnPrecedent) else None
-            if allowed is not None:
-                refusal = None
-            if tool is None:
-                record = ToolCall(name=name, arguments=args, ok=False, error=f"unknown tool '{name}'")
-            elif refusal is not None:
-                record = ToolCall(name=name, arguments=args, ok=False, result=refusal, error=None)
-            else:
-                try:
-                    record = ToolCall(
-                        name=name, arguments=args, ok=True, result=tool.handler(**args)
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    log.exception("tool %s failed", name)
-                    record = ToolCall(name=name, arguments=args, ok=False, error=str(exc)[:300])
-            record.duration_ms = int((time.monotonic() - started) * 1000)
-            result.calls.append(record)
-            if on_tool:
-                on_tool(record)
-            messages.append(
-                {
-                    "role": "tool",
-                    "name": name,
-                    "content": (
-                        json.dumps(refusal, default=str)
-                        if refusal is not None
-                        else _with_note(_render_result(
-                            record.result if record.ok else {"error": record.error}
-                        ), allowed)
-                    ),
-                }
-            )
-
-    result.error = f"max_rounds ({max_rounds}) exhausted without a final answer"
-    return result
+    return executor.run_stream(
+        _wiring(), task, tools, system, model=model or _DEFAULT_MODEL, max_rounds=max_rounds,
+        timeout_s=timeout_s, on_tool=on_tool, on_delta=on_delta, agent=agent, workflow_id=workflow_id,
+        user_id=user_id)
 
 
 def run_tools(
@@ -422,124 +368,15 @@ def run_tools(
 ) -> ToolRunResult:
     """Run AgentNick over ``task``, letting it call ``tools`` until it answers.
 
-    Bounded by ``max_rounds``. Never raises to the caller: transport failures come
-    back as ``ToolRunResult.error`` with whatever was gathered so far, because a
-    dead Ollama should degrade the answer, not take down the request.
-
-    ``require_tool_use`` nudges the model once if it tries to answer without
-    consulting a single tool. That is the anti-hallucination guard: for a grounded
-    question, an answer produced without looking anything up is a guess.
+    Bounded by ``max_rounds``. Never raises to the caller: transport failures come back as
+    ``ToolRunResult.error`` with whatever was gathered so far, because a dead model server should
+    degrade the answer, not take down the request. The loop is the orchestrator's
+    (``orchestration.executor.run``); ``require_tool_use`` nudges the model once if it tries to answer
+    without consulting a single tool.
     """
-    model = model or _DEFAULT_MODEL
-    by_name = {t.name: t for t in tools}
-    schemas = [t.schema() for t in tools]
+    from orchestration import executor
 
-    messages: List[Dict[str, Any]] = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": task},
-    ]
-
-    result = ToolRunResult(model=model, system=system, tools_offered=[t.name for t in tools])
-    nudged = False
-    any_tool_call = False
-
-    for _ in range(max_rounds):
-        result.rounds += 1
-        try:
-            message = _chat(messages, schemas, model, timeout_s)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("tool_runtime chat failed: %s", exc)
-            result.error = str(exc)[:300]
-            return result
-
-        messages.append(message)
-        tool_calls = message.get("tool_calls") or []
-
-        if not tool_calls:
-            content = message.get("content") or ""
-            # The model wants to answer. If it never looked anything up and the
-            # caller demanded grounding, push back exactly once.
-            if require_tool_use and not any_tool_call and not nudged:
-                nudged = True
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": nudge
-                        or (
-                            "You answered without calling any tool. Do not rely on "
-                            "assumptions. Call the tools you need to establish the "
-                            "facts, then answer from what they return."
-                        ),
-                    }
-                )
-                continue
-            result.answer = _gate(content, messages, schemas, model, timeout_s, result)
-            return result
-
-        any_tool_call = True
-        for call in tool_calls:
-            fn = call.get("function") or {}
-            name = fn.get("name") or ""
-            args = _coerce_args(fn.get("arguments"))
-            tool = by_name.get(name)
-
-            started = time.monotonic()
-            refusal = None
-            if tool is not None:
-                refusal = _policy_refusal(name, args, agent=agent,
-                                          reason=message.get("content"),
-                                          workflow_id=workflow_id, user_id=user_id)
-            allowed = refusal if isinstance(refusal, _RanOnPrecedent) else None
-            if allowed is not None:
-                refusal = None
-            if tool is None:
-                record = ToolCall(
-                    name=name,
-                    arguments=args,
-                    ok=False,
-                    error=f"unknown tool '{name}'",
-                )
-            elif refusal is not None:
-                # Refused by an agent policy: the handler never runs; the model is told why.
-                record = ToolCall(name=name, arguments=args, ok=False, result=refusal, error=None)
-            else:
-                try:
-                    value = tool.handler(**args)
-                    record = ToolCall(name=name, arguments=args, ok=True, result=value)
-                except TypeError as exc:
-                    # Bad arguments from the model — tell it, don't crash.
-                    record = ToolCall(
-                        name=name,
-                        arguments=args,
-                        ok=False,
-                        error=f"invalid arguments: {exc}",
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    log.exception("tool %s failed", name)
-                    record = ToolCall(
-                        name=name, arguments=args, ok=False, error=str(exc)[:300]
-                    )
-            record.duration_ms = int((time.monotonic() - started) * 1000)
-            result.calls.append(record)
-
-            messages.append(
-                {
-                    "role": "tool",
-                    "name": name,
-                    "content": (
-                        json.dumps(refusal, default=str)
-                        if refusal is not None
-                        else _with_note(_render_result(
-                            record.result if record.ok else {"error": record.error}
-                        ), allowed)
-                    ),
-                }
-            )
-
-    # Ran out of rounds. Return the last thing said rather than nothing.
-    result.error = f"max_rounds ({max_rounds}) exhausted without a final answer"
-    for message in reversed(messages):
-        if message.get("role") == "assistant" and message.get("content"):
-            result.answer = message["content"]
-            break
-    return result
+    return executor.run(
+        _wiring(), task, tools, system, model=model or _DEFAULT_MODEL, max_rounds=max_rounds,
+        timeout_s=timeout_s, require_tool_use=require_tool_use, nudge=nudge, agent=agent,
+        workflow_id=workflow_id, user_id=user_id)
