@@ -18,6 +18,7 @@ threadpool FastAPI runs ``def`` endpoints on, and does not leak to other request
 """
 from __future__ import annotations
 
+import os
 import re
 import sys
 import threading
@@ -111,11 +112,26 @@ def reset(token) -> None:
     _tenant.reset(token)
 
 
+PLATFORM_LABEL_ENV = "PLATFORM_TENANT_LABEL"
+
+
+def platform_label() -> Optional[str]:
+    """The one company label that platform work with no company of its own writes under (D-49).
+
+    Valid only while exactly one customer exists. Before a second customer is added, each job must bind
+    the company of the record it processes, and this setting must be removed. Unset (or not a plain
+    identifier) means platform writes name no company and are refused once the label is mandatory.
+    """
+    return clean(os.environ.get(PLATFORM_LABEL_ENV, "").strip())
+
+
 def connection_settings() -> Optional[tuple]:
     """(tenant, system) to apply to a new connection, or None when there is nothing to say."""
     tenant, system_on = _tenant.get(), _system.get()
     if tenant is None and not system_on:
         return None
+    if tenant is None:
+        tenant = platform_label()
     return (tenant or "", "on" if system_on else "off")
 
 

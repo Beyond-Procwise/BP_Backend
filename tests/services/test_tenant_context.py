@@ -82,9 +82,33 @@ def test_a_tenant_is_passed_and_system_is_off():
         assert tc.connection_settings() == ("a", "off")
 
 
-def test_system_with_no_tenant_is_passed_with_an_empty_tenant():
+def test_system_with_no_tenant_is_passed_with_an_empty_tenant(monkeypatch):
+    monkeypatch.delenv(tc.PLATFORM_LABEL_ENV, raising=False)
     with tc.system():
         assert tc.connection_settings() == ("", "on")
+
+
+def test_system_with_no_tenant_uses_the_one_configured_platform_label(monkeypatch):
+    monkeypatch.setenv(tc.PLATFORM_LABEL_ENV, "acme")
+    with tc.system():
+        assert tc.connection_settings() == ("acme", "on")
+
+
+def test_a_bound_tenant_beats_the_platform_label(monkeypatch):
+    monkeypatch.setenv(tc.PLATFORM_LABEL_ENV, "acme")
+    with tc.system(), tc.bound("other"):
+        assert tc.connection_settings() == ("other", "on")
+
+
+def test_a_bad_platform_label_is_ignored_not_repaired(monkeypatch):
+    monkeypatch.setenv(tc.PLATFORM_LABEL_ENV, "a b;drop")
+    with tc.system():
+        assert tc.connection_settings() == ("", "on")
+
+
+def test_the_platform_label_never_applies_outside_system_mode(monkeypatch):
+    monkeypatch.setenv(tc.PLATFORM_LABEL_ENV, "acme")
+    assert tc.connection_settings() is None
 
 
 class _Cur:
