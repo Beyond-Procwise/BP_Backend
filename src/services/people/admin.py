@@ -19,7 +19,7 @@ from services.people.models import PeopleStore, Person
 from services.people.resolver import TARGETS
 
 TENANT = "default"          # single-tenant today; every query below is scoped by it anyway
-PERSON_FIELDS = ("display_name", "email", "manager_subject", "department_id", "is_department_head",
+PERSON_FIELDS = ("display_name", "email", "title", "manager_subject", "department_id", "is_department_head",
                  "roles", "approval_limit", "is_active", "delegate_subject", "delegate_until")
 CHANNELS = {"email"}
 _HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -49,7 +49,7 @@ def validate_person_update(store: PeopleStore, tenant: str, subject: str, fields
         raise PeopleError(422, f"cannot set: {', '.join(unknown)}")
     out: Dict[str, Any] = {}
     for k, v in fields.items():
-        if k in ("display_name", "email", "department_id"):
+        if k in ("display_name", "email", "department_id", "title"):
             out[k] = (str(v).strip() or None) if v is not None else None
         elif k in ("is_department_head", "is_active"):
             if not isinstance(v, bool):
@@ -156,7 +156,7 @@ def validate_prefs(prefs: Any) -> Dict[str, Any]:
 
 # ------------------------------------------------------------------ SQL
 _P = ("subject, display_name, email, manager_subject, department_id, is_department_head, roles, "
-      "approval_limit, is_active, delegate_subject, delegate_until, last_modified_by, last_modified_at")
+      "approval_limit, is_active, delegate_subject, delegate_until, title, last_modified_by, last_modified_at")
 
 
 def _person_dict(r) -> Dict[str, Any]:

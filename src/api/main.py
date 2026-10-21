@@ -53,6 +53,7 @@ from api.routers import agents as agents_router_mod, documents, email, metrics, 
 from api.routers import permission_settings as permission_settings_router_mod
 from api.routers import people as people_router_mod
 from api.routers import messaging as messaging_router_mod
+from api.routers import people_graph as people_graph_router_mod
 from api.routers import deal_visibility as deal_visibility_router_mod
 from api.routers import ws as ws_router_mod
 # Imported here, not further down, because every router below is mounted with
@@ -629,6 +630,7 @@ _AUTHENTICATED_ROUTERS = [
     permission_settings_router_mod.router,
     people_router_mod.router,
     messaging_router_mod.router,
+    people_graph_router_mod.router,
     deal_visibility_router_mod.router,
     promotion.router,
     summary.router,

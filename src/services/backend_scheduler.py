@@ -488,6 +488,7 @@ class BackendScheduler:
         self._register_email_draft_sweep_job()
         self._register_agent_policy_approvals_job()
         self._register_domain_event_drain_job()
+        self._register_people_graph_jobs()
         self._register_agent_policy_conflict_scan_job()
         self._register_agent_policy_learning_scan_job()
 
@@ -504,6 +505,45 @@ class BackendScheduler:
             return
         self.register_job(self.DOMAIN_EVENT_DRAIN_JOB_NAME, self._run_domain_event_drain,
                           interval=timedelta(seconds=15), initial_delay=timedelta(seconds=30))
+
+    PEOPLE_GRAPH_REFRESH_JOB_NAME = "people-graph-refresh"
+    PEOPLE_GRAPH_DECISIONS_JOB_NAME = "people-graph-decisions"
+
+    def _register_people_graph_jobs(self) -> None:
+        """Daily: HR + RBAC mirrors, history backfill, derivation, activity retention. Every minute: decision
+        edges for approvals just made. OFF with PEOPLE_GRAPH=off. Own lane: the daily job reads and writes Neo4j."""
+        import os
+        if os.environ.get("PEOPLE_GRAPH", "on").strip().lower() == "off":
+            return
+        if self.PEOPLE_GRAPH_REFRESH_JOB_NAME not in self._jobs:
+            self.register_job(self.PEOPLE_GRAPH_REFRESH_JOB_NAME, self._run_people_graph_refresh,
+                              interval=timedelta(hours=24), initial_delay=timedelta(minutes=10), lane="people-graph")
+        if self.PEOPLE_GRAPH_DECISIONS_JOB_NAME not in self._jobs:
+            self.register_job(self.PEOPLE_GRAPH_DECISIONS_JOB_NAME, self._run_people_graph_decisions,
+                              interval=timedelta(seconds=60), initial_delay=timedelta(minutes=2), lane="people-graph")
+
+    def _run_people_graph_refresh(self) -> None:
+        try:
+            from services.db import get_conn
+            from services.people.graph import service
+            with get_conn() as conn:
+                out = service.refresh(conn)
+            logger.info("people graph refresh: %s", out)
+        except Exception:
+            logger.exception("people graph refresh failed")
+
+    def _run_people_graph_decisions(self) -> None:
+        try:
+            from datetime import datetime, timedelta as _td, timezone
+            from services.db import get_conn
+            from services.people.graph import service, sync
+            now = datetime.now(timezone.utc)
+            with get_conn() as conn:
+                facts = sync.facts_from_events(conn, now - _td(minutes=10))
+            if facts:
+                sync.apply_decisions(service.writer(), facts)
+        except Exception:
+            logger.exception("people graph decision edges failed")
 
     def _run_domain_event_drain(self) -> None:
         try:

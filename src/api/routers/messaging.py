@@ -47,6 +47,46 @@ def _run(fn, *args, **kwargs):
         raise HTTPException(status_code=exc.status, detail=exc.detail)
 
 
+def _picker(conn, me, q, conversation_id):
+    """Tier 1 groups from the org chart; tiers 2-3 from the graph only when the tenant switched them on.
+    Every person shown is logged (who, which tier) so acceptance can be measured."""
+    out = svc.suggest_recipients(conn, me, q, conversation_id)
+    try:
+        from services.people.admin import TENANT
+        from services.people.graph import activity, queries, service
+        if service.tiers_enabled(conn):
+            key = None
+            if conversation_id:
+                conv = svc.get_conversation(conn, me, conversation_id)
+                key = f"{conv['entity_type']}:{conv['entity_id']}" if conv.get("entity_type") else None
+            extra = [r for r in queries.suggest_recipients(service.get_store(), TENANT, me, entity_key=key, graph_tiers=True)
+                     if r["tier"] >= 2]
+            known = {p["subject"] for g in out["suggested"] for p in g["people"]}
+            for tier, label in ((2, "Have decided on this before"), (3, "You often work with")):
+                people = [{"subject": r["subject"], "name": r["name"], "reason": r["reason"]} for r in extra
+                          if r["tier"] == tier and r["subject"] not in known]
+                if people:
+                    out["suggested"].append({"label": label, "tier": "derived" if tier == 3 else "asserted", "people": people,
+                                             "advisory": tier == 3})
+        with conn.cursor() as cur:
+            for i, g in enumerate(out["suggested"]):
+                tier = "1" if g["label"] in _TIER1 else ("2" if g["label"].startswith("Have decided") else "3")
+                for p in g["people"]:
+                    activity.record(cur, "suggestion.shown", me, target_user_id=p["subject"], tier=tier)
+    except Exception:
+        pass                                   # suggestions never fail because logging or the graph did
+    return out
+
+
+_TIER1 = {"Your manager", "Your reporting line", "Your department head", "Your direct reports", "Already in this conversation"}
+
+
+class FeedbackBody(BaseModel):
+    subject: str
+    tier: str
+    outcome: str            # accepted | dismissed
+
+
 class DirectBody(BaseModel):
     to: str
 
@@ -113,7 +153,7 @@ def conversations(limit: int = Query(50, ge=1, le=100), principal=Depends(requir
 def suggest(q: Optional[str] = None, conversation_id: Optional[int] = None,
             principal=Depends(require_user)) -> dict[str, Any]:
     me = _require_member(principal)
-    return _run(svc.suggest_recipients, me, q, conversation_id)
+    return _run(_picker, me, q, conversation_id)
 
 
 @router.get("/conversations/{conversation_id}", summary="One conversation")
@@ -175,3 +215,15 @@ def edit(message_id: int, body: EditBody, principal=Depends(require_user)) -> di
 def delete(message_id: int, principal=Depends(require_user)) -> dict[str, Any]:
     me = _require_member(principal)
     return _run(svc.delete, me, message_id)
+
+
+@router.post("/suggestions/feedback", summary="Tell the learning loop whether a suggested person was used")
+def suggestion_feedback(body: FeedbackBody, principal=Depends(require_user)) -> dict[str, Any]:
+    me = _require_member(principal)
+    if body.outcome not in ("accepted", "dismissed") or body.tier not in ("1", "2", "3"):
+        raise HTTPException(status_code=422, detail="outcome is accepted or dismissed; tier is 1, 2 or 3")
+    from services.people.graph import activity
+    def run(conn):
+        with conn.cursor() as cur:
+            return activity.record(cur, f"suggestion.{body.outcome}", me, target_user_id=body.subject, tier=body.tier)
+    return {"recorded": bool(_run(run))}

@@ -30,13 +30,13 @@ class InMemoryPeopleStore:
 
 
 _COLS = ("subject, tenant_id, display_name, manager_subject, department_id, is_department_head, "
-         "roles, approval_limit, is_active, delegate_subject, delegate_until")
+         "roles, approval_limit, is_active, delegate_subject, delegate_until, title")
 
 
 def _row(r) -> Person:
     return Person(subject=r[0], tenant_id=r[1], display_name=r[2] or "", manager_subject=r[3],
                   department_id=r[4], is_department_head=bool(r[5]), roles=tuple(r[6] or ()),
-                  approval_limit=r[7], is_active=bool(r[8]), delegate_subject=r[9], delegate_until=r[10])
+                  approval_limit=r[7], is_active=bool(r[8]), delegate_subject=r[9], delegate_until=r[10], title=r[11])
 
 
 class PgPeopleStore:

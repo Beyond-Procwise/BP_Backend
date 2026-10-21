@@ -22,6 +22,7 @@ class Person:
     is_active: bool = True
     delegate_subject: Optional[str] = None
     delegate_until: Optional[datetime] = None
+    title: Optional[str] = None
 
     @property
     def is_admin(self) -> bool:

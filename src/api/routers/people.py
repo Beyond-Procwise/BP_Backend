@@ -51,6 +51,7 @@ def _problem(exc: svc.PeopleError):
 class PersonBody(BaseModel):
     display_name: Optional[str] = None
     email: Optional[str] = None
+    title: Optional[str] = None
     manager_subject: Optional[str] = None
     department_id: Optional[str] = None
     is_department_head: Optional[bool] = None

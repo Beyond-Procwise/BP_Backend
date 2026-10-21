@@ -56,3 +56,32 @@ Code: src/services/people/{messaging,realtime,db}.py, src/api/routers/messaging.
 - Not done: attachments are metadata only (no upload/storage endpoint); one notification per message (no coalescing of a busy chat);
   no search over message text; no activity-store rows yet (Phase 4: message.sent verb, metadata only); output-safety may rewrite a message body
   that names an internal table/route; UI (inbox, thread panel, picker, bell) lives in the UI repo.
+
+## Update — Phase 4 people knowledge graph built (same day)
+Code: src/services/people/graph/{model,store,writer,sync,activity,derive,proposed,queries,service}.py, src/api/routers/people_graph.py,
+sql/bp_graph.sql (adds bp_person.title, bp_activity, bp_proposed_edge; applied to bp_testdb only — DEPLOY ORDER: the code now SELECTs bp_person.title,
+so migrate before deploying).
+Governing principle + admission rule are verbatim in the module docstring of graph/model.py (copy into docs/people_knowledge_graph.md when docs/ is writable in git).
+- Three layers: GRAPH = asserted facts (hr / rbac / user_action edges, each with source, source_ref, asserted_by, valid_from, valid_to; changes close+open);
+  ACTIVITY STORE (bp_activity) = behaviour, metadata only; EMBEDDINGS = content only, may only RE-ORDER people the graph already returned
+  and may only PROPOSE edges via bp_proposed_edge (confirmed by a person -> source=inferred, confirmed_by).
+- validate_edge is the single gate: unknown type, wrong source for the type, missing source_ref/asserted_by/valid_from, bad labels, missing required
+  props, MESSAGED/VIEWED/COLLABORATED_ON/MENTIONED... (refused by name) all raise AdmissionError and store nothing. Same contract suite runs on the in-memory
+  store and on real Neo4j.
+- Graph store: Neo4j (the app's existing connection). Own nodes: User, Title, Role, Permission, Department, Team (spec labels) + EntityType + Entity stubs keyed
+  type:id, all with pw_tenant/pw_key, so the existing Supplier/PurchaseOrder nodes other code queries are never touched. Entity stubs are NOT yet linked to the
+  legacy nodes (follow-up). Nothing has been synced into the shared graph yet: first service.refresh() writes Users/Roles/Permissions for tenant 'default'.
+- Sync (idempotent, daily job `people-graph-refresh` + 60 s `people-graph-decisions`, PEOPLE_GRAPH=off disables): HR from bp_person (REPORTS_TO, HOLDS_TITLE,
+  MEMBER_OF, DELEGATES_TO with its own window, HAS_AUTHORITY max_amount/unlimited); RBAC from bp_role_assignment + RoleDefinitionPolicy (HAS_ROLE, GRANTS, ON) —
+  only DIRECT DB assignments; roles that arrive via Cognito groups at runtime are not mirrored; decisions from approval.* events AND history (bp_approval, policy
+  approval cases) — one edge per action, idempotent by event_id, with duration_ms.
+- Derivation (daily): WORKS_WITH (>= N=8 addressed interactions across >= M=3 distinct entities in 90 days; direct chat with no entity never counts) and
+  ACTIVE_IN (decision edges only, outcome-weighted). Half-life 6 weeks, floor 0.2, each dismissed suggestion x0.8. Rebuilt every run, source=derived (advisory).
+- Queries (admin-gated, each result has reason + basis asserted|derived|inferred, all take as_of): who_can_act, who_has_acted, who_knows_about,
+  find_bottlenecks, suggest_recipients (tier 1 asserted always; tiers 2-4 only when the tenant switch is ON). Switch default OFF; turning it on needs tier-1
+  acceptance evidence (>=30 shown, >=20% accepted) unless an admin forces it. Picker logs suggestion.shown; POST /messages/suggestions/feedback logs accepted/dismissed.
+- Privacy: DELETE /people/me/activity and /admin/graph/users/{subject}?pseudonymise= remove activity rows and derived edges; asserted decision edges stay (de-identified
+  when pseudonymised). Retention default 365 days (pruned by the daily job).
+- NOT done: embedding-based proposer (the queue + confirm flow exist; nothing writes proposals yet); linking Entity stubs to legacy Supplier/PO nodes; Team nodes
+  (no source table); WATCHES/OWNS/ASSIGNED/SIGNED/ESCALATED have a validated write path but no product action emits them yet; RBAC via Cognito groups; UI
+  ("My network", reason chips); docs/people_knowledge_graph.md (docs/ is gitignored); bp_sqldb migrations.

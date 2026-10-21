@@ -250,11 +250,23 @@ def send(conn, me: str, conversation_id: int, body: Any, mentions: Optional[Sequ
         everyone = [s for s, _ in others]
         # a mute silences ordinary messages, never a direct mention
         plain = [s for s, muted in others if not muted and s not in mentioned]
+        _log_activity(cur, conv, me, mid, conversation_id, mentioned, [x for x in everyone if x != me])
         _announce(cur, "message.received", mid, conversation_id, me, f"New message from {sender['name']}", plain)
         _announce(cur, "comment.mentioned", mid, conversation_id, me, f"{sender['name']} mentioned you", mentioned)
     return {"id": mid, "conversation_id": conversation_id, "sender": me, "body": text, "mentions": mentioned,
             "attachments": atts, "reply_to_id": reply_to_id, "created_at": created.isoformat(),
             "signal": everyone}
+
+
+def _log_activity(cur, conv, me, mid, conversation_id, mentioned, others) -> None:
+    """Behaviour goes to the activity store (ids and verbs, never text); it never becomes a graph edge directly."""
+    from services.people.graph import activity
+    ent = dict(entity_type=conv["entity_type"], entity_id=conv["entity_id"])
+    direct = others[0] if conv["type"] == "direct" and others else None
+    activity.record(cur, "message.sent", me, target_user_id=direct, conversation_id=conversation_id, message_id=mid,
+                    conversation_type=conv["type"], **ent)
+    for m in mentioned:
+        activity.record(cur, "mention", me, target_user_id=m, conversation_id=conversation_id, message_id=mid, **ent)
 
 
 def _announce(cur, event_type: str, message_id: int, conversation_id: int, actor: str, summary: str,

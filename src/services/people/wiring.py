@@ -106,9 +106,28 @@ def _prefs_from_db(conn):
     return prefs_for
 
 
+def _graph_suggester(conn):
+    """Tiers 2-4, advisory, and only handed to the resolver when the tenant switched them on."""
+    from services.people.graph import queries, service
+    def suggest(actor: Person, event_type: str, entity: EntityRef):
+        d = {}
+        key = f"{entity.entity_type}:{entity.entity_id}"
+        rows = queries.suggest_recipients(service.get_store(), actor.tenant_id, actor.subject, entity_key=key,
+                                          graph_tiers=True, k=5)
+        return [r["subject"] for r in rows if r["tier"] >= 2]
+    return suggest
+
+
 def build_service(conn) -> NotificationService:
     store = PgPeopleStore(conn)
-    resolver = RecipientResolver(store, HierarchyService(store), PgRuleSource(conn), _can_view(conn))
+    suggester = None
+    try:
+        from services.people.graph import service as graph_service
+        if graph_service.tiers_enabled(conn):
+            suggester = _graph_suggester(conn)
+    except Exception:
+        suggester = None
+    resolver = RecipientResolver(store, HierarchyService(store), PgRuleSource(conn), _can_view(conn), suggester)
     return NotificationService(
         resolver, PgNotificationRepo(conn), entity_for=entity_for_event,
         person_for=store.get, prefs_for=_prefs_from_db(conn),

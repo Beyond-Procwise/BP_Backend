@@ -76,8 +76,10 @@ class RecipientResolver:
         hierarchy: HierarchyService,
         rules: RuleSource,
         can_view: Callable[[Person, EntityRef], bool],
+        graph_suggest: Optional[Callable[[Person, str, EntityRef], Sequence[str]]] = None,
     ) -> None:
         self._store, self._h, self._rules, self._can_view = store, hierarchy, rules, can_view
+        self._graph_suggest = graph_suggest        # None unless the tenant switched graph tiers 2-4 on
 
     def resolve(
         self,
@@ -121,6 +123,11 @@ class RecipientResolver:
             elif t == "watcher":
                 cands += [(s, "watcher", None) for s in entity.watchers]
 
+        if self._graph_suggest is not None:
+            try:
+                cands += [(x, "graph_suggested", None) for x in self._graph_suggest(actor, event_type, entity)]
+            except Exception:
+                pass                              # advisory only: a graph failure never changes who is told
         best: Dict[str, Tuple[int, str, Optional[str]]] = {}
         for subject, reason, pre_from in cands:
             base = self._store.get(tenant, subject)
