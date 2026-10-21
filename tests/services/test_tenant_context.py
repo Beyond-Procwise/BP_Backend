@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from services import db, tenant_context as tc
+from services import tenant_context as tc
 
 
 # --- reading the label ---------------------------------------------------------
@@ -65,14 +65,6 @@ def test_system_is_scoped_and_off_by_default():
     assert tc.is_system() is False
 
 
-def test_a_new_thread_starts_with_no_tenant():
-    seen = []
-    with tc.bound("a"):
-        t = threading.Thread(target=lambda: seen.append(tc.current()))
-        t.start(); t.join()
-    assert seen == [None]
-
-
 def test_both_import_names_share_one_context():
     other = importlib.import_module("src.services.tenant_context")
     assert other is tc
@@ -97,61 +89,173 @@ def test_system_with_no_tenant_is_passed_with_an_empty_tenant():
 
 class _Cur:
     def __init__(self, log): self.log = log
-    def __enter__(self): return self
-    def __exit__(self, *a): return False
     def execute(self, sql, params=None): self.log.append((sql, params))
+    def close(self): pass
 
 
 class _Conn:
-    def __init__(self): self.log, self.autocommit, self.closed = [], False, False
+    def __init__(self, autocommit=True):
+        self.log, self.autocommit, self.closed, self.commits = [], autocommit, False, 0
     def cursor(self): return _Cur(self.log)
+    def commit(self): self.commits += 1
     def close(self): self.closed = True
 
 
 @pytest.fixture
-def real_path(monkeypatch):
-    conns = []
-    monkeypatch.setenv("PROCWISE_TEST_LIVE_DB", "1")
-    monkeypatch.setattr(db, "_pg_dsn", lambda: "host=x")
+def driver():
+    """A stand-in for psycopg2 whose connect() hands out recording connections, wrapped like the real one."""
+    made = []
 
-    def connect(dsn):
-        c = _Conn(); conns.append(c); return c
-    monkeypatch.setattr(db, "psycopg2", SimpleNamespace(connect=connect))
-    return conns
+    def connect(*a, **k):
+        c = _Conn(autocommit=k.pop("autocommit", True)); made.append(c); return c
+    mod = SimpleNamespace(connect=connect)
+    tc.install_driver_patch(mod)
+    return mod, made
 
 
-def test_get_conn_gives_the_connection_the_tenant(real_path):
+def test_a_new_connection_is_given_the_tenant(driver):
+    mod, made = driver
     with tc.bound("acme"):
-        with db.get_conn() as c:
-            (sql, params), = c.log
+        c = mod.connect()
+    (sql, params), = c.log
     assert "app.tenant_id" in sql and params == ("acme", "off")
 
 
-def test_get_conn_with_nothing_bound_runs_no_extra_statement(real_path):
-    with db.get_conn() as c:
-        assert c.log == []
+def test_a_connection_made_with_nothing_bound_runs_no_extra_statement(driver):
+    mod, made = driver
+    assert mod.connect().log == []
 
 
-def test_get_conn_for_system_work_says_so(real_path):
+def test_platform_work_says_so(driver):
+    mod, _ = driver
     with tc.system():
-        with db.get_conn() as c:
-            assert c.log[0][1] == ("", "on")
+        assert mod.connect().log[0][1] == ("", "on")
 
 
-def test_a_failure_telling_the_database_closes_the_connection(real_path, monkeypatch):
-    monkeypatch.setattr(db, "psycopg2", SimpleNamespace(connect=lambda dsn: _BadConn(real_path)))
+def test_the_setting_is_committed_on_a_connection_that_is_not_autocommit(driver):
+    mod, _ = driver
+    with tc.bound("acme"):
+        c = mod.connect(autocommit=False)
+    assert c.commits == 1
+
+
+def test_a_failure_telling_the_database_closes_the_connection(driver):
+    mod, made = driver
+    made_bad = []
+    bad = _Conn(); bad.cursor = lambda: (_ for _ in ()).throw(RuntimeError("no"))
+    mod2 = SimpleNamespace(connect=lambda *a, **k: made_bad.append(bad) or bad)
+    tc.install_driver_patch(mod2)
     with tc.bound("acme"):
         with pytest.raises(RuntimeError):
-            with db.get_conn():
-                pass
-    assert real_path[-1].closed
+            mod2.connect()
+    assert bad.closed
 
 
-class _BadConn(_Conn):
-    def __init__(self, sink):
-        super().__init__(); sink.append(self)
+def test_the_patch_is_installed_once():
+    mod = SimpleNamespace(connect=lambda *a, **k: _Conn())
+    tc.install_driver_patch(mod); first = mod.connect
+    tc.install_driver_patch(mod)
+    assert mod.connect is first
 
-    def cursor(self): raise RuntimeError("no")
+
+def test_the_real_driver_is_patched_so_every_caller_gets_it():
+    import psycopg2
+    assert getattr(psycopg2, "_bp_tenant_connect", False) is True
+
+
+def test_a_pooled_connection_is_cleared_when_nothing_is_bound():
+    c = _Conn()
+    tc.tell_connection(c, always=True)
+    assert c.log[0][1] == ("", "off")
+
+
+def test_a_pooled_connection_is_re_told_on_each_checkout(monkeypatch):
+    sa = pytest.importorskip("sqlalchemy")
+    seen = []
+    monkeypatch.setattr(tc, "tell_connection", lambda conn, always=False: seen.append(always))
+    engine = sa.create_engine("sqlite://")
+    with engine.connect():
+        pass
+    assert seen and all(seen)
+
+
+# --- carrying the tenant into threads and pools --------------------------------------------------
+def _in_thread(fn):
+    out = []
+    t = threading.Thread(target=lambda: out.append(fn()))
+    t.start(); t.join()
+    return out[0]
+
+
+def test_a_thread_started_inside_a_request_keeps_its_tenant():
+    with tc.bound("acme"):
+        assert _in_thread(tc.current) == "acme"
+
+
+def test_a_subclassed_thread_keeps_it_too():
+    got = []
+
+    class T(threading.Thread):
+        def run(self): got.append(tc.current())
+    with tc.bound("acme"):
+        t = T(); t.start(); t.join()
+    assert got == ["acme"]
+
+
+def test_a_thread_started_as_platform_work_stays_platform_work():
+    with tc.system():
+        assert _in_thread(tc.is_system) is True
+
+
+def test_a_thread_started_with_nothing_bound_has_nothing():
+    assert _in_thread(lambda: (tc.current(), tc.is_system())) == (None, False)
+
+
+def test_a_pool_task_carries_the_submitters_tenant():
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with tc.bound("acme"):
+            assert pool.submit(tc.current).result() == "acme"
+
+
+def test_a_pooled_thread_never_runs_one_callers_task_as_anothers():
+    """One worker thread serves all three tasks; each must see only its own submitter's tenant."""
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with tc.bound("acme"):
+            a = pool.submit(tc.current).result()
+        b = pool.submit(tc.current).result()
+        with tc.bound("beta"):
+            c = pool.submit(tc.current).result()
+    assert (a, b, c) == ("acme", None, "beta")
+
+
+def test_a_pools_own_worker_thread_is_not_given_a_tenant():
+    from concurrent.futures import ThreadPoolExecutor
+    with tc.bound("acme"):
+        pool = ThreadPoolExecutor(max_workers=1)
+        pool.submit(lambda: None).result()
+    # submitted with no tenant: the worker thread (created while "acme" was bound) must see none
+    assert pool.submit(tc.current).result() is None
+    pool.shutdown()
+
+
+def test_the_event_loops_default_executor_carries_it():
+    import asyncio
+
+    async def go():
+        with tc.bound("acme"):
+            return await asyncio.get_running_loop().run_in_executor(None, tc.current)
+    assert asyncio.run(go()) == "acme"
+
+
+def test_enter_and_leave_system():
+    token = tc.enter_system()
+    try:
+        assert tc.is_system() is True
+    finally:
+        tc.leave_system(token)
+    assert tc.is_system() is False
 
 
 # --- the request middleware ----------------------------------------------------
@@ -231,3 +335,60 @@ def test_the_middleware_clears_the_tenant_when_the_request_ends(monkeypatch):
 
     assert asyncio.run(go()) is None
     assert seen == ["acme", None]
+
+
+# --- platform work -------------------------------------------------------------------------------
+def test_as_system_runs_the_function_as_platform_work():
+    assert tc.is_system() is False
+    assert tc.as_system(tc.is_system)() is True
+    assert tc.is_system() is False
+
+
+def test_a_shared_worker_started_by_a_request_does_not_take_that_requests_tenant():
+    """The egress log writer is started lazily by whichever request logs first, then serves everyone."""
+    from services import egress_log
+    seen = []
+    done = threading.Event()
+
+    def fake_run():
+        seen.append((tc.current(), tc.is_system()))
+        done.set()
+    original = egress_log._run
+    egress_log._run = fake_run
+    egress_log._worker = None
+    try:
+        with tc.bound("acme"):
+            egress_log._ensure_worker()
+        assert done.wait(5)
+    finally:
+        egress_log._run = original
+        egress_log._worker = None
+    # carried the request's tenant into the thread, then ran as_system: tenant + system together is
+    # fine -- the policy's system branch lets it write for any customer
+    assert seen[0][1] is True
+
+
+ENTRY_POINTS = [
+    ("src/services/extraction_telemetry/telemetry_service.py", "def main() -> int:"),
+    ("src/services/vector_store/worker.py", "def main(argv"),
+    ("src/services/vector_store/rebuild.py", "def main(argv"),
+    ("src/orchestration/cli.py", "def main() -> None:"),
+    ("scripts/extraction_health_check.py", "def main() -> None:"),
+]
+
+
+@pytest.mark.parametrize("path,signature", ENTRY_POINTS)
+def test_every_standalone_platform_process_enters_system_mode(path, signature):
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    text = open(os.path.join(root, path), encoding="utf-8").read()
+    body = text[text.index(signature):]
+    assert "enter_system()" in body[:600], f"{path}: main() must start with tenant_context.enter_system()"
+
+
+def test_the_web_apps_startup_runs_as_platform_work_and_ends_before_requests():
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    text = open(os.path.join(root, "src/api/main.py"), encoding="utf-8").read()
+    start = text.index("async def lifespan(app: FastAPI):")
+    body = text[start:text.index("# Release CUDA memory", start)]
+    assert body.index("enter_system()") < body.index("SessionNotifyListener")
+    assert body.index("leave_system(") < body.index("\n    yield\n")

@@ -67,6 +67,8 @@ def rebuild(connect: Callable[[], Any], store_factory: Callable[[Optional[Embedd
 
 
 def main(argv: Optional[list] = None) -> int:
+    from services import tenant_context as _tc
+    _tc.enter_system()  # a platform process: no signed-in user, spans every customer
     import argparse
     ap = argparse.ArgumentParser(description="Rebuild vectors from their source rows (Postgres is the source of truth).")
     ap.add_argument("--tenant", help="rebuild one tenant only (default: every tenant)")

@@ -48,6 +48,8 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from services.tenant_context import as_system as _as_system
+
 logger = logging.getLogger(__name__)
 
 DDL = """
@@ -187,7 +189,7 @@ def _ensure_worker() -> None:
         if _worker is not None and _worker.is_alive():
             return
         _worker = threading.Thread(
-            target=_run, name="egress-log-writer", daemon=True
+            target=_as_system(_run), name="egress-log-writer", daemon=True
         )
         _worker.start()
 

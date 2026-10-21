@@ -15,6 +15,7 @@ import time
 from typing import Optional
 
 from src.services.i18n.store import source_hash
+from src.services.tenant_context import as_system as _as_system
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,7 @@ class Filler:
             if texts:
                 self._cv.notify()
             if self._start and self._thread is None:
-                self._thread = threading.Thread(target=self._loop, name="i18n-filler", daemon=True)
+                self._thread = threading.Thread(target=_as_system(self._loop), name="i18n-filler", daemon=True)
                 self._thread.start()
         return added
 

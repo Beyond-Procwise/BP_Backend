@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import re
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Iterator, Optional
@@ -80,6 +82,26 @@ def system() -> Iterator[None]:
         _system.reset(token)
 
 
+def enter_system():
+    """Start running as platform work without a ``with`` block; returns a token for ``leave_system``.
+    For process entry points (the web app's startup, command-line tools)."""
+    return _system.set(True)
+
+
+def leave_system(token) -> None:
+    _system.reset(token)
+
+
+def as_system(fn):
+    """``fn`` wrapped so it always runs as platform work. For a shared worker that a request may happen to
+    start first (a log writer, a queue) but that serves every customer."""
+    def run(*args, **kwargs):
+        with system():
+            return fn(*args, **kwargs)
+    run.__name__ = getattr(fn, "__name__", "run")
+    return run
+
+
 def set_for_request(tenant: Optional[str]):
     """Set the tenant and return a token for ``reset``. For the request middleware only."""
     return _tenant.set(clean(tenant))
@@ -95,3 +117,136 @@ def connection_settings() -> Optional[tuple]:
     if tenant is None and not system_on:
         return None
     return (tenant or "", "on" if system_on else "off")
+
+
+# --- carrying the tenant into threads --------------------------------------------------------------
+# asyncio tasks, ``asyncio.to_thread`` and Starlette's threadpool copy the ContextVars; a bare
+# ``threading.Thread`` and ``ThreadPoolExecutor.submit`` do NOT. Work a request starts (a report job, a
+# workflow run) would then lose its tenant and, with row-level security on, see no rows. So both are
+# made to carry the two values of the code that started them -- once, here, for every current and
+# future call site, instead of editing each one.
+#
+#   * a thread/task started while a tenant (or system mode) is bound runs with the same;
+#   * a pool task ALWAYS sets both values explicitly (even to "none"), so a pooled thread can never run
+#     one caller's task under another caller's tenant;
+#   * a pool's own worker threads are not given a tenant of their own.
+
+
+@contextmanager
+def _rebind(tenant: Optional[str], system_on: bool) -> Iterator[None]:
+    t = _tenant.set(tenant)
+    s = _system.set(system_on)
+    try:
+        yield
+    finally:
+        _system.reset(s)
+        _tenant.reset(t)
+
+
+def _carry(fn):
+    tenant, system_on = _tenant.get(), _system.get()
+
+    def run(*args, **kwargs):
+        with _rebind(tenant, system_on):
+            return fn(*args, **kwargs)
+    return run
+
+
+def install_propagation() -> None:
+    """Idempotent. Patches ``Thread.start`` and ``ThreadPoolExecutor.submit`` to carry the tenant."""
+    if getattr(threading.Thread, "_bp_tenant_carry", False):
+        return
+    original_start = threading.Thread.start
+    original_submit = ThreadPoolExecutor.submit
+
+    def start(self):
+        owner = getattr(self._target, "__module__", "") if getattr(self, "_target", None) else ""
+        if owner != "concurrent.futures.thread" and (_tenant.get() is not None or _system.get()):
+            self.run = _carry(self.run)
+        return original_start(self)
+
+    def submit(self, fn, /, *args, **kwargs):
+        return original_submit(self, _carry(fn), *args, **kwargs)
+
+    threading.Thread.start = start
+    ThreadPoolExecutor.submit = submit
+    threading.Thread._bp_tenant_carry = True
+
+
+install_propagation()
+
+
+# --- telling the database ----------------------------------------------------------------------------
+# One place for every connection, whichever code makes it: the driver's connect() is wrapped, so
+# get_conn(), the ~16 direct psycopg2.connect() callers and the scripts all get it. A pooled
+# connection is reused by many callers, so the pool also re-applies on every checkout.
+
+_SET_SQL = "SELECT set_config('app.tenant_id', %s, false), set_config('app.system', %s, false)"
+
+
+def tell_connection(conn, *, always: bool = False) -> None:
+    """Set ``app.tenant_id`` / ``app.system`` on ``conn`` from the current context.
+
+    Does nothing when nothing is bound, unless ``always`` (a reused connection must be cleared). The
+    setting is committed on its own: a later rollback by the caller must not undo it.
+    """
+    say = connection_settings()
+    if say is None:
+        if not always:
+            return
+        say = ("", "off")
+    cur = conn.cursor()
+    try:
+        cur.execute(_SET_SQL, say)
+    finally:
+        cur.close()
+    if not getattr(conn, "autocommit", False):
+        conn.commit()
+
+
+def install_driver_patch(module=None) -> None:
+    """Wrap ``module.connect`` (default: psycopg2) so each new connection is told its tenant."""
+    if module is None:
+        try:
+            import psycopg2 as module  # type: ignore
+        except Exception:  # noqa: BLE001 - no driver, nothing to patch
+            return
+    if getattr(module, "_bp_tenant_connect", False):
+        return
+    original = module.connect
+
+    def connect(*args, **kwargs):
+        conn = original(*args, **kwargs)
+        try:
+            tell_connection(conn)
+        except Exception:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+        return conn
+
+    module.connect = connect
+    module._bp_tenant_connect = True
+
+
+def install_pool_hook() -> None:
+    """SQLAlchemy pools reuse connections: re-apply (or clear) the tenant each time one is checked out."""
+    try:
+        from sqlalchemy import event
+        from sqlalchemy.engine import Engine
+    except Exception:  # noqa: BLE001
+        return
+    if getattr(Engine, "_bp_tenant_checkout", False):
+        return
+
+    @event.listens_for(Engine, "checkout")
+    def _checkout(dbapi_connection, connection_record, connection_proxy):
+        tell_connection(dbapi_connection, always=True)
+
+    Engine._bp_tenant_checkout = True
+
+
+install_driver_patch()
+install_pool_hook()
