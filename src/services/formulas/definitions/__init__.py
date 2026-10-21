@@ -23,10 +23,11 @@ from . import (  # noqa: F401
     ranking,
     risk,
     rivalry,
+    scoring,
 )
 
 __all__ = [
     "benchmarking", "clustering", "cost", "critic", "deal", "duplicates", "extraction",
     "linking", "negotiation", "opportunity", "performance", "price_outlier", "ranking", "risk",
-    "rivalry",
+    "rivalry", "scoring",
 ]
