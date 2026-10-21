@@ -46,3 +46,18 @@ def test_junk_arguments_do_not_crash_it(tool):
 def test_the_description_tells_the_model_to_relay_the_reply_unchanged():
     d = {t.name: t for t in control._policy_check_tools()}["check_policy"].description.lower()
     assert "reply_text" in d and "do not" in d
+
+
+def test_reading_the_approval_policy_points_the_model_at_check_policy(monkeypatch):
+    monkeypatch.setattr(GT, "get_policy", lambda q: dict(APPROVAL) if "approval" in q else {})
+    monkeypatch.setattr(GT, "list_governance", lambda agent=None: {"policies": []})
+    get = {t.name: t for t in control._governance_tools()}["get_policy"]
+    out = get.handler(query="approval_threshold_policy")
+    assert "check_policy" in out["note"] and out["slug"] == "approval_threshold_policy"
+
+
+def test_other_policies_carry_no_such_note(monkeypatch):
+    monkeypatch.setattr(GT, "get_policy", lambda q: {"slug": "negotiation_bounds_policy", "details": {}})
+    monkeypatch.setattr(GT, "list_governance", lambda agent=None: {"policies": []})
+    get = {t.name: t for t in control._governance_tools()}["get_policy"]
+    assert "note" not in get.handler(query="negotiation_bounds_policy")

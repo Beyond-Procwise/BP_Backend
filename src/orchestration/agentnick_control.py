@@ -45,7 +45,13 @@ Rules:
 - To DO something (extract a document, rank suppliers, evaluate quotes, decide an
   approval, draft an email), call the matching run_<agent> tool. Do not describe
   what an agent would do — run it.
-- Before applying any rule, weight, or threshold, fetch it with get_policy. Never
+- To find out whether a purchase, PO, award, contract or payment is allowed, or who must
+  approve it, call check_policy. It reads the approval policy and returns the verdict;
+  do not work the verdict out from get_policy yourself.
+- For a bigger job (a negotiation plan, an Incoterm choice, validating a saving, a full
+  policy check), call list_skills and read the matching skill with use_skill first,
+  and follow it.
+- Before applying any other rule, weight, or threshold, fetch it with get_policy. Never
   assume a number. If a policy does not exist, say so; do not invent one.
 - For questions about spend, suppliers, invoices, quotes, POs or findings, call
   get_corpus_facts. The figures must come from the corpus, not from your priors.
@@ -175,6 +181,15 @@ def _agent_tools(
     return tools
 
 
+def _with_check_policy_note(policy: Dict[str, Any]) -> Dict[str, Any]:
+    """The approval limit is applied by check_policy, not by the model reading its numbers."""
+    if isinstance(policy, dict) and policy.get("slug") == "approval_threshold_policy":
+        return {**policy, "note": ("To check a request against this policy, call check_policy with the "
+                                   "facts of the request. It applies the limit and returns the verdict; "
+                                   "do not work the verdict out from these numbers yourself.")}
+    return policy
+
+
 def _governance_tools() -> List[Tool]:
     """The governed prompts and policies, as tools."""
     try:
@@ -194,7 +209,7 @@ def _governance_tools() -> List[Tool]:
         """
         hit = GT.get_policy(str(query))
         if hit:
-            return hit
+            return _with_check_policy_note(hit)
 
         # Retry once on the singular/plural of the query before giving up — the
         # single most common near-miss.
@@ -203,7 +218,7 @@ def _governance_tools() -> List[Tool]:
             if variant and variant != q:
                 hit = GT.get_policy(variant)
                 if hit:
-                    return hit
+                    return _with_check_policy_note(hit)
 
         catalogue = GT.list_governance(None) or {}
         available = [

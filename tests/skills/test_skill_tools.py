@@ -102,3 +102,9 @@ def test_every_real_skill_fits_in_parts(monkeypatch):
 
 def use_names(control):
     return [x["name"] for x in {t.name: t for t in control._skill_tools()}["list_skills"].handler()["skills"]]
+
+
+def test_the_system_prompt_routes_policy_questions_and_big_jobs():
+    s = control._SYSTEM
+    assert "check_policy" in s and "list_skills" in s and "use_skill" in s
+    assert s.index("check_policy") < s.index("fetch it with get_policy")  # the specific route is read first
