@@ -1,0 +1,10 @@
+bp_category_master
+bp_category_product_map
+bp_contract_master
+bp_deal_documents
+bp_deal_kpis
+bp_deal_orphans
+bp_deal_overview
+bp_process_monitor_status
+bp_product_master
+bp_supplier_master
