@@ -20,6 +20,10 @@ logger = logging.getLogger(__name__)
 MAX_ATTEMPTS = 5
 
 
+class ChannelSkipped(Exception):
+    """A channel cannot apply to this person (e.g. no address). Recorded, never retried."""
+
+
 class NotificationRepo(Protocol):
     def insert(self, event: DomainEvent, user: str, reason: str, detail: str, title: str,
                body: str, link: str, priority: str) -> Optional[int]:
@@ -148,6 +152,8 @@ class NotificationService:
                 try:
                     send(r.person, {"title": event.summary, "detail": r.detail, "link": self._link_for(event)})
                     self._repo.set_channel_status(nid, ch, "sent")
+                except ChannelSkipped as skip:
+                    self._repo.set_channel_status(nid, ch, f"skipped_{skip}")
                 except Exception as exc:
                     logger.warning("channel %s failed for %s: %s", ch, r.person.subject, exc)
                     self._repo.set_channel_status(nid, ch, "failed")

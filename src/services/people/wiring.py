@@ -128,16 +128,22 @@ def build_service(conn) -> NotificationService:
     except Exception:
         suggester = None
     resolver = RecipientResolver(store, HierarchyService(store), PgRuleSource(conn), _can_view(conn), suggester)
+    channels = {}
+    from services.people import email_channel
+    if email_channel.enabled():
+        import os
+        channels["email"] = email_channel.make_email_channel(
+            email_channel.pg_address_for(conn), email_channel.ses_send, os.environ.get("APP_BASE_URL", ""))
     return NotificationService(
-        resolver, PgNotificationRepo(conn), entity_for=entity_for_event,
+        resolver, PgNotificationRepo(conn), entity_for=entity_for_event, channels=channels,
         person_for=store.get, prefs_for=_prefs_from_db(conn),
         link_for=lambda e: (e.data or {}).get("link") or f"/{e.entity_type}/{e.entity_id}",
         on_created=lambda subject, e: realtime.push([subject], {"type": "notification", "event": e.type}))
 
 
 def drain_once(limit: int = 50) -> Dict[str, int]:
-    """One worker pass over the outbox (scheduled every few seconds). Email/Teams channels are not
-    wired yet: only in-app notifications are produced."""
+    """One worker pass over the outbox (scheduled every few seconds). Email goes out only when
+    NOTIFICATION_EMAIL=on; otherwise only in-app notifications are produced."""
     from services.db import get_conn
     with get_conn() as conn:
         return drain(PgOutbox(conn), build_service(conn), limit)

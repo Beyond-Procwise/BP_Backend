@@ -143,3 +143,57 @@ def test_catalogue_covers_prompt_minimum():
               "contract.expiring", "rfq.response_received", "agent.recommendation_ready", "comment.mentioned",
               "message.received"]:
         assert t in CATALOGUE
+
+
+# --- email channel ---------------------------------------------------------
+from services.people.email_channel import compose, make_email_channel
+
+
+def _email_svc(sent, addresses, accept=True, prefs=None):
+    chan = make_email_channel(lambda p: addresses.get(p.subject),
+                              lambda to, subj, body: (sent.append((to, subj, body)) or accept), "https://app.example")
+    p = prefs if prefs is not None else {"cm": {"channels": ["email"]}, "cpo": {"channels": ["email"]}}
+    return build(p, channels={"email": chan})
+
+
+def test_email_sent_with_value_free_text_and_link():
+    sent = []
+    svc, repo = _email_svc(sent, {"cm": "cm@x.com", "cpo": "cpo@x.com"})
+    svc.handle(ev(amount=60000))
+    assert {s[0] for s in sent} == {"cm@x.com", "cpo@x.com"}
+    assert all("60000" not in s[2] and "https://app.example/requisition/R1" in s[2] for s in sent)
+    assert all(r["channels"]["email"] == "sent" for r in repo.rows)
+
+
+def test_email_not_sent_twice_on_replay():
+    sent = []
+    svc, _ = _email_svc(sent, {"cm": "cm@x.com", "cpo": "cpo@x.com"})
+    e = ev()
+    svc.handle(e); svc.handle(e)
+    assert len(sent) == 2
+
+
+def test_missing_address_is_skipped_not_retried():
+    sent = []
+    svc, repo = _email_svc(sent, {"cm": "cm@x.com"})          # cpo has no address
+    svc.handle(ev())                                           # must not raise
+    st = {r["user"]: r["channels"]["email"] for r in repo.rows}
+    assert st == {"cm": "sent", "cpo": "skipped_no_address"} and len(sent) == 1
+
+
+def test_mail_service_refusal_marks_failed_and_raises_for_retry():
+    svc, repo = _email_svc([], {"cm": "cm@x.com", "cpo": "cpo@x.com"}, accept=False)
+    with pytest.raises(RuntimeError):
+        svc.handle(ev())
+    assert all(r["channels"]["email"] == "failed" for r in repo.rows)
+
+
+def test_no_email_prefs_no_email():
+    sent = []
+    svc, _ = _email_svc(sent, {"cm": "cm@x.com"}, prefs={})
+    svc.handle(ev())
+    assert sent == []
+
+
+def test_compose_omits_link_without_base_url():
+    assert "Open it" not in compose({"title": "t", "link": "/x/1"})[1]
