@@ -42,3 +42,16 @@ def test_a_broken_skill_is_reported_not_served(make_skill, monkeypatch):
 def test_description_says_a_skill_is_advice_only(tools):
     d = tools["use_skill"].description.lower()
     assert "advice" in d and "approval" in d
+
+
+def test_a_real_skill_outside_the_skills_folder_cannot_be_reached(make_skill, monkeypatch, tmp_path):
+    from tests.skills.conftest import write_skill
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    write_skill(outside, name="secret-skill")
+    root = tmp_path / "root"
+    root.mkdir()
+    write_skill(root, name="demo-skill")
+    monkeypatch.setenv("SKILLS_DIR", str(root))
+    out = {t.name: t for t in control._skill_tools()}["use_skill"].handler(name="../outside/secret-skill")
+    assert out["found"] is False
