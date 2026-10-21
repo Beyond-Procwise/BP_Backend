@@ -228,3 +228,18 @@ def test_rows_in_the_wrong_shape_say_which_field_is_missing(bad, needle):
     with pytest.raises(w.ScoringError) as e:
         run(**bad)
     assert needle in str(e.value) and "expected" in str(e.value)
+
+
+def test_every_shape_problem_is_reported_in_one_go():
+    with pytest.raises(w.ScoringError) as e:
+        run(criteria=[{"name": "quality", "weight": 0.6}],
+            scores=[{"supplier": "A", "criterion": "quality", "score": 4}],
+            metrics=[{"supplier_id": "A", "criterion_id": "price", "price": 100}])
+    msg = str(e.value)
+    assert "criterion_id" in msg and "supplier_id" in msg and "evaluator_id" in msg and "value" in msg
+
+
+def test_a_price_given_as_a_score_is_pointed_at_metrics():
+    sc = SCORES + [{"supplier_id": "A", "criterion_id": "price", "evaluator_id": "e1", "score": 100000}]
+    with pytest.raises(w.ScoringError, match="metrics"):
+        run(scores=sc)

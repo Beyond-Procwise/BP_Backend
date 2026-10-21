@@ -47,24 +47,51 @@ def _dec(value: Any, what: str) -> Decimal:
 _CRITERION_TYPES = ("scored", "price", "numeric_metric", _GATE, _GROUP)
 
 
-def _need(row: Any, keys: Sequence[str], what: str, example: str) -> None:
-    if not isinstance(row, Mapping):
-        raise ScoringError(f"{what} must be an object, expected like {example}")
-    missing = [k for k in keys if row.get(k) is None]
-    if missing:
-        raise ScoringError(f"{what} {dict(row)} has no {', '.join(missing)}; expected like {example}")
+def _shape_problems(criteria, scores, metrics, consensus) -> List[str]:
+    """Every problem with the shape of the rows, once each, so a caller can fix them in one go."""
+    out: List[str] = []
+    seen = set()
+
+    def need(row: Any, keys: Sequence[str], what: str, example: str) -> bool:
+        if not isinstance(row, Mapping):
+            out.append(f"{what} must be an object, expected like {example}")
+            return False
+        missing = tuple(k for k in keys if row.get(k) is None)
+        if missing and (what, missing) not in seen:
+            seen.add((what, missing))
+            out.append(f"{what} {dict(row)} has no {', '.join(missing)}; expected like {example}")
+        return not missing
+
+    crit_ex = '{"criterion_id": "quality", "parent_id": null, "weight": "0.6", "type": "scored"}'
+    types: Dict[str, str] = {}
+    for c in criteria:
+        if need(c, ("criterion_id", "type"), "a criteria row", crit_ex):
+            if c["type"] not in _CRITERION_TYPES:
+                out.append(f"criterion {c['criterion_id']} has type {c['type']!r}; expected one of "
+                           + ", ".join(_CRITERION_TYPES))
+            elif c["type"] != _GATE:
+                need(c, ("weight",), "a criteria row", crit_ex)
+            types[str(c["criterion_id"])] = str(c["type"])
+    for r in scores:
+        if need(r, ("supplier_id", "criterion_id", "evaluator_id", "score"), "a scores row",
+                '{"supplier_id": "A", "criterion_id": "quality", "evaluator_id": "e1", "score": 4}'):
+            if types.get(str(r["criterion_id"])) in _METRIC_TYPES and ("metric", r["criterion_id"]) not in seen:
+                seen.add(("metric", r["criterion_id"]))
+                out.append(f"criterion {r['criterion_id']} is a {types[str(r['criterion_id'])]} criterion: give its "
+                           'values under metrics as {"supplier_id": "A", "criterion_id": "' + str(r["criterion_id"])
+                           + '", "value": 100}, not under scores')
+    for r in metrics:
+        need(r, ("supplier_id", "criterion_id", "value"), "a metrics row",
+             '{"supplier_id": "A", "criterion_id": "price", "value": 100}')
+    for r in consensus:
+        need(r, ("supplier_id", "criterion_id", "score"), "a consensus_scores row",
+             '{"supplier_id": "A", "criterion_id": "quality", "score": 4}')
+    return out
 
 
 def _tree(criteria: Sequence[Mapping[str, Any]]):
     byid: Dict[str, Mapping[str, Any]] = {}
     for c in criteria:
-        _need(c, ("criterion_id", "type"), "a criteria row",
-              '{"criterion_id": "quality", "parent_id": null, "weight": "0.6", "type": "scored"}')
-        if c["type"] not in _CRITERION_TYPES:
-            raise ScoringError(f"criterion {c['criterion_id']} has type {c['type']!r}; expected one of "
-                               + ", ".join(_CRITERION_TYPES))
-        if c["type"] != _GATE:
-            _need(c, ("weight",), "a criteria row", '{"criterion_id": "quality", "weight": "0.6", "type": "scored"}')
         cid = str(c.get("criterion_id"))
         if cid in byid:
             raise ScoringError(f"criterion {cid} appears twice")
@@ -195,6 +222,9 @@ def weighted_scoring(
         raise ScoringError("scale_max must be above scale_min")
     if monte_carlo_n and seed is None:
         raise ScoringError("monte carlo needs a seed so the result can be reproduced")
+    problems = _shape_problems(criteria, scores, metrics, consensus_scores)
+    if problems:
+        raise ScoringError(" | ".join(problems))
     byid, children, sibs = _tree(criteria)
     gweights = _global_weights(byid, children, sibs)
     leaves = [c for c in byid if not children.get(c)]
@@ -207,8 +237,6 @@ def weighted_scoring(
 
     by_sc: Dict[Tuple[str, str], Dict[str, float]] = {}
     for r in scores:
-        _need(r, ("supplier_id", "criterion_id", "evaluator_id", "score"), "a scores row",
-              '{"supplier_id": "A", "criterion_id": "quality", "evaluator_id": "e1", "score": 4}')
         s, c, e = str(r.get("supplier_id")), str(r.get("criterion_id")), str(r.get("evaluator_id"))
         if c not in byid:
             raise ScoringError(f"a score names criterion {c}, which is not in the criteria")
@@ -216,9 +244,6 @@ def weighted_scoring(
         if byid[c].get("type") != _GATE and not (smin <= v <= smax):
             raise ScoringError(f"score {v} for {s} on {c} is outside the scale {smin} to {smax}")
         by_sc.setdefault((s, c), {})[e] = v
-    for r in consensus_scores:
-        _need(r, ("supplier_id", "criterion_id", "score"), "a consensus_scores row",
-              '{"supplier_id": "A", "criterion_id": "quality", "score": 4}')
     consensus = {(str(r.get("supplier_id")), str(r.get("criterion_id"))): _num(r.get("score"), "a consensus score")
                  for r in consensus_scores}
     for (s, c), v in consensus.items():
@@ -226,8 +251,6 @@ def weighted_scoring(
             raise ScoringError(f"consensus score {v} for {s} on {c} is outside the scale {smin} to {smax}")
     values: Dict[str, Dict[str, float]] = {}
     for r in metrics:
-        _need(r, ("supplier_id", "criterion_id", "value"), "a metrics row",
-              '{"supplier_id": "A", "criterion_id": "price", "value": 100}')
         values.setdefault(str(r.get("criterion_id")), {})[str(r.get("supplier_id"))] = _num(
             r.get("value"), f"value for {r.get('supplier_id')} on {r.get('criterion_id')}")
     suppliers = sorted({s for s, _ in by_sc} | {s for m in values.values() for s in m})
