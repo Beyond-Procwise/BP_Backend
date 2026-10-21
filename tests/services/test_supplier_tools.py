@@ -79,3 +79,13 @@ def test_lookup_unknown_and_outage_differ():
 def test_lookup_output_is_plain_json_even_with_decimal_amounts():
     row = _L[:9] + (Decimal("5000.00"),) + _L[10:14] + (Decimal("1000000.00"),) + _L[15:]
     json.dumps(ST.lookup("acme", rows=lambda s, p: [row], today=TODAY))
+
+
+def test_lookup_matches_part_of_a_name_and_an_exact_id():
+    seen = {}
+
+    def rows(sql, params):
+        seen["params"] = params
+        return []
+    ST.lookup("acme", rows=rows)
+    assert seen["params"] == ["acme", "%acme%", "%acme%"]
