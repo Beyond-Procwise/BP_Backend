@@ -37,6 +37,8 @@ class Proposal:
     model: str = ""
     message: Dict[str, Any] = field(default_factory=dict)
     verified: bool = False
+    # The egress guard refused the call, so nothing was sent. Different from a model that answered nothing.
+    refused: bool = False
 
 
 _COUNTS: contextvars.ContextVar[tuple] = contextvars.ContextVar("token_counts", default=())
@@ -102,7 +104,7 @@ def chat(messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] =
         payload["tools"] = tools
     response = _send(payload, timeout or DEFAULT_TIMEOUT_S)
     if response is None:
-        return Proposal(content="", model=name)
+        return Proposal(content="", model=name, refused=True)
     response.raise_for_status()
     body = response.json()
     note_usage(body)
@@ -144,6 +146,19 @@ def chat_stream(messages: List[Dict[str, Any]], tools: List[Dict[str, Any]], *,
         if fragment:
             parts.append(fragment)
     return Proposal(content="".join(parts), tool_calls=calls, model=name)
+
+
+def generate(prompt: str, **kwargs: Any) -> Optional[str]:
+    """One completion through the model's other route (``/api/generate``), with the client's queue, retries
+    and foreground accounting. Every option goes to the client unchanged and its text comes back unchanged:
+    this adds nothing of its own, so a caller moved onto it behaves as it did. The text is a proposal.
+
+    The client is read at call time, so a caller or a test that replaces ``ollama_client.ollama_generate``
+    is still honoured.
+    """
+    from src.services import ollama_client
+
+    return ollama_client.ollama_generate(prompt, **kwargs)
 
 
 def structured(system: str, user: str, schema: Dict[str, Any], *, model: Optional[str] = None,

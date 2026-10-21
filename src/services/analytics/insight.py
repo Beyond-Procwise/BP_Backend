@@ -236,7 +236,7 @@ def _writer_timeout() -> int:
 def _ollama_writer(prompt: str) -> Optional[str]:
     """The platform model, constrained to the schema. think=False: a reasoning
     model otherwise answers in a field this call does not read."""
-    from src.services.ollama_client import ollama_generate
+    from src.services.agentnick_driver import generate as ollama_generate
 
     return ollama_generate(prompt, format=INSIGHT_SCHEMA, temperature=0,
                            num_predict=256, think=False, retries=1,

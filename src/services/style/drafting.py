@@ -293,7 +293,8 @@ class StyleDraftingService:
         if self._generate is not None:
             return self._generate(prompt), "injected"
 
-        from services.ollama_client import DEFAULT_MODEL, ollama_generate
+        from services.ollama_client import DEFAULT_MODEL
+        from src.services.agentnick_driver import generate as ollama_generate
 
         text = ollama_generate(prompt, temperature=0.3, think=False)
         if not text:

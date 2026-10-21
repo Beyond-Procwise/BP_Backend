@@ -392,7 +392,7 @@ def _default_generate(prompt: str, *, schema: Any, temperature: float) -> Option
     comes back empty. The model is left to ``ollama_client``'s default, which is
     the resident one — pinning a different model here would evict it.
     """
-    from src.services.ollama_client import ollama_generate
+    from src.services.agentnick_driver import generate as ollama_generate
 
     return ollama_generate(
         prompt, format=schema, temperature=temperature,

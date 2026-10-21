@@ -17,8 +17,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASELINE = os.path.join(ROOT, "tests", "agentnick_direct_calls_baseline.txt")
 # The driver is the boundary. tool_runtime only keeps the names other modules import from it.
 EXEMPT = ("src/services/agentnick_driver.py", "src/services/tool_runtime.py")
-# Two wires reach the model today: raw posts to its HTTP API, and ollama_client.ollama_generate.
-PATTERN = re.compile(r"api/chat|api/generate|api/embed|\b_?OLLAMA_CHAT\b|\bollama_generate\b|\bollama_cloud_generate\b")
+# Two wires reach the model: raw posts to its HTTP API, and ollama_client.ollama_generate. A caller counts as
+# direct when it posts to the API itself or imports/calls the client's generate functions. Importing the driver's
+# generate (even under the local name ollama_generate) is the sanctioned route and is not matched.
+PATTERN = re.compile(
+    r"api/chat|api/generate|api/embed|\b_?OLLAMA_CHAT\b"
+    r"|ollama_client\s+import[^\n]*\bollama_(?:cloud_)?generate\b"
+    r"|ollama_client\.ollama_(?:cloud_)?generate\b"
+    r"|\bdef ollama_(?:cloud_)?generate\b")
 
 
 def _scan():
@@ -65,3 +71,28 @@ if __name__ == "__main__" and "--write" in sys.argv:
         fh.write("# Files that call the model directly. May only shrink. See tests/test_agentnick_driver_boundary.py\n")
         fh.write("\n".join(_scan()) + "\n")
     print(f"wrote {len(_scan())} files to {BASELINE}")
+
+
+# Callers moved onto the driver. Each must import the driver's generate and must not import the client's.
+MOVED_TO_THE_DRIVER = (
+    "src/services/sell_side/quote_agent.py", "src/services/sell_side/template_reader.py",
+    "src/services/rga/compose.py", "src/services/analytics/insight.py", "src/services/style/compiler.py",
+    "src/services/style/drafting.py", "src/services/style/exemplars.py",
+    "src/services/negotiation_advice/advisor.py", "src/services/summary_agent.py",
+    "src/services/deal_summary.py", "src/services/i18n/adapters.py",
+)
+# opportunity_critic/llm.py moved too, but through chat() rather than generate().
+
+
+def test_the_callers_moved_onto_the_driver_use_it_and_not_the_client():
+    for rel in MOVED_TO_THE_DRIVER:
+        src = open(os.path.join(ROOT, rel), encoding="utf-8").read()
+        assert "agentnick_driver import generate" in src, f"{rel} should import the driver's generate"
+        assert not PATTERN.search(src), f"{rel} calls the model directly again"
+        assert rel not in _baseline(), f"{rel} is moved; it should not be in the baseline"
+
+
+def test_the_critic_goes_through_the_driver_chat():
+    src = open(os.path.join(ROOT, "src/services/opportunity_critic/llm.py"), encoding="utf-8").read()
+    assert "agentnick_driver" in src and "agentnick_driver.chat(" in src and not PATTERN.search(src)
+    assert "src/services/opportunity_critic/llm.py" not in _baseline()

@@ -40,7 +40,7 @@ def batch_schema(keys: list[str]) -> dict:
 class OllamaAdapter:
     def __init__(self, settings: TranslationSettings, generate: Callable[..., Optional[str]] | None = None):
         if generate is None:
-            from src.services.ollama_client import ollama_generate as generate
+            from src.services.agentnick_driver import generate
         self._generate = generate
         self._s = settings
         self.model = settings.model

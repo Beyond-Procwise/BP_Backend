@@ -28,7 +28,7 @@ import subprocess
 import tempfile
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from src.services.ollama_client import ollama_generate
+from src.services.agentnick_driver import generate as ollama_generate
 from src.services.sell_side import templates
 from src.services.sell_side.builder import LINE_TAGS, TERM_KEYS, clean_html
 from src.services.sell_side.quote_agent import AgentUnavailable, _default_busy, _default_prompt

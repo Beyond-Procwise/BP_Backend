@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from src.services.db import get_conn
-from src.services.ollama_client import ollama_generate
+from src.services.agentnick_driver import generate as ollama_generate
 from src.services.deal_summary import (
     GROUNDING_RULE,
     NATIVE_CURRENCY_RULE,

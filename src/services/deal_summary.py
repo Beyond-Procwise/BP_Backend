@@ -12,7 +12,7 @@ import os
 from typing import Any, Optional
 
 from src.services.db import get_conn
-from src.services.ollama_client import ollama_generate
+from src.services.agentnick_driver import generate as ollama_generate
 from src.services.version_collapse import base_reference, latest_per_family, version_ordinal
 
 log = logging.getLogger(__name__)

@@ -211,7 +211,7 @@ class StyleCompiler:
         if self._generate is not None:
             return self._generate(prompt)
 
-        from services.ollama_client import ollama_generate
+        from src.services.agentnick_driver import generate as ollama_generate
 
         # `format` is the JSON schema, so decoding is grammar-guided: the model cannot
         # emit a shape the Pydantic model would then reject.

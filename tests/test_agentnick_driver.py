@@ -145,3 +145,62 @@ def test_the_driver_holds_no_data_policy_or_tool_machinery():
     for forbidden in ("get_conn", "psycopg", "agent_policy", "governance", "orchestration", "run_calculation",
                       "Tool(", "handler"):
         assert not re.search(rf"\b{re.escape(forbidden)}", src), forbidden
+
+
+# ---- generate: the second route to the model ----------------------------------------------------------
+
+def test_generate_hands_the_prompt_and_every_option_to_the_client_and_returns_its_text(monkeypatch):
+    from src.services import ollama_client
+    seen = {}
+    monkeypatch.setattr(ollama_client, "ollama_generate",
+                        lambda prompt, **kw: (seen.update(prompt=prompt, **kw), "the text")[1])
+    out = driver.generate("write it", model="m", temperature=0.3, think=False, format={"type": "object"},
+                          background=True, use_load_options=False)
+    assert out == "the text"
+    assert seen == {"prompt": "write it", "model": "m", "temperature": 0.3, "think": False,
+                    "format": {"type": "object"}, "background": True, "use_load_options": False}
+
+
+def test_generate_returns_none_when_the_client_does(monkeypatch):
+    from src.services import ollama_client
+    monkeypatch.setattr(ollama_client, "ollama_generate", lambda prompt, **kw: None)
+    assert driver.generate("x") is None
+
+
+def test_generate_reads_the_client_at_call_time_so_a_patch_made_later_is_honoured(monkeypatch):
+    from src.services import ollama_client
+    first = driver.generate.__globals__["__name__"]
+    monkeypatch.setattr(ollama_client, "ollama_generate", lambda prompt, **kw: "patched")
+    assert driver.generate("x") == "patched" and first == driver.__name__
+
+
+def test_a_patch_made_through_the_other_import_name_reaches_generate_too(monkeypatch):
+    import services.ollama_client as other
+    monkeypatch.setattr(other, "ollama_generate", lambda prompt, **kw: "via services")
+    assert driver.generate("x") == "via services"
+
+
+def test_generate_adds_no_behaviour_of_its_own(monkeypatch):
+    from src.services import ollama_client
+    boom = RuntimeError("model down")
+
+    def raising(prompt, **kw):
+        raise boom
+
+    monkeypatch.setattr(ollama_client, "ollama_generate", raising)
+    with pytest.raises(RuntimeError) as e:
+        driver.generate("x")
+    assert e.value is boom
+
+
+def test_a_refused_call_is_marked_refused_and_an_empty_answer_is_not(monkeypatch):
+    monkeypatch.setattr(egress, "post", lambda url, **kw: None)
+    refused = driver.chat(MSGS, None, model="m", timeout=1)
+    assert refused.refused is True and refused.content == ""
+    monkeypatch.setattr(egress, "post", lambda url, **kw: _Reply({"role": "assistant", "content": ""}))
+    empty = driver.chat(MSGS, None, model="m", timeout=1)
+    assert empty.refused is False and empty.content == ""
+
+
+def test_a_normal_answer_is_not_marked_refused(sent):
+    assert driver.chat(MSGS, TOOLS, model="m", timeout=9).refused is False

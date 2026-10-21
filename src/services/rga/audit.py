@@ -17,7 +17,7 @@ someone outside the organisation is irreversible. Building a Fact Pack is not.
 A NOTE ON TOKEN COUNTS
 
 §7 asks ``report.composed`` to carry them. It does not, and this is deliberate
-rather than forgotten: ``services/ollama_client.ollama_generate`` reads the
+rather than forgotten: the model client's generate function reads the
 response body and returns ``body["response"]`` alone — ``eval_count`` and
 ``prompt_eval_count`` are discarded inside the function. Surfacing them would
 mean changing the return contract of the one client that extraction, the insight

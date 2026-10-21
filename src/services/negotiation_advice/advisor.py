@@ -99,7 +99,7 @@ def explain_play(play: dict, signals: dict, *, generate=None) -> str:
     try:
         if generate is None:
             from src.services.deal_summary import _SUMMARY_MODEL
-            from src.services.ollama_client import ollama_generate
+            from src.services.agentnick_driver import generate as ollama_generate
 
             def generate(**kw):
                 return ollama_generate(kw.pop("prompt"), **kw)

@@ -164,7 +164,7 @@ class ExemplarService:
         if self._generate is not None:
             return self._generate(prompt)
 
-        from services.ollama_client import ollama_generate
+        from src.services.agentnick_driver import generate as ollama_generate
 
         # Warmer than compilation on purpose: three exemplars generated at temperature 0
         # come back near-identical, which defeats the point of having three.

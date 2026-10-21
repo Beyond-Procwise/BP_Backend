@@ -23,12 +23,10 @@ there is one source of truth for where the model lives.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Optional, Tuple
 
-from src.services import egress
-from src.services.tool_runtime import (
-    _DEFAULT_MODEL, _DEFAULT_TIMEOUT_S, _OLLAMA_CHAT,
-)
+from src.services import agentnick_driver
+from src.services.tool_runtime import _DEFAULT_MODEL, _DEFAULT_TIMEOUT_S
 
 logger = logging.getLogger(__name__)
 
@@ -45,32 +43,14 @@ def ask_for_critique(
     One round: the model is given its instructions and the candidate, and must
     answer. No tools are offered, so there is nothing for it to call instead.
     """
-    payload: Dict[str, Any] = {
-        "model": model or _DEFAULT_MODEL,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": task},
-        ],
-        "stream": False,
-        # Reasoning-tuned models return empty content unless think is off.
-        "think": False,
-        "keep_alive": -1,
-        "options": {"temperature": 0, "num_predict": 2048},
-    }
-    # No "tools" key, deliberately: see the module docstring.
+    # No tools are passed, deliberately: see the module docstring.
     try:
-        response = egress.post(
-            _OLLAMA_CHAT,
-            purpose=egress.Purpose.MODEL_INFERENCE,
-            json=payload,
-            timeout=timeout_s or _DEFAULT_TIMEOUT_S,
-            require_global=False,   # the model daemon is on localhost by design
-            raise_transport_errors=True,
-        )
-        if response is None:
+        proposal = agentnick_driver.chat(
+            [{"role": "system", "content": system}, {"role": "user", "content": task}], None,
+            model=model or _DEFAULT_MODEL, timeout=timeout_s or _DEFAULT_TIMEOUT_S)
+        if proposal.refused:
             return None, "model call was refused by the egress guard"
-        response.raise_for_status()
-        content = (response.json().get("message") or {}).get("content")
+        content = proposal.content
     except Exception as exc:  # noqa: BLE001 - a dead model is an error, not a crash
         logger.error("critic model call failed: %s", exc)
         return None, str(exc)[:300]

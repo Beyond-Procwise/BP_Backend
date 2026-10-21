@@ -66,3 +66,19 @@ def test_an_empty_answer_is_an_error_not_an_empty_critique():
         answer, error = ask_for_critique("system", "task")
     assert answer is None
     assert "empty" in error
+
+
+def test_a_call_the_egress_guard_refuses_is_reported_as_refused_not_as_empty():
+    with patch.object(egress, "post", return_value=None):
+        answer, error = ask_for_critique("system", "task")
+    assert answer is None and "refused by the egress guard" in error
+
+
+def test_the_critic_reaches_the_model_through_the_driver():
+    from src.services import agentnick_driver
+    seen = {}
+    real = agentnick_driver.chat
+    with patch.object(agentnick_driver, "chat", side_effect=lambda *a, **k: (seen.update(k, args=a), real(*a, **k))[1]), \
+         patch.object(egress, "post", return_value=_response(_CRITIQUE)):
+        ask_for_critique("system", "task", model="m", timeout_s=7)
+    assert seen["model"] == "m" and seen["timeout"] == 7 and seen["args"][1] is None

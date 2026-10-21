@@ -22,7 +22,7 @@ import re
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
-from src.services.ollama_client import ollama_generate
+from src.services.agentnick_driver import generate as ollama_generate
 
 PROMPT_NAME = "sales_quote_drafting"
 OPS = ("markup_all", "markup_line", "discount_all", "discount_line", "valid_until", "add_line")
