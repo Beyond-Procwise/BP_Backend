@@ -36,6 +36,8 @@ def _lines(name):
 
 
 TABLES = _lines("proc_tables_2026-10-21.txt")
+ALREADY = set(_lines("proc_tables_already_labelled_2026-10-21.txt"))
+WITH_DEFAULT = _lines("proc_tables_label_default_2026-10-21.txt")
 FILES = gen.files()
 
 
@@ -71,11 +73,12 @@ def _tables_touched(sql):
         set(re.findall(r"CALL pg_temp\.bp_relabel\('proc\.([a-z0-9_]+)'", sql))
 
 
-@pytest.mark.parametrize("part", ["1_add_label", "2_backfill_and_index", "3_not_null", "4_row_level_security"])
+@pytest.mark.parametrize("part", ["1_add_label", "2_backfill_and_index", "3_not_null", "4_row_level_security", "6_stamp_on_insert"])
 def test_migrations_touch_owned_tables_only(part):
     sql = FILES[f"2026-10-21_tenant_isolation_{part}.sql"]
-    touched = _tables_touched(sql) - {"bp_support_access_log"}
-    assert touched == set(cls.OWNED), (sorted(touched - cls.OWNED), sorted(cls.OWNED - touched))
+    touched = _tables_touched(sql) - {"bp_support_access_log", "bp_stamp_tenant"}   # the latter is a function
+    expected = set(cls.OWNED) - ALREADY if part == "1_add_label" else set(cls.OWNED)   # part 1 leaves old columns alone
+    assert touched == expected, (sorted(touched - expected), sorted(expected - touched))
 
 
 def test_shared_and_review_tables_are_never_named_by_any_migration():
@@ -99,8 +102,50 @@ def test_every_policy_fails_closed_when_no_tenant_is_set():
 
 def test_part_1_drops_the_default_it_adds():
     sql = FILES["2026-10-21_tenant_isolation_1_add_label.sql"]
-    assert sql.count("ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default'") == len(cls.OWNED)
-    assert sql.count("ALTER COLUMN tenant_id DROP DEFAULT") == len(cls.OWNED)
+    added = len(cls.OWNED) - len(set(cls.OWNED) & ALREADY)
+    assert sql.count("ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT 'default'") == added
+    assert sql.count("ALTER COLUMN tenant_id DROP DEFAULT") == added
+
+
+def test_part_1_never_touches_a_column_that_already_existed():
+    """Seven tables already had tenant_id NOT NULL DEFAULT 'default'; dropping that default in part 1
+    would make their next insert fail before the stamping trigger exists (found 2026-10-21)."""
+    sql = FILES["2026-10-21_tenant_isolation_1_add_label.sql"]
+    for t in set(cls.OWNED) & ALREADY:
+        assert f"ALTER TABLE proc.{t} " not in sql, t
+
+
+def test_the_tables_with_an_old_default_are_owned_and_already_labelled():
+    assert WITH_DEFAULT and set(WITH_DEFAULT) <= set(cls.OWNED) & ALREADY
+
+
+def test_part_6_puts_a_stamp_trigger_on_every_owned_table():
+    sql = FILES["2026-10-21_tenant_isolation_6_stamp_on_insert.sql"]
+    assert sql.count("CREATE TRIGGER tr_bp_stamp_tenant BEFORE INSERT") == len(cls.OWNED)
+
+
+def test_part_6_drops_an_old_default_in_the_same_transaction_as_its_trigger():
+    sql = FILES["2026-10-21_tenant_isolation_6_stamp_on_insert.sql"]
+    blocks = [b for b in sql.split("BEGIN;")[1:]]
+    dropped = set()
+    for b in blocks:
+        m = re.search(r"ALTER TABLE proc\.([a-z0-9_]+) ALTER COLUMN tenant_id DROP DEFAULT", b)
+        if m:
+            assert "CREATE TRIGGER tr_bp_stamp_tenant" in b and "COMMIT;" in b
+            dropped.add(m.group(1))
+    assert dropped == set(WITH_DEFAULT)
+
+
+def test_the_stamp_trigger_never_overwrites_and_never_guesses():
+    sql = FILES["2026-10-21_tenant_isolation_6_stamp_on_insert.sql"]
+    fn = sql[sql.index("CREATE OR REPLACE FUNCTION"):sql.index("$$;")]
+    assert "IF NEW.tenant_id IS NULL THEN" in fn           # a named tenant is kept
+    assert "coalesce" not in fn.lower() and "'default'" not in fn   # nothing bound stays NULL
+
+
+def test_part_6_rollback_restores_the_old_defaults():
+    sql = FILES["2026-10-21_tenant_isolation_6_stamp_on_insert_rollback.sql"]
+    assert sql.count("SET DEFAULT 'default'") == len(WITH_DEFAULT)
 
 
 def test_identifiers_fit_and_are_unique():
@@ -109,7 +154,7 @@ def test_identifiers_fit_and_are_unique():
 
 
 def test_every_forward_file_has_a_rollback_where_one_can_exist():
-    for part in ("1_add_label", "3_not_null", "4_row_level_security", "5_support_access"):
+    for part in ("1_add_label", "3_not_null", "4_row_level_security", "5_support_access", "6_stamp_on_insert"):
         assert f"2026-10-21_tenant_isolation_{part}_rollback.sql" in FILES
 
 

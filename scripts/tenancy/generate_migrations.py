@@ -71,7 +71,11 @@ def p1_add_label() -> str:
 -- and the file can be re-run (every statement is idempotent).
 -- Tables that already carry tenant_id (20) keep it; part 2 relabels any NULL rows.
 -- Reversible: 1_add_label_rollback.sql drops the column ONLY on tables this file added it to.""")]
+    labelled = _already_labelled()
     for t in owned():
+        if t in labelled:
+            out.append(f"-- proc.{t}: already has tenant_id; its default (if any) is left alone here -- part 6 replaces it.\n")
+            continue
         out.append(f"""BEGIN;
 SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.{t} ADD COLUMN IF NOT EXISTS tenant_id text DEFAULT '{LABEL}';
@@ -127,6 +131,42 @@ SET LOCAL lock_timeout = '3s';
 ALTER TABLE proc.{t} ALTER COLUMN tenant_id SET NOT NULL;
 ALTER TABLE proc.{t} DROP CONSTRAINT {ck};
 COMMIT;
+""")
+    return "\n".join(out)
+
+
+def p6_stamp() -> str:
+    withdefault = [t for t in _read_lines(_snap("proc_tables_label_default_2026-10-21.txt"))]
+    out = [header(6, "stamp the tenant on every new row", f"""
+-- APPLY AFTER part 1 and AFTER the application that sets app.tenant_id is running (tenant_context);
+-- order: 1 -> 6 -> 2 -> [app] -> 3 -> 5 -> 4.
+-- A BEFORE INSERT trigger fills tenant_id from the connection's app.tenant_id when the insert did not
+-- name one, so ~200 INSERT statements in the code do not each have to. Rules:
+--   * an insert that names a tenant keeps it (a platform job may name one; row-level security, part 4,
+--     still refuses a name that is not the caller's);
+--   * an insert that names none and has no tenant on the connection stays NULL: part 2 relabels it
+--     until part 3, and part 3's NOT NULL refuses it after -- it is never guessed into '{LABEL}'.
+-- {len(withdefault)} owned tables already carried tenant_id NOT NULL DEFAULT '{LABEL}'. That default would
+-- fill the label BEFORE this trigger ran, so for those tables the default is dropped in the same
+-- transaction that creates the trigger (no moment with neither).
+-- Reversible: 6_stamp_on_insert_rollback.sql (puts the default back).""")]
+    out.append("""CREATE OR REPLACE FUNCTION proc.bp_stamp_tenant() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.tenant_id IS NULL THEN
+    NEW.tenant_id := nullif(current_setting('app.tenant_id', true), '');
+  END IF;
+  RETURN NEW;
+END $$;
+""")
+    for t in owned():
+        drop = f"ALTER TABLE proc.{t} ALTER COLUMN tenant_id DROP DEFAULT;\n" if t in withdefault else ""
+        out.append(f"""BEGIN;
+SET LOCAL lock_timeout = '3s';
+DROP TRIGGER IF EXISTS tr_bp_stamp_tenant ON proc.{t};
+CREATE TRIGGER tr_bp_stamp_tenant BEFORE INSERT ON proc.{t}
+  FOR EACH ROW EXECUTE FUNCTION proc.bp_stamp_tenant();
+{drop}COMMIT;
 """)
     return "\n".join(out)
 
@@ -221,7 +261,13 @@ DROP FUNCTION IF EXISTS proc.bp_support_begin(text, text);
 DROP TABLE IF EXISTS proc.bp_support_access_log;
 COMMIT;
 """
-    return {"5_support_access_rollback.sql": r5, "1_add_label_rollback.sql": "\n".join(r1) + "\n", "3_not_null_rollback.sql": "\n".join(r3) + "\n",
+    withdefault = _read_lines(_snap("proc_tables_label_default_2026-10-21.txt"))
+    r6 = [header(6, "ROLLBACK of stamp_on_insert", f"-- Removes the trigger and restores the old DEFAULT '{LABEL}' on the {len(withdefault)} tables that had it.")]
+    for t in owned():
+        restore = f"ALTER TABLE proc.{t} ALTER COLUMN tenant_id SET DEFAULT '{LABEL}';\n" if t in withdefault else ""
+        r6.append(f"BEGIN;\nDROP TRIGGER IF EXISTS tr_bp_stamp_tenant ON proc.{t};\n{restore}COMMIT;")
+    r6.append("DROP FUNCTION IF EXISTS proc.bp_stamp_tenant();")
+    return {"6_stamp_on_insert_rollback.sql": "\n".join(r6) + "\n", "5_support_access_rollback.sql": r5, "1_add_label_rollback.sql": "\n".join(r1) + "\n", "3_not_null_rollback.sql": "\n".join(r3) + "\n",
             "4_row_level_security_rollback.sql": "\n".join(r4) + "\n"}
 
 
@@ -230,9 +276,12 @@ def _read_lines(path: str) -> List[str]:
         return [l.strip() for l in fh if l.strip()]
 
 
+def _snap(name: str) -> str:
+    return os.path.join(os.path.dirname(__file__), "..", "..", "tests", "tenancy", name)
+
+
 def _already_labelled() -> set:
-    return set(_read_lines(os.path.join(os.path.dirname(__file__), "..", "..", "tests", "tenancy",
-                                        "proc_tables_already_labelled_2026-10-21.txt")))
+    return set(_read_lines(_snap("proc_tables_already_labelled_2026-10-21.txt")))
 
 
 def files() -> Dict[str, str]:
@@ -241,7 +290,7 @@ def files() -> Dict[str, str]:
     views = _read_lines(os.path.join(snap, "proc_views_2026-10-21.txt"))
     out = {"1_add_label.sql": p1_add_label(), "2_backfill_and_index.sql": p2_backfill(),
            "3_not_null.sql": p3_not_null(), "4_row_level_security.sql": p4_rls(views),
-           "5_support_access.sql": p5_support_log()}
+           "5_support_access.sql": p5_support_log(), "6_stamp_on_insert.sql": p6_stamp()}
     out.update(rollbacks(views))
     return {f"{DATE}_tenant_isolation_{k}": v for k, v in out.items()}
 
