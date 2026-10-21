@@ -27,14 +27,13 @@ Ask before planning; do not proceed on guessed spend.
 NOT AVAILABLE: commodity_index_lookup. Ask the user for the index move since the last price; without it, the justified part of an increase request cannot be separated and the plan says so.
 NOT AVAILABLE: financial_health_score. Ask whether the supplier is in financial difficulty; do not infer it.
 NOT AVAILABLE: supplier_lookup. Use `tool:get_corpus_facts` for the supplier's history and say what was missing.
-NOT AVAILABLE: normalise_bids. Compare quotes only where the user or a tool gives like-for-like prices.
 NOT AVAILABLE: savings_tracker. Record the expected saving in the plan; logging it is a separate step.
 NOT AVAILABLE: build_docx. Give the plan as text.
 
 ## Workflow
 
 1. Frame the negotiation and value at stake. Ask for anything missing.
-2. Fact base: `tool:get_corpus_facts` for the supplier's spend, history, open findings and quotes. `tool:list_opportunity_levers` and `tool:get_opportunity_bucket` for known savings levers on this supplier.
+2. Fact base: `tool:get_corpus_facts` for the supplier's spend, history, open findings and quotes. `tool:list_opportunity_levers` and `tool:get_opportunity_bucket` for known savings levers on this supplier. If there are competing quotes, put them on the same terms with `bids.normalise` through `tool:run_calculation` first, using only exchange rates, freight figures and a cost of capital the user or finance gave, and compare only what it reports as comparable.
 3. Costed floor, for a manufactured part only: ask the user for the bill of materials (net weight, price per kg, scrap rate), the routing (cycle time, cavities, oee, machine rate, labour rate) and the overhead, SG&A and margin percentages. Never supply a rate yourself. With those, run `cost.should_cost` through `tool:run_calculation`; its result is a modelled estimate, never the supplier's actual cost, and every rate in it is the user's. If the user cannot give them, there is no costed floor: say so and label the target an estimate.
 4. Position: `tool:list_calculations` for the `negotiation` family, then `tool:run_calculation` for `negotiation.zopa_estimate` (our ceiling, the supplier's floor if evidence exists, an entry counter; pass the `cost.should_cost` unit cost as its `should_cost` input when you have one), `negotiation.batna_strength` (alternative quotes and history), `negotiation.kraljic_quadrant` (suggested style) and `negotiation.outlier_rails` (whether an offer breaches a review or escalation rail). Use only inputs the tools or the user supplied. If a result says it could not be assessed, say so and show what is missing.
 5. Governed bounds: `tool:get_policy` for `negotiation_bounds_policy`. Rounds, term limits, concession steps and escalation rails come from it, not from this skill.

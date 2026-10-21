@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from . import (  # noqa: F401
     benchmarking,
+    bids,
     clustering,
     cost,
     critic,
@@ -27,7 +28,7 @@ from . import (  # noqa: F401
 )
 
 __all__ = [
-    "benchmarking", "clustering", "cost", "critic", "deal", "duplicates", "extraction",
+    "benchmarking", "bids", "clustering", "cost", "critic", "deal", "duplicates", "extraction",
     "linking", "negotiation", "opportunity", "performance", "price_outlier", "ranking", "risk",
     "rivalry", "scoring",
 ]

@@ -21,7 +21,7 @@ Ask for these; stop if the integrity items are missing.
 
 - The published evaluation criteria, weights, scale and normalisation method, exactly as issued to bidders.
 - Every evaluator's scores, and the panel's consensus scores if they exist.
-- Like-for-like prices per supplier: same volumes, currency, delivery terms and payment terms. Never compare raw quotes.
+- The bids themselves, or prices already on the same volumes, currency, delivery terms and payment terms. Never compare raw quotes: if they are not already like-for-like, normalise them with `bids.normalise` (step 2).
 - Evaluation horizon, cost of capital and any ownership costs, from finance. Never supply a rate yourself.
 - The current result and date of each risk check (sanctions, financial health, ESG, forced labour), supplied by compliance.
 - The procurement regime, if public, and the baseline price for savings.
@@ -30,7 +30,6 @@ NOT AVAILABLE: screen_sanctions. Ask for the result and date from compliance. If
 NOT AVAILABLE: financial_health_score. Ask for the result and date; if none, record "not performed".
 NOT AVAILABLE: esg_rating_lookup. Ask for the result and date; if none, record "not performed".
 NOT AVAILABLE: forced_labour_screen. Ask for the result and date where it applies; if none, record "not performed".
-NOT AVAILABLE: normalise_bids. Ask the user for prices already adjusted to the same terms, and say that you did not adjust them.
 NOT AVAILABLE: savings_tracker. Work out the saving against the baseline as a percentage only and say it is not logged.
 NOT AVAILABLE: route_approval. Say which approval is needed; a person submits it.
 NOT AVAILABLE: build_docx. Give the memo as text using templates/memo.md.
@@ -38,14 +37,15 @@ NOT AVAILABLE: build_docx. Give the memo as text using templates/memo.md.
 ## Workflow
 
 1. Integrity check before any analysis. Confirm that every bidder was evaluated against the published criteria and weights, no bid arrived after the deadline, evaluator conflict-of-interest declarations are on file, and clarifications did not change a bid's substance. If any answer is no or unknown, stop and say what must be fixed first.
-2. Scores. Use `tool:run_calculation` with `scoring.weighted_total`, passing the published criteria, scale, evaluator scores, consensus scores, the price or metric values, and the published normalisation. If it comes back unassessed, say the scores cannot be combined and why (for example weights that do not sum to 1); do not total them yourself. Report its evaluator and criterion flags, and say that agreement statistics (Krippendorff alpha, ICC) were not computed.
-3. Cost. For each option run `landed_cost.total_cost` and then `tco.total_cost` through `tool:run_calculation`, with the same horizon, cost of capital and volumes for every option. Use only figures the user or finance supplied. Anything a quote does not state is reported as not stated, not as zero.
-4. Risk. For each risk check, record the result and its date. A result older than `config.thresholds.screening_max_age_days` days is stale. Any check not performed, stale, or with an unresolved potential match means the award is blocked pending compliance. Say so at the top of the memo.
-5. Options. Compare a single award to rank 1, a split award where the user allows one (for example for a critical item with supply risk and volume above each supplier's minimum), and a cherry-pick by lot only if the published rules allowed it. For each option give score, total cost, risk status and the saving against the baseline as a percentage (`deal.pct_change`).
-6. Decide. Recommend the option that ranks first under the published method. If the lowest-TCO option is not the top-scoring one, explain the difference in one paragraph. Run `scoring.weighted_total` again with `monte_carlo_n` and a seed the user gives, or read its one-at-a-time results: if a weight change of `config.thresholds.close_decision_shift_pp` percentage points flips rank 1, or removing one evaluator would, mark it a close decision and show the alternative.
-7. Conditions. List conditions precedent (approvals, certificates, onboarding), points still to negotiate, and the transition plan for an incumbent. Standstill periods depend on the regime: ask the user for the rule; if not given, say it is not determined.
-8. Approval. Call `tool:check_policy` with the total award value over the term and its currency. Report its reply as it is, including the approving role and anything it lists as not assessed. Ask the user for the requester and, if known, the approver.
-9. Write the memo using templates/memo.md. The memo is a draft for approval. Notification of suppliers happens only after an authorised person approves, and never from this skill.
+2. Like-for-like prices. If the bids are not already on the same terms, run `bids.normalise` through `tool:run_calculation` with the line master, each bid, the base currency, the exchange rates and their date, the target Incoterm and payment days, and the cost of capital from finance. Every rate and every freight or insurance figure must come from the user or finance; never supply one. Report what it lists as not normalised, its exceptions, any missing lines and the policy applied, and use its normalised prices as the price values in the next step. If it comes back unassessed, say why and ask for the missing input.
+3. Scores. Use `tool:run_calculation` with `scoring.weighted_total`, passing the published criteria, scale, evaluator scores, consensus scores, the price or metric values, and the published normalisation. If it comes back unassessed, say the scores cannot be combined and why (for example weights that do not sum to 1); do not total them yourself. Report its evaluator and criterion flags, and say that agreement statistics (Krippendorff alpha, ICC) were not computed.
+4. Cost. For each option run `landed_cost.total_cost` and then `tco.total_cost` through `tool:run_calculation`, with the same horizon, cost of capital and volumes for every option. Use only figures the user or finance supplied. Anything a quote does not state is reported as not stated, not as zero.
+5. Risk. For each risk check, record the result and its date. A result older than `config.thresholds.screening_max_age_days` days is stale. Any check not performed, stale, or with an unresolved potential match means the award is blocked pending compliance. Say so at the top of the memo.
+6. Options. Compare a single award to rank 1, a split award where the user allows one (for example for a critical item with supply risk and volume above each supplier's minimum), and a cherry-pick by lot only if the published rules allowed it. For each option give score, total cost, risk status and the saving against the baseline as a percentage (`deal.pct_change`).
+7. Decide. Recommend the option that ranks first under the published method. If the lowest-TCO option is not the top-scoring one, explain the difference in one paragraph. Run `scoring.weighted_total` again with `monte_carlo_n` and a seed the user gives, or read its one-at-a-time results: if a weight change of `config.thresholds.close_decision_shift_pp` percentage points flips rank 1, or removing one evaluator would, mark it a close decision and show the alternative.
+8. Conditions. List conditions precedent (approvals, certificates, onboarding), points still to negotiate, and the transition plan for an incumbent. Standstill periods depend on the regime: ask the user for the rule; if not given, say it is not determined.
+9. Approval. Call `tool:check_policy` with the total award value over the term and its currency. Report its reply as it is, including the approving role and anything it lists as not assessed. Ask the user for the requester and, if known, the approver.
+10. Write the memo using templates/memo.md. The memo is a draft for approval. Notification of suppliers happens only after an authorised person approves, and never from this skill.
 
 ## Frameworks and heuristics
 

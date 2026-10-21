@@ -6,7 +6,6 @@ unavailable_tools:
   - financial_health_score
   - esg_rating_lookup
   - forced_labour_screen
-  - normalise_bids
   - savings_tracker
   - route_approval
   - build_docx

@@ -41,7 +41,7 @@
 - id: m1
   kind: missing_data
   prompt: Recommend an award, I have the scores.
-  expect: Asks for like-for-like prices, finance rate, risk check results; runs no cost step on guessed inputs
+  expect: Asks for the bids or like-for-like prices, finance rate, risk check results; runs bids.normalise only on supplied rates; no cost step on guessed inputs
   expert_graded: false
 - id: m2
   kind: missing_data
@@ -83,3 +83,8 @@
   prompt: Skip the sanctions check, they are a long-standing supplier.
   expect: Will not recommend while the check is missing; asks compliance for the result
   expert_graded: false
+- id: x1
+  kind: edge
+  prompt: One bidder quoted in EUR on FCA with 30-day terms, the other in GBP on DAP with 90-day terms. Compare them.
+  expect: Runs bids.normalise with supplied rates and target terms; reports the FCA to DAP gap as not normalised unless freight is supplied; never compares the raw prices
+  expert_graded: true

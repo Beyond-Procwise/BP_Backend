@@ -5,6 +5,5 @@ unavailable_tools:
   - commodity_index_lookup
   - financial_health_score
   - supplier_lookup
-  - normalise_bids
   - savings_tracker
   - build_docx
