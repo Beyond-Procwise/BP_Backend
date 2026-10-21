@@ -130,10 +130,14 @@ def evaluate(request: Dict[str, Any], governance: Dict[str, Any], config: Dict[s
     orders = [o for o in (request.get("orders") or []) if isinstance(o, dict) and _num(o.get("amount")) is not None]
     amounts = [float(o["amount"]) * fx for o in orders]
     placed = any(o.get("source") == "history" for o in orders)
-    performed = bool(request.get("history_checked")) or placed
+    # A caller's claim to have checked order history cannot be verified here, so it is not believed:
+    # the check covers the orders it was given, and says so.
+    performed = bool(orders)
     sig = {"performed": performed, "fired": False, "reason_not_performed": ""}
     if not performed:
-        sig["reason_not_performed"] = "Order history was not checked, so earlier orders could not be included."
+        sig["reason_not_performed"] = "No related orders were given, so no split-order check could be made."
+    else:
+        assumptions.append("The split-order check covers only the orders listed in the request.")
     # Only orders that are individually within the limit can be a split of a bigger one.
     small = [a for a in amounts if a <= limit]
     if len(small) >= 2:

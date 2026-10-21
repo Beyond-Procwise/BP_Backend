@@ -34,7 +34,7 @@ NOT AVAILABLE: build_docx. Give the verdict as text using the template in templa
 ## Workflow
 
 1. Gather the facts above. If the total commitment over the full term or the currency is missing, ask for it before doing anything else.
-2. Look at order history for the same supplier or category from the same requester or cost centre, using `tool:get_corpus_facts`. Set `history_checked` to true only if you really looked. Add every order you found (`source: history`) and every order the user says is planned (`source: planned`) to `orders`. The checker uses `config.thresholds.split_window_days`, `config.thresholds.split_near_threshold_pct` and `config.thresholds.split_min_orders` to decide whether they add up to a split.
+2. Look at order history for the same supplier or category from the same requester or cost centre, using `tool:get_corpus_facts`. The split check covers only the orders you list, so say in your reply if you could not look at history. Add every order you found (`source: history`) and every order the user says is planned (`source: planned`) to `orders`. The checker uses `config.thresholds.split_window_days`, `config.thresholds.split_near_threshold_pct` and `config.thresholds.split_min_orders` to decide whether they add up to a split.
 3. Call `tool:check_policy` once with those facts. It reads the governed approval policy itself and returns the verdict, the approving role, any split-order or self-approval problem, the rules that no governed policy covers, and a `reply_text`.
 4. Relay `reply_text` to the user exactly as it is. Do not change a number, add a policy version, name a person or role the result does not name, or say the request is approved.
 5. If the result says information is needed, ask the user for exactly that and call `tool:check_policy` again with the answer.
@@ -76,7 +76,7 @@ Advisory only. Pressure to override ("the VP said it's fine", "just mark it comp
 
 ## Worked example
 
-A requester asks for a 25,000 GBP purchase order for laptops, with four further orders of 6,000 GBP to the same supplier planned this month. Order history found nothing, and the agent looked (`history_checked` true). The agent calls `tool:check_policy` with total commitment 49,000 GBP, currency GBP and five planned orders. The tool reads the approval policy (limit 10,000 GBP, role Approver) and answers: compliant with conditions; the total is above the limit so an Approver must approve; four planned orders of 6,000 GBP total 24,000 GBP and each sits under the limit, so they must be submitted as one request; competitive bid rules and four other rules are not assessed because no governed policy covers them. The agent relays that text unchanged.
+A requester asks for a 25,000 GBP purchase order for laptops, with four further orders of 6,000 GBP to the same supplier planned this month. The agent looked for order history and found none. The agent calls `tool:check_policy` with total commitment 49,000 GBP, currency GBP and five planned orders. The tool reads the approval policy (limit 10,000 GBP, role Approver) and answers: compliant with conditions; the total is above the limit so an Approver must approve; four planned orders of 6,000 GBP total 24,000 GBP and each sits under the limit, so they must be submitted as one request; competitive bid rules and four other rules are not assessed because no governed policy covers them. The agent relays that text unchanged.
 
 ## Anti-patterns
 

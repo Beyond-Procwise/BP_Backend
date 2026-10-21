@@ -651,7 +651,7 @@ def _policy_check_tools() -> List[Tool]:
                 "governed approval policy and get a verdict, the required approver and any split-order or "
                 "self-approval problem. Pass only the facts of the request: total_commitment over the whole "
                 "term including renewals, currency, any orders (each {amount, source: planned or history}), "
-                "history_checked true only if you actually looked at order history, requester and approver. "
+                "requester and approver only if the user stated them. List related orders you found or the user mentioned; the split check covers only those. "
                 "The limit, the approving role and the verdict come from the policy, never from you. Relay "
                 "reply_text to the user as it is: do not change a number, add a policy version, name an "
                 "approver, or call it approved. If it says information is needed, ask for exactly that."
@@ -663,7 +663,7 @@ def _policy_check_tools() -> List[Tool]:
                     "currency": {"type": "string", "description": "ISO 4217 code, e.g. GBP."},
                     "orders": {"type": "array", "items": {"type": "object"},
                                "description": "Related orders: {amount, source: planned|history}."},
-                    "history_checked": {"type": "boolean"},
+                    "history_checked": {"type": "boolean", "description": "Ignored; list the orders instead."},
                     "requester": {"type": "string"}, "approver": {"type": "string"},
                     "fx_rate_to_policy_currency": {"type": "number", "description": "Only if the user gave one."},
                     "waiver_id": {"type": "string"},

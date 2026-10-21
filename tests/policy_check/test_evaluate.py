@@ -112,7 +112,7 @@ def test_self_approval_is_blocking():
 
 def test_planned_orders_each_under_the_limit_but_over_it_together_raise_a_warning():
     orders = [{"amount": 6000, "source": "planned"}] * 4
-    v = run({"total_commitment": 24000, "currency": "GBP", "orders": orders, "history_checked": False})
+    v = run({"total_commitment": 24000, "currency": "GBP", "orders": orders})
     assert v["split_signal"]["fired"] is True and v["verdict"] == "COMPLIANT_WITH_CONDITIONS"
     assert v["violations"][0]["severity"] == "warning"
     assert any("combined" in a for a in v["required_actions"])
@@ -120,7 +120,7 @@ def test_planned_orders_each_under_the_limit_but_over_it_together_raise_a_warnin
 
 def test_a_split_that_includes_orders_already_placed_is_blocking():
     orders = [{"amount": 6000, "source": "history"}, {"amount": 6000, "source": "planned"}]
-    v = run({"total_commitment": 12000, "currency": "GBP", "orders": orders, "history_checked": True})
+    v = run({"total_commitment": 12000, "currency": "GBP", "orders": orders })
     assert v["verdict"] == "NON_COMPLIANT" and v["violations"][0]["severity"] == "blocking"
 
 
@@ -130,10 +130,21 @@ def test_three_orders_just_under_the_limit_fire_the_near_threshold_signal():
     assert v["split_signal"]["fired"] is True
 
 
-def test_the_split_check_says_when_history_was_not_looked_at():
-    v = run({"total_commitment": 5000, "currency": "GBP", "history_checked": False})
-    assert v["split_signal"]["performed"] is False and "history" in v["split_signal"]["reason_not_performed"]
-    assert v["split_signal"]["fired"] is False
+def test_with_no_related_orders_the_split_check_says_it_could_not_be_made():
+    v = run({"total_commitment": 5000, "currency": "GBP"})
+    assert v["split_signal"]["performed"] is False and v["split_signal"]["fired"] is False
+    assert "orders" in v["split_signal"]["reason_not_performed"]
+
+
+def test_a_claim_that_history_was_checked_is_not_believed_without_orders():
+    v = run({"total_commitment": 5000, "currency": "GBP" })
+    assert v["split_signal"]["performed"] is False
+
+
+def test_the_split_check_states_that_it_covers_only_the_orders_listed():
+    orders = [{"amount": 3000, "source": "planned"}, {"amount": 2000, "source": "planned"}]
+    v = run({"total_commitment": 5000, "currency": "GBP", "orders": orders})
+    assert v["split_signal"]["performed"] is True and any("only the orders listed" in a for a in v["assumptions"])
 
 
 def test_a_waiver_id_is_never_applied():
@@ -156,7 +167,7 @@ def test_same_facts_same_policy_same_verdict():
 
 def test_one_large_order_among_small_ones_does_not_hide_the_split():
     orders = [{"amount": 25000, "source": "planned"}] + [{"amount": 6000, "source": "planned"}] * 4
-    v = run({"total_commitment": 49000, "currency": "GBP", "orders": orders, "history_checked": True})
+    v = run({"total_commitment": 49000, "currency": "GBP", "orders": orders })
     assert v["split_signal"]["fired"] is True and v["split_signal"]["combined"] == 24000
     assert v["verdict"] == "COMPLIANT_WITH_CONDITIONS"
 
