@@ -97,7 +97,7 @@ def sync_rbac(w: GraphWriter, snap: RbacSnapshot) -> Dict[str, int]:
 # ------------------------------------------------------------------ decisions
 @dataclass
 class DecisionFact:
-    verb: str                     # approve | reject | request
+    verb: str                     # approve | reject | request | escalate
     actor: str
     entity_key: str               # e.g. decision:123, approval:7
     event_id: str                 # stable across the live consumer and the backfill
@@ -108,16 +108,18 @@ class DecisionFact:
     currency: Optional[str] = None
     supplier_key: Optional[str] = None
     category_key: Optional[str] = None
+    escalated_to: Optional[str] = None
 
 
-_TYPE = {"approve": "APPROVED", "reject": "REJECTED", "request": "REQUESTED"}
+_TYPE = {"approve": "APPROVED", "reject": "REJECTED", "request": "REQUESTED", "escalate": "ESCALATED"}
 
 
 def apply_decisions(w: GraphWriter, facts: Iterable[DecisionFact]) -> Dict[str, int]:
     out = {"written": 0, "skipped": 0}
     for f in facts:
         extras = {k: v for k, v in dict(duration_ms=f.duration_ms, amount=f.amount, currency=f.currency,
-                                        supplier_key=f.supplier_key, category_key=f.category_key).items() if v is not None}
+                                        supplier_key=f.supplier_key, category_key=f.category_key,
+                                        escalated_to=f.escalated_to).items() if v is not None}
         e = w.record_decision(U(f.actor), _TYPE[f.verb], NodeRef("Entity", f.entity_key), event_id=f.event_id,
                               decided_at=f.decided_at, asserted_by=f.actor, source_ref=f.source_ref, **extras)
         out["written" if e else "skipped"] += 1
@@ -170,6 +172,33 @@ def facts_from_history(conn) -> List[DecisionFact]:
             dur = int((at - created).total_seconds() * 1000) if created and at else None
             out.append(DecisionFact(verb, by, f"decision:{orig}", f"approval.{name}:{orig}:{level}", at,
                                     f"bp_decision:{did}", duration_ms=dur))
+    return out
+
+
+#: What a finding escalation is addressed to. The action records no person: the finding stays open in the queue it was
+#: raised into ("a request for a human", decision_engine.STATUS_FOR_ACTION), so that is the honest destination.
+FINDINGS_QUEUE = "findings_queue"
+
+
+def facts_from_findings(conn) -> List[DecisionFact]:
+    """A person escalating a finding on a PURCHASE ORDER -> an ESCALATED edge to the stub ``po:<po_id>``.
+
+    Only the escalate verb: other finding outcomes (confirm, dismiss, flag, ...) are not decision edges until ruled on.
+    The PO is the finding's own document (bp_extraction_discrepancy.doc_type = 'purchase_order', doc_pk_candidate);
+    findings on invoices, quotes, contracts, or with no document id produce nothing. People only: system and agent
+    actors are skipped, as for approvals."""
+    out: List[DecisionFact] = []
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT d.decision_id, d.actioned_by, d.actioned_at, d.supplier_id, f.doc_pk_candidate "
+            "FROM proc.bp_decision d JOIN proc.bp_extraction_discrepancy f ON f.discrepancy_id::text = d.subject_id "
+            "WHERE d.subject_type='finding' AND d.decision='escalate' AND d.status IN ('actioned','overridden') "
+            "AND d.actioned_by IS NOT NULL AND d.actioned_at IS NOT NULL "
+            "AND d.actioned_by NOT LIKE 'system:%%' AND d.actioned_by NOT LIKE 'agent:%%' "
+            "AND f.doc_type='purchase_order' AND btrim(coalesce(f.doc_pk_candidate,'')) <> ''")
+        for did, by, at, sup, po in cur.fetchall():
+            out.append(DecisionFact("escalate", by, f"po:{po.strip()}", f"finding.escalated:{did}", at, f"bp_decision:{did}",
+                                    supplier_key=f"supplier:{sup}" if sup else None, escalated_to=FINDINGS_QUEUE))
     return out
 
 

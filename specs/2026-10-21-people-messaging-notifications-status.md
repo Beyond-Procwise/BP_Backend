@@ -99,3 +99,13 @@ Older node is only matched, never created or changed; links only on exactly one 
 The link carries no pw_tenant and the older node has none, so asserted-edge queries/deletes never see or touch it. Live graph has a uniqueness constraint on Supplier.supplier_id.
 Proven on real Neo4j: made-up ids reported missing, real SUP-CondorLogisticsUkLtd + PO000001 linked, then removed; Supplier/PO/relationship counts identical before/after. 10 tests (memory + Neo4j); ambiguity guard and closed-map check each proven red by mutation.
 NOTE: only `supplier:` stubs exist today (from approval history/derivation). Nothing creates `po:` stubs yet — PO linking is ready but idle until a PO-keyed fact is written. Not yet used by queries (e.g. who_knows_about a supplier -> its POs/invoices).
+
+## Update — finding escalations on POs create po: stubs (same day, ruling: option 1, escalate only)
+sync.facts_from_findings (read by the daily refresh with the other decision sources): a PERSON's `escalate` on a finding (proc.bp_decision subject_type='finding',
+status actioned|overridden, human verb in `decision`) whose finding is on a PURCHASE ORDER (bp_extraction_discrepancy.doc_type='purchase_order', doc_pk_candidate = po_id)
+-> ESCALATED edge User -> Entity `po:<po_id>`, supplier_key from the decision, idempotent by `finding.escalated:<decision_id>`. The daily link step then ties the stub to the PurchaseOrder node.
+Not included (not decision edges until ruled on): confirm, dismiss, flag, hold, assign, investigate, query. Invoices/quotes/contracts findings, doc_type 'po' rows (doc_pk is a numeric id, not a po_id),
+blank doc ids, system:/agent: actors and still-open rows produce nothing.
+escalated_to = "findings_queue": the model requires it, but the action records no person (the finding stays open in the queue it was raised into); it is not read by any query.
+ESCALATED edges stay out of ACTIVE_IN derivation (escalating is not expertise). Today bp_testdb has 0 human escalations on POs (test actions were on invoices), so a first refresh adds no po: stubs until a real one happens.
+Tests: tests/services/people/graph/test_finding_escalation.py (3 pure + 1 live SQL); each filter and the derivation exclusion proven red by mutation; end-to-end on real PO000001 under a throwaway tenant, counts restored.

@@ -42,7 +42,8 @@ def refresh(conn, store: Optional[GraphStore] = None, *, event_days: int = 30, n
     except Exception:
         logger.exception("RBAC mirror failed; graph keeps its previous copy")
         out["rbac"] = {"error": True}
-    facts = sync.facts_from_history(conn) + sync.facts_from_events(conn, now - timedelta(days=event_days))
+    facts = (sync.facts_from_history(conn) + sync.facts_from_events(conn, now - timedelta(days=event_days))
+             + sync.facts_from_findings(conn))
     out["decisions"] = sync.apply_decisions(w, facts)
     since = now - timedelta(days=cfg.window_days)
     out["derived"] = derive.rebuild(w, derive.load_interactions(conn, TENANT, since),
