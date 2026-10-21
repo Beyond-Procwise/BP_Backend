@@ -67,6 +67,8 @@ ACTIONS: Dict[str, str] = {
     "opportunity.review": "write",
     "document.upload": "write",
     "document.promote": "write",
+    # Bulk-rewrites po_id across every final table. Its own action so who may do it is its own setting.
+    "document.renumber": "write",
     "email.draft": "write",
     # The queues the email-learning job leaves for people. Reading them is `read`; deciding one (resolving a data-quality
     # item, accepting a review item, approving YOUR OWN style rule, exporting a candidate) is `write`. Approving an

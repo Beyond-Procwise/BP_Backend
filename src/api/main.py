@@ -50,6 +50,7 @@ from agents.negotiation_agent import NegotiationAgent
 from agents.approvals_agent import ApprovalsAgent
 from agents.supplier_interaction_agent import SupplierInteractionAgent
 from api.routers import agents as agents_router_mod, documents, email, metrics, run, stream, system, training, vendors, workflows, deal_summary, deal_proposals, promotion, summary, negotiate, opportunities,session
+from api.routers import permission_settings as permission_settings_router_mod
 from api.routers import ws as ws_router_mod
 # Imported here, not further down, because every router below is mounted with
 # require_user as a dependency and that reference is resolved at mount time.
@@ -622,6 +623,7 @@ _AUTHENTICATED_ROUTERS = [
     deal_proposals.router,
     negotiate.router,
     opportunities.router,
+    permission_settings_router_mod.router,
     promotion.router,
     summary.router,
     session.router,
