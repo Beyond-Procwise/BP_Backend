@@ -520,6 +520,54 @@ def _calculation_tools(*, workflow_id: Optional[str] = None) -> List[Tool]:
     ]
 
 
+def _skill_tools() -> List[Tool]:
+    """Skills: playbooks the agent reads before a job. Reading one runs nothing."""
+    from src.services import skills as SK
+
+    def _refuse(note: str) -> Dict[str, Any]:
+        return {"found": False, "note": note, "available": [s.name for s in SK.list_skills()]}
+
+    def _list() -> Dict[str, Any]:
+        return {"skills": [{"name": s.name, "description": s.description} for s in SK.list_skills()]}
+
+    def _use(name: Any = None) -> Dict[str, Any]:
+        if not isinstance(name, str):
+            return _refuse("Give the skill name as text. Pick one from 'available'.")
+        try:
+            skill = SK.load_skill(name)
+        except SK.SkillNotFound:
+            return _refuse(f"No skill named '{name}'. Pick one from 'available'.")
+        except SK.SkillInvalid as exc:
+            return _refuse(f"Skill '{name}' is not usable: {exc}")
+        return {"found": True, "name": skill.name, "playbook": skill.body, "config": skill.config,
+                "references_available": sorted(skill.references)}
+
+    return [
+        Tool(
+            name="list_skills",
+            description="List the skills (packaged playbooks) available, with when to use each.",
+            parameters={"type": "object", "properties": {}},
+            handler=_list,
+        ),
+        Tool(
+            name="use_skill",
+            description=(
+                "Read a skill's playbook and its settings before doing the job it covers "
+                "(policy checks, Incoterms, negotiation plans, savings validation). A skill is "
+                "advice: it does not run anything, and every tool call, number and approval it "
+                "mentions still has to come from the real tools and the approval flow. If it "
+                "lists a tool as NOT AVAILABLE, say so; do not work around it with a guess."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {"name": {"type": "string", "description": "A name from list_skills."}},
+                "required": ["name"],
+            },
+            handler=_use,
+        ),
+    ]
+
+
 def build_tools(
     agent_nick: Any,
     *,
@@ -545,6 +593,7 @@ def build_tools(
         + _corpus_tools(agent_nick)
         + _opportunity_tools(agent_nick, workflow_id=workflow_id, user_id=user_id)
         + _calculation_tools(workflow_id=workflow_id)
+        + _skill_tools()
     )
     if exclude:
         blocked = set(exclude)
