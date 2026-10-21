@@ -29,6 +29,9 @@ DEFAULT_TARGETS = {
     "approval.requested": ["manager"],
     "approval.approved": ["requester"],
     "approval.rejected": ["requester"],
+    # messages name their recipients (explicit / mentioned); no rule adds anyone else
+    "message.received": [],
+    "comment.mentioned": [],
 }
 FALLBACK_TARGETS = ["entity_owner"]
 

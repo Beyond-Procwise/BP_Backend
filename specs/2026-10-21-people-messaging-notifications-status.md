@@ -35,3 +35,24 @@ src/api/routers/people.py (registered in the authenticated router list), logic i
   GET /people/me, PUT /people/me/delegate (out of office).
 - No endpoint emits events or deletes people (deactivate with is_active=false). Roles in bp_person are a routing mirror, NOT authorisation.
 - Tests: 54 (services/people + tests/api/test_people_router.py); gate ratchet passes unchanged. Proven live on bp_testdb through TestClient (rows cleaned).
+
+## Update — Phase 2 messaging built (same day)
+Tables (sql/bp_messaging.sql, applied to bp_testdb only): bp_conversation (direct|group|entity_thread), bp_conversation_participant, bp_message.
+Code: src/services/people/{messaging,realtime,db}.py, src/api/routers/messaging.py (+ WS /ws/user in routers/ws.py).
+- Access: a conversation is visible to current participants only; anyone else gets 404 (same as "does not exist"). Entity threads
+  (po|contract|supplier|rfq|deal|requisition|invoice|approval) are invite-only: this backend has no per-item visibility rule (bp_deal has no creator),
+  so a thread cannot be opened by "anyone who can see the PO". One thread per item; a second person gets 409 "ask someone in it to add you".
+  A participant's @mention in an entity thread invites the person; in direct/group an outsider mention is refused. Direct = one per pair.
+- Mentions: @[Name](subject) in the text and/or `mentions` list; max 20; never yourself. Edit/delete own messages only (soft delete blanks the text).
+- Notifications: message.received (explicit = other active, unmuted participants) and comment.mentioned (mentions; a mute never silences a mention),
+  through the same outbox/worker. Titles carry NO message text. The resolver's can_view for conversations re-checks participation at notify time
+  (someone who left before the worker ran is not notified — proven by mutation).
+- Real-time: WS /ws/user?token= pushes {type:message|notification|conversation, ids} only (own manager, not the session one — a shared one would
+  let any user subscribe to another's channel). Single uvicorn worker assumed; clients also poll /messages/conversations and /notifications/unread-count.
+- Recipient picker: GET /messages/suggest-recipients?q=&conversation_id= -> labelled asserted groups (manager, reporting line, department head,
+  direct reports, already-in-thread) + name/email search. Graph tiers 2-4 come with Phase 4.
+- Tests: tests/services/people/test_messaging_pure.py, test_messaging_live.py (PROCWISE_TEST_LIVE_DB=1; 11 tests, 3 guards proven red by mutation),
+  tests/api/test_messaging_router.py. End-to-end over HTTP+WS on bp_testdb verified.
+- Not done: attachments are metadata only (no upload/storage endpoint); one notification per message (no coalescing of a busy chat);
+  no search over message text; no activity-store rows yet (Phase 4: message.sent verb, metadata only); output-safety may rewrite a message body
+  that names an internal table/route; UI (inbox, thread panel, picker, bell) lives in the UI repo.

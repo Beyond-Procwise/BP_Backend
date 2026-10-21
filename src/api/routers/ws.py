@@ -189,3 +189,36 @@ async def session_status_ws(
         log.debug("WS receive error session=%s: %s", session_id, exc)
     finally:
         await ws_manager.disconnect(session_id, websocket)
+
+
+@router.websocket("/ws/user")
+async def user_signals_ws(websocket: WebSocket, token: str | None = Query(default=None)) -> None:
+    """Live signals for the signed-in person: new message, new notification.
+
+    Authenticated before the handshake, like the session socket (token in the query string).
+    The frames carry a type and ids only; the client fetches the content over HTTP, where
+    participation is checked again. If auth is off there is no person to address, so it closes.
+    """
+    from services.people import realtime
+
+    try:
+        principal = principal_from_token(token)
+    except AuthError as exc:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        log.warning("user WS rejected: %s", exc)
+        return
+    subject = getattr(principal, "subject", None)
+    if not subject:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    realtime.set_loop(asyncio.get_running_loop())
+    await realtime.manager.connect(str(subject), websocket)
+    try:
+        while True:
+            await websocket.receive_text()          # clients send nothing; this notices a disconnect
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        log.debug("user WS receive error: %s", exc)
+    finally:
+        await realtime.manager.disconnect(str(subject), websocket)

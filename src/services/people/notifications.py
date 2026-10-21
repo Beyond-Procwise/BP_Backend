@@ -100,10 +100,12 @@ class NotificationService:
         channels: Optional[Dict[str, Callable[[Person, dict], None]]] = None,
         link_for: Callable[[DomainEvent], str] = lambda e: f"/{e.entity_type}/{e.entity_id}",
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        on_created: Optional[Callable[[str, DomainEvent], None]] = None,
     ):
         self._resolver, self._repo, self._entity_for = resolver, repo, entity_for
         self._person_for, self._prefs_for = person_for, prefs_for
         self._channels, self._link_for, self._now = channels or {}, link_for, now
+        self._on_created = on_created
 
     def handle(self, event: DomainEvent) -> int:
         """Create and dispatch notifications for one event; returns how many were newly created.
@@ -112,7 +114,9 @@ class NotificationService:
         if actor is None:
             logger.info("event %s: actor %s is not in bp_person, nobody notified", event.event_id, event.actor_id)
             return 0
-        recipients = self._resolver.resolve(actor, event.type, self._entity_for(event))
+        data = event.data or {}
+        recipients = self._resolver.resolve(actor, event.type, self._entity_for(event),
+                                            explicit=data.get("explicit") or (), mentioned=data.get("mentioned") or ())
         created, failed = 0, []
         for r in recipients:
             prefs = self._prefs_for(event.tenant_id, r.person.subject) or {}
@@ -128,6 +132,11 @@ class NotificationService:
                 nid, done_channels = found
             else:
                 created += 1
+                if self._on_created:
+                    try:
+                        self._on_created(r.person.subject, event)
+                    except Exception:
+                        logger.debug("live signal failed", exc_info=True)
             quiet = (not event.mandatory) and _in_quiet_hours(prefs, self._now())
             for ch in prefs.get("channels", []):
                 send = self._channels.get(ch)

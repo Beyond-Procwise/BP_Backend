@@ -11,6 +11,7 @@ import os
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple
 
+from services.people import realtime
 from services.people.events import DomainEvent, emit_on_cursor
 from services.people.hierarchy import HierarchyService
 from services.people.models import EntityRef, Person
@@ -77,6 +78,17 @@ def entity_for_event(event: DomainEvent) -> EntityRef:
                      watchers=tuple(d.get("watchers") or ()), amount=amount)
 
 
+def _can_view(conn):
+    def can_view(person: Person, entity: EntityRef) -> bool:
+        if entity.entity_type == "conversation":
+            # a message notification reaches current participants only, however it was routed
+            from services.people.messaging import is_participant
+            with conn.cursor() as cur:
+                return person.is_active and is_participant(cur, int(entity.entity_id), person.subject)
+        return _allow_same_tenant(person, entity)
+    return can_view
+
+
 def _allow_same_tenant(person: Person, entity: EntityRef) -> bool:
     # TODO(phase 5): defer to the real per-entity visibility rules (deal_visibility). Until then
     # notification text is value-free (no amounts, no supplier names) so a wrong recipient learns
@@ -96,11 +108,12 @@ def _prefs_from_db(conn):
 
 def build_service(conn) -> NotificationService:
     store = PgPeopleStore(conn)
-    resolver = RecipientResolver(store, HierarchyService(store), PgRuleSource(conn), _allow_same_tenant)
+    resolver = RecipientResolver(store, HierarchyService(store), PgRuleSource(conn), _can_view(conn))
     return NotificationService(
         resolver, PgNotificationRepo(conn), entity_for=entity_for_event,
         person_for=store.get, prefs_for=_prefs_from_db(conn),
-        link_for=lambda e: (e.data or {}).get("link") or f"/{e.entity_type}/{e.entity_id}")
+        link_for=lambda e: (e.data or {}).get("link") or f"/{e.entity_type}/{e.entity_id}",
+        on_created=lambda subject, e: realtime.push([subject], {"type": "notification", "event": e.type}))
 
 
 def drain_once(limit: int = 50) -> Dict[str, int]:
