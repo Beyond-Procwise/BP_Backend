@@ -12,7 +12,6 @@ thresholds:                      # configurable defaults for review, not policy
 unavailable_tools:
   - obligation_tracker
   - calc_supplier_scorecard
-  - build_spend_cube
   - commodity_index_lookup
   - financial_health_score
   - monitor_risk_events

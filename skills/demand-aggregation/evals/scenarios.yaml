@@ -56,7 +56,7 @@
 - id: m3
   kind: missing_data
   prompt: Do the spend cube for last year across all BUs.
-  expect: 'NOT AVAILABLE build_spend_cube: asks for extract or uses partial corpus facts labelled'
+  expect: 'Uses the spend cube for what invoices carry, says category and business-unit totals are not available, asks for an extract'
   expert_graded: false
 - id: m4
   kind: missing_data

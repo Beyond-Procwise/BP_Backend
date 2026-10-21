@@ -10,7 +10,6 @@ thresholds:
   feasibility_min: 1
   feasibility_max: 5
 unavailable_tools:
-  - build_spend_cube
   - classify_spend
   - landed_cost_calc
   - build_xlsx

@@ -29,7 +29,7 @@ Ask for what is missing; do not assume it.
 - Who in the business can calculate and check the adjustment each period.
 
 NOT AVAILABLE: commodity_index_lookup. There is no index lookup. Ask the user for the index code, source and series; without a series say "index history not available" and do not estimate correlation, base values or any simulation.
-NOT AVAILABLE: build_spend_cube. Use `tool:get_corpus_facts` for invoiced spend and volumes, or ask the user.
+Use `tool:build_spend_cube` to cut invoiced spend by supplier, month, currency, country, region, buyer, payment terms or status for a period; its totals equal the dashboards. Invoices carry no category, no business unit and no price-per-item, so it cannot give category totals or item prices: say so, and use `tool:get_corpus_facts` for item prices or ask the user for an extract.
 NOT AVAILABLE: build_docx. Give the recommendation and clause text as plain text.
 NOT AVAILABLE: build_xlsx. Give the sensitivity table as a text table.
 NOT AVAILABLE: render_chart. Describe the price paths in a table; do not claim a chart was made.

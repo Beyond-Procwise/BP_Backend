@@ -747,6 +747,31 @@ def _ledger_tools() -> List[Tool]:
     ]
 
 
+def _spend_tools() -> List[Tool]:
+    """Invoiced spend cut by one dimension. Read-only; same figures as the dashboards."""
+    from src.services.analytics import spend_cube as SC
+
+    return [
+        Tool(
+            name="build_spend_cube",
+            description=(
+                "Invoiced spend cut by ONE dimension for a period: by = supplier, month, currency, country, "
+                "region, buyer, payment_terms or status. Defaults to the fiscal year to date and GBP. Returns the "
+                "total, invoice count, and the top cells with share and as-billed amounts; the total equals the "
+                "dashboard. There is no category or business unit. A currency with no rate is left out and "
+                "named; quote that. If spend cannot be read, say so rather than reporting zero."
+            ),
+            parameters={"type": "object", "properties": {
+                "by": {"type": "string", "enum": list(SC.DIMENSIONS)},
+                "start": {"type": "string", "description": "YYYY-MM-DD, optional."},
+                "end": {"type": "string", "description": "YYYY-MM-DD, optional."},
+                "currency": {"type": "string", "description": "ISO code, default GBP."},
+                "top_n": {"type": "integer"}}, "required": ["by"]},
+            handler=SC.build,
+        ),
+    ]
+
+
 def build_tools(
     agent_nick: Any,
     *,
@@ -776,6 +801,7 @@ def build_tools(
         + _policy_check_tools()
         + _contract_tools()
         + _ledger_tools()
+        + _spend_tools()
     )
     if exclude:
         blocked = set(exclude)

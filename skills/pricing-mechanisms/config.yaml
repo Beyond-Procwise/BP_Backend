@@ -14,7 +14,6 @@ thresholds:
   uncapped_exposure_escalate_pct: 10    # uncapped exposure above this share of annual spend escalates
 unavailable_tools:
   - commodity_index_lookup
-  - build_spend_cube
   - build_docx
   - build_xlsx
   - render_chart

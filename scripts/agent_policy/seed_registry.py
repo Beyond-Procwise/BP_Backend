@@ -30,6 +30,7 @@ FIXED_TOOLS = {
     "extract_clauses": ["document_id", "clause_type", "containing"],
     "redline_compare": ["original", "revised"],
     "savings_tracker": ["since", "until"],
+    "build_spend_cube": ["by", "start", "end", "currency", "top_n"],
 }
 
 # Tools the two older tool loops offer (services/governance_tools/governed_reasoning.py and
