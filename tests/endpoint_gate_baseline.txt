@@ -19,7 +19,6 @@ src/api/routers/negotiate.py::POST router /{deal_id}/advice/message::post_negoti
 src/api/routers/playbooks.py::POST router /proposals/{proposal_id}/reject::reject_proposal
 src/api/routers/promotion.py::POST router /link-proposals/{doc_type}/{doc_pk}/confirm::post_confirm_link
 src/api/routers/promotion.py::POST router /link-proposals/{doc_type}/{doc_pk}/reject::post_reject_link
-src/api/routers/reports.py::POST router /presentation-mode::presentation_set
 src/api/routers/requirements.py::POST router /message::post_message
 src/api/routers/requirements.py::POST router /run-workflow::post_run_workflow
 src/api/routers/stream.py::POST router /plan::stream_plan
