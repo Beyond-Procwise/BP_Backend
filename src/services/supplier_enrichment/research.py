@@ -131,7 +131,15 @@ def _chat(messages: list[dict]) -> dict:
 
 
 def _run_loop(supplier_name: str) -> tuple[str, dict[str, str]]:
-    """Drive AgentNick's tool-use loop. Returns (final_content, evidence).
+    """Drive AgentNick's tool-use loop. Returns (final_content, evidence). Every outbound call
+    of the loop (model turns, search, page reads) is audited under the research agent's name."""
+    from src.services import egress
+    with egress.calling("supplier_research"):
+        return _run_loop_inner(supplier_name)
+
+
+def _run_loop_inner(supplier_name: str) -> tuple[str, dict[str, str]]:
+    """The loop itself.
 
     `evidence` maps each URL to the exact text the model was shown for it, which is what the
     grounding guard checks claims against. Previously only the URLs were kept and the text was

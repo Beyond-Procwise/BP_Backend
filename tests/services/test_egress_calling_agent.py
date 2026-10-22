@@ -80,12 +80,22 @@ def test_the_tool_loop_runs_under_the_agents_name(monkeypatch):
         return "ran"
 
     def fake_run_stream(*a, **k):
+        # The real executor.run_stream is a plain function returning a ToolRunResult (it streams
+        # through callbacks); it is NOT a generator. The wrapper must return its value as-is.
         seen["stream_agent"] = egress.current_agent()
-        yield "chunk"
+        return "streamed-result"
     monkeypatch.setattr(executor, "run", fake_run)
     monkeypatch.setattr(executor, "run_stream", fake_run_stream)
     assert tool_runtime.run_tools("task", [], "system", agent="quote_comparison") == "ran"
     assert seen["agent"] == "quote_comparison"
-    assert list(tool_runtime.run_tools_stream("task", [], "system", agent="negotiation")) == ["chunk"]
+    assert tool_runtime.run_tools_stream("task", [], "system", agent="negotiation") == "streamed-result"
     assert seen["stream_agent"] == "negotiation"
     assert egress.current_agent() is None
+
+
+def test_the_research_loop_runs_under_its_own_name(monkeypatch):
+    from src.services.supplier_enrichment import research as R
+    seen = {}
+    monkeypatch.setattr(R, "_run_loop_inner", lambda name: seen.update(agent=egress.current_agent()) or ("", {}))
+    assert R._run_loop("Borcelle") == ("", {})
+    assert seen["agent"] == "supplier_research"

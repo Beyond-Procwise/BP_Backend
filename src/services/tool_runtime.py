@@ -374,13 +374,11 @@ def run_tools_stream(
     """
     from orchestration import executor
 
-    def _under_agent():
-        with egress.calling(agent):       # the whole stream runs as the agent (1.20j)
-            yield from executor.run_stream(
-                _wiring(verify, check_arguments), task, tools, system, model=model or _DEFAULT_MODEL, max_rounds=max_rounds,
-                timeout_s=timeout_s, on_tool=on_tool, on_delta=on_delta, agent=agent, workflow_id=workflow_id,
-                user_id=user_id)
-    return _under_agent()
+    with egress.calling(agent):           # the whole stream runs as the agent (1.20j)
+        return executor.run_stream(
+            _wiring(verify, check_arguments), task, tools, system, model=model or _DEFAULT_MODEL, max_rounds=max_rounds,
+            timeout_s=timeout_s, on_tool=on_tool, on_delta=on_delta, agent=agent, workflow_id=workflow_id,
+            user_id=user_id)
 
 
 def run_tools(
