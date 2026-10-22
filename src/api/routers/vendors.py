@@ -26,6 +26,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from api.auth import require_user
+from api.endpoint_gate import require as gate
 
 from src.services.extraction_v2.pipeline import ExtractionPipelineV2
 from src.services.extraction_v2.template_store import (
@@ -222,6 +223,7 @@ def build_router(store: Optional[TemplateStore] = None) -> APIRouter:
     async def upload(file: UploadFile = File(...),
                      doc_type: str = Form(...),
                      principal=Depends(require_user)):
+        gate("document.extract", principal, agent="vendor_onboarding_api", context={"doc_type": doc_type})
         body = await file.read()
         if not body:
             raise HTTPException(400, "empty upload")
@@ -244,6 +246,7 @@ def build_router(store: Optional[TemplateStore] = None) -> APIRouter:
 
     @router.post("/onboard/{sid}/correct")
     def correct(sid: str, req: CorrectionRequest, principal=Depends(require_user)):
+        gate("extraction_template.write", principal, agent="vendor_onboarding_api", context={"op": "correct"})
         sess = _SESSIONS.get(sid)
         if sess is None:
             raise HTTPException(404, "session not found")
@@ -252,6 +255,8 @@ def build_router(store: Optional[TemplateStore] = None) -> APIRouter:
 
     @router.post("/onboard/{sid}/save")
     def save(sid: str, req: SaveRequest, principal=Depends(require_user)):
+        gate("extraction_template.write", principal, agent="vendor_onboarding_api",
+             context={"op": "save", "vendor_name": req.vendor_name})
         sess = _SESSIONS.get(sid)
         if sess is None:
             raise HTTPException(404, "session not found")

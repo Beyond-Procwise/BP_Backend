@@ -40,9 +40,6 @@ src/api/routers/value_ledger.py::POST router /findings/{discrepancy_id}/settle::
 src/api/routers/value_ledger.py::POST router /opportunities/{opportunity_id}/realise::post_realise
 src/api/routers/value_ledger.py::POST router /outcomes/{outcome_id}/correct::post_correct
 src/api/routers/value_summary.py::POST router /value-summary/findings/{finding_id}/query-send::post_query_send
-src/api/routers/vendors.py::POST router /onboard/upload::upload
-src/api/routers/vendors.py::POST router /onboard/{sid}/correct::correct
-src/api/routers/vendors.py::POST router /onboard/{sid}/save::save
 src/api/routers/workflows.py::DELETE router /email/{unique_id}/attachments/{index}::remove_email_attachment
 src/api/routers/workflows.py::POST router /approvals::approvals
 src/api/routers/workflows.py::POST router /ask/stream::ask_question_stream
