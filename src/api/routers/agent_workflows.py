@@ -284,6 +284,11 @@ def submit_input(run_id: str, body: AnswerBody, request: Request,
     workflow_input_request_repo.answer for why the audit trail depends on
     this.
     """
+    # Permission FIRST, before anything that reveals whether a run or request exists: a probe by someone
+    # who may not answer is refused and audited, and learns nothing. A missing request or run reads as the
+    # strictest case (an approval with no recorded starter), so it is refused for them too.
+    _require_answer_permission(principal, run_id, body.request_id)
+
     if _is_blank_answer(body.answer):
         raise HTTPException(status_code=400, detail="answer must not be blank")
 
@@ -295,8 +300,6 @@ def submit_input(run_id: str, body: AnswerBody, request: Request,
             status_code=404,
             detail=f"Request {body.request_id} does not belong to run {run_id}",
         )
-
-    _require_answer_permission(principal, run_id, body.request_id)
 
     # A no-op if this request was already answered (e.g. a replayed final
     # answer) -- idempotent, not an error, so a client retry still gets a

@@ -137,9 +137,72 @@ def test_unreadable_policy_does_not_let_the_starter_approve(world):
     assert call(world, P("starter", "Admin"), approval=True).status_code == 403
 
 
-def test_no_principal_is_refused(world):
-    world["mode"] = "any_signed_in"
-    assert call(world, None).status_code == 403
+def test_sign_in_off_refuses_nobody(world):
+    """require_user returns None only when authentication is switched off (local/dev)."""
+    for mode in ("approver_only", "starter_or_approver", "any_signed_in"):
+        world["mode"] = mode
+        assert call(world, None, approval=True).status_code == 200
+    world["unreadable"] = True
+    assert call(world, None).status_code == 200
+
+
+def test_a_principal_with_no_subject_is_refused(world):
+    assert call(world, P("", "Admin")).status_code == 403
+
+
+# --- unknown starter ---------------------------------------------------------
+
+def test_unknown_starter_on_an_approval_only_admin_may_answer(world):
+    world["started_by"] = None
+    assert call(world, P("manager", "Approver"), approval=True).status_code == 403
+    assert call(world, P("buyer2", "Buyer"), approval=True).status_code == 403
+    assert call(world, P("boss", "Admin"), approval=True).status_code == 200
+
+
+def test_unknown_starter_does_not_restrict_a_non_approval_question(world):
+    world["started_by"] = None
+    assert call(world, P("manager", "Approver"), approval=False).status_code == 200
+
+
+def test_unknown_starter_applies_under_every_mode(world):
+    world["started_by"] = None
+    for mode in ("starter_or_approver", "any_signed_in"):
+        world["mode"] = mode
+        assert call(world, P("manager", "Approver"), approval=True).status_code == 403, mode
+        assert call(world, P("boss", "Admin"), approval=True).status_code == 200, mode
+
+
+# --- permission is checked before anything reveals what exists --------------
+
+def raw_post(world, who, body, run="run-1"):
+    app = FastAPI()
+    app.include_router(aw.router)
+    app.dependency_overrides[require_user] = lambda: who
+    return TestClient(app).post(f"/agent-workflows/runs/{run}/input", json=body)
+
+
+def test_a_refused_caller_cannot_probe_for_requests_and_leaves_an_audit_row(world, monkeypatch):
+    buyer = P("buyer2", "Buyer")
+    monkeypatch.setattr(aw.reqrepo, "request_run_id", lambda rid: None)        # no such request
+    r1 = raw_post(world, buyer, {"request_id": 999, "answer": "x"})
+    monkeypatch.setattr(aw.reqrepo, "request_run_id", lambda rid: "other-run")  # someone else's request
+    r2 = raw_post(world, buyer, {"request_id": 1, "answer": "x"})
+    r3 = raw_post(world, buyer, {"request_id": 1, "answer": "  "})              # blank
+    assert [r.status_code for r in (r1, r2, r3)] == [403, 403, 403]
+    assert len(world["audit"]) == 3 and all(a["status"] == "denied" for a in world["audit"])
+    assert [a["details"]["request_id"] for a in world["audit"]] == [999, 1, 1]
+    assert not world["answered"]
+
+
+def test_a_permitted_caller_still_gets_400_and_404(world, monkeypatch):
+    boss = P("boss", "Admin")
+    assert raw_post(world, boss, {"request_id": 1, "answer": " "}).status_code == 400
+    monkeypatch.setattr(aw.reqrepo, "request_run_id", lambda rid: None)
+    assert raw_post(world, boss, {"request_id": 999, "answer": "x"}).status_code == 404
+    monkeypatch.setattr(aw.reqrepo, "request_run_id", lambda rid: "other-run")
+    assert raw_post(world, boss, {"request_id": 1, "answer": "x"}).status_code == 404
+    assert not world["answered"]
+    assert all(a["status"] == "allowed" for a in world["audit"])
 
 
 # --- every attempt is audited -----------------------------------------------

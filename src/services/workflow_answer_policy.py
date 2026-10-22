@@ -16,6 +16,12 @@ FAIL CLOSED. If the row cannot be read, or holds a value that is not one of the 
 Admin only (and the starter is still barred from answering an approval). An outage must never read as
 "anyone may answer".
 
+UNKNOWN STARTER. If the run has no recorded starter and the question is an approval, only an Admin may
+answer: we cannot prove the answerer is not the starter.
+
+SIGN-IN OFF. ``require_user`` returns no principal only when authentication is switched off (local/dev).
+Then nothing is refused, matching the support ticket list and the agent groups.
+
 Approval question: the request's ``field_type`` is ``approval``, or its ``required_field`` names one
 (contains "approv"). No question the product asks today is typed that way; this is the seam the approval
 nodes use.
@@ -85,10 +91,17 @@ def decide(principal: Any, started_by: Optional[str], approval: bool,
     def no(why: str) -> Decision:
         return Decision(False, why, mode, role)
 
-    if principal is None or not subject:
+    if principal is None:
+        # Sign-in switched off (require_user returns None only then): nothing is refused, as with the
+        # support ticket list and the agent groups. There is no one to hold to a rule.
+        return Decision(True, "sign-in is switched off, so nothing is refused", mode, "")
+    if not subject:
         return no("You need to be signed in to answer this question.")
     if approval and is_starter:
         return no("You started this run, so you cannot approve it yourself. Ask an approver to answer.")
+    if approval and not started_by and role != "Admin":
+        # Nobody is recorded as having started this run, so we cannot show the answerer is not the starter.
+        return no("This run has no recorded starter, so only an Admin can approve it.")
     if mode == ANY_SIGNED_IN:
         return Decision(True, "any signed-in person may answer", mode, role)
     if mode == STARTER_OR_APPROVER:
