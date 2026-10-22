@@ -16,6 +16,7 @@ import api.routers.value_ledger as value_ledger_router
 
 @pytest.fixture()
 def client(monkeypatch):
+    monkeypatch.setattr(value_ledger_router, "gate", lambda *a, **k: None)   # RT-15: the routes ask the gate first; its own tests cover it
     app = FastAPI()
     app.include_router(value_ledger_router.router)
     app.dependency_overrides[value_ledger_router.require_user] = lambda: SimpleNamespace(subject="buyer-1")

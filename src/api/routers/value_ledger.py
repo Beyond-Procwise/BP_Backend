@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from api.auth import require_user
+from api.endpoint_gate import require as gate
 from src.services import value_ledger
 
 logger = logging.getLogger(__name__)
@@ -84,12 +85,14 @@ class CorrectBody(BaseModel):
 
 @router.post("/findings/{discrepancy_id}/outcome", summary="Close a money finding with what happened to it")
 def post_outcome(discrepancy_id: int, body: OutcomeBody, principal=Depends(require_user)) -> dict:
+    gate("value.record", principal, agent="value_ledger_api", context={"discrepancy_id": discrepancy_id, "op": "outcome", "outcome": body.outcome})
     return _call(value_ledger.record_finding_outcome, discrepancy_id, body.outcome, body.amount,
                  body.currency, actor=_actor(principal), valid_from=body.valid_from, note=body.note)
 
 
 @router.post("/findings/{discrepancy_id}/settle", summary="Credit received, or the claim dropped")
 def post_settle(discrepancy_id: int, body: SettleBody, principal=Depends(require_user)) -> dict:
+    gate("value.record", principal, agent="value_ledger_api", context={"discrepancy_id": discrepancy_id, "op": "settle", "outcome": body.outcome})
     return _call(value_ledger.settle_claim, discrepancy_id, body.outcome, body.amount,
                  body.currency, actor=_actor(principal), evidence_ref=body.evidence_ref,
                  valid_from=body.valid_from, note=body.note)
@@ -97,6 +100,7 @@ def post_settle(discrepancy_id: int, body: SettleBody, principal=Depends(require
 
 @router.post("/opportunities/{opportunity_id}/realise", summary="Mark an opportunity's saving realised")
 def post_realise(opportunity_id: str, body: RealiseBody, principal=Depends(require_user)) -> dict:
+    gate("value.record", principal, agent="value_ledger_api", context={"opportunity_id": opportunity_id, "op": "realise"})
     return _call(value_ledger.realise_opportunity, opportunity_id, body.amount, body.currency,
                  actor=_actor(principal), valid_from=body.valid_from,
                  evidence_ref=body.evidence_ref, note=body.note)
@@ -104,6 +108,7 @@ def post_realise(opportunity_id: str, body: RealiseBody, principal=Depends(requi
 
 @router.post("/outcomes/{outcome_id}/correct", summary="Correct a recorded figure (a new row)")
 def post_correct(outcome_id: int, body: CorrectBody, principal=Depends(require_user)) -> dict:
+    gate("value.record", principal, agent="value_ledger_api", context={"outcome_id": outcome_id, "op": "correct"})
     return _call(value_ledger.correct_outcome, outcome_id, body.amount, body.currency,
                  actor=_actor(principal), note=body.note, evidence_ref=body.evidence_ref)
 

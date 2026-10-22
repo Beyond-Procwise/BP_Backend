@@ -67,6 +67,8 @@ ACTIONS: Dict[str, str] = {
     # list bypasses the scheduler's caps). A configure action: refused for everyone, Admin included,
     # until the authority row allows it (deploy/sql/2026-10-22_summary_precompute_authority.sql, Admin).
     "summary.precompute": "configure",
+    # Appending to the value ledger: a finding's outcome or settlement, a realised saving, a correction.
+    "value.record": "write",
     # Rejecting an opportunity is permanent in the sense that matters: the reason is
     # written against it and the stage moves, and the opportunity card is where a person
     # does it. "Pursue", the card's other verb, gets NO name of its own -- it opens a

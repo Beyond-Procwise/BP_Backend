@@ -32,10 +32,6 @@ src/api/routers/stream.py::POST router /plan::stream_plan
 src/api/routers/support.py::POST router /contact/stream::contact_support_stream
 src/api/routers/support.py::POST router /contact::contact_support
 src/api/routers/support.py::POST router /{reference}/confirm::confirm_support
-src/api/routers/value_ledger.py::POST router /findings/{discrepancy_id}/outcome::post_outcome
-src/api/routers/value_ledger.py::POST router /findings/{discrepancy_id}/settle::post_settle
-src/api/routers/value_ledger.py::POST router /opportunities/{opportunity_id}/realise::post_realise
-src/api/routers/value_ledger.py::POST router /outcomes/{outcome_id}/correct::post_correct
 src/api/routers/value_summary.py::POST router /value-summary/findings/{finding_id}/query-send::post_query_send
 src/api/routers/workflows.py::DELETE router /email/{unique_id}/attachments/{index}::remove_email_attachment
 src/api/routers/workflows.py::POST router /approvals::approvals
