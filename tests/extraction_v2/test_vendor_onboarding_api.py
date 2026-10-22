@@ -33,6 +33,10 @@ def _build_app() -> tuple[FastAPI, InMemoryTemplateStore]:
     # The onboarding writes resolve the caller (P8 phase 2); this app never
     # configures auth, and the tests are about onboarding: pinned, nobody.
     app.dependency_overrides[require_user] = lambda: None
+    # RT-13: the onboarding writes ask the gate first; this app has no policy store, and the
+    # gate has its own tests (tests/api/test_vendor_onboarding_gate.py). Pinned open here.
+    import src.api.routers.vendors as _vendors
+    _vendors.gate = lambda *a, **k: None
     return app, store
 
 

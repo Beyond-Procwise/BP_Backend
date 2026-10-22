@@ -1,11 +1,12 @@
 """The vendor-onboarding writes ask the gate first (audit RT-13).
 
 Uploading a document runs extraction on it (``document.extract``, compute: Buyer and above). Correcting
-and saving teach the system a vendor TEMPLATE that changes how everyone's documents of that layout are
-read from then on, so they are asked as ``extraction_template.write``, a configure-class action: Admin
-only, refused-and-asked for anyone else, like the quote-template and entity-profile writes. No screen
-calls these routes (the legacy HTML form at GET /vendors/onboard is the only client). A refusal changes
-nothing.
+and saving teach the system a vendor TEMPLATE that steers how later documents of that layout are read
+(in an in-memory, per-process store today), so they are asked as ``extraction_template.write``, a
+configure-class action: refused for everyone, an Admin included, until the drafted authority row
+(deploy/sql/2026-10-22_extraction_template_write_authority.sql, Admin) exists, like the quote-template
+and entity-profile writes. No screen calls these routes (the legacy HTML form is the only client, and it
+sends no bearer token). A refusal changes nothing.
 """
 from __future__ import annotations
 
@@ -79,3 +80,9 @@ def test_a_refusal_changes_nothing(rig, monkeypatch):
     assert _upload(http).status_code == 403
     assert v._SESSIONS[sid].corrections == sess_before and store.recorded == []
     assert len(v._SESSIONS) == 1, "a refused upload opens no session"
+
+
+def test_the_authority_row_draft_names_the_action_and_admin():
+    from pathlib import Path
+    text = (Path(__file__).resolve().parents[2] / "deploy" / "sql" / "2026-10-22_extraction_template_write_authority.sql").read_text()
+    assert "extraction_template.write" in text and "'required_role', 'Admin'" in text and "WHERE NOT EXISTS" in text

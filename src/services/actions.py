@@ -138,7 +138,9 @@ ACTIONS: Dict[str, str] = {
     "entity_profile.write": "configure",
     # The templates every seller starts a customer quote from.
     "quote_template.write": "configure",
-    # Teaching a vendor extraction template changes how everyone's documents of that layout are read.
+    # Teaching a vendor extraction template (vendor onboarding form). A configure action: until an
+    # authority row allows it (deploy/sql/2026-10-22_extraction_template_write_authority.sql, Admin)
+    # the gate refuses everyone, an Admin included.
     "extraction_template.write": "configure",
     "policy.reload": "configure",
     # Which buyers a Buyer/Viewer may see in reports. Changes what every report shows that person.

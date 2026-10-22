@@ -220,11 +220,13 @@ def build_router(store: Optional[TemplateStore] = None) -> APIRouter:
         return HTMLResponse(_FORM_HTML)
 
     @router.post("/onboard/upload")
-    async def upload(file: UploadFile = File(...),
-                     doc_type: str = Form(...),
-                     principal=Depends(require_user)):
+    def upload(file: UploadFile = File(...),
+               doc_type: str = Form(...),
+               principal=Depends(require_user)):
+        # A plain def: the gate reads policy and writes its audit row synchronously, which must not
+        # sit on the event loop. FastAPI runs a sync handler in a worker thread.
         gate("document.extract", principal, agent="vendor_onboarding_api", context={"doc_type": doc_type})
-        body = await file.read()
+        body = file.file.read()
         if not body:
             raise HTTPException(400, "empty upload")
         try:
