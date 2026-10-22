@@ -32,6 +32,9 @@ def world(monkeypatch):
     monkeypatch.setattr(egress, "_resolve", lambda host: ["127.0.0.1"] if host == "localhost" else ["93.184.216.34"])
     monkeypatch.setattr(egress_log, "record", lambda **kw: events.append(kw))
     monkeypatch.setattr(ep, "_load_row", lambda: ep.Policy(version=1, rules=RULES))
+    # Process-wide writer state: earlier test files let the REAL writer thread flush against the dead
+    # test database, which sets _writer_failing for the whole process. Start each test from "healthy".
+    monkeypatch.setattr(egress_log, "_writer_failing", False)
     ep.invalidate()
     yield calls, events
     ep.invalidate(forget_last_good=True)
@@ -88,8 +91,11 @@ def test_an_observed_enforced_call_is_refused_the_same_way(world, monkeypatch):
     assert ran == []
 
 
-def test_with_capacity_an_enforced_allowed_call_goes_out(world):
+def test_with_capacity_an_enforced_allowed_call_goes_out(world, monkeypatch):
     calls, events = world
+    # Pinned, not inferred: the real writer thread may flip the flag at any moment while the dead
+    # database is unreachable; this test is about what happens WITH capacity.
+    monkeypatch.setattr(egress_log, "capacity", lambda: (True, ""))
     assert egress.get("https://open.er-api.com/v6/latest/GBP", purpose=Purpose.FX_RATES) is not None
     assert len(calls) == 1 and events[-1]["outcome"] == "http_200"
 
