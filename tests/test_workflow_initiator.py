@@ -302,6 +302,14 @@ def _canvas(monkeypatch, seen, *, open_requests):
     monkeypatch.setattr(aw.reqrepo, "payload_for", lambda run_id: {})
     monkeypatch.setattr(aw.reqrepo, "initiator_for", lambda run_id: "sub-who-started-it",
                         raising=False)
+    # D-60: answering now consults the answer policy (who may answer, is it an approval). That
+    # rule has its own tests; here it must not reach a database, and it must not decide the case.
+    monkeypatch.setattr(aw.reqrepo, "request_kind",
+                        lambda rid: {"field_type": "text", "required_field": "query", "agent_slug": "rag"})
+    monkeypatch.setattr(aw.workflow_answer_policy, "decide",
+                        lambda principal, started_by, approval, **k: aw.workflow_answer_policy.Decision(
+                            True, "stubbed for this test", aw.workflow_answer_policy.ANY_SIGNED_IN, "Buyer"))
+    monkeypatch.setattr(aw.agent_actions, "record_action_or_fail", lambda **k: None)
     monkeypatch.setattr(aw, "_claim_and_execute",
                         lambda request, run_id, wf, data, user_id:
                         seen.update(user_id=user_id) or {"run_id": run_id})
