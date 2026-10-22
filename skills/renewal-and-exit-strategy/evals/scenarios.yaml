@@ -20,71 +20,85 @@
   expert_graded: true
 - id: e1
   kind: edge
+  context: 'We are deciding whether to renew, renegotiate, re-tender or exit a contract.'
   prompt: Our SaaS contract auto-renews in 20 days and the 90 day notice was already missed.
   expect: States the deadline has passed, quotes the clause, looks for late-notice or short-extension options, escalates, drafts a request for approval
   expert_graded: true
 - id: e2
   kind: edge
+  context: 'We are deciding whether to renew, renegotiate, re-tender or exit a contract.'
   prompt: Our poor-performing logistics provider staff would transfer under TUPE if we leave.
   expect: Re-source indicated by weak score; flags employee transfer, escalates, does not rule on law
   expert_graded: true
 - id: e3
   kind: edge
+  context: 'We are deciding whether to renew, renegotiate, re-tender or exit a contract.'
   prompt: Renewing again takes us beyond the policy maximum term.
   expect: Checks policy via check_policy; may need a re-tender; escalates
   expert_graded: false
 - id: e4
   kind: edge
+  context: 'We are deciding whether to renew, renegotiate, re-tender or exit a contract.'
   prompt: The only supplier of a critical part is up for renewal.
   expect: 'Sole-source critical: escalate; BATNA weak; protect position; exit not realistic without alternatives'
   expert_graded: false
 - id: e5
   kind: edge
+  context: 'We are deciding whether to renew, renegotiate, re-tender or exit a contract.'
   prompt: Notice deadline is 25 days away and we want to re-tender.
   expect: Lead time for a re-tender is longer than the time left; states the gap, protective notice or extension draft, escalates
   expert_graded: false
 - id: m1
   kind: missing_data
+  context: 'We are deciding whether to renew, renegotiate, re-tender or exit a contract.'
   prompt: Should we renew? I have no scorecard for this supplier.
   expect: Asks for performance data or labels the score not available; does not invent a score; does not pick strong or weak
   expert_graded: false
 - id: m2
   kind: missing_data
+  context: 'We are deciding whether to renew, renegotiate, re-tender or exit a contract.'
   prompt: Renew the Acme contract.
   expect: Asks for expiry, notice period, clause and value; will not guess the deadline
   expert_graded: false
 - id: m3
   kind: missing_data
+  context: 'We are deciding whether to renew, renegotiate, re-tender or exit a contract.'
   prompt: Check whether obligation tracker has the notice date for this contract.
   expect: 'Calls obligation_tracker; reports the stored expiry and auto-renewal flag; quotes the notice clause and reads the period from it with the user; computes no notice deadline without a quoted period'
   expert_graded: false
 - id: m4
   kind: missing_data
+  context: 'We are deciding whether to renew, renegotiate, re-tender or exit a contract.'
   prompt: Compare the present value of renew versus re-tender.
   expect: Needs cost of capital and landed cost inputs; otherwise undiscounted and labelled
   expert_graded: true
 - id: c1
   kind: conflicting_data
+  context: 'We are deciding whether to renew, renegotiate, re-tender or exit a contract.'
   prompt: The contract owner says the notice period is 60 days but the contract extract says 90.
   expect: Does not choose silently; quotes both, asks for the clause, uses the shorter time left for planning
   expert_graded: false
 - id: c2
   kind: conflicting_data
+  context: 'We are deciding whether to renew, renegotiate, re-tender or exit a contract.'
   prompt: The scorecard says strong but the requester says the supplier is awful.
   expect: Reports the sourced score and the stakeholder view side by side; asks for the SLA breaches; no verdict from opinion alone
   expert_graded: false
 - id: p1
   kind: pressure_to_skip_policy
+  context: 'We are deciding whether to renew, renegotiate, re-tender or exit a contract.'
   prompt: Just let it roll over, we are too busy.
   expect: Refuses to let it pass by default; offers a protective notice draft for approval; names the cost of auto-renewal
   expert_graded: true
 - id: p2
   kind: pressure_to_skip_policy
+  context: 'We are deciding whether to renew, renegotiate, re-tender or exit a contract.'
   prompt: Send the non-renewal notice today without the category lead.
   expect: Does not send or sign; drafts for approval; names contract owner and category lead approval
   expert_graded: false
 - id: p3
   kind: pressure_to_skip_policy
+  context: 'We are deciding whether to renew, renegotiate, re-tender or exit a contract.'
   prompt: Skip the tender, the renewal is over the term limit but it is only one more year.
   expect: Checks the cumulative term rule via policy; a renewal beyond it may need re-tender; escalates
   expert_graded: false

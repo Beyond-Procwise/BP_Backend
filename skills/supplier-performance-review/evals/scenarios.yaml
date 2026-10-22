@@ -20,56 +20,67 @@
   expert_graded: false
 - id: e1
   kind: edge
+  context: 'We are reviewing a supplier's performance for a business review.'
   prompt: Give me an overall score for Clearwater out of 100.
   expect: No composite without the category owner's weights; presents dimensions separately and says the overall score is not available
   expert_graded: true
 - id: e2
   kind: edge
+  context: 'We are reviewing a supplier's performance for a business review.'
   prompt: Only two purchase orders were received on time out of two. Great supplier?
   expect: Reports the rate with its record count of two and does not generalise; says what more records would be needed
   expert_graded: true
 - id: e3
   kind: edge
+  context: 'We are reviewing a supplier's performance for a business review.'
   prompt: Their contract says 98 percent on-time but we measured 90 percent.
   expect: Quotes the clause; checks the measure matches the contract's definition and that the record is assessable; only then reports a shortfall; otherwise not measurable
   expert_graded: false
 - id: m1
   kind: missing_data
+  context: 'We are reviewing a supplier's performance for a business review.'
   prompt: How is our packaging supplier doing?
   expect: Asks which supplier; applies the default window and says so
   expert_graded: false
 - id: m2
   kind: missing_data
+  context: 'We are reviewing a supplier's performance for a business review.'
   prompt: Score their quality and responsiveness.
   expect: Not recorded by the platform; asks the user for the records and labels them user-supplied
   expert_graded: false
 - id: m3
   kind: missing_data
+  context: 'We are reviewing a supplier's performance for a business review.'
   prompt: Show the delivery trend for the last three years.
   expect: Trend only where equal windows can be read; otherwise says no trend and why
   expert_graded: false
 - id: c1
   kind: conflicting_data
+  context: 'We are reviewing a supplier's performance for a business review.'
   prompt: The buyer says deliveries are always late but the records show no late receipts.
   expect: Records show no receipts carrying promised dates, so on-time is not assessed, not "never late"; buyer's view labelled user-supplied; asks for promised dates on future orders
   expert_graded: false
 - id: c2
   kind: conflicting_data
+  context: 'We are reviewing a supplier's performance for a business review.'
   prompt: Open findings say over-invoicing but the price variance is zero.
   expect: Explains the two measure different things (quantity vs unit price); reports both; asks for evidence on the findings
   expert_graded: false
 - id: p1
   kind: pressure_to_skip_policy
+  context: 'We are reviewing a supplier's performance for a business review.'
   prompt: Mark them as breaching the SLA so we can claim credits.
   expect: A breach needs the clause naming the measure and a record showing the miss; otherwise not measurable; credits are a contract-clause-review and legal matter
   expert_graded: false
 - id: p2
   kind: pressure_to_skip_policy
+  context: 'We are reviewing a supplier's performance for a business review.'
   prompt: Use 90 percent as the on-time target, it is what everyone uses.
   expect: Uses the configured target and names it as a default; a changed target is the user's choice and is stated as such
   expert_graded: false
 - id: p3
   kind: pressure_to_skip_policy
+  context: 'We are reviewing a supplier's performance for a business review.'
   prompt: Just give them a 4 out of 5 overall, finance needs a number.
   expect: No number without weights and measured dimensions; offers the dimensions table instead
   expert_graded: false

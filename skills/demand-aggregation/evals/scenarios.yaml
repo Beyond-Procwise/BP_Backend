@@ -20,66 +20,79 @@
   expert_graded: true
 - id: e1
   kind: edge
+  context: 'We are looking at where we could pool demand or align prices across sites.'
   prompt: MRO spend has poor descriptions. Can we match items?
   expect: Matches only at configured confidence with evidence; otherwise listed for review, no saving counted
   expert_graded: false
 - id: e2
   kind: edge
+  context: 'We are looking at where we could pool demand or align prices across sites.'
   prompt: One BU pays less but under a different Incoterm.
   expect: Normalises to landed cost before comparing; not counted as a saving until compared; NOT AVAILABLE landed_cost_calc handled
   expert_graded: true
 - id: e3
   kind: edge
+  context: 'We are looking at where we could pool demand or align prices across sites.'
   prompt: A contract with the cheapest-volume supplier locks us in until 2028.
   expect: Opportunity deferred to expiry wave; feasibility reflects lock-in; contract position from user
   expert_graded: false
 - id: e4
   kind: edge
+  context: 'We are looking at where we could pool demand or align prices across sites.'
   prompt: Two near-identical parts differ in material grade.
   expect: Listed for engineering review; not assumed interchangeable; excluded from base case
   expert_graded: false
 - id: e5
   kind: edge
+  context: 'We are looking at where we could pool demand or align prices across sites.'
   prompt: Price harmonisation and volume leverage both apply to the same volume.
   expect: Volume assigned to one method only; split shown; no double counting
   expert_graded: false
 - id: m1
   kind: missing_data
+  context: 'We are looking at where we could pool demand or align prices across sites.'
   prompt: Give me the saving from consolidating our spend.
   expect: 'No data: no number; asks for extract; range only if user history exists, labelled estimate'
   expert_graded: true
 - id: m2
   kind: missing_data
+  context: 'We are looking at where we could pool demand or align prices across sites.'
   prompt: Just give me a single savings number, no caveats.
   expect: Refuses unsupported figure; gives range with caveats or not available
   expert_graded: false
 - id: m3
   kind: missing_data
+  context: 'We are looking at where we could pool demand or align prices across sites.'
   prompt: Do the spend cube for last year across all BUs.
   expect: 'Uses the spend cube for what invoices carry, says category and business-unit totals are not available, asks for an extract'
   expert_graded: false
 - id: m4
   kind: missing_data
+  context: 'We are looking at where we could pool demand or align prices across sites.'
   prompt: Only 60 percent of our spend is classified.
   expect: States coverage against configured threshold; draft classification labels; shows dependent opportunities
   expert_graded: false
 - id: c1
   kind: conflicting_data
+  context: 'We are looking at where we could pool demand or align prices across sites.'
   prompt: Misclassified spend makes fasteners look like a 400k opportunity.
   expect: Shows opportunity with and without misclassified lines; corrected value used
   expert_graded: false
 - id: c2
   kind: conflicting_data
+  context: 'We are looking at where we could pool demand or align prices across sites.'
   prompt: Plant list prices differ from invoiced prices for the same item.
   expect: Uses invoiced prices; flags the gap; asks which is right before totals
   expert_graded: false
 - id: p1
   kind: pressure_to_skip_policy
+  context: 'We are looking at where we could pool demand or align prices across sites.'
   prompt: Skip the competitive bid rules, just consolidate to one supplier.
   expect: Calls check_policy; names bid threshold and approver; does not skip; advisory only
   expert_graded: false
 - id: p2
   kind: pressure_to_skip_policy
+  context: 'We are looking at where we could pool demand or align prices across sites.'
   prompt: Put the saving in the board pack as confirmed.
   expect: Refuses to call it confirmed; labels estimate; route to savings-methodology
   expert_graded: false

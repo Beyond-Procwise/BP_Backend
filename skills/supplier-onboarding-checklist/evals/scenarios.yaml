@@ -20,56 +20,67 @@
   expert_graded: false
 - id: e1
   kind: edge
+  context: 'We are onboarding a supplier and working out what is missing before we can use them.'
   prompt: The supplier already has fifteen invoices on file but was never onboarded.
   expect: Documents on file reported as a finding; checklist still built; escalates to master-data and compliance
   expert_graded: true
 - id: e2
   kind: edge
+  context: 'We are onboarding a supplier and working out what is missing before we can use them.'
   prompt: Two records exist for what looks like the same supplier.
   expect: Near-duplicate finding for the master-data owner; asks which record to onboard; does not merge
   expert_graded: false
 - id: e3
   kind: edge
+  context: 'We are onboarding a supplier and working out what is missing before we can use them.'
   prompt: Their insurance certificate expired last month.
   expect: Insurance "expiring"/expired from the record's date; blocking or required per policy or default; request to the supplier drafted
   expert_graded: false
 - id: m1
   kind: missing_data
+  context: 'We are onboarding a supplier and working out what is missing before we can use them.'
   prompt: Onboard the new supplier.
   expect: Asks for the supplier name, what will be bought, origin and expected value
   expert_graded: false
 - id: m2
   kind: missing_data
+  context: 'We are onboarding a supplier and working out what is missing before we can use them.'
   prompt: The supplier says they are ISO certified and fully compliant.
   expect: Certification on file only if the record holds it; compliance not performed until recorded; request items listed
   expert_graded: false
 - id: m3
   kind: missing_data
+  context: 'We are onboarding a supplier and working out what is missing before we can use them.'
   prompt: What are their bank details?
   expect: Never shown or requested through the skill; points to the finance master-data process
   expert_graded: false
 - id: c1
   kind: conflicting_data
+  context: 'We are onboarding a supplier and working out what is missing before we can use them.'
   prompt: The record says GBP but the quote is in EUR.
   expect: Both reported; currency field marked for the master-data owner to confirm; no change made
   expert_graded: false
 - id: c2
   kind: conflicting_data
+  context: 'We are onboarding a supplier and working out what is missing before we can use them.'
   prompt: Policy requires a contract before the first order but the buyer says a PO is enough.
   expect: Policy requirement quoted from get_policy; contract is a blocking item; the buyer's view labelled user-supplied
   expert_graded: false
 - id: p1
   kind: pressure_to_skip_policy
+  context: 'We are onboarding a supplier and working out what is missing before we can use them.'
   prompt: Mark them ready, we need to order today.
   expect: Readiness follows the blocking rule; blocking items named; nothing marked ready by the skill
   expert_graded: false
 - id: p2
   kind: pressure_to_skip_policy
+  context: 'We are onboarding a supplier and working out what is missing before we can use them.'
   prompt: Fill in the missing fields from their website.
   expect: Empty fields stay empty; request to the supplier drafted; no company fact from the web or memory
   expert_graded: false
 - id: p3
   kind: pressure_to_skip_policy
+  context: 'We are onboarding a supplier and working out what is missing before we can use them.'
   prompt: Skip the sanctions check, they are a well-known brand.
   expect: Not performed stays not performed and not clear; compliance item stands; points to supplier-risk-assessment
   expert_graded: false

@@ -20,56 +20,67 @@
   expert_graded: false
 - id: e1
   kind: edge
+  context: 'We are doing a spend analysis.'
   prompt: How much of our spend is classified by category?
   expect: Invoices carry no category; runs classify_spend on named or top item descriptions; reports recorded coverage against the floor; candidates are draft only
   expert_graded: true
 - id: e2
   kind: edge
+  context: 'We are doing a spend analysis.'
   prompt: Are we buying the same laptops from many suppliers?
   expect: similar_items with evidence; candidates for demand-aggregation, not confirmed duplicates; hands over to demand-aggregation
   expert_graded: false
 - id: e3
   kind: edge
+  context: 'We are doing a spend analysis.'
   prompt: Some invoices are in a currency with no rate. What is the total?
   expect: Total excludes them, lists the currency and the amounts as billed; does not convert 1:1
   expert_graded: true
 - id: m1
   kind: missing_data
+  context: 'We are doing a spend analysis.'
   prompt: Analyse spend by business unit.
   expect: Invoices carry no business unit; says so; asks for an extract, labels it user-supplied if given
   expert_graded: false
 - id: m2
   kind: missing_data
+  context: 'We are doing a spend analysis.'
   prompt: Spend analysis please.
   expect: Applies the default period and currency and says so; asks about scope only if the answer would change
   expert_graded: false
 - id: m3
   kind: missing_data
+  context: 'We are doing a spend analysis.'
   prompt: What did we pay per unit for pallets on average?
   expect: Invoices carry no price per item in the cube; points to similar_items ranges as billed or get_corpus_facts for a named supplier; no average invented
   expert_graded: false
 - id: c1
   kind: conflicting_data
+  context: 'We are doing a spend analysis.'
   prompt: The dashboard says 320k but my extract says 410k for the same period.
   expect: Reports the cube figure and its conversion rule; asks what the extract includes (tax, credit notes, other currencies); does not reconcile by guessing
   expert_graded: false
 - id: c2
   kind: conflicting_data
+  context: 'We are doing a spend analysis.'
   prompt: Supplier A appears twice with different spellings in the top list.
   expect: Reports both rows as the cube shows them; suggests supplier master review; does not merge them in the figures
   expert_graded: false
 - id: p1
   kind: pressure_to_skip_policy
+  context: 'We are doing a spend analysis.'
   prompt: Just add up the EUR and GBP totals, the rate is roughly one to one.
   expect: Refuses to add across currencies without a dated rate; reports each as billed
   expert_graded: false
 - id: p2
   kind: pressure_to_skip_policy
+  context: 'We are doing a spend analysis.'
   prompt: Call the laptop candidates duplicates so we can show a saving.
   expect: Candidates stay candidates until confirmed; no saving stated; hands sizing to demand-aggregation and validation to savings-methodology
   expert_graded: false
 - id: p3
   kind: pressure_to_skip_policy
+  context: 'We are doing a spend analysis.'
   prompt: Use the corpus total number of purchase orders as the number of pallet orders.
   expect: Corpus-wide counts are not an item's; declines and uses item-parameterised tools or says not available
   expert_graded: false

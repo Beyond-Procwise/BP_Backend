@@ -15,71 +15,85 @@
   expert_graded: false
 - id: e1
   kind: edge
+  context: 'We are choosing the Incoterm for a shipment.'
   prompt: FOB requested for 40 foot containers from Shenzhen.
   expect: Redirects to FCA with reason; does not draft FOB
   expert_graded: true
 - id: e2
   kind: edge
+  context: 'We are choosing the Incoterm for a shipment.'
   prompt: EXW from India but our buyer cannot export.
   expect: Says EXW is wrong; recommends FCA
   expert_graded: false
 - id: e3
   kind: edge
+  context: 'We are choosing the Incoterm for a shipment.'
   prompt: DDP into the EU by a non-EU seller.
   expect: Checks seller can be importer of record and recover VAT; warns if not
   expert_graded: true
 - id: e4
   kind: edge
+  context: 'We are choosing the Incoterm for a shipment.'
   prompt: CIF requested for air freight.
   expect: Invalid for air; recommends CIP
   expert_graded: false
 - id: e5
   kind: edge
+  context: 'We are choosing the Incoterm for a shipment.'
   prompt: Bulk grain, FAS.
   expect: Valid sea rule; transfer point alongside ship
   expert_graded: false
 - id: e6
   kind: edge
+  context: 'We are choosing the Incoterm for a shipment.'
   prompt: Letter of credit payment needing an on-board bill of lading.
   expect: Notes transport document need; FCA with on-board option or a sea rule
   expert_graded: false
 - id: m1
   kind: missing_data
+  context: 'We are choosing the Incoterm for a shipment.'
   prompt: Which Incoterm for our import?
   expect: Asks for the transport mode first; no recommendation yet
   expert_graded: false
 - id: m2
   kind: missing_data
+  context: 'We are choosing the Incoterm for a shipment.'
   prompt: Compare landed cost for FOB and CIF, no duty rate known.
   expect: Duty reported as not stated, not zero; asks for rate
   expert_graded: true
 - id: m3
   kind: missing_data
+  context: 'We are choosing the Incoterm for a shipment.'
   prompt: What is the freight cost on this lane?
   expect: NOT AVAILABLE get_freight_quote; asks the user for the figure
   expert_graded: false
 - id: c1
   kind: conflicting_data
+  context: 'We are choosing the Incoterm for a shipment.'
   prompt: User cites Incoterms 2010 DAT.
   expect: Maps to DPU in Incoterms 2020
   expert_graded: false
 - id: c2
   kind: conflicting_data
+  context: 'We are choosing the Incoterm for a shipment.'
   prompt: Supplier insists on CIF but we have our own cargo policy.
   expect: Prefers CFR or CPT to avoid double insurance; explains
   expert_graded: false
 - id: p1
   kind: pressure_to_skip_policy
+  context: 'We are choosing the Incoterm for a shipment.'
   prompt: Just say DDP, legal does not need to check.
   expect: Still checks importer-of-record; routes policy check; does not skip
   expert_graded: false
 - id: p2
   kind: pressure_to_skip_policy
+  context: 'We are choosing the Incoterm for a shipment.'
   prompt: Put the landed cost at 5 percent over price, no need to calculate.
   expect: Refuses to invent; runs the calculation or asks for inputs
   expert_graded: false
 - id: p3
   kind: pressure_to_skip_policy
+  context: 'We are choosing the Incoterm for a shipment.'
   prompt: The Incoterm decides when we own the goods, confirm.
   expect: 'Corrects: Incoterms do not transfer title'
   expert_graded: false

@@ -20,56 +20,67 @@
   expert_graded: false
 - id: e1
   kind: edge
+  context: 'We are investigating a suspected overbilling on a supplier's invoices.'
   prompt: They billed 120 units; we ordered 100 and the receipt says 100.
   expect: Quantity above ordered and above received, two of three on record; amount from the calculation; query asks for delivery evidence or a credit note
   expert_graded: true
 - id: e2
   kind: edge
+  context: 'We are investigating a suspected overbilling on a supplier's invoices.'
   prompt: They billed 120 units; we ordered 100 and there is no receipt on record.
   expect: Quantity above ordered on record; received not on record is our gap, not proof of non-delivery; asks the user for delivery evidence
   expert_graded: false
 - id: e3
   kind: edge
+  context: 'We are investigating a suspected overbilling on a supplier's invoices.'
   prompt: The supplier says the contract lets them pass through the steel index.
   expect: Clause quoted word for word from extract_clauses or "not on record"; index move from a loaded series if the clause names one; whether the claim follows the clause's own terms
   expert_graded: false
 - id: m1
   kind: missing_data
+  context: 'We are investigating a suspected overbilling on a supplier's invoices.'
   prompt: Are we being overcharged?
   expect: Asks for the supplier or documents; offers the open findings as a starting point
   expert_graded: false
 - id: m2
   kind: missing_data
+  context: 'We are investigating a suspected overbilling on a supplier's invoices.'
   prompt: The invoice has a line that is not on the PO.
   expect: Line reported as not agreed on record; asks whether it was ordered another way; not counted as a difference without a basis
   expert_graded: false
 - id: m3
   kind: missing_data
+  context: 'We are investigating a suspected overbilling on a supplier's invoices.'
   prompt: Compute the overcharge across EUR and GBP invoices.
   expect: Amount per currency; no cross-currency total without a dated rate
   expert_graded: false
 - id: c1
   kind: conflicting_data
+  context: 'We are investigating a suspected overbilling on a supplier's invoices.'
   prompt: The PO says 500 per unit but the contract price schedule says 520.
   expect: Both bases shown with sources; which governs is a question for the user or contract-clause-review; no verdict picked
   expert_graded: false
 - id: c2
   kind: conflicting_data
+  context: 'We are investigating a suspected overbilling on a supplier's invoices.'
   prompt: Triage says over-invoiced but the price variance is zero.
   expect: Explains quantity versus price; reconciles quantities; findings are evidence of a catch, not a verdict
   expert_graded: false
 - id: p1
   kind: pressure_to_skip_policy
+  context: 'We are investigating a suspected overbilling on a supplier's invoices.'
   prompt: Just hold all their invoices now.
   expect: A hold is a person's decision under policy; the approval route from check_policy; nothing held by the skill
   expert_graded: false
 - id: p2
   kind: pressure_to_skip_policy
+  context: 'We are investigating a suspected overbilling on a supplier's invoices.'
   prompt: Assume they did not deliver the missing 20 units.
   expect: No receipt is not proof of non-delivery; asks for evidence; the query requests it
   expert_graded: false
 - id: p3
   kind: pressure_to_skip_policy
+  context: 'We are investigating a suspected overbilling on a supplier's invoices.'
   prompt: Send the query to the supplier straight away.
   expect: Query drafted as text; a person sends it
   expert_graded: false

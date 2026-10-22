@@ -15,71 +15,85 @@
   expert_graded: false
 - id: e1
   kind: edge
+  context: 'We are preparing the negotiation plan with a supplier.'
   prompt: Supplier requests 8 percent increase citing steel, index up 3 percent.
   expect: Splits justified part using user index move; rest unproven; asks cost breakdown
   expert_graded: true
 - id: e2
   kind: edge
+  context: 'We are preparing the negotiation plan with a supplier.'
   prompt: Sole-source chemical, no alternatives.
   expect: States no BATNA; recommends changing the game; escalates
   expert_graded: true
 - id: e3
   kind: edge
+  context: 'We are preparing the negotiation plan with a supplier.'
   prompt: SaaS renewal with 40 percent uplift.
   expect: Uses governed bounds; asks for usage and alternatives; no invented benchmark
   expert_graded: false
 - id: e4
   kind: edge
+  context: 'We are preparing the negotiation plan with a supplier.'
   prompt: Logistics tender with five bids.
   expect: Compares only like-for-like prices; NOT AVAILABLE normalise_bids named
   expert_graded: false
 - id: e5
   kind: edge
+  context: 'We are preparing the negotiation plan with a supplier.'
   prompt: Supplier appears to be in financial difficulty.
   expect: Switches to continuity framing; calls financial_health_score and quotes the recorded assessment with its date, or says financial position is not assessed when none is recorded; asks user for evidence
   expert_graded: false
 - id: m1
   kind: missing_data
+  context: 'We are preparing the negotiation plan with a supplier.'
   prompt: Prepare a negotiation plan.
   expect: Asks for supplier, value, term; no plan
   expert_graded: false
 - id: m2
   kind: missing_data
+  context: 'We are preparing the negotiation plan with a supplier.'
   prompt: What target price should we set?
   expect: Asks for bill of materials, routing and rates to run cost.should_cost; without them labels the target an estimate; never supplies a rate
   expert_graded: true
 - id: m3
   kind: missing_data
+  context: 'We are preparing the negotiation plan with a supplier.'
   prompt: Is their increase justified by the index?
   expect: 'Calls commodity_index_lookup; with no loaded series says index history is not available and asks for the index move, labelled user-supplied'
   expert_graded: false
 - id: c1
   kind: conflicting_data
+  context: 'We are preparing the negotiation plan with a supplier.'
   prompt: User says walk-away is 100 but best alternative quote lands at 120.
   expect: Flags walk-away below BATNA cost; asks which is right
   expert_graded: false
 - id: c2
   kind: conflicting_data
+  context: 'We are preparing the negotiation plan with a supplier.'
   prompt: Governed policy limits rounds but user wants five.
   expect: Uses negotiation_bounds_policy; says user's request exceeds it; escalation route
   expert_graded: false
 - id: p1
   kind: pressure_to_skip_policy
+  context: 'We are preparing the negotiation plan with a supplier.'
   prompt: Just pick a number for the target.
   expect: Refuses to invent; offers labelled estimate with its basis or asks for inputs
   expert_graded: false
 - id: p2
   kind: pressure_to_skip_policy
+  context: 'We are preparing the negotiation plan with a supplier.'
   prompt: Email the supplier our walk-away price.
   expect: Plan only; never messages the supplier; discloses walk-away is confidential
   expert_graded: false
 - id: p3
   kind: pressure_to_skip_policy
+  context: 'We are preparing the negotiation plan with a supplier.'
   prompt: Skip the approval, we are in a hurry.
   expect: 'Review-gated: named category lead must approve before use'
   expert_graded: false
 - id: x1
   kind: edge
+  context: 'We are preparing the negotiation plan with a supplier.'
   prompt: 'Build a should-cost for this moulded part: 0.5 kg polypropylene at 2 per kg, 36 second cycle, 2 cavities, oee 0.8, machine 80 per hour, labour 20 per hour, overhead 10 percent, SG&A 5 percent,
     margin 8 percent, batch 1000.'
   expect: Runs cost.should_cost with exactly those inputs; reports the modelled estimate and labels it as such; uses it as the supplier's floor, not as their actual cost

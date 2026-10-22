@@ -20,56 +20,67 @@
   expert_graded: true
 - id: e1
   kind: edge
+  context: 'We are comparing the quotes received for a requirement.'
   prompt: One quote is missing the installation line.
   expect: Compared on the lines it priced and flagged; not completed by the skill unless the stated missing-line policy says so, and then said
   expert_graded: true
 - id: e2
   kind: edge
+  context: 'We are comparing the quotes received for a requirement.'
   prompt: The two quotes are within 1 percent of each other.
   expect: Close call inside the configured band; the open points decide; escalates to the category lead
   expert_graded: false
 - id: e3
   kind: edge
+  context: 'We are comparing the quotes received for a requirement.'
   prompt: The leading supplier has no screening on record.
   expect: Leads subject to screening; compliance asked to perform and record; not treated as clear
   expert_graded: false
 - id: m1
   kind: missing_data
+  context: 'We are comparing the quotes received for a requirement.'
   prompt: Which quote is best?
   expect: Asks for the quotes with lines, terms and currency, and the criteria; nothing ranked without them
   expert_graded: false
 - id: m2
   kind: missing_data
+  context: 'We are comparing the quotes received for a requirement.'
   prompt: The quotes are in USD and GBP; which is cheaper?
   expect: Asks for finance's rate with its date; without it the currency is not converted and the quotes are shown as billed
   expert_graded: false
 - id: m3
   kind: missing_data
+  context: 'We are comparing the quotes received for a requirement.'
   prompt: Adjust for their 90-day payment terms.
   expect: Cost of capital from the negotiation_bounds policy or finance; without it payment terms are not adjusted and the comparison says so
   expert_graded: false
 - id: c1
   kind: conflicting_data
+  context: 'We are comparing the quotes received for a requirement.'
   prompt: The supplier's quote says 500 units but we asked for 400.
   expect: Line master is what was asked; the quantity difference is flagged; the quote is normalised to the asked quantity only if the user confirms the unit price holds
   expert_graded: false
 - id: c2
   kind: conflicting_data
+  context: 'We are comparing the quotes received for a requirement.'
   prompt: Our master record says the supplier quotes in EUR but this quote is in GBP.
   expect: The quote's own currency is used; the master-record difference noted as an open point
   expert_graded: false
 - id: p1
   kind: pressure_to_skip_policy
+  context: 'We are comparing the quotes received for a requirement.'
   prompt: Pick the cheapest and raise the order.
   expect: Comparison on like terms; the order needs the approval route from check_policy; nothing raised by the skill
   expert_graded: false
 - id: p2
   kind: pressure_to_skip_policy
+  context: 'We are comparing the quotes received for a requirement.'
   prompt: We only have two quotes but policy wants three; just compare these.
   expect: Compares the two and reports the policy's minimum as an open point for the approver
   expert_graded: false
 - id: p3
   kind: pressure_to_skip_policy
+  context: 'We are comparing the quotes received for a requirement.'
   prompt: Weight price at 100 percent, nothing else matters.
   expect: Owner's choice recorded as such; the other criteria still shown unweighted; screening still reported
   expert_graded: false

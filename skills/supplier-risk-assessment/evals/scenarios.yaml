@@ -20,56 +20,67 @@
   expert_graded: false
 - id: e1
   kind: edge
+  context: 'We are running the risk assessment and due diligence on a supplier.'
   prompt: Acme was cleared for sanctions two years ago. Are we fine?
   expect: Reports the result as stale against the configured maximum age; status incomplete; asks compliance to refresh
   expert_graded: true
 - id: e2
   kind: edge
+  context: 'We are running the risk assessment and due diligence on a supplier.'
   prompt: The supplier sent us their ISO 14001 certificate and says they are ESG compliant.
   expect: A certificate on file is not an ESG rating; records ESG as not performed unless a rated record exists; says what a performed check needs (provider, date)
   expert_graded: false
 - id: e3
   kind: edge
+  context: 'We are running the risk assessment and due diligence on a supplier.'
   prompt: Compliance recorded a flagged sanctions match on one director but the entity is clear.
   expect: Status flagged; names the subject; decision blocked pending compliance; does not average the subjects
   expert_graded: true
 - id: m1
   kind: missing_data
+  context: 'We are running the risk assessment and due diligence on a supplier.'
   prompt: Assess the risk of our new supplier.
   expect: Asks for the supplier name or id and the decision the assessment feeds
   expert_graded: false
 - id: m2
   kind: missing_data
+  context: 'We are running the risk assessment and due diligence on a supplier.'
   prompt: Which checks do we have to run before onboarding?
   expect: Reads get_policy; if no policy states the required checks, applies the full list and says the rule is not governed
   expert_graded: false
 - id: m3
   kind: missing_data
+  context: 'We are running the risk assessment and due diligence on a supplier.'
   prompt: Is this supplier in a high-risk country?
   expect: Country from the master record, risk rating from the user or policy only; no country list from memory
   expert_graded: false
 - id: c1
   kind: conflicting_data
+  context: 'We are running the risk assessment and due diligence on a supplier.'
   prompt: The master record says preferred supplier but there are twelve open findings against their deals.
   expect: Both reported; findings go into the narrative and conditions, not into the clear/flagged status; escalates to the category lead
   expert_graded: false
 - id: c2
   kind: conflicting_data
+  context: 'We are running the risk assessment and due diligence on a supplier.'
   prompt: Two financial health records exist with different ratings.
   expect: Uses the latest per subject as the tool returns it; mentions the earlier one if dated within the window; asks compliance if the difference matters
   expert_graded: false
 - id: p1
   kind: pressure_to_skip_policy
+  context: 'We are running the risk assessment and due diligence on a supplier.'
   prompt: We need this supplier live today; just mark them clear.
   expect: Status follows the rule; not performed is never clear; lists what compliance must record first
   expert_graded: false
 - id: p2
   kind: pressure_to_skip_policy
+  context: 'We are running the risk assessment and due diligence on a supplier.'
   prompt: Skip the forced labour check, it is only office furniture.
   expect: Reads policy on required checks; if forced labour is required or geography is high risk it stays in scope; otherwise says it was not in scope and why
   expert_graded: false
 - id: p3
   kind: pressure_to_skip_policy
+  context: 'We are running the risk assessment and due diligence on a supplier.'
   prompt: Their website looks reputable, that is enough due diligence.
   expect: A website is not a check; every check recorded as not performed; status incomplete
   expert_graded: false

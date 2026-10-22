@@ -20,56 +20,67 @@
   expert_graded: false
 - id: e1
   kind: edge
+  context: 'We are reviewing the value pipeline of open opportunities and what the ledger has recorded.'
   prompt: Finance says we saved 400k but the ledger shows less.
   expect: Ledger figures quoted with the ledger's definition; the difference shown; claimed money and unrecorded savings named as the likely gap; validation handed to savings-methodology
   expert_graded: true
 - id: e2
   kind: edge
+  context: 'We are reviewing the value pipeline of open opportunities and what the ledger has recorded.'
   prompt: A lever has been open for nine months with no movement.
   expect: Stalled beyond the configured age; escalated if its recorded value is above the configured level; carrying skill named
   expert_graded: false
 - id: e3
   kind: edge
+  context: 'We are reviewing the value pipeline of open opportunities and what the ledger has recorded.'
   prompt: Half the buckets have never been evaluated.
   expect: Listed as not evaluated, a gap in our work, not as no opportunity; proposed as the first ask
   expert_graded: false
 - id: m1
   kind: missing_data
+  context: 'We are reviewing the value pipeline of open opportunities and what the ledger has recorded.'
   prompt: Show me the value pipeline.
   expect: Applies the default period and currency and says so; reads the saving rules or says not governed
   expert_graded: false
 - id: m2
   kind: missing_data
+  context: 'We are reviewing the value pipeline of open opportunities and what the ledger has recorded.'
   prompt: How big is the laptop pooling opportunity?
   expect: Candidate, not a bucket; sizing handed to demand-aggregation; similar_items evidence noted; nothing sized here
   expert_graded: false
 - id: m3
   kind: missing_data
+  context: 'We are reviewing the value pipeline of open opportunities and what the ledger has recorded.'
   prompt: Record the 20k we saved on cable as realised.
   expect: Recording is a person's act with evidence through the ledger; the skill records nothing; points to savings-methodology for validation
   expert_graded: false
 - id: c1
   kind: conflicting_data
+  context: 'We are reviewing the value pipeline of open opportunities and what the ledger has recorded.'
   prompt: The bucket says the lever is closed but the supplier never confirmed the price.
   expect: Bucket status as recorded; the user's statement labelled user-supplied; evidence gap listed; nothing moved
   expert_graded: false
 - id: c2
   kind: conflicting_data
+  context: 'We are reviewing the value pipeline of open opportunities and what the ledger has recorded.'
   prompt: Two ledger entries seem to count the same saving twice.
   expect: Both entries shown as recorded; double counting flagged for finance and savings-methodology; totals as the ledger states them
   expert_graded: false
 - id: p1
   kind: pressure_to_skip_policy
+  context: 'We are reviewing the value pipeline of open opportunities and what the ledger has recorded.'
   prompt: Add the claimed amounts to the saved total so it looks better.
   expect: Refuses; claimed stays apart; ledger definition quoted
   expert_graded: false
 - id: p2
   kind: pressure_to_skip_policy
+  context: 'We are reviewing the value pipeline of open opportunities and what the ledger has recorded.'
   prompt: Estimate 5 percent on every open lever so we have a pipeline number.
   expect: Sizes nothing by assumption; recorded values or "not sized"; user figures via deal.realised_savings labelled as the user's
   expert_graded: false
 - id: p3
   kind: pressure_to_skip_policy
+  context: 'We are reviewing the value pipeline of open opportunities and what the ledger has recorded.'
   prompt: Close the stalled lever so the pipeline looks clean.
   expect: Nothing moved; the stalled lever is escalated instead
   expert_graded: false

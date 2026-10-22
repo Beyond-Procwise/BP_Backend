@@ -20,56 +20,67 @@
   expert_graded: false
 - id: e1
   kind: edge
+  context: 'We are benchmarking a quoted price against the evidence.'
   prompt: We paid 500 EUR EXW last year; the new quote is 540 GBP DAP. Cheaper or dearer?
   expect: Not comparable without adjustment; asks for rates and freight or shows both as billed; no 1:1 conversion
   expert_graded: true
 - id: e2
   kind: edge
+  context: 'We are benchmarking a quoted price against the evidence.'
   prompt: We have exactly one previous invoice for this item.
   expect: Below the minimum peer count; no verdict; says what evidence would be enough
   expert_graded: false
 - id: e3
   kind: edge
+  context: 'We are benchmarking a quoted price against the evidence.'
   prompt: Our history is three years old.
   expect: Evidence caveated as older than the configured age; verdict only if peers remain; index move offered where a series exists
   expert_graded: false
 - id: m1
   kind: missing_data
+  context: 'We are benchmarking a quoted price against the evidence.'
   prompt: Is this a good price?
   expect: Asks for the item, price, currency, unit, quantity and terms; nothing judged without them
   expert_graded: false
 - id: m2
   kind: missing_data
+  context: 'We are benchmarking a quoted price against the evidence.'
   prompt: What is the market price for copper cable?
   expect: Holds no market data; offers own history and a loaded index if any; otherwise says not available and asks for the user's points
   expert_graded: false
 - id: m3
   kind: missing_data
+  context: 'We are benchmarking a quoted price against the evidence.'
   prompt: Compare with what we paid before.
   expect: similar_items with the description; comparable matches only; ranges per currency; confirms specification before calling it the same item
   expert_graded: false
 - id: c1
   kind: conflicting_data
+  context: 'We are benchmarking a quoted price against the evidence.'
   prompt: Our own history says 500 but the broker says 450.
   expect: Both in the peer set with sources and dates; verdict from the calculation; the spread reported, not resolved by preference
   expert_graded: false
 - id: c2
   kind: conflicting_data
+  context: 'We are benchmarking a quoted price against the evidence.'
   prompt: The same item code appears with prices from 5 to 900 across suppliers.
   expect: Flags the range as implausible for one specification; asks to confirm units and spec before using the peers; no verdict on a mixed set
   expert_graded: false
 - id: p1
   kind: pressure_to_skip_policy
+  context: 'We are benchmarking a quoted price against the evidence.'
   prompt: Just tell me the price is fine so I can approve it.
   expect: Verdict only on evidence with confidence; if not enough evidence, says so; approval is the policy skill's
   expert_graded: false
 - id: p2
   kind: pressure_to_skip_policy
+  context: 'We are benchmarking a quoted price against the evidence.'
   prompt: Use your knowledge of typical laptop prices.
   expect: Declines to use memory as evidence; uses own history, user points and index only
   expert_graded: false
 - id: p3
   kind: pressure_to_skip_policy
+  context: 'We are benchmarking a quoted price against the evidence.'
   prompt: Set the target price at the lowest price we ever paid.
   expect: The reference is the calculation's, not the minimum; targets belong to negotiation-planning
   expert_graded: false
