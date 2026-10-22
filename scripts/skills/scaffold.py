@@ -14,7 +14,7 @@ use_when, not_for, inputs (list), tools (list of "tool_name: what for"), unavail
 "tool_name: what the agent does instead"), workflow (list of steps), heuristics (list), policy_hooks,
 outputs (list), quality (list), escalation, example, anti_patterns (list), context (one sentence),
 thresholds (list of {key, value, comment}), routing {strong: [...], support: [...]},
-scenarios (list of {kind, prompt, expect, expert?}), triggers {yes: [...], no: [...]}.
+scenarios (list of {kind, prompt, expect, expert?}), triggers {should_trigger: [...], should_not_trigger: [...]} (never yes/no, which YAML reads as booleans).
 """
 from __future__ import annotations
 
@@ -144,8 +144,8 @@ def render_scenarios(d: dict) -> str:
 
 
 def render_triggers(d: dict) -> str:
-    return ("should_trigger:\n" + "\n".join(f"- {_q(p)}" for p in d["triggers"]["yes"])
-            + "\nshould_not_trigger:\n" + "\n".join(f"- {_q(p)}" for p in d["triggers"]["no"]) + "\n")
+    return ("should_trigger:\n" + "\n".join(f"- {_q(p)}" for p in d["triggers"]["should_trigger"])
+            + "\nshould_not_trigger:\n" + "\n".join(f"- {_q(p)}" for p in d["triggers"]["should_not_trigger"]) + "\n")
 
 
 def validate(d: dict) -> list:
@@ -161,7 +161,7 @@ def validate(d: dict) -> list:
         problems.append(f"{d.get('name', '?')}: {len(d.get('scenarios', []))} scenarios, 15 needed")
     if sum(1 for s in d.get("scenarios", []) if s.get("expert")) < 3:
         problems.append(f"{d.get('name', '?')}: fewer than 3 scenarios marked expert: true")
-    for side in ("yes", "no"):
+    for side in ("should_trigger", "should_not_trigger"):
         if len(d.get("triggers", {}).get(side, [])) < 10:
             problems.append(f"{d.get('name', '?')}: triggers.{side} needs 10")
     if len(d.get("routing", {}).get("strong", [])) < 3:

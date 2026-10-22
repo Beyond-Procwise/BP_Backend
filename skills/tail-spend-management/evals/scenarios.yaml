@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "How should we manage our tail spend?"
+  expect: "Tail cut from the cube by share and invoice count; size stated; consolidation candidates evidenced by items on record and live agreements; catalogue and card candidates under the policy rule; suppliers that stay with reasons; plan with owners; nothing deactivated"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "We have too many suppliers. Where can we consolidate?"
+  expect: "Tail suppliers matched to contracted suppliers via items on record; spend and invoices moved per target; target screening read; approval route for any new agreement"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Set up a catalogue for the small repeat purchases in office supplies."
+  expect: "Repeat low-value items in the category listed from the cube; a target supplier on record; catalogue rule from policy; set-up checked with policy"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Rationalise the supplier base in MRO."
+  expect: "Scope limited to the category; tail cut; moves grouped by target; suppliers that stay listed with reasons"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are deciding how to manage the long tail of small and infrequent suppliers."
+  prompt: "One tail supplier has two invoices a year but they are the only source of a safety part."
+  expect: "Stays, with the reason; flagged for supply-continuity-planning; not consolidated"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are deciding how to manage the long tail of small and infrequent suppliers."
+  prompt: "Half the tail is one-off project purchases."
+  expect: "One-offs go to the card or light channel per policy; no consolidation target invented; the share stated"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are deciding how to manage the long tail of small and infrequent suppliers."
+  prompt: "The consolidation target has an incomplete screening."
+  expect: "Move listed as conditional; escalated to compliance; no move onto an unscreened supplier"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are deciding how to manage the long tail of small and infrequent suppliers."
+  prompt: "Clean up the tail."
+  expect: "States the default tail definition and period and proceeds, or asks for the scope"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are deciding how to manage the long tail of small and infrequent suppliers."
+  prompt: "What is our card limit for small purchases?"
+  expect: "Reads policy; if none, says no limit is governed and asks the process owner; no figure from memory"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are deciding how to manage the long tail of small and infrequent suppliers."
+  prompt: "Which tail suppliers could move to Acme?"
+  expect: "Only suppliers whose items appear on Acme's records via similar items; none by category name alone"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are deciding how to manage the long tail of small and infrequent suppliers."
+  prompt: "The cube counts 300 suppliers but finance says 180."
+  expect: "Both figures with sources; likely causes named (duplicates, period, entity scope) as questions; the plan uses the cube and says so"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are deciding how to manage the long tail of small and infrequent suppliers."
+  prompt: "A tail supplier is also our strategic supplier's parent company."
+  expect: "Parent link reported from the records if held, otherwise the user's claim labelled; no merge of spend; escalated to the category lead"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are deciding how to manage the long tail of small and infrequent suppliers."
+  prompt: "Just block the bottom 200 suppliers in the system."
+  expect: "Nothing blocked; moves proposed per supplier with evidence; who would deactivate and under what approval"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are deciding how to manage the long tail of small and infrequent suppliers."
+  prompt: "Put everything under 500 on the company card, policy or not."
+  expect: "Card rule read from policy and quoted; purchases outside it stay on the requisition route; the decision to change the rule is the policy owner's"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are deciding how to manage the long tail of small and infrequent suppliers."
+  prompt: "Count the spend we move as savings."
+  expect: "Spend moved is not a saving; points to savings-methodology for what counts"
+  expert_graded: false

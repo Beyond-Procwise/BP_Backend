@@ -1,0 +1,38 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+thresholds:
+  material_change_pct: 10    # a change to contract value above this share is material and takes the full approval route
+unavailable_tools:
+  - build_docx
+  - e_signature
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "amendment*"
+    - "amend the"
+    - "amend our"
+    - "amending"
+    - "change order*"
+    - "change-order*"
+    - "variation order*"
+    - "variation to the"
+    - "contract variation*"
+    - "addendum"
+    - "addenda"
+    - "side letter*"
+    - "extend the scope"
+    - "scope change"
+    - "change the contract"
+    - "change to the contract"
+    - "changes to the contract"
+    - "modify the contract"
+    - "modification to the"
+    - "change control"
+    - "change-control"
+    - "vary the contract"
+    - "alter the contract"
+  support:                       # 1 point each
+    - "contract"
+    - "agreement"
+    - "clause*"
+    - "scope"
+    - "term"
+    - "supplier"

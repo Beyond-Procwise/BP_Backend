@@ -1,0 +1,33 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+thresholds:
+  strategic_share_pct: 5    # share of total spend above which a supplier is a strategic or leverage candidate
+  category_share_pct: 40    # share of a category above which a supplier is critical to that category
+unavailable_tools:
+  - build_docx
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "segment*"
+    - "segmentation"
+    - "which suppliers are strategic"
+    - "suppliers are strategic"
+    - "strategic versus"
+    - "strategic vs"
+    - "strategic and which"
+    - "preferred supplier list"
+    - "supplier tier*"
+    - "tier our suppliers"
+    - "tier the suppliers"
+    - "tiering"
+    - "which suppliers matter"
+    - "critical supplier*"
+    - "key supplier*"
+    - "bottleneck supplier*"
+    - "supplier portfolio"
+    - "supplier relationship management"
+    - "srm"
+    - "relationship plan*"
+  support:                       # 1 point each
+    - "supplier*"
+    - "strategic"
+    - "spend"
+    - "relationship"

@@ -1,0 +1,40 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+thresholds:
+  tail_share_pct: 20    # the tail is the suppliers beyond this share of spend, counted from the largest down
+  min_invoices: 4    # suppliers with fewer invoices than this in the period are in the tail whatever their spend
+unavailable_tools:
+  - build_docx
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "manage the tail"
+    - "manage our tail"
+    - "managing the tail"
+    - "managing our tail"
+    - "tail management"
+    - "tail-spend management"
+    - "tail spend management"
+    - "tail suppliers"
+    - "long tail"
+    - "too many suppliers"
+    - "number of suppliers"
+    - "reduce our suppliers"
+    - "reduce the suppliers"
+    - "reduce suppliers"
+    - "supplier count"
+    - "rationalis*"
+    - "rationaliz*"
+    - "small suppliers"
+    - "one-off suppliers"
+    - "one-time suppliers"
+    - "infrequent suppliers"
+    - "low-value purchase*"
+    - "low value purchase*"
+    - "small purchase*"
+    - "catalogue for"
+    - "catalog for"
+    - "small repeat"
+    - "repeat purchase*"
+    - "consolidate the tail"
+    - "consolidate small"
+  support:                       # 1 point each
+    - "supplier*"

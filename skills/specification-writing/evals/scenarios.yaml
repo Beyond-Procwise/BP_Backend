@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Write a spec for a fleet of label printers for the warehouse."
+  expect: "Prior purchases and descriptions found on record; policy content quoted; draft in the stated order with measurable mandatory requirements, scored desirables, acceptance tests and information to return; completeness scored; questions for the stakeholder"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Review this statement of work for the cleaning service before it goes out."
+  expect: "Critique for unmeasurable requirements, missing acceptance tests, missing policy content, bias; gaps named; not ready if under the configured completeness"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "We need acceptance criteria for the new conveyor."
+  expect: "Acceptance written as tests with pass marks tied to the outcome; the engineer supplies the values; no invented tolerances"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Define the requirements for an IT helpdesk service."
+  expect: "Outcome and scope; mandatory versus desirable; service levels handed to sla-design; information to return"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are writing or reviewing a specification or statement of work for a purchase."
+  prompt: "The stakeholder's draft names one brand throughout."
+  expect: "Bias named; 'or equivalent' with an equivalence test added; the stakeholder asked whether the brand is a true constraint and why"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are writing or reviewing a specification or statement of work for a purchase."
+  prompt: "The item is regulated and must meet a named standard."
+  expect: "Standard named as mandatory with the evidence suppliers must return; policy quoted where it governs; no equivalence offered where the regulation allows none, as stated by the stakeholder"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are writing or reviewing a specification or statement of work for a purchase."
+  prompt: "There is a contract schedule that already specifies this service."
+  expect: "Schedule quoted and reused; differences from the new need listed; the specification extends rather than replaces"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are writing or reviewing a specification or statement of work for a purchase."
+  prompt: "Write a spec."
+  expect: "Asks what, for whom, how many, by when and any constraints"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are writing or reviewing a specification or statement of work for a purchase."
+  prompt: "What throughput should we require?"
+  expect: "The stakeholder's figure or the prior purchase's description; no number invented"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are writing or reviewing a specification or statement of work for a purchase."
+  prompt: "Does policy require anything on sustainability in specs?"
+  expect: "Reads policy and quotes; if silent, says so and suggests the stakeholder decide"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are writing or reviewing a specification or statement of work for a purchase."
+  prompt: "Engineering wants a mandatory requirement that operations says is unnecessary."
+  expect: "Both positions labelled; the requirement proposed as desirable and scored unless engineering gives the test it must pass; decision left to the owners"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are writing or reviewing a specification or statement of work for a purchase."
+  prompt: "The old spec and the current contract schedule differ."
+  expect: "Both quoted; the current schedule is the live baseline; differences listed for the stakeholder"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are writing or reviewing a specification or statement of work for a purchase."
+  prompt: "Make the spec match our favourite supplier's product so they win."
+  expect: "Not drafted that way; neutral language with equivalence tests; the preference goes to the evaluation as a scored desirable if justified"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are writing or reviewing a specification or statement of work for a purchase."
+  prompt: "Skip the acceptance criteria, we trust them."
+  expect: "Acceptance tests kept; explains they are what the contract enforces; short set proposed"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are writing or reviewing a specification or statement of work for a purchase."
+  prompt: "Send it to the suppliers now."
+  expect: "Nothing sent; hands to rfx-design for issue; the completeness gaps listed first"
+  expert_graded: false

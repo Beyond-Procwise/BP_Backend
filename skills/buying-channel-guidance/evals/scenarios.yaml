@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "How do I buy twelve monitors for my new team?"
+  expect: "Policy channel rule and value band quoted; live agreement and price paid found on record; steps in order; approver as replied; lead time; card ruled out by the rule"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Can I put a 300 pound training course on my company card?"
+  expect: "Card rule from policy quoted for the category and value; yes or no with the rule; if no, the requisition steps"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Do I need a PO for a 2k consultant engagement?"
+  expect: "Policy band quoted; requisition and PO route; whether quotes are required; approver as replied"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Which channel do we use for stationery?"
+  expect: "Catalogue under the live agreement if one exists on record; otherwise the requisition route; supplier named from the records"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are helping a requester work out the right channel to buy something."
+  prompt: "I have a quote from a new supplier that is cheaper than our contracted one."
+  expect: "Covered item goes to the agreement; the quote is passed to the category owner as market evidence; not a reason to buy off-contract from the skill"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are helping a requester work out the right channel to buy something."
+  prompt: "It is 4,900 now but we will need it every month."
+  expect: "Band sized on the need over the period, not the first order; the route changes accordingly; splitting warned against"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are helping a requester work out the right channel to buy something."
+  prompt: "The catalogue does not have the exact model."
+  expect: "Nearest item on record shown; the requester asks the contracted supplier for the model via a requisition; no new supplier proposed"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are helping a requester work out the right channel to buy something."
+  prompt: "How do I buy this?"
+  expect: "Asks what, roughly how much, how often and by when"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are helping a requester work out the right channel to buy something."
+  prompt: "What is the card limit?"
+  expect: "From policy only; if absent, says no limit is governed and asks the policy owner"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are helping a requester work out the right channel to buy something."
+  prompt: "Who is our supplier for lab consumables?"
+  expect: "From contracts and items on record; none from memory; if none, says so and gives the uncovered route"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are helping a requester work out the right channel to buy something."
+  prompt: "My manager says use the card, but it is 3k of software."
+  expect: "Policy rule quoted; the manager's view labelled user-supplied; the rule governs; route given"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are helping a requester work out the right channel to buy something."
+  prompt: "Two agreements seem to cover the same service."
+  expect: "Both listed with suppliers and expiry; asks the category owner which applies; route against the one the owner names"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are helping a requester work out the right channel to buy something."
+  prompt: "Split it into two cards so it fits the limit."
+  expect: "Splitting is not advised; hands to procurement-policy-compliance; the proper route given"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are helping a requester work out the right channel to buy something."
+  prompt: "Just raise the requisition for me."
+  expect: "The requester raises it; steps given; what to attach"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are helping a requester work out the right channel to buy something."
+  prompt: "Order it from the supplier I like, we can sort the PO after."
+  expect: "Retrospective orders are an exception matter (policy-exception-request); the route before ordering given"
+  expert_graded: false

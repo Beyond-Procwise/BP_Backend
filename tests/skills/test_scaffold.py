@@ -27,7 +27,7 @@ def definition(**over):
         "routing": {"strong": ["demo*", "show me the demo", "demonstrate"], "support": ["example"]},
         "scenarios": [{"kind": KINDS[i % 5], "prompt": f'Prompt {i} with a "quote" and an apostrophe\'s',
                        "expect": f"Expect {i}", "expert": i < 3} for i in range(15)],
-        "triggers": {"yes": [f"Demo {i}" for i in range(10)], "no": [f"Other {i}" for i in range(10)]},
+        "triggers": {"should_trigger": [f"Demo {i}" for i in range(10)], "should_not_trigger": [f"Other {i}" for i in range(10)]},
     }
     d.update(over)
     return d
@@ -76,7 +76,7 @@ def test_an_unavailable_tool_gets_both_its_config_entry_and_its_not_available_li
     ({"scenarios": definition()["scenarios"][:14]}, "15 needed"),
     ({"scenarios": [s for s in definition()["scenarios"] if s["kind"] != "edge"]}, "no edge scenario"),
     ({"scenarios": [dict(s, expert=False) for s in definition()["scenarios"]]}, "fewer than 3"),
-    ({"triggers": {"yes": ["one"], "no": definition()["triggers"]["no"]}}, "triggers.yes needs 10"),
+    ({"triggers": {"should_trigger": ["one"], "should_not_trigger": definition()["triggers"]["should_not_trigger"]}}, "triggers.should_trigger needs 10"),
     ({"routing": {"strong": ["a"]}}, "routing.strong needs 3"),
 ])
 def test_validate_names_each_gap(change, needle):

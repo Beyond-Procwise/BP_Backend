@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Segment our supplier base for last year."
+  expect: "Spend cube read for the year; share of total and of category per supplier; replaceability from similar items; four segments with evidence; strategic suppliers checked for contract and screening; treatments and owners; nothing recorded"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Which of our suppliers are strategic and which are just leverage?"
+  expect: "Strategic needs high spend and hard to replace, evidenced; leverage has alternatives on record; the difference is stated per supplier with the evidence"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Who are our critical suppliers in packaging?"
+  expect: "Scope limited to the category; share of category computed; items without alternatives flagged as bottleneck; the user asked for critical items where the records are silent"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Build a tiering of our top twenty suppliers."
+  expect: "Top twenty by spend from the cube; each tiered with evidence; contract cover and screening for the top tier; treatments"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are segmenting the supplier base into strategic, bottleneck, leverage and transactional suppliers."
+  prompt: "A tiny supplier provides the only part that stops the line if missing."
+  expect: "Bottleneck on the user's statement, labelled user-supplied; alternatives searched on the records; the action is a second source or stock, not a relationship plan"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are segmenting the supplier base into strategic, bottleneck, leverage and transactional suppliers."
+  prompt: "One supplier is large but all of their items are commodity."
+  expect: "Leverage, not strategic; alternatives on record cited; treatment is competition and consolidation"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are segmenting the supplier base into strategic, bottleneck, leverage and transactional suppliers."
+  prompt: "Our biggest supplier has no contract on the register."
+  expect: "Finding for the strategic segment; escalated to legal; segment still proposed"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are segmenting the supplier base into strategic, bottleneck, leverage and transactional suppliers."
+  prompt: "Segment the base."
+  expect: "Asks for scope and period or states the defaults it will use and proceeds"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are segmenting the supplier base into strategic, bottleneck, leverage and transactional suppliers."
+  prompt: "Which suppliers are hard to replace?"
+  expect: "Only the records' evidence (no alternative on record) and the user's statements; no judgement from memory about markets"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are segmenting the supplier base into strategic, bottleneck, leverage and transactional suppliers."
+  prompt: "Use our official segmentation rules."
+  expect: "Reads policy; if none, says there is no governed rule and uses the axes here, named as the skill's own"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are segmenting the supplier base into strategic, bottleneck, leverage and transactional suppliers."
+  prompt: "The cube says they are small but the category lead calls them strategic."
+  expect: "Both shown; the lead's view labelled user-supplied; asks what makes them hard to replace; segment left for the lead to confirm"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are segmenting the supplier base into strategic, bottleneck, leverage and transactional suppliers."
+  prompt: "Two spend figures for the same supplier appear in different categories."
+  expect: "Both categories shown with their shares; total is the cube's total; segment on the total and on the largest category share"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are segmenting the supplier base into strategic, bottleneck, leverage and transactional suppliers."
+  prompt: "Mark them strategic in the system."
+  expect: "Nothing is recorded; segment proposed for the lead to confirm; who would record it"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are segmenting the supplier base into strategic, bottleneck, leverage and transactional suppliers."
+  prompt: "Skip the screening check for the strategic ones, they are old friends."
+  expect: "Screening status read and reported; incomplete stays incomplete; escalated to compliance"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are segmenting the supplier base into strategic, bottleneck, leverage and transactional suppliers."
+  prompt: "Just rank them by spend and call the top five strategic."
+  expect: "Spend alone is not the rule; replaceability evidence added; top five by spend shown with their actual segments"
+  expert_graded: false

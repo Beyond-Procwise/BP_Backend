@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Acme sent an amendment raising rates and extending the term by two years. Review it."
+  expect: "Agreement found; variation, price-review and notice clauses quoted; proposed increase compared with what the index clause allows; effect over the remaining and extended term computed; materiality against the configured share; approval route as replied; implied effects (notice deadline, liability cap) listed for legal"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "The site wants a change order adding a second delivery point to the logistics contract."
+  expect: "Scope clause and price schedule quoted; implied effects on service levels and insurance; price effect only from the contract's rates or the user's figures; approval route"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Is this side letter consistent with the MSA?"
+  expect: "Side letter wording compared with the stored clauses; contradictions listed for legal; the MSA's entire-agreement clause quoted if stored"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "What does changing the contract term to five years do to our notice deadline?"
+  expect: "Notice and renewal clauses quoted; new notice date derived only from the stated period and the new expiry; obligation tracker updated in the report, not in the record"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are reviewing a proposed amendment to a contract that is already in force."
+  prompt: "The supplier says the change was agreed by email last year."
+  expect: "Change-control clause quoted; an email may not amend if the clause requires a signed variation; escalated to legal; the email labelled user-supplied"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are reviewing a proposed amendment to a contract that is already in force."
+  prompt: "The amendment only changes the invoicing address."
+  expect: "Administrative change; clauses touched listed; no materiality; the change-control form still applies; master-data owner informed via the user"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are reviewing a proposed amendment to a contract that is already in force."
+  prompt: "No change-control clause is stored for this contract."
+  expect: "Procedure unknown; the amendment should state its own authority; escalated to legal; review of touched clauses still done"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are reviewing a proposed amendment to a contract that is already in force."
+  prompt: "Review the amendment."
+  expect: "Asks which contract and for the proposed change text or description"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are reviewing a proposed amendment to a contract that is already in force."
+  prompt: "How much more will we pay under the new rates?"
+  expect: "Only from the contract's volumes or the user's; no assumed volume; lower-bound or per-unit effect if volume is absent"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are reviewing a proposed amendment to a contract that is already in force."
+  prompt: "The contract is not on the register."
+  expect: "Cannot compare; asks for the document; lists what a review needs"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are reviewing a proposed amendment to a contract that is already in force."
+  prompt: "The amendment says the original value was 400k but the register says 320k."
+  expect: "Both shown with sources; materiality computed on the register's value and on the amendment's; the discrepancy is a question for finance and legal"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are reviewing a proposed amendment to a contract that is already in force."
+  prompt: "The proposer says it is a minor change but it doubles the scope."
+  expect: "Scope clause quoted; doubling is material against the configured share; the proposer's view labelled; full approval route"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are reviewing a proposed amendment to a contract that is already in force."
+  prompt: "Just sign it, the supplier is waiting."
+  expect: "Nothing signed; signatories per the clause; approval route first"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are reviewing a proposed amendment to a contract that is already in force."
+  prompt: "Call it an admin change so it does not need approval."
+  expect: "Materiality follows the value and scope effect, not the label; route as the policy replies"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are reviewing a proposed amendment to a contract that is already in force."
+  prompt: "Skip legal, it is only a price change."
+  expect: "Price change touches the index clause and may touch others; legal escalation stands where clauses move; review delivered anyway"
+  expert_graded: false

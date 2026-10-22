@@ -1,0 +1,39 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+thresholds:
+  min_completeness_pct: 80    # completeness score below which the specification is not ready to issue
+unavailable_tools:
+  - build_docx
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "specification*"
+    - "spec for"
+    - "the spec"
+    - "write the spec"
+    - "write a spec"
+    - "draft the spec"
+    - "draft a spec"
+    - "review the spec"
+    - "review this spec"
+    - "statement of work"
+    - "sow"
+    - "scope of work"
+    - "scope of works"
+    - "requirements document"
+    - "requirement document"
+    - "user requirement*"
+    - "technical requirement*"
+    - "functional requirement*"
+    - "service description"
+    - "define the requirement*"
+    - "define what we need"
+    - "describe what we need"
+    - "spec out"
+    - "acceptance criteria"
+    - "acceptance test*"
+  support:                       # 1 point each
+    - "requirement*"
+    - "spec"
+    - "scope"
+    - "deliverable*"
+    - "acceptance"
+    - "supplier*"
