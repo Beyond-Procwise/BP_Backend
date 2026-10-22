@@ -40,6 +40,9 @@ ACTIONS: Dict[str, str] = {
     "deal.read": "read",
     "finding.read": "read",
     "report.read": "read",
+    # Translating UI strings or texts for the signed-in user: a read (every role keeps its translations),
+    # named so it is audited and an Admin can narrow it by policy.
+    "content.translate": "read",
     "policy.read": "read",
     # --- computing -------------------------------------------------------
     "quote.rank": "compute",
