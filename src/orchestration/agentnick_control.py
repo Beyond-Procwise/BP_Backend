@@ -571,6 +571,8 @@ def _skill_tools() -> List[Tool]:
             return _refuse(f"No skill named '{name}'. Pick one from 'available'.")
         except SK.SkillInvalid as exc:
             return _refuse(f"Skill '{name}' is not usable: {exc}")
+        if str((skill.config or {}).get("status", "")).strip().lower() == "dormant":
+            return _refuse(f"Skill '{name}' is dormant: drafted but not yet in use. Pick one from 'available'.")
         pieces = SK.split_parts(skill.body)
         try:
             number = int(part)

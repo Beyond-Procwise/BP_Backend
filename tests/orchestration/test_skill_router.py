@@ -290,3 +290,15 @@ def test_review_probes_stay_silent_and_the_framework_question_routes(router):
     noisy = [(p, router.route(p).skill) for p in REVIEW_PROBES_SILENT if router.route(p) is not None]
     assert noisy == []
     assert [(sk, p) for sk, ps in REVIEW_PROBES.items() for p in ps if (router.route(p) or sr.NO_MATCH).skill != sk] == []
+
+
+def test_a_dormant_skill_is_never_routed_to(tmp_path):
+    (tmp_path / "napper").mkdir()
+    (tmp_path / "napper" / "SKILL.md").write_text("---\nname: napper\ndescription: d\n---\n")
+    (tmp_path / "napper" / "config.yaml").write_text("status: dormant\nrouting:\n  strong: ['take a nap', 'napping', 'siesta']\n")
+    (tmp_path / "waker").mkdir()
+    (tmp_path / "waker" / "SKILL.md").write_text("---\nname: waker\ndescription: d\n---\n")
+    (tmp_path / "waker" / "config.yaml").write_text("routing:\n  strong: ['wake up', 'alarm', 'rise']\n")
+    r = sr.Router(sr.load_entries(tmp_path))
+    assert [e.name for e in r.entries] == ["waker"]
+    assert r.route("Time to take a nap") is None and r.route("Set the alarm to wake up").skill == "waker"

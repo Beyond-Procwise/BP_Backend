@@ -73,6 +73,8 @@ def load_entries(skills_dir: Optional[Path] = None) -> List[Entry]:
             cfg = {}
         routing = (cfg or {}).get("routing") or {}
         strong = [str(x) for x in routing.get("strong") or []]
+        if str((cfg or {}).get("status", "")).strip().lower() == "dormant":
+            continue  # on disk and checked, never routed (services.skills.loader.status_of)
         if strong:
             out.append(Entry(folder.name, strong, [str(x) for x in routing.get("support") or []]))
     return out

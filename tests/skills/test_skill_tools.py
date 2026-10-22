@@ -108,3 +108,16 @@ def test_the_system_prompt_routes_policy_questions_and_big_jobs():
     s = control._SYSTEM
     assert "check_policy" in s and "list_skills" in s and "use_skill" in s
     assert s.index("check_policy") < s.index("fetch it with get_policy")  # the specific route is read first
+
+
+def test_use_skill_refuses_a_dormant_skill_and_list_skills_hides_it(make_skill, monkeypatch):
+    from types import SimpleNamespace as NS
+    from orchestration import agentnick_control as control
+    make_skill(name="awake-skill", config={"thresholds": {}, "routing": {"strong": ["a", "b", "c"]}})
+    make_skill(name="asleep-skill", config={"thresholds": {}, "status": "dormant", "routing": {"strong": ["x", "y", "z"]}})
+    monkeypatch.setenv("SKILLS_DIR", str(make_skill.root))
+    t = {x.name: x for x in control.build_tools(NS(agents={"opportunity_miner": NS()}))}
+    assert [s["name"] for s in t["list_skills"].handler()["skills"]] == ["awake-skill"]
+    out = t["use_skill"].handler(name="asleep-skill")
+    assert out["found"] is False and "dormant" in out["note"] and "awake-skill" in out["available"]
+    assert t["use_skill"].handler(name="awake-skill")["found"] is not False

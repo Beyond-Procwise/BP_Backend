@@ -59,3 +59,15 @@ def test_a_colon_in_the_description_is_a_named_problem_not_a_crash(make_skill):
     text = skill_text(description="Does a thing. Review-gated: someone signs.")
     problems = checks.check_structure(make_skill(text=text))
     assert any("frontmatter" in p for p in problems), problems
+
+
+def test_a_dormant_skill_stays_on_disk_and_under_the_checker_but_is_not_listed(make_skill, monkeypatch):
+    """A drafted or unreviewed playbook waits with `status: dormant` in config.yaml: present, checked, unreachable."""
+    from src.services.skills import loader
+    make_skill(name="live-skill", config={"thresholds": {}, "routing": {"strong": ["a", "b", "c"]}})
+    make_skill(name="sleeping-skill", config={"thresholds": {}, "status": "dormant", "routing": {"strong": ["sleep*", "nap", "doze"]}})
+    monkeypatch.setenv("SKILLS_DIR", str(make_skill.root))
+    assert [s.name for s in loader.list_skills()] == ["live-skill"]
+    assert [s.name for s in loader.list_skills(include_dormant=True)] == ["live-skill", "sleeping-skill"]
+    assert loader.load_skill("sleeping-skill").config["status"] == "dormant"
+    assert loader.status_of(make_skill.root / "sleeping-skill") == "dormant" and loader.status_of(make_skill.root / "live-skill") == "active"

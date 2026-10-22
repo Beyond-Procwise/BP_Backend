@@ -21,6 +21,9 @@ class SkillInvalid(ValueError):
     pass
 
 
+DORMANT = "dormant"
+
+
 @dataclass
 class SkillSummary:
     name: str
@@ -46,9 +49,23 @@ def _folders() -> List[Path]:
     return sorted(p for p in root.iterdir() if p.is_dir() and (p / "SKILL.md").is_file()) if root.is_dir() else []
 
 
-def list_skills() -> List[SkillSummary]:
+def status_of(folder: Path) -> str:
+    """A skill's status from its config: "active" unless config.yaml says ``status: dormant``. A dormant skill
+    stays on disk and under the checker, but is not listed, not routed and not usable until the line is
+    removed; it is how a drafted or unreviewed playbook waits without reaching the agent."""
+    cfg = folder / "config.yaml"
+    try:
+        data = yaml.safe_load(cfg.read_text()) if cfg.is_file() else {}
+    except yaml.YAMLError:
+        return "active"
+    return DORMANT if str((data or {}).get("status", "")).strip().lower() == DORMANT else "active"
+
+
+def list_skills(*, include_dormant: bool = False) -> List[SkillSummary]:
     out = []
     for p in _folders():
+        if not include_dormant and status_of(p) == DORMANT:
+            continue
         meta, _ = checks.split_frontmatter((p / "SKILL.md").read_text())
         out.append(SkillSummary(name=p.name, description=str((meta or {}).get("description", ""))))
     return out
