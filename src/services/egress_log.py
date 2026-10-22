@@ -113,7 +113,17 @@ _worker: Optional[threading.Thread] = None
 _worker_lock = threading.Lock()
 _dropped = 0
 _dropped_lock = threading.Lock()
+# False refuses EVERY enforced external call (1.20h): a switched-off writer has no capacity to
+# record them. Nothing in src/ flips this; it exists for tests and for an operator who means it.
 _enabled = True
+# Set when a flush fails to write, cleared by the next flush that succeeds. While set, an enforced
+# call is refused even though the queue has room: the queue draining into a failing writer is
+# not capacity, it is a silent discard (review of 8f8a17af).
+_writer_failing = False
+# Enforced calls refused because there was no capacity. They could not be recorded when it
+# happened; the count becomes its own row when the writer recovers, so the gap is admitted.
+_refused_unaudited = 0
+_refused_lock = threading.Lock()
 
 
 def payload_digest(body: Any) -> tuple[Optional[str], Optional[int]]:
@@ -138,16 +148,44 @@ def payload_digest(body: Any) -> tuple[Optional[str], Optional[int]]:
     return hashlib.sha256(raw).hexdigest(), len(raw)
 
 
-def has_capacity() -> bool:
-    """Can the next event be queued? False when the writer is switched off or its queue is full.
+def capacity() -> tuple[bool, str]:
+    """(can the next event be recorded?, why not). The gate asks this BEFORE an ENFORCED call
+    leaves (1.20h): a call that enforcement permits but that cannot be recorded would be exactly
+    the unrecorded call enforcement exists to prevent, so it is refused instead. Shadow calls
+    never ask.
 
-    The gate asks this BEFORE an ENFORCED call leaves (1.20h): an outbound call that enforcement
-    permits but that cannot be recorded would be exactly the unrecorded call enforcement exists
-    to prevent, so it is refused instead. Shadow calls never ask."""
+    Honest limits: the check and the record straddle the network call, so N concurrent enforced
+    callers can all see one free slot; the losers' rows are dropped and admitted by the
+    ``events_dropped`` row. And a writer that fails is noticed on the NEXT flush (every 2 s), not
+    on the call itself."""
     try:
-        return bool(_enabled) and not _queue.full()
+        if not _enabled:
+            return False, "the egress audit writer is switched off"
+        if _writer_failing:
+            return False, "the egress audit writer is failing to write (see the flush log)"
+        if _queue.full():
+            return False, "the egress audit queue is full"
+        return True, ""
     except Exception:  # noqa: BLE001 - if even this fails, there is no capacity to speak of
-        return False
+        return False, "the egress audit writer cannot be asked"
+
+
+def has_capacity() -> bool:
+    return capacity()[0]
+
+
+def note_refused_unaudited() -> None:
+    """Count an enforced call refused for lack of capacity; it becomes a row when the writer recovers."""
+    global _refused_unaudited
+    with _refused_lock:
+        _refused_unaudited += 1
+
+
+def _take_refused() -> int:
+    global _refused_unaudited
+    with _refused_lock:
+        n, _refused_unaudited = _refused_unaudited, 0
+        return n
 
 
 def record(*, purpose: str, destination: str, method: str, outcome: str,
@@ -254,8 +292,19 @@ def flush(batch: Optional[list[dict]] = None) -> int:
     audit writer that can break the thing it audits is a worse problem than a
     gap in the audit.
     """
+    global _writer_failing
     events = _drain() if batch is None else batch
     dropped = _take_drops()
+    refused = _take_refused()
+    if refused:
+        events.append({
+            "occurred_at": datetime.now(timezone.utc),
+            "purpose": "audit", "destination": "-", "method": "-",
+            "outcome": "calls_refused_unaudited",
+            "detail": f"{refused} enforced call(s) refused because the audit writer had no capacity; "
+                      f"they did not leave and could not be recorded at the time",
+            "payload_sha256": None, "payload_bytes": None,
+        })
     if dropped:
         # The gap is recorded as a row of its own. An audit log that silently
         # loses entries is worse than one that admits to a gap: a reader can act
@@ -276,10 +325,21 @@ def flush(batch: Optional[list[dict]] = None) -> int:
             cur.executemany(_INSERT, [_row(e) for e in events])
             if not getattr(conn, "autocommit", False):
                 conn.commit()
+        if _writer_failing:
+            logger.warning("egress log writer recovered")
+        _writer_failing = False
         return len(events)
     except Exception:
-        logger.debug("egress log flush failed; %d event(s) lost",
-                     len(events), exc_info=True)
+        if not _writer_failing:
+            logger.warning("egress log writer is failing; enforced external calls are refused until it recovers",
+                           exc_info=True)
+        _writer_failing = True
+        # The refusals counted above were consumed into `events` and are now lost with the batch:
+        # put the count back so the next successful flush still admits them.
+        if refused:
+            with _refused_lock:
+                globals()["_refused_unaudited"] += refused
+        logger.debug("egress log flush failed; %d event(s) lost", len(events), exc_info=True)
         return 0
 
 

@@ -285,10 +285,11 @@ def _audit_can_record(decision: Decision, purpose: Purpose, destination: str) ->
     if not decision.enforced:
         return True
     from src.services import egress_log
-    if egress_log.has_capacity():
+    ok, why = egress_log.capacity()
+    if ok:
         return True
-    logger.error("egress audit writer has no capacity: enforced %s call to %s refused, unrecorded",
-                 purpose.value, destination)
+    egress_log.note_refused_unaudited()      # admitted as a row once the writer recovers
+    logger.error("%s: enforced %s call to %s refused, unrecorded", why, purpose.value, destination)
     return False
 
 
