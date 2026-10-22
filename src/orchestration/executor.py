@@ -121,11 +121,22 @@ CLOSING_INSTRUCTION = (
 
 
 _SCREEN_TALK = re.compile(r"\byou are (?:on|viewing|looking at) (?:the|a|an|your)\b"
-                          r"|\bthe system has (?:automatically|identified|retrieved|checked|flagged|analy[sz]ed)\b", re.IGNORECASE)
+                          r"|\bthe system (?:has (?:automatically|identified|retrieved|checked|flagged|analy[sz]ed)|shows|displays|is showing|identified|retrieved|analy[sz]ed)\b", re.IGNORECASE)
 REWRITE_INSTRUCTION = (
     "That answer describes a screen or something 'the system' did, which does not exist. Rewrite it as yourself "
     "in plain text with the same facts and figures and nothing added: no screen, no buttons, no 'the system has'."
 )
+
+
+_SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def scrub_screen_talk(text: str) -> str:
+    """Drop the sentences that narrate a screen or 'the system'; keep everything else in order. Returns the
+    text unchanged when nothing would be left. Used when the model repeats the narration in its rewrite."""
+    parts = [p for p in _SENTENCE.split(text or "") if p is not None]
+    kept = [p for p in parts if p.strip() and not _SCREEN_TALK.search(p)]
+    return "\n".join(kept).strip() if kept else text
 
 
 def narrates_a_screen(text: str) -> bool:
@@ -147,7 +158,10 @@ def _unnarrated(w: Wiring, content: str, messages: List[Dict[str, Any]], model: 
     except Exception as exc:  # noqa: BLE001
         w.log.warning("screen rewrite failed: %s", exc)
         redo = ""
-    return redo if redo.strip() else content
+    # Live, run 10: the rewrite came back narrating again ("You are on the Incoterms Selection screen"); the
+    # narrating sentences are then cut out mechanically, which keeps the facts and loses only the framing.
+    chosen = redo if redo.strip() else content
+    return scrub_screen_talk(chosen) if narrates_a_screen(chosen) else chosen
 
 
 def _closing_turn(w: Wiring, messages: List[Dict[str, Any]], model: str, timeout_s: int, result: Any,
@@ -182,6 +196,7 @@ def _closing_turn(w: Wiring, messages: List[Dict[str, Any]], model: str, timeout
             content = (message or {}).get("content") or content
         except Exception as exc:  # noqa: BLE001
             w.log.warning("closing retry failed: %s", exc)
+        content = _unnarrated(w, content, messages, model, timeout_s, result)
         answer = w.safety_gate(content, messages, [], model, timeout_s, result)
         answer, _ = _release(w, answer, result, True)
     result.answer = answer

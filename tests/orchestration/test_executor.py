@@ -491,13 +491,13 @@ def test_a_closing_answer_that_narrates_a_screen_is_rewritten_once(mode):
 
 
 @pytest.mark.parametrize("mode", ["whole", "stream"])
-def test_when_the_rewrite_comes_back_empty_the_narrating_answer_is_kept(mode):
+def test_when_the_rewrite_comes_back_empty_the_narrating_sentence_is_cut_and_the_facts_kept(mode):
     s = Script([{"role": "assistant", "content": "", "tool_calls": [tc("a")]}] * 2
                + [{"role": "assistant", "content": "You are on the Tail Spend screen. Two items are bought elsewhere."},
                   {"role": "assistant", "content": ""}])
     fn = ex.run if mode == "whole" else ex.run_stream
     res = fn(s.wiring(), "task", [tool("a")], "system", model="m", max_rounds=2, timeout_s=5)
-    assert res.answer.startswith("You are on the Tail Spend screen") and res.error is None
+    assert res.answer == "Two items are bought elsewhere." and res.error is None
 
 
 @pytest.mark.parametrize("mode", ["whole", "stream"])
@@ -509,3 +509,21 @@ def test_an_ordinary_final_answer_that_narrates_a_screen_is_rewritten_too(mode):
     fn = ex.run if mode == "whole" else ex.run_stream
     res = fn(s.wiring(), "task", [tool("a")], "system", model="m", max_rounds=4, timeout_s=5)
     assert res.answer == "Over the past 12 months the top supplier was Crossfell." and res.error is None
+
+
+def test_scrubbing_drops_only_the_sentences_that_narrate_a_screen():
+    text = ("You are on the Incoterms Selection screen for a new deal. The system shows the recommended rule. "
+            "DDP places all cost and risk on the seller.\nFCA is the better fit for containers.")
+    assert ex.scrub_screen_talk(text) == "DDP places all cost and risk on the seller.\nFCA is the better fit for containers."
+    assert ex.scrub_screen_talk("You are on the Incoterms screen.") == "You are on the Incoterms screen."
+
+
+@pytest.mark.parametrize("mode", ["whole", "stream"])
+def test_when_the_rewrite_narrates_again_the_narrating_sentences_are_cut_out(mode):
+    """Run 10, 2026-10-22: the rewrite came back 'You are on the Incoterms Selection screen...' a second time."""
+    s = Script([{"role": "assistant", "content": "", "tool_calls": [tc("a")]},
+                {"role": "assistant", "content": "You are on the Incoterms screen. DDP places the risk on the seller."},
+                {"role": "assistant", "content": "You are viewing the Incoterms page. DDP places the risk on the seller."}])
+    fn = ex.run if mode == "whole" else ex.run_stream
+    res = fn(s.wiring(), "task", [tool("a")], "system", model="m", max_rounds=4, timeout_s=5)
+    assert res.answer == "DDP places the risk on the seller." and res.error is None

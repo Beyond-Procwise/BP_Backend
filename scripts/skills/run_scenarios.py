@@ -75,7 +75,16 @@ def main(argv=None) -> int:
     kinds = [k.strip() for k in args.kinds.split(",") if k.strip()]
 
     from src.orchestration import agentnick_control as control
-    from src.services import output_safety as OS
+    import importlib
+    # The executor imports the gate as `services.output_safety`; this script runs with both `src` and the repo on
+    # the path, so both module names are patched or the spy sees nothing (run 10, 2026-10-22).
+    _modules = []
+    for _name in ("services.output_safety", "src.services.output_safety"):
+        try:
+            _modules.append(importlib.import_module(_name))
+        except Exception:  # noqa: BLE001
+            pass
+    OS = _modules[0]
     # The gate replaces a leaking answer with a stock sentence and logs why; the log did not reach the report
     # (runs 7 and 9), so the reason is captured here and written beside the answer.
     withheld: list = []
@@ -86,7 +95,8 @@ def main(argv=None) -> int:
         if out == OS.SAFE_REPLY and text != OS.SAFE_REPLY:
             withheld.append({"matched": [v.match for v in OS.inspect(text, prose=kw.get("prose", True))][:6], "head": text[:300]})
         return out
-    OS.enforce = _spy
+    for _m in _modules:
+        _m.enforce = _spy
     nick = _nick()
     skills_dir = ROOT / "skills"
     folders = sorted(p for p in skills_dir.iterdir() if p.is_dir() and (not args.skill or p.name in args.skill))
