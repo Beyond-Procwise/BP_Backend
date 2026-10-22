@@ -81,9 +81,21 @@ def _plain(v: Any) -> Any:
     return v
 
 
+def _singular(word: str) -> str:
+    """'computers' and 'computer' are one word for matching; 'laptops' and 'laptop' too."""
+    if len(word) > 4 and word.endswith("ies"):
+        return word[:-3] + "y"
+    if len(word) > 4 and word.endswith("es") and word[-3] in "sxz":
+        return word[:-2]
+    if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
 def core_words(text: Any) -> frozenset:
-    """The words that describe the thing itself: no item codes, no buying words, no one-letter tokens."""
-    return frozenset(w for w in _WORD.findall(str(text or "").lower())
+    """The words that describe the thing itself: no item codes, no buying words, no one-letter tokens,
+    plurals folded to the singular."""
+    return frozenset(_singular(w) for w in _WORD.findall(str(text or "").lower())
                      if len(w) >= 2 and not _CODE.match(w) and w not in _BUYING)
 
 

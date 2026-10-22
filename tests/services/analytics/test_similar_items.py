@@ -31,7 +31,7 @@ def _rows(po=PO, inv=INV, quote=QUOTE):
 
 
 def test_descriptive_words_drop_codes_and_buying_words():
-    assert SI.core_words("Advanced Laptop Computers Installation ITM003969") == frozenset({"laptop", "computers"})
+    assert SI.core_words("Advanced Laptop Computers Installation ITM003969") == frozenset({"laptop", "computer"})
     assert SI.item_code("Advanced Laptop Computers Installation ITM003969") == "ITM003969"
     assert SI.item_code("Ergonomic chair") is None
     assert SI.similarity("Advanced Laptop Computers Installation", "Standard Laptop Computers Kit") == 1.0
@@ -45,7 +45,7 @@ def test_refuses_short_or_empty_descriptions():
 
 def test_matches_carry_evidence_per_source_and_are_ranked_by_similarity_then_volume():
     out = SI.find("Advanced Laptop Computers Installation ITM003969", rows=_rows())
-    assert out["found"] and out["descriptive_words"] == ["computers", "laptop"]
+    assert out["found"] and out["descriptive_words"] == ["computer", "laptop"]
     descs = [m["description"] for m in out["matches"]]
     assert descs[:3] == ["Advanced Laptop Computers Installation ITM003969", "Standard Laptop Computers Kit ITM003967",
                          "laptop computers (advanced) installation"]
@@ -92,3 +92,11 @@ def test_outage_is_not_no_match():
         raise store.StoreUnavailable("db down")
     out = SI.find("Laptop computers", rows=down)
     assert out["found"] is False and out["available"] is False and "does not mean" in out["note"]
+
+
+def test_singular_and_plural_wording_match():
+    """Live, 2026-10-22: 'laptop computer' found nothing because every line says 'Laptop Computers'."""
+    assert SI.similarity("laptop computer", "Standard Laptop Computers Kit ITM003967") == 1.0
+    assert SI._singular("batteries") == "battery" and SI._singular("boxes") == "box" and SI._singular("glass") == "glass"
+    out = SI.find("laptop computer", rows=_rows())
+    assert out["found"] and out["matches"][0]["description"].startswith("Advanced Laptop Computers")
