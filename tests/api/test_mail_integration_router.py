@@ -326,6 +326,8 @@ def test_real_app_refusal_arrives_as_fields(real, monkeypatch):
 
 
 def test_real_app_setup_script_bad_id_is_400(real, monkeypatch):
+    monkeypatch.setattr(r.mail_policy, "load", lambda conn=None: type(
+        "Pol", (), {"restriction_group": "Procwise Mailboxes", "access_level": "read_send"})())
     monkeypatch.setattr(r, "read_integration",
                         lambda conn: {"tenant_id": "11111111-1111-1111-1111-111111111111"})
     res = real.get(f"{B}/m365/setup-script", params={"service_principal_object_id": "bad'; x"})

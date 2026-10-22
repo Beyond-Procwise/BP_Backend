@@ -28,11 +28,16 @@ making a request has not finished writing it.
 
 WHAT THIS DOES NOT DO YET, STATED PLAINLY
 
-  * It does not consult a policy engine. There is no policy model keyed on
-    (destination, purpose, classification) to consult — building one is the next
-    piece of work, and ``_evaluate`` is the seam it will plug into. Until then
-    this records rather than refuses, and the docstring says so rather than
-    letting the presence of a "gate" imply a decision is being made.
+  * It enforces a policy ONLY where the administrator says so. ``_evaluate`` computes
+    the decision from the EgressPolicy row (``services.egress_policy``; a built-in
+    default when there is no row) and records it, with the calling agent and what the
+    payload carries, on every event row. For a purpose the row lists under ``enforce``
+    the decision is applied: a denied call does not leave. For every other purpose it
+    is shadow: recorded, not applied. A local destination is never refused.
+    CAVEAT before enforcing model_inference: "local" is decided by what the host NAME
+    resolves to at that instant; a model host named by a public or dual-stack address,
+    or a lookup that fails, reads as external and would be refused. Name it by a
+    loopback/private address, or add an allow rule for it, first.
   * It does not classify payloads. There is no classification registry, so the
     ``classification`` column on every event row is empty.
 
@@ -45,8 +50,8 @@ than the body: the point is to prove which payload was or was not sent, not to
 make the audit log a second copy of the data it is auditing. A REFUSED call's
 digest is recorded too, because that is the evidence of what was withheld.
 
-``policy_version`` on those rows is NULL, because there is no policy to have a
-version. A row claiming one would be worse than a NULL.
+``policy_version`` on those rows names the SHADOW rule set that judged the call
+(``shadow-default-v0``); it is NULL only where nothing judged it (SDK client rows).
 
 So: this is the seam, with the SSRF guard, the audit trail and the payload
 digest real, and the policy evaluation honestly absent. It is worth having
@@ -60,7 +65,8 @@ import logging
 import socket
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Optional
+from contextlib import contextmanager
+from typing import Any, Iterator, Optional
 from urllib.parse import urljoin, urlsplit
 
 import requests
@@ -206,25 +212,94 @@ def check_destination(url: str, *, allowed_ports: frozenset[int] | None = None,
 # The seam a policy engine will plug into
 # ---------------------------------------------------------------------------
 
-def _evaluate(purpose: Purpose, destination: str) -> tuple[bool, str]:
-    """Whether this call is permitted.
+#: The rule set the SHADOW decision is computed from. Recorded on every event row as
+#: ``policy_version`` so a reader knows which rules "would have" decided it.
+SHADOW_RULES_VERSION = "shadow-default-v0"
+UNKNOWN_AGENT = "unknown"
+_LOCAL_NAMES = frozenset({"localhost", "127.0.0.1", "::1"})
 
-    Deliberately trivial today, and named so the absence is visible in a stack
-    trace rather than hidden behind an approving-sounding wrapper. There is no
-    policy model keyed on (destination, purpose, classification) to consult; when
-    there is, this is the one function that changes and every caller inherits it.
 
-    Returning True here is not a decision that the call is safe. It is the
-    absence of a decision, which is what the audit found and what this module
-    exists to make fixable in one place.
+@dataclass(frozen=True)
+class Decision:
+    """What the gate does and what it would do.
+
+    ``shadow`` is the POLICY view alone, judged independently of the SSRF guard that runs
+    after it: a call the guard refuses (a link-local or private address) can still carry
+    ``shadow="allow"``, because the shadow asks "would an egress rule stop this" and the
+    guard already did. ``outcome`` on the event row says what actually happened.
     """
-    return True, "no destination policy is configured"
+    permitted: bool          # what the gate DOES (False only for an enforced purpose the rules deny)
+    reason: str
+    shadow: str              # what the gate WOULD do: "allow" | "deny"
+    shadow_reason: str
+    version: str = SHADOW_RULES_VERSION   # which rule set judged it (the policy row's, when one exists)
+    enforced: bool = False               # the decision was APPLIED (the purpose is in the row's enforce list)
+
+
+def _is_local_destination(host: str) -> bool:
+    """Loopback, or a name that resolves only to non-global addresses (the private model
+    host, an in-VPC service). Unresolvable names are not local: they are not known to be."""
+    if host in _LOCAL_NAMES:
+        return True
+    try:
+        return not _is_global(str(ipaddress.ip_address(host)))   # a literal: no lookup needed
+    except ValueError:
+        pass
+    addrs = _resolve(host)
+    return bool(addrs) and all(not _is_global(a) for a in addrs)
+
+
+def _evaluate(purpose: Purpose, destination: str, agent: str = UNKNOWN_AGENT,
+              local: Optional[bool] = None, level: str = "public") -> Decision:
+    """What the gate does (nothing yet) and what it WOULD do (recorded).
+
+    SHADOW BY DEFAULT (1.20 a-c, D-62): the decision an egress policy would take is computed and
+    recorded on the event row, not applied, so a period of shadow shows exactly which calls
+    enforcing would block, by purpose, host and agent. ENFORCED PER PURPOSE (step d): once an
+    Admin lists a purpose in the policy row's ``enforce`` list, ``permitted`` follows the
+    decision for that purpose; a local destination is never refused.
+
+    The decision comes from the administrator's ``EgressPolicy`` row (``services.egress_policy``)
+    when one exists, else from the built-in default rule set: a local destination would be
+    allowed; any external destination would be denied until a rule allows this purpose to this
+    host for this agent. An unreadable row reads as deny for external destinations. Returning
+    ``permitted=True`` is not a judgement that the call is safe; it is the absence of
+    enforcement, which this record makes visible rather than hidden.
+    """
+    from src.services import egress_policy
+    if local is None:
+        local = _is_local_destination(destination)
+    verdict = egress_policy.shadow_for(purpose, destination, agent, local=local, level=level)
+    if local or not egress_policy.enforced_for(purpose):
+        return Decision(True, f"shadow mode for {purpose.value}: recorded, not applied",
+                        verdict.effect, verdict.reason, verdict.version)
+    # Enforced (step d): the policy's answer is applied. A local destination never reaches here.
+    permitted = verdict.effect == "allow"
+    return Decision(permitted, verdict.reason if not permitted else f"enforced: {verdict.reason}",
+                    verdict.effect, verdict.reason, verdict.version, enforced=True)
+
+
+def _audit_can_record(decision: Decision, purpose: Purpose, destination: str) -> bool:
+    """An ENFORCED call must be recordable before it leaves (1.20h). Logged at ERROR when not:
+    the refusal cannot be recorded either, and the log line is the only trace."""
+    if not decision.enforced:
+        return True
+    from src.services import egress_log
+    ok, why = egress_log.capacity()
+    if ok:
+        return True
+    egress_log.note_refused_unaudited()      # admitted as a row once the writer recovers
+    logger.error("%s: enforced %s call to %s refused, unrecorded", why, purpose.value, destination)
+    return False
 
 
 def _record(*, purpose: Purpose, destination: str, method: str,
             outcome: str, detail: str = "",
             payload_sha256: Optional[str] = None,
-            payload_bytes: Optional[int] = None) -> None:
+            payload_bytes: Optional[int] = None,
+            agent: str = UNKNOWN_AGENT,
+            decision: Optional[Decision] = None,
+            classification: Optional[list] = None) -> None:
     """One line per outbound call, whatever the outcome, to the log AND the table.
 
     A refused or failed call still disclosed a hostname and usually the shape of
@@ -237,8 +312,9 @@ def _record(*, purpose: Purpose, destination: str, method: str,
     watching would be a worse problem than a gap in the audit.
     """
     logger.info(
-        "egress purpose=%s destination=%s method=%s outcome=%s%s",
-        purpose.value, destination, method, outcome,
+        "egress purpose=%s destination=%s method=%s outcome=%s agent=%s%s%s",
+        purpose.value, destination, method, outcome, agent,
+        f" shadow={decision.shadow}" if decision else "",
         f" detail={detail}" if detail else "",
     )
     try:
@@ -247,6 +323,11 @@ def _record(*, purpose: Purpose, destination: str, method: str,
             purpose=purpose.value, destination=destination, method=method,
             outcome=outcome, detail=detail,
             payload_sha256=payload_sha256, payload_bytes=payload_bytes,
+            agent=agent,
+            shadow_decision=decision.shadow if decision else None,
+            shadow_reason=decision.shadow_reason if decision else None,
+            policy_version=decision.version if decision else None,
+            classification=list(classification or []),
         )
     except Exception:  # noqa: BLE001 - never fail a call over its own audit row
         logger.debug("egress event not queued", exc_info=True)
@@ -266,9 +347,14 @@ def request(
     follow_redirects: bool = False,
     timeout: int = 15,
     raise_transport_errors: bool = False,
+    agent: Optional[str] = None,
     **kwargs: Any,
 ) -> Optional[requests.Response]:
     """Make one outbound HTTP call, described and recorded.
+
+    ``agent`` names the agent (or service) on whose behalf the call leaves; it is recorded
+    on the event row and is what an egress rule will be keyed on. A caller that names none
+    is recorded as ``unknown`` and will only ever match rules that allow any agent.
 
     Returns the response, or None if it was refused or failed — most callers in
     this codebase treat an outbound failure as "no data", and raising would turn
@@ -299,11 +385,20 @@ def request(
         kwargs.get("json") if kwargs.get("json") is not None else kwargs.get("data")
     )
 
-    permitted, why = _evaluate(purpose, destination)
-    if not permitted:
+    agent = agent or UNKNOWN_AGENT
+    # What the payload carries (1.20 c): classified only for EXTERNAL destinations, so the local
+    # model host never pays for the scan. The tags ride on every outcome branch's event row.
+    from src.services import egress_classify
+    local = _is_local_destination(destination)
+    body = kwargs.get("json") if kwargs.get("json") is not None else kwargs.get("data")
+    tags: list = [] if local else egress_classify.classify(url, body)
+    decision = _evaluate(purpose, destination, agent, local=local, level=egress_classify.level_of(tags))
+    if not decision.permitted:
         _record(purpose=purpose, destination=destination, method=method,
-                outcome="denied", detail=why,
-                payload_sha256=_sha, payload_bytes=_bytes)
+                outcome="denied", detail=decision.reason,
+                payload_sha256=_sha, payload_bytes=_bytes, agent=agent, decision=decision, classification=tags)
+        return None
+    if not _audit_can_record(decision, purpose, destination):
         return None
 
     current = url
@@ -314,7 +409,7 @@ def request(
         if not ok:
             _record(purpose=purpose, destination=urlsplit(current).hostname or "?",
                     method=method, outcome="refused", detail=reason,
-                    payload_sha256=_sha, payload_bytes=_bytes)
+                    payload_sha256=_sha, payload_bytes=_bytes, agent=agent, decision=decision, classification=tags)
             return None
 
         try:
@@ -324,7 +419,7 @@ def request(
         except Exception as exc:  # noqa: BLE001
             _record(purpose=purpose, destination=destination, method=method,
                     outcome="error", detail=type(exc).__name__,
-                    payload_sha256=_sha, payload_bytes=_bytes)
+                    payload_sha256=_sha, payload_bytes=_bytes, agent=agent, decision=decision, classification=tags)
             if raise_transport_errors:
                 raise
             return None
@@ -338,13 +433,54 @@ def request(
 
         _record(purpose=purpose, destination=destination, method=method,
                 outcome=f"http_{response.status_code}",
-                payload_sha256=_sha, payload_bytes=_bytes)
+                payload_sha256=_sha, payload_bytes=_bytes, agent=agent, decision=decision, classification=tags)
         return response
 
     _record(purpose=purpose, destination=destination, method=method,
             outcome="refused", detail=f"more than {_MAX_REDIRECTS} redirects",
-            payload_sha256=_sha, payload_bytes=_bytes)
+            payload_sha256=_sha, payload_bytes=_bytes, agent=agent, decision=decision, classification=tags)
     return None
+
+
+@contextmanager
+def observe(purpose: Purpose, destination: str, *, agent: Optional[str] = None,
+            payload: Any = None) -> Iterator[None]:
+    """Describe and record an outbound call made by a LIBRARY that owns its own HTTP client.
+
+    Some callers cannot route through :func:`request` because the library they use (the
+    ``ddgs`` search client) brings its own transport. Without this, such a call left the box
+    unseen: no event row, no shadow decision, nothing for enforcement to act on. Wrapping the
+    call here gives it the same decision and the same event row as a request, with method
+    ``LIBRARY`` and outcome ``library_call`` or ``library_error``. The SSRF destination check
+    does not apply: the destination is the library's fixed provider, not a model's choice.
+
+    The decision is recorded on every call and applied for an enforced purpose: a denied call
+    raises ``EgressDenied`` here, before the library runs.
+    """
+    agent = agent or UNKNOWN_AGENT
+    from src.services import egress_classify
+    from src.services.egress_log import payload_digest
+    _sha, _bytes = payload_digest(payload)
+    local = _is_local_destination(destination)
+    tags: list = [] if local else egress_classify.classify(f"https://{destination}/", payload)
+    decision = _evaluate(purpose, destination, agent, local=local, level=egress_classify.level_of(tags))
+    if not decision.permitted:
+        _record(purpose=purpose, destination=destination, method="LIBRARY", outcome="denied",
+                detail=decision.reason, payload_sha256=_sha, payload_bytes=_bytes,
+                agent=agent, decision=decision, classification=tags)
+        raise EgressDenied(reason=decision.reason, destination=destination, purpose=purpose.value)
+    if not _audit_can_record(decision, purpose, destination):
+        raise EgressDenied(reason="the egress audit writer has no capacity", destination=destination,
+                           purpose=purpose.value)
+    try:
+        yield
+    except Exception as exc:  # noqa: BLE001 - recorded, then re-raised unchanged (as request() does)
+        _record(purpose=purpose, destination=destination, method="LIBRARY", outcome="library_error",
+                detail=type(exc).__name__, payload_sha256=_sha, payload_bytes=_bytes,
+                agent=agent, decision=decision, classification=tags)
+        raise
+    _record(purpose=purpose, destination=destination, method="LIBRARY", outcome="library_call",
+            payload_sha256=_sha, payload_bytes=_bytes, agent=agent, decision=decision, classification=tags)
 
 
 def get(url: str, *, purpose: Purpose, **kwargs: Any) -> Optional[requests.Response]:
@@ -382,6 +518,7 @@ def post(url: str, *, purpose: Purpose, **kwargs: Any) -> Optional[requests.Resp
 # saying out loud; it is not the same thing as auditing every call.
 # ---------------------------------------------------------------------------
 
+# TODO(1.20 e): aws_client/graph_client take no ``agent`` yet; their rows carry "unknown" and no shadow.
 def _record_sdk_request(purpose: Purpose, service: str):
     """A botocore ``before-send`` handler that records one AWS request."""
 

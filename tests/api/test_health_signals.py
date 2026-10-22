@@ -40,23 +40,16 @@ def test_last_finding_written_is_none_when_no_finding_exists():
     assert health_signals.last_finding_written(_Cur(row=(None,))) is None
 
 
-def test_vector_store_points_asks_for_an_exact_count():
+def test_vector_store_points_counts_the_document_collection_for_the_one_tenant():
     calls = []
 
-    class _Client:
-        def count(self, collection_name, exact):
-            calls.append((collection_name, exact))
-            return SimpleNamespace(count=0)
+    class _Store:
+        def count(self, tenant_id, *, collection=None):
+            calls.append((tenant_id, collection))
+            return 0
 
-    assert health_signals.vector_store_points(_Client(), "procwise_document_embeddings") == 0
-    assert calls == [("procwise_document_embeddings", True)]
-
-
-def test_collection_name_falls_back_to_the_default_when_blank():
-    assert health_signals.collection_name(SimpleNamespace(qdrant_collection_name="  ")) == (
-        "procwise_document_embeddings"
-    )
-    assert health_signals.collection_name(SimpleNamespace(qdrant_collection_name="docs v2")) == "docs_v2"
+    assert health_signals.vector_store_points(_Store()) == 0
+    assert calls == [("default", "documents")]
 
 
 def _health_with(monkeypatch, *, agent_nick, last_finding=None):
@@ -73,11 +66,12 @@ def _health_with(monkeypatch, *, agent_nick, last_finding=None):
 
 
 def test_health_reports_the_vector_store_point_count(monkeypatch):
-    class _Client:
-        def count(self, collection_name, exact):
-            return SimpleNamespace(count=1234)
+    class _Store:
+        def count(self, tenant_id, *, collection=None):
+            return 1234
 
-    body = _health_with(monkeypatch, agent_nick=SimpleNamespace(qdrant_client=_Client()))
+    monkeypatch.setattr("src.services.vector_store.get_vector_store", lambda: _Store())
+    body = _health_with(monkeypatch, agent_nick=SimpleNamespace())
 
     assert body["vector_store"]["points"] == 1234
     assert body["vector_store"]["collection"]

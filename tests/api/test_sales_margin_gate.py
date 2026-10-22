@@ -35,7 +35,9 @@ MARGIN_PERMIT = {
     "raw_row": {"version": 1},
 }
 
-MARGIN_PATHS = ["/sales/quotes/9/internal", "/sales/opportunities", "/sales/opportunities/7"]
+MARGIN_PATHS = ["/sales/quotes/9/internal", "/sales/opportunities", "/sales/opportunities/7",
+                # a special bid is our cost for one customer's deal
+                "/sales/accounts/A1/special-bids"]
 
 _QUOTE = {"sales_quote_id": 9, "quote_ref": "SQ-1", "status": "approved", "account_name": "A",
           "contact_name": None, "currency": "GBP", "quote_date": dt.date(2026, 9, 11),
@@ -61,6 +63,8 @@ def serve(monkeypatch):
     monkeypatch.setattr(sr.quotes, "get_quote", lambda c, q: dict(_QUOTE))
     monkeypatch.setattr(sr.quotes, "get_quote_internal",
                         lambda c, q: fetched.append(q) or dict(_INTERNAL))
+    monkeypatch.setattr(sr.special_bids, "list_for_account",
+                        lambda c, a: fetched.append(a) or [{"cost_price": D("16.00")}])
     monkeypatch.setattr(sr.opportunities, "get_opportunity",
                         lambda c, o: fetched.append(o) or {"expected_margin": D("16.00")})
     monkeypatch.setattr(sr.opportunities, "list_opportunities",

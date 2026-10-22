@@ -7,9 +7,11 @@ used is returned, so the margin can be re-derived by hand later (spec §4.2).
 from __future__ import annotations
 
 from dataclasses import dataclass
+import datetime as dt
 from decimal import Decimal
 from typing import Optional, Sequence, Tuple
 
+from src.services.sell_side import special_bids
 from src.services.sell_side._db import NotFound
 
 
@@ -26,6 +28,8 @@ class CostAt:
     unit_cost: Optional[Decimal]
     cost_tier_applied: Optional[Decimal]
     is_current: bool
+    cost_source: str = "catalog"          # catalog | special_bid
+    special_bid_id: Optional[int] = None
 
 
 def pick_tier(tiers: Sequence[Tuple[Decimal, Decimal]],
@@ -35,8 +39,10 @@ def pick_tier(tiers: Sequence[Tuple[Decimal, Decimal]],
     return max(eligible, key=lambda t: t[0]) if eligible else None
 
 
-def cost_at(cur, catalog_item_id: int, quantity: Decimal) -> CostAt:
-    """``cur`` must be a RealDictCursor."""
+def cost_at(cur, catalog_item_id: int, quantity: Decimal, *, account_id: Optional[str] = None,
+            on_date: Optional[dt.date] = None) -> CostAt:
+    """``cur`` must be a RealDictCursor. With an ``account_id``, a special bid registered
+    for that customer and applying at this quantity replaces the catalog cost (and says so)."""
     cur.execute(
         "SELECT catalog_item_id, distributor_id, distributor_sku, mpn, item_description, "
         "unit_of_measure, currency, list_price, cost_price, valid_to IS NULL AS is_current "
@@ -55,13 +61,21 @@ def cost_at(cur, catalog_item_id: int, quantity: Decimal) -> CostAt:
                 f"catalog item {catalog_item_id} is priced in {item['currency']} but a "
                 f"cost tier is in {t['currency']}; refusing to mix them")
     tier = pick_tier([(t["min_quantity"], t["cost_price"]) for t in tiers], quantity)
+    bid = None
+    if account_id is not None:
+        bid = special_bids.resolve(
+            cur, account_id=account_id, distributor_id=item["distributor_id"],
+            distributor_sku=item["distributor_sku"], currency=item["currency"].strip(),
+            quantity=quantity, on_date=on_date)
     return CostAt(
         catalog_item_id=item["catalog_item_id"], distributor_id=item["distributor_id"],
         distributor_sku=item["distributor_sku"], mpn=item["mpn"],
         item_description=item["item_description"],
         unit_of_measure=item["unit_of_measure"], currency=item["currency"].strip(),
         list_price=item["list_price"],
-        unit_cost=tier[1] if tier else item["cost_price"],
-        cost_tier_applied=tier[0] if tier else None,
+        unit_cost=(bid.cost_price if bid else tier[1] if tier else item["cost_price"]),
+        cost_tier_applied=None if bid else (tier[0] if tier else None),
         is_current=bool(item["is_current"]),
+        cost_source="special_bid" if bid else "catalog",
+        special_bid_id=bid.special_bid_id if bid else None,
     )

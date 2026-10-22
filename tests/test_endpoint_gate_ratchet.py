@@ -16,6 +16,8 @@ Regenerate only when gating routes:  python tests/test_endpoint_gate_ratchet.py 
 import ast
 import os
 import re
+
+import pytest
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -31,6 +33,16 @@ GATE_HELPER = re.compile(r"^(_gate|_require|_require_\w+|require_role\w*)$")
 
 # Deliberately public write endpoints (no signed-in user exists yet). Keep this tiny and justified.
 PUBLIC: dict = {}
+
+# Write handlers whose gate lives INSIDE the service they call, where the scanner cannot see it.
+# Each entry names where the gate is, so nobody "gates" the handler again with a second action name
+# and double-audits. A handler listed here must still exist and still look ungated to the scanner;
+# the moment it gains a visible gate the entry is stale and must go.
+GUARDED_IN_SERVICE: dict = {
+    "src/api/routers/value_summary.py::POST router /value-summary/findings/{finding_id}/query-send::post_query_send":
+        "services.value_query_service.send_query runs email_dispatch_guard.check_recipient_and_sensitivity "
+        "and guardrail.authorize('email.send', 'communicate', principal) before anything is sent",
+}
 
 # Registration styles the scanner cannot see. None exists today; if one appears the scan must be taught it.
 UNSEEN_REGISTRATION = re.compile(r"\.api_route\(|\.add_api_route\(|\.mount\(|\.add_websocket_route\(")
@@ -124,7 +136,7 @@ def _baseline():
 
 
 def test_no_new_write_endpoint_skips_the_gate():
-    new = sorted(set(_ungated()) - set(_baseline()) - set(PUBLIC))
+    new = sorted(set(_ungated()) - set(_baseline()) - set(PUBLIC) - set(GUARDED_IN_SERVICE))
     assert not new, (
         "write endpoints that never consult the gate (endpoint_gate.require / guardrail.authorize / a router "
         f"role helper): {new}. Gate them; require_user only proves identity."
@@ -158,3 +170,12 @@ if __name__ == "__main__":
             fh.write("# Write handlers under src/api that never consult the gate. May only shrink. See tests/test_endpoint_gate_ratchet.py\n")
             fh.write("\n".join(_ungated()) + "\n")
         print(f"wrote {len(_ungated())} entries")
+
+
+@pytest.mark.parametrize("handler", sorted(GUARDED_IN_SERVICE))
+def test_a_handler_guarded_inside_its_service_still_exists_and_still_looks_ungated(handler):
+    """The exemption may not rot: the handler must exist, and must NOT have grown a visible gate
+    (then it is gated twice, under two names, and the entry here is stale)."""
+    ungated = set(_ungated())
+    assert handler in ungated, f"{handler} is gone or now calls the gate itself: remove it from GUARDED_IN_SERVICE"
+    assert handler not in set(_baseline()), f"{handler} is in the baseline AND exempted: pick one"

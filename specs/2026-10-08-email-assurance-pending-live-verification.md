@@ -447,3 +447,38 @@ deterministic check (figures, dates, deadline, contact details, bank details, aw
 Also seen in the 20-request run: "12-month commitment" in the person's own request was flagged as an ungrounded figure (12) once the
 request was classified as a counter, whose carried keys do not include the request text; and the judge scored "clarity of ask" 1 on
 an email that was asked to carry no ask ("tell them we will come back next week"), a false flag of the kind the flag metrics are for.
+
+
+## Planner prompt held out of pack (b) (ruling 2026-10-09)
+
+Moved to `deploy/sql/2026-10-09_email_brief_plan_prompt_held.sql`, in no pack and never applied by the rehearsal (the eval harness
+still loads it so the planner code path stays tested). Pack (b) now installs two prompts, classify and judge. With no planner row the
+stage reports `unavailable` and drafts are written from the request alone, as on bp_testdb today. Rehearsal re-run: PASS.
+
+
+## Pack (b) applied to bp_testdb (2026-10-09 21:26 UTC, by request)
+
+Applied from origin/Development, hashes equal to the rehearsed ones: `2026-10-08_email_agent_steering.sql` (7f21b66f8a5f762b),
+`2026-10-08_email_tone_rules.sql` (436d01b122b0807b), `2026-10-08_email_assurance_prompts.sql` (25dfc1508506e4cd: classify and judge
+only; the planner prompt is held). procwise restarted 21:26:57, healthy. Checked through DB-backed engines: `email_family_classify` and
+`email_draft_judge` resolve, `email_brief_plan` does not (as intended), EmailToneRules and EmailSteeringRules load. From now on the
+running service classifies free-text requests, derives tone, steers the writer and judges drafts (the review flag can fire).
+Not applied: the roles file, anything on bp_sqldb. A standalone `EmailDraftingAgent()` has an EMPTY prompt engine (no DB), so it
+reports every prompt missing; check prompts through a DB-backed PromptEngine, as above.
+
+
+## The person's own words on a classified request; dates listed as unverified (2026-10-10)
+
+* **Fixed: a figure, date or reference the person typed failed as invented once the request was classified into another family.**
+  Only the `free_prompt` family carries the request text; a request classified as a counter lost it (the "12-month commitment"
+  case above). On every classified run the request is now carried: accepted, listed as unverified, never above a figure that must
+  not be stated. An instruction on a DECLARED family is unchanged (its figures still fail). Live, bp_testdb, real model: the same
+  email went from two failures (`12`, `6 November 2026`) to none, with both listed for the reviewer.
+* **Closed: R2 (criterion 1 for dates).** A date that no Postgres fact and no reasoned value holds is listed under
+  `unverified_dates` and shown as a warning (`unverified_date`) in the stored violations, which the reviewer's view already
+  returns; no schema change. It makes the draft `needs_review`, never fails it, never sends it to repair, and such a draft is not
+  an exemplar candidate. **Consequence to know:** an RFQ carrying the buyer's own deadline is now `needs_review` (it was
+  `verified`), so the needs-review rate for `rfq_batch` will rise. Every family is still in shadow, so nothing is blocked.
+* **Fixed, found on the way: a year-month-day date was read day-first.** `2026-10-05` came out as 10 May, so a stored date
+  disagreed with "5 October 2026" in the email (a false failure) and agreed with "10 May 2026" (a miss). Only days 1-12 were
+  affected.

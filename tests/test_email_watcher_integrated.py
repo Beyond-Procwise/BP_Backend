@@ -33,9 +33,11 @@ def _fail_connect(*_args, **_kwargs):
     raise psycopg2.OperationalError("forced test fallback")
 
 
-psycopg2.connect = _fail_connect
-db.psycopg2 = psycopg2
-db._pg_dsn = lambda: None
+# The database is forced to the in-memory fake for THIS module only. This used to be done at import time by
+# assigning psycopg2.connect outright; pytest imports every test file before running any, so that cut every other
+# test in the session off from the database (the contract-parity and approval-store tests passed alone and failed in
+# a full run). The patch is applied in setup_module and undone in teardown_module.
+_FORCE_FAKE_DB = pytest.MonkeyPatch()
 
 
 @pytest.fixture(autouse=True)
@@ -44,6 +46,9 @@ def _force_fake_db(monkeypatch):
 
 
 def setup_module(_module):
+    _FORCE_FAKE_DB.setattr(psycopg2, "connect", _fail_connect)
+    _FORCE_FAKE_DB.setattr(db, "psycopg2", psycopg2)
+    _FORCE_FAKE_DB.setattr(db, "_pg_dsn", lambda: None)
     supplier_interaction_repo.init_schema()
     supplier_interaction_repo.reset()
     supplier_response_repo.init_schema()
@@ -59,6 +64,7 @@ def teardown_module(_module):
     reset_tracking(workflow_id="wf-header")
     reset_tracking(workflow_id="wf-continuous")
     reset_tracking(workflow_id="wf-fallback")
+    _FORCE_FAKE_DB.undo()
 
 
 def test_register_and_process_supplier_response():

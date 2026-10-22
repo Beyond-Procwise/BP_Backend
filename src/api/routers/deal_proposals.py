@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from api.auth import require_user
+from api.endpoint_gate import require as gate
 from src.services.db import get_conn
 from src.services import deal_clustering, proposal_store
 from src.services.declared_linkage import declared_groups
@@ -137,6 +138,7 @@ def _confirm(proposal_id: int, confirmed_by: str, expected: Optional[list]) -> d
 
 @router.post("/proposals/generate", summary="Cluster an upload batch into proposed deals")
 def generate(body: GenerateBody, principal=Depends(require_user)) -> dict[str, Any]:
+    gate("deal.write", principal, agent="deal_proposals_api", context={"batch_deal_id": body.batch_deal_id, "op": "generate"})
     try:
         return _generate(body.batch_deal_id, body.session_id)
     except Exception as exc:  # atomic failure — no partial proposals (spec §Error handling)
@@ -153,6 +155,7 @@ def list_(batch: str) -> dict[str, Any]:
 @router.post("/proposals/{proposal_id}/confirm", summary="Confirm a proposal — mints the deal")
 def confirm(proposal_id: int, body: ConfirmBody,
             principal=Depends(require_user)) -> dict[str, Any]:
+    gate("deal.write", principal, agent="deal_proposals_api", context={"proposal_id": proposal_id, "op": "confirm"})
     # Confirming mints the deal, and the name on it lands in
     # bp_deal_proposal.confirmed_by AND bp_agent_actions.agent. That name is
     # the token's. `body.confirmed_by` stays on the model because clients send
@@ -167,6 +170,7 @@ def confirm(proposal_id: int, body: ConfirmBody,
 @router.post("/proposals/{proposal_id}/reject", summary="Reject a proposal — never re-proposed")
 def reject(proposal_id: int, body: RejectBody,
            principal=Depends(require_user)) -> dict[str, Any]:
+    gate("deal.write", principal, agent="deal_proposals_api", context={"proposal_id": proposal_id, "op": "reject"})
     # A rejected grouping is never re-proposed, so who rejected it matters as
     # much as who confirmed one. The token, not `body.rejected_by`.
     with get_conn() as conn:
@@ -184,6 +188,7 @@ def reject(proposal_id: int, body: RejectBody,
 @router.patch("/proposals/{proposal_id}/members", summary="Move/remove documents pre-confirm")
 def patch_members(proposal_id: int, body: MembersBody,
                   principal=Depends(require_user)) -> dict[str, Any]:
+    gate("deal.write", principal, agent="deal_proposals_api", context={"proposal_id": proposal_id, "op": "members"})
     with get_conn() as conn:
         conn.autocommit = False
         try:

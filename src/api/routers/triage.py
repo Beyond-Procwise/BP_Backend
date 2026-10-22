@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 
 from api.auth import require_user
+from api.endpoint_gate import require as gate
 from src.services.governed_limits import LimitUnavailable
 from src.services.triage import engine
 
@@ -35,6 +36,7 @@ def get_deal_triage(deal_id: str) -> dict[str, Any]:
 
 @router.post("/deals/{deal_id}/run", summary="Re-triage one deal and update the Action Centre")
 def run_deal_triage(deal_id: str, principal=Depends(require_user)) -> dict[str, Any]:
+    gate("finding.triage", principal, agent="triage_api", context={"deal_id": deal_id})
     try:
         report = engine.run_triage([deal_id], "single")
     except LimitUnavailable as exc:
