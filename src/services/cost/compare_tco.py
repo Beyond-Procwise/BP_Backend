@@ -34,6 +34,20 @@ LIFETIME_ALIASES = {
 }
 
 
+def _incoterm_text(value: Any) -> Optional[str]:
+    """landed_cost.total_cost reads the Incoterm as text ('DAP Leeds'); the model sometimes sends
+    {rule, place} (live, 2026-10-22), which the calculation then ignores and every delivery component
+    looks missing. Either form becomes the text form."""
+    if value is None:
+        return None
+    if isinstance(value, Mapping):
+        rule = str(value.get("rule") or value.get("term") or value.get("incoterm") or "").strip().upper()
+        place = str(value.get("place") or value.get("named_place") or value.get("location") or "").strip()
+        return (f"{rule} {place}".strip() or None) if rule else None
+    text = str(value).strip()
+    return text or None
+
+
 def _lifetime_key(key: Any) -> str:
     k = str(key or "").strip().lower().replace(" ", "_").replace("-", "_")
     return LIFETIME_ALIASES.get(k, k)
@@ -101,7 +115,10 @@ def compare(options: Any = None, horizon_years: Any = None, cost_of_capital: Any
             "cross_border": bool(o.get("cross_border", True)),
             "components": list(o.get("components") or []),  # an option with no stated extras has none, not None
         }
-        for key in ("incoterm", "duty_rate", "customs_basis", "evaluation_date"):
+        incoterm = _incoterm_text(o.get("incoterm"))
+        if incoterm:
+            landed_inputs["incoterm"] = incoterm
+        for key in ("duty_rate", "customs_basis", "evaluation_date"):
             if o.get(key) is not None:
                 landed_inputs[key] = o[key]
         if fx_rates is not None:
