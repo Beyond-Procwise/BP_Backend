@@ -37,7 +37,12 @@ def world(monkeypatch):
         return ["127.0.0.1"] if host in ("localhost", "model.internal") else ["93.184.216.34"]
     monkeypatch.setattr(egress, "_resolve", _resolve)
     monkeypatch.setattr(egress_log, "record", lambda **kw: events.append(kw))
-    return calls, events
+    # No EgressPolicy row (1.20 b): these tests describe the built-in default rule set.
+    from src.services import egress_policy
+    monkeypatch.setattr(egress_policy, "_load_row", lambda: None)
+    egress_policy.invalidate()
+    yield calls, events
+    egress_policy.invalidate()
 
 
 # ---- the agent travels with the call ------------------------------------------------------------

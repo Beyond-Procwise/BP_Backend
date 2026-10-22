@@ -228,6 +228,7 @@ class Decision:
     reason: str
     shadow: str              # what the gate WOULD do: "allow" | "deny"
     shadow_reason: str
+    version: str = SHADOW_RULES_VERSION   # which rule set judged it (the policy row's, when one exists)
 
 
 def _is_local_destination(host: str) -> bool:
@@ -252,19 +253,18 @@ def _evaluate(purpose: Purpose, destination: str, agent: str = UNKNOWN_AGENT) ->
     before any of them is blocked. The policy row that will replace ``shadow-default-v0``
     is step (b); ``permitted`` starts following ``shadow`` at step (d), one purpose at a time.
 
-    Default rule set: a local destination would be allowed; any external destination would
-    be denied until a rule allows this purpose to this host for this agent. Returning
+    The decision comes from the administrator's ``EgressPolicy`` row (``services.egress_policy``)
+    when one exists, else from the built-in default rule set: a local destination would be
+    allowed; any external destination would be denied until a rule allows this purpose to this
+    host for this agent. An unreadable row reads as deny for external destinations. Returning
     ``permitted=True`` is not a judgement that the call is safe; it is the absence of
     enforcement, which this record makes visible rather than hidden.
     """
-    if _is_local_destination(destination):
-        return Decision(True, "shadow mode: local destination",
-                        "allow", f"local destination {destination}")
-    return Decision(
-        True, "shadow mode: no destination policy is enforced", "deny",
-        f"no egress rule allows {purpose.value} to {destination} for agent {agent} "
-        f"({SHADOW_RULES_VERSION}: external destinations are denied until a rule allows them)",
-    )
+    from src.services import egress_policy
+    verdict = egress_policy.shadow_for(purpose, destination, agent,
+                                       local=_is_local_destination(destination))
+    return Decision(True, "shadow mode: no destination policy is enforced",
+                    verdict.effect, verdict.reason, verdict.version)
 
 
 def _record(*, purpose: Purpose, destination: str, method: str,
@@ -299,7 +299,7 @@ def _record(*, purpose: Purpose, destination: str, method: str,
             agent=agent,
             shadow_decision=decision.shadow if decision else None,
             shadow_reason=decision.shadow_reason if decision else None,
-            policy_version=SHADOW_RULES_VERSION if decision else None,
+            policy_version=decision.version if decision else None,
         )
     except Exception:  # noqa: BLE001 - never fail a call over its own audit row
         logger.debug("egress event not queued", exc_info=True)
