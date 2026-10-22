@@ -1111,6 +1111,22 @@ def _on(switch: str) -> bool:
     return os.getenv(switch, "on").strip().lower() != "off"
 
 
+def _scoped_to_skill(skill_name: str, tools: Sequence[Tool]) -> List[Tool]:
+    """The offered tools narrowed to the ones the skill's playbook refers to as `tool:name`. Never raises:
+    if the skill cannot be read, or names nothing, the tools are left as they were."""
+    try:
+        from src.services import skills as SK
+        from . import context_builder
+
+        needed = context_builder.tools_needed(SK.load_skill(skill_name).body)
+    except Exception:  # noqa: BLE001
+        log.exception("skill tool scope: could not read %s; tools left unscoped", skill_name)
+        return list(tools)
+    if not needed:
+        return list(tools)
+    return [t for t in tools if t.name in needed]
+
+
 def _plan_context(task: str, tools: Sequence[Tool], extra_system: Optional[str]):
     """Route the request to a skill if one clearly covers it, and build the prompt in layers.
 
@@ -1198,6 +1214,11 @@ def reason(
     if context.skill:
         # The playbook is already in the prompt, so reading it again would only spend rounds.
         tools = [t for t in tools if t.name not in ("list_skills", "use_skill")]
+        if _on("AGENT_SKILL_TOOL_SCOPE"):
+            # Offer only the tools the playbook names. Live, 2026-10-22: told in prose not to, the model
+            # still spent its rounds on corpus-wide facts and trackers the playbook had replaced with one
+            # call. A tool the playbook does not name is not on the table for that request.
+            tools = _scoped_to_skill(context.skill, tools)
     system = context.system
     result = run_tools(
         task,

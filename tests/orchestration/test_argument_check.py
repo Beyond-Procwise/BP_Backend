@@ -181,3 +181,9 @@ def test_every_name_on_the_identifier_list_is_a_real_input_somewhere():
                          for term in spec.contract.inputs)
     stale = sorted(n for n in ac.IDENTIFIER_ARGS if n not in names and n not in described)
     assert stale == [], f"on the list but not an input of any tool or calculation: {stale}"
+
+
+def test_the_two_figures_of_a_percentage_change_must_come_from_the_run():
+    assert found({"name": "deal.pct_change", "inputs": {"new": 123456, "base": 98765}}) == [("inputs.new", 123456), ("inputs.base", 98765)]
+    got = [call("invoice_reconciliation", {"differences_by_currency": {"GBP": {"price_above_po": 25.0}}, "invoiced_total": 1325.0})]
+    assert found({"name": "deal.pct_change", "inputs": {"new": 25.0, "base": 1325.0}}, calls=got) == []

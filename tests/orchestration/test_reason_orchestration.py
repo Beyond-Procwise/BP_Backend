@@ -119,3 +119,20 @@ def test_the_argument_check_uses_the_request_and_can_be_switched_off(captured, m
     monkeypatch.setenv("AGENT_VERIFY", "off")
     control.reason(nick(), PLAIN_ASK)
     assert captured["kw"]["check_arguments"] is None
+
+
+def test_a_request_a_skill_covers_is_offered_only_the_skills_own_tools(captured):
+    from services import skills as SK
+    from orchestration import context_builder as cb
+    res = control.reason(nick(), POLICY_ASK)
+    needed = cb.tools_needed(SK.load_skill("procurement-policy-compliance").body)
+    offered = set(captured["tools"])
+    assert offered and offered <= needed, (offered - needed)
+    assert "list_skills" not in offered and "use_skill" not in offered
+    assert "check_policy" in offered
+
+
+def test_the_tool_scope_can_be_switched_off(captured, monkeypatch):
+    monkeypatch.setenv("AGENT_SKILL_TOOL_SCOPE", "off")
+    control.reason(nick(), POLICY_ASK)
+    assert "get_corpus_facts" in captured["tools"]

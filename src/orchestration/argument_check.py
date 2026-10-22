@@ -28,6 +28,9 @@ ASSUMPTION_ARGS = frozenset({
     "cost_of_capital", "default_insurance_rate", "duty_rate", "fx_rates", "fx_rate_to_policy_currency",
     "horizon_years", "margin_pct", "overhead_pct", "sga_pct", "price_reference", "target_payment_days",
     "early_tolerance_days", "late_tolerance_days", "in_full_tolerance", "sensitivity_pct",
+    # deal.pct_change: the two figures compared must be figures the run holds, never a pair the model made up
+    # (live, 2026-10-22: invoiced_total 100,000 against po_total 95,000 from nowhere).
+    "new", "base",
 })
 
 #: Identifiers a model passes to a tool. An id is never worked out: it comes from the request or from
