@@ -1,6 +1,6 @@
 # Configurable defaults for this skill. They are starting points for review, not governed policy.
 thresholds:
-  tail_share_pct: 20    # the tail is the suppliers beyond this share of spend, counted from the largest down
+  tail_cell_share_pct: 0.5    # a supplier whose share of spend from the cube is below this is in the tail
   min_invoices: 4    # suppliers with fewer invoices than this in the period are in the tail whatever their spend
 unavailable_tools:
   - build_docx

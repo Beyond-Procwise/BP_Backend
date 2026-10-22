@@ -4,7 +4,7 @@
 
 - name: supplier-segmentation
   title: Supplier Segmentation
-  description: "Place each supplier in a segment (strategic, critical or bottleneck, leverage, transactional) from the spend, the share of category, the findings, the contract cover and the risk on record, and say what treatment each segment gets. Use when asked to segment or tier the supplier base, to name the strategic, critical or key suppliers, or to decide which suppliers deserve a relationship plan. Not for one supplier's performance (supplier-performance-review) or a category's sourcing strategy (category-strategy)."
+  description: "Place each supplier in a segment (strategic, critical or bottleneck, leverage, transactional) from the spend and its share, the findings, the contract cover and the risk on record, and say what treatment each segment gets. Use when asked to segment or tier the supplier base, to name the strategic, critical or key suppliers, or to decide which suppliers deserve a relationship plan. Not for one supplier's performance (supplier-performance-review) or a category's sourcing strategy (category-strategy)."
   purpose: "Give the supplier base a shape people can act on. Each supplier lands in one segment on evidence from the records, with the treatment the segment implies (relationship plan, scorecard, contract, consolidation or catalogue). The skill reads and proposes; it changes no record."
   use_when: "Use when the question is which suppliers matter most, how to tier or segment the base, who the strategic or critical suppliers are, or where to put relationship effort."
   not_for: "Not for one supplier's scorecard (supplier-performance-review), for the category plan (category-strategy), for cutting the tail (tail-spend-management) or for risk screening (supplier-risk-assessment)."
@@ -13,7 +13,7 @@
     - "The axes the user wants, if any; otherwise spend and criticality as described here."
     - "Any criticality the user knows that the records do not hold (sole-source items, safety-critical parts), labelled user-supplied."
   tools:
-    - "build_spend_cube: for spend by supplier and category over the period, the share each supplier holds and the share of its category"
+    - "build_spend_cube: for spend by supplier over the period with the share each supplier holds (the cube has no category; a category scope comes from the user's list of suppliers or from `tool:classify_spend` on their items)"
     - "calc_supplier_scorecard: for open findings, on-time delivery and price variance where a scorecard is wanted for a candidate strategic supplier"
     - "search_contracts: for whether a supplier is under a live agreement"
     - "screening_summary: for the screening status of suppliers proposed as strategic"
@@ -23,20 +23,20 @@
     - "build_docx: the segmentation is given as text and tables"
   workflow:
     - "Frame the scope and period, and read the policy for any segmentation rule; where none exists, use the axes here and say so."
-    - "Read the spend cube. Rank suppliers by spend and compute each one's share of total and of its category. Suppliers above `config.thresholds.strategic_share_pct` of total spend or above `config.thresholds.category_share_pct` of their category are candidates for strategic or leverage."
+    - "Read the spend cube by supplier for the period and take each supplier's share from the cube's own share figure; do no arithmetic on it. Suppliers at or above `config.thresholds.strategic_share_pct` of total spend are candidates for strategic or leverage; a supplier the user names as holding a whole category is a candidate on that statement, labelled user-supplied."
     - "Judge supply difficulty from the records only: an item with no alternative supplier on record (similar items) is bottleneck territory; the user's list of critical items is added, labelled user-supplied."
     - "Place each supplier: high spend and hard to replace is strategic; low spend and hard to replace is bottleneck; high spend and easy to replace is leverage; the rest is transactional."
     - "For strategic and bottleneck candidates read the contract cover and the screening status; a strategic supplier with no live agreement or an incomplete screening is a finding."
     - "Name the treatment per segment and the first three actions, each with an owner."
   heuristics:
     - "Kraljic's two axes (profit impact, supply risk) applied with the records' own evidence, not with a scored survey."
-    - "Share of category matters more than share of total for criticality; a small supplier can hold a whole category."
+    - "Criticality is about the item, not the spend; a small supplier can hold the only source of a part, and the records show that through the absence of alternatives."
     - "A segment is a working hypothesis the category lead confirms; the skill never calls a supplier strategic on spend alone when the item has alternatives."
     - "Treatment follows segment: relationship plan and scorecard for strategic; alternatives and stock for bottleneck; competition and consolidation for leverage; catalogue and card for transactional."
   policy_hooks: "Any segmentation rule or required treatment comes from `tool:get_policy` and is quoted. Spend commitments that follow from the plan (a new agreement with a strategic supplier) are checked with `tool:check_policy` and reported as replied. No record is changed and no supplier is told its segment."
   outputs:
     - "Frame: scope, period, axes used and whether they come from policy or from this skill."
-    - "Segment table: supplier, spend, share of total, share of category, replaceability evidence, segment, contract cover, screening status."
+    - "Segment table: supplier, spend, share of total (from the cube), replaceability evidence, segment, contract cover, screening status."
     - "Findings: strategic suppliers without an agreement or with incomplete screening; bottleneck items with no alternative."
     - "Treatment per segment and the first actions with owners."
     - "Open questions for the category lead."
@@ -54,15 +54,14 @@
     - "Treating a one-off project spend as a recurring strategic relationship."
   context: "We are segmenting the supplier base into strategic, bottleneck, leverage and transactional suppliers."
   thresholds:
-    - {key: strategic_share_pct, value: 5, comment: "share of total spend above which a supplier is a strategic or leverage candidate"}
-    - {key: category_share_pct, value: 40, comment: "share of a category above which a supplier is critical to that category"}
+    - {key: strategic_share_pct, value: 5, comment: "share of total spend at or above which a supplier is a strategic or leverage candidate"}
   routing:
     strong: ["segment*", "segmentation", "which suppliers are strategic", "suppliers are strategic", "strategic versus", "strategic vs", "strategic and which", "preferred supplier list", "supplier tier*", "tier our suppliers", "tier the suppliers", "tiering", "which suppliers matter", "critical supplier*", "key supplier*", "bottleneck supplier*", "supplier portfolio", "supplier relationship management", "srm", "relationship plan*"]
     support: ["supplier*", "strategic", "spend"]
   scenarios:
-    - {kind: typical, expert: true, prompt: "Segment our supplier base for last year.", expect: "Spend cube read for the year; share of total and of category per supplier; replaceability from similar items; four segments with evidence; strategic suppliers checked for contract and screening; treatments and owners; nothing recorded"}
+    - {kind: typical, expert: true, prompt: "Segment our supplier base for last year.", expect: "Spend cube read for the year; share of total per supplier from the cube; replaceability from similar items; four segments with evidence; strategic suppliers checked for contract and screening; treatments and owners; nothing recorded"}
     - {kind: typical, expert: true, prompt: "Which of our suppliers are strategic and which are just leverage?", expect: "Strategic needs high spend and hard to replace, evidenced; leverage has alternatives on record; the difference is stated per supplier with the evidence"}
-    - {kind: typical, prompt: "Who are our critical suppliers in packaging?", expect: "Scope limited to the category; share of category computed; items without alternatives flagged as bottleneck; the user asked for critical items where the records are silent"}
+    - {kind: typical, prompt: "Who are our critical suppliers in packaging?", expect: "Scope limited to the suppliers the user names or classification gives; shares from the cube; items without alternatives flagged as bottleneck; the user asked for critical items where the records are silent"}
     - {kind: typical, prompt: "Build a tiering of our top twenty suppliers.", expect: "Top twenty by spend from the cube; each tiered with evidence; contract cover and screening for the top tier; treatments"}
     - {kind: edge, expert: true, prompt: "A tiny supplier provides the only part that stops the line if missing.", expect: "Bottleneck on the user's statement, labelled user-supplied; alternatives searched on the records; the action is a second source or stock, not a relationship plan"}
     - {kind: edge, prompt: "One supplier is large but all of their items are commodity.", expect: "Leverage, not strategic; alternatives on record cited; treatment is competition and consolidation"}
@@ -107,10 +106,10 @@
   not_for: "Not for sizing the tail (spend-analysis), for finding off-process purchases (maverick-spend-review), for pooling demand across business units (demand-aggregation) or for choosing a channel for one purchase (buying-channel-guidance)."
   inputs:
     - "The scope and period, default the whole base over the last full year."
-    - "The tail definition the user wants; otherwise the configured share of spend and the configured supplier-count cut."
+    - "The tail definition the user wants; otherwise the configured per-supplier share and invoice-count cuts."
     - "Any channels the organisation already runs (catalogue, card), from policy or the user."
   tools:
-    - "build_spend_cube: for spend and invoice count by supplier and category, from which the tail is cut"
+    - "build_spend_cube: for spend, share and invoice count by supplier, read with order set to bottom so the smallest suppliers come first"
     - "similar_items: for whether a tail supplier's items are already bought from a contracted or larger supplier"
     - "search_contracts: for the agreements the consolidation targets are under"
     - "screening_summary: for the status of the suppliers the tail would move onto"
@@ -120,13 +119,13 @@
     - "build_docx: the plan is given as text and tables"
   workflow:
     - "Frame the scope and read the policy for channels and targets."
-    - "Cut the tail from the cube: suppliers beyond the configured share of spend, `config.thresholds.tail_share_pct`, and suppliers with fewer than `config.thresholds.min_invoices` invoices in the period are the long tail. Report the count, spend and invoice count of the tail."
+    - "Cut the tail from the cube read by supplier with order set to bottom (and top_n at its maximum, repeated with the period narrowed if the cell count exceeds it): a supplier whose share from the cube is below `config.thresholds.tail_cell_share_pct`, or with fewer than `config.thresholds.min_invoices` invoices in the period, is in the long tail. Report the tail's supplier count and invoice count as the cube gives them; do no arithmetic on shares."
     - "For each tail supplier (or the largest group of them), look for the same items on record from a contracted supplier (similar items plus contracts). A match is a consolidation candidate; the target's screening status is read."
     - "Items bought repeatedly at low value with no contracted alternative are catalogue candidates; one-off low-value purchases are card or light-channel candidates per policy."
     - "What remains stays, with the reason (specialist, regulated, one-off project)."
     - "Plan: moves grouped by target supplier or channel, with the spend and invoice count moved, the owner and the dependency; approval routes for any new agreement."
   heuristics:
-    - "The tail is defined by both share of spend and frequency; a supplier with three invoices and a large value is not tail."
+    - "The tail is defined by both a supplier's share and its frequency; a supplier with three invoices and a large share is not tail."
     - "Consolidate onto agreements that exist before creating new ones."
     - "Processing cost per invoice is the lever in the tail, so invoice count moved matters as much as spend moved."
     - "A supplier that stays in the tail for a good reason is listed with the reason, not hidden."
@@ -138,7 +137,7 @@
     - "Suppliers that stay, with reasons."
     - "Plan with owners, dependencies and approval routes."
   quality:
-    - "The tail cut is stated and reproducible from the cube."
+    - "The tail cut is stated and reproducible from the cube's own share and invoice figures."
     - "Every consolidation target is evidenced by items on record; none from memory."
     - "Channel assignments cite the policy rule or say there is none."
     - "No supplier is removed or blocked."
@@ -151,7 +150,7 @@
     - "Counting spend moved as a saving (savings-methodology decides what counts)."
   context: "We are deciding how to manage the long tail of small and infrequent suppliers."
   thresholds:
-    - {key: tail_share_pct, value: 20, comment: "the tail is the suppliers beyond this share of spend, counted from the largest down"}
+    - {key: tail_cell_share_pct, value: 0.5, comment: "a supplier whose share of spend from the cube is below this is in the tail"}
     - {key: min_invoices, value: 4, comment: "suppliers with fewer invoices than this in the period are in the tail whatever their spend"}
   routing:
     strong: ["manage the tail", "manage our tail", "managing the tail", "managing our tail", "tail management", "tail-spend management", "tail spend management", "tail suppliers", "long tail", "too many suppliers", "number of suppliers", "reduce our suppliers", "reduce the suppliers", "reduce suppliers", "supplier count", "rationalis*", "rationaliz*", "small suppliers", "one-off suppliers", "one-time suppliers", "infrequent suppliers", "low-value purchase*", "low value purchase*", "small purchase*", "catalogue for", "catalog for", "small repeat", "repeat purchase*", "consolidate the tail", "consolidate small"]

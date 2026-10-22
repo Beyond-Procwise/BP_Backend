@@ -18,10 +18,10 @@ Not for sizing the tail (spend-analysis), for finding off-process purchases (mav
 ## Inputs and preconditions
 
 - The scope and period, default the whole base over the last full year.
-- The tail definition the user wants; otherwise the configured share of spend and the configured supplier-count cut.
+- The tail definition the user wants; otherwise the configured per-supplier share and invoice-count cuts.
 - Any channels the organisation already runs (catalogue, card), from policy or the user.
 
-- Use `tool:build_spend_cube` for spend and invoice count by supplier and category, from which the tail is cut
+- Use `tool:build_spend_cube` for spend, share and invoice count by supplier, read with order set to bottom so the smallest suppliers come first
 - Use `tool:similar_items` for whether a tail supplier's items are already bought from a contracted or larger supplier
 - Use `tool:search_contracts` for the agreements the consolidation targets are under
 - Use `tool:screening_summary` for the status of the suppliers the tail would move onto
@@ -29,12 +29,12 @@ Not for sizing the tail (spend-analysis), for finding off-process purchases (mav
 - Use `tool:check_policy` for any new agreement the plan proposes
 NOT AVAILABLE: build_docx. the plan is given as text and tables
 
-Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.tail_share_pct`, `config.thresholds.min_invoices`.
+Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.tail_cell_share_pct`, `config.thresholds.min_invoices`.
 
 ## Workflow
 
 1. Frame the scope and read the policy for channels and targets.
-2. Cut the tail from the cube: suppliers beyond the configured share of spend, `config.thresholds.tail_share_pct`, and suppliers with fewer than `config.thresholds.min_invoices` invoices in the period are the long tail. Report the count, spend and invoice count of the tail.
+2. Cut the tail from the cube read by supplier with order set to bottom (and top_n at its maximum, repeated with the period narrowed if the cell count exceeds it): a supplier whose share from the cube is below `config.thresholds.tail_cell_share_pct`, or with fewer than `config.thresholds.min_invoices` invoices in the period, is in the long tail. Report the tail's supplier count and invoice count as the cube gives them; do no arithmetic on shares.
 3. For each tail supplier (or the largest group of them), look for the same items on record from a contracted supplier (similar items plus contracts). A match is a consolidation candidate; the target's screening status is read.
 4. Items bought repeatedly at low value with no contracted alternative are catalogue candidates; one-off low-value purchases are card or light-channel candidates per policy.
 5. What remains stays, with the reason (specialist, regulated, one-off project).
@@ -42,7 +42,7 @@ Settings this skill reads from its own configuration, named by key and never res
 
 ## Frameworks and heuristics
 
-- The tail is defined by both share of spend and frequency; a supplier with three invoices and a large value is not tail.
+- The tail is defined by both a supplier's share and its frequency; a supplier with three invoices and a large share is not tail.
 - Consolidate onto agreements that exist before creating new ones.
 - Processing cost per invoice is the lever in the tail, so invoice count moved matters as much as spend moved.
 - A supplier that stays in the tail for a good reason is listed with the reason, not hidden.
@@ -61,7 +61,7 @@ Channel rules, card limits and any supplier-count target are read with `tool:get
 
 ## Quality bar
 
-- The tail cut is stated and reproducible from the cube.
+- The tail cut is stated and reproducible from the cube's own share and invoice figures.
 - Every consolidation target is evidenced by items on record; none from memory.
 - Channel assignments cite the policy rule or say there is none.
 - No supplier is removed or blocked.

@@ -1,6 +1,6 @@
 ---
 name: supplier-segmentation
-description: "Place each supplier in a segment (strategic, critical or bottleneck, leverage, transactional) from the spend, the share of category, the findings, the contract cover and the risk on record, and say what treatment each segment gets. Use when asked to segment or tier the supplier base, to name the strategic, critical or key suppliers, or to decide which suppliers deserve a relationship plan. Not for one supplier's performance (supplier-performance-review) or a category's sourcing strategy (category-strategy)."
+description: "Place each supplier in a segment (strategic, critical or bottleneck, leverage, transactional) from the spend and its share, the findings, the contract cover and the risk on record, and say what treatment each segment gets. Use when asked to segment or tier the supplier base, to name the strategic, critical or key suppliers, or to decide which suppliers deserve a relationship plan. Not for one supplier's performance (supplier-performance-review) or a category's sourcing strategy (category-strategy)."
 ---
 
 # Supplier Segmentation
@@ -21,7 +21,7 @@ Not for one supplier's scorecard (supplier-performance-review), for the category
 - The axes the user wants, if any; otherwise spend and criticality as described here.
 - Any criticality the user knows that the records do not hold (sole-source items, safety-critical parts), labelled user-supplied.
 
-- Use `tool:build_spend_cube` for spend by supplier and category over the period, the share each supplier holds and the share of its category
+- Use `tool:build_spend_cube` for spend by supplier over the period with the share each supplier holds (the cube has no category; a category scope comes from the user's list of suppliers or from `tool:classify_spend` on their items)
 - Use `tool:calc_supplier_scorecard` for open findings, on-time delivery and price variance where a scorecard is wanted for a candidate strategic supplier
 - Use `tool:search_contracts` for whether a supplier is under a live agreement
 - Use `tool:screening_summary` for the screening status of suppliers proposed as strategic
@@ -29,12 +29,12 @@ Not for one supplier's scorecard (supplier-performance-review), for the category
 - Use `tool:get_policy` for any segmentation rule or treatment the organisation has set
 NOT AVAILABLE: build_docx. the segmentation is given as text and tables
 
-Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.strategic_share_pct`, `config.thresholds.category_share_pct`.
+Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.strategic_share_pct`.
 
 ## Workflow
 
 1. Frame the scope and period, and read the policy for any segmentation rule; where none exists, use the axes here and say so.
-2. Read the spend cube. Rank suppliers by spend and compute each one's share of total and of its category. Suppliers above `config.thresholds.strategic_share_pct` of total spend or above `config.thresholds.category_share_pct` of their category are candidates for strategic or leverage.
+2. Read the spend cube by supplier for the period and take each supplier's share from the cube's own share figure; do no arithmetic on it. Suppliers at or above `config.thresholds.strategic_share_pct` of total spend are candidates for strategic or leverage; a supplier the user names as holding a whole category is a candidate on that statement, labelled user-supplied.
 3. Judge supply difficulty from the records only: an item with no alternative supplier on record (similar items) is bottleneck territory; the user's list of critical items is added, labelled user-supplied.
 4. Place each supplier: high spend and hard to replace is strategic; low spend and hard to replace is bottleneck; high spend and easy to replace is leverage; the rest is transactional.
 5. For strategic and bottleneck candidates read the contract cover and the screening status; a strategic supplier with no live agreement or an incomplete screening is a finding.
@@ -43,7 +43,7 @@ Settings this skill reads from its own configuration, named by key and never res
 ## Frameworks and heuristics
 
 - Kraljic's two axes (profit impact, supply risk) applied with the records' own evidence, not with a scored survey.
-- Share of category matters more than share of total for criticality; a small supplier can hold a whole category.
+- Criticality is about the item, not the spend; a small supplier can hold the only source of a part, and the records show that through the absence of alternatives.
 - A segment is a working hypothesis the category lead confirms; the skill never calls a supplier strategic on spend alone when the item has alternatives.
 - Treatment follows segment: relationship plan and scorecard for strategic; alternatives and stock for bottleneck; competition and consolidation for leverage; catalogue and card for transactional.
 
@@ -54,7 +54,7 @@ Any segmentation rule or required treatment comes from `tool:get_policy` and is 
 ## Output specification
 
 1. Frame: scope, period, axes used and whether they come from policy or from this skill.
-2. Segment table: supplier, spend, share of total, share of category, replaceability evidence, segment, contract cover, screening status.
+2. Segment table: supplier, spend, share of total (from the cube), replaceability evidence, segment, contract cover, screening status.
 3. Findings: strategic suppliers without an agreement or with incomplete screening; bottleneck items with no alternative.
 4. Treatment per segment and the first actions with owners.
 5. Open questions for the category lead.

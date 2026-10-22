@@ -1,7 +1,6 @@
 # Configurable defaults for this skill. They are starting points for review, not governed policy.
 thresholds:
-  strategic_share_pct: 5    # share of total spend above which a supplier is a strategic or leverage candidate
-  category_share_pct: 40    # share of a category above which a supplier is critical to that category
+  strategic_share_pct: 5    # share of total spend at or above which a supplier is a strategic or leverage candidate
 unavailable_tools:
   - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
