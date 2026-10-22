@@ -120,6 +120,9 @@ def test_the_drop_becomes_its_own_row(monkeypatch):
 
     def _fake_conn():
         class _Cur:
+            def execute(self, *a, **k):
+                pass          # the DDL the writer runs first (1.20i)
+
             def executemany(self, sql, rows):
                 written["rows"] = rows
 

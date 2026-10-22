@@ -91,8 +91,9 @@ def test_an_enforced_purpose_that_the_rules_deny_is_refused_before_it_leaves(wor
     assert "evil.example" in e["detail"]
 
 
-def test_an_enforced_purpose_that_the_rules_allow_still_goes_out(world):
+def test_an_enforced_purpose_that_the_rules_allow_still_goes_out(world, monkeypatch):
     calls, events = world
+    monkeypatch.setattr(egress_log, "capacity", lambda: (True, ""))   # the real writer thread, with no database, must not decide this
     assert egress.get("https://html.duckduckgo.com/html/?q=Borcelle", purpose=Purpose.SUPPLIER_RESEARCH) is not None
     assert len(calls) == 1 and events[-1]["outcome"] == "http_200"
 

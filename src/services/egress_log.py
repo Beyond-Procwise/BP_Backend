@@ -124,6 +124,10 @@ _writer_failing = False
 # happened; the count becomes its own row when the writer recovers, so the gap is admitted.
 _refused_unaudited = 0
 _refused_lock = threading.Lock()
+# Set once the writer has run ensure_schema() itself (1.20i). The first flush does it, before its
+# first INSERT, so the writer never depends on startup ordering in main.py: at the 2026-10-22
+# restart the first batch was written before the schema step and was lost.
+_schema_ready = False
 
 
 def payload_digest(body: Any) -> tuple[Optional[str], Optional[int]]:
@@ -318,8 +322,12 @@ def flush(batch: Optional[list[dict]] = None) -> int:
         })
     if not events:
         return 0
+    global _schema_ready
     try:
         from src.services.db import get_conn
+        if not _schema_ready:
+            ensure_schema()          # idempotent DDL; runs before the first INSERT of this process
+            _schema_ready = True
         with get_conn() as conn:
             cur = conn.cursor()
             cur.executemany(_INSERT, [_row(e) for e in events])
@@ -339,7 +347,13 @@ def flush(batch: Optional[list[dict]] = None) -> int:
         if refused:
             with _refused_lock:
                 globals()["_refused_unaudited"] += refused
-        logger.debug("egress log flush failed; %d event(s) lost", len(events), exc_info=True)
+        # The batch is lost; admit it. The real events (not the bookkeeping rows) count as dropped so
+        # the next successful flush writes the same events_dropped row a full queue would.
+        lost = sum(1 for e in events if e.get("purpose") != "audit")
+        if lost:
+            with _dropped_lock:
+                globals()["_dropped"] += lost
+        logger.debug("egress log flush failed; %d event(s) lost (admitted as dropped)", len(events), exc_info=True)
         return 0
 
 

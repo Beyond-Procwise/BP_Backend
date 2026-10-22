@@ -117,6 +117,9 @@ def test_the_event_row_carries_agent_and_shadow_after_the_existing_columns(monke
     written = {}
 
     class _Cur:
+        def execute(self, *a, **k):
+            pass          # the DDL the writer runs first (1.20i)
+
         def executemany(self, sql, rows):
             written["sql"], written["rows"] = sql, rows
 
