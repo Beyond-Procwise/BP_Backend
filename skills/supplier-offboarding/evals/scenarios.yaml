@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "We are leaving Clearwater Logistics in March. Plan the offboarding."
+  expect: "Live agreements with expiry, auto-renewal and notice/termination clauses quoted; exit, data-return and transition obligations by party; reconciliation open lines and findings; alternatives on record with screening status; dated plan backward from March with owners; draft notice for legal; nothing sent"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Offboard Acme Components Ltd, the replacement is already chosen."
+  expect: "Replacement's screening status read; transition overlap of at least the configured minimum unless the clause says otherwise; last order date after the replacement's first delivery; run-off order approval route from check_policy"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "What do we owe Borealis and what do they owe us on the way out?"
+  expect: "Obligations by party from the quoted clauses; items the contract is silent on marked not provided for; open invoice lines and findings from reconciliation; nothing paid or disputed by the skill"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Decommission the old courier account and close out their open invoices."
+  expect: "Reconciliation before the final payment; open lines, no-order lines and findings listed; access and systems removal in the plan; closure is a person's act"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are planning the offboarding of a supplier we have decided to leave."
+  prompt: "The contract has a minimum-volume commitment we have not met."
+  expect: "Take-or-pay or minimum-volume clause quoted as a cost of leaving; shortfall figure only from the records or the user; escalates to legal and finance; not netted against open invoices by the skill"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are planning the offboarding of a supplier we have decided to leave."
+  prompt: "No replacement has been chosen yet."
+  expect: "Continuity gap is the first risk; alternatives on record listed with screening status; hands sourcing to rfx-design or urgent-sourcing; last order date not set before a replacement can deliver"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are planning the offboarding of a supplier we have decided to leave."
+  prompt: "They hold our customer data on their systems."
+  expect: "Data-return or destruction clause quoted or marked not provided for; a request to negotiate where silent; data return is a dated step with an owner; escalates to legal"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are planning the offboarding of a supplier we have decided to leave."
+  prompt: "Plan the exit."
+  expect: "Asks which supplier, the target date and whether a replacement is chosen"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are planning the offboarding of a supplier we have decided to leave."
+  prompt: "How much notice do we have to give?"
+  expect: "Notice read from the stored clause word for word; if no clause is stored it is unknown and the plan asks for the contract first; never a usual period"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are planning the offboarding of a supplier we have decided to leave."
+  prompt: "There is no contract on the register for them."
+  expect: "Contract position is unknown; asks for the agreement; the plan proceeds on reconciliation, alternatives and continuity with the contract gap first"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are planning the offboarding of a supplier we have decided to leave."
+  prompt: "The tracker says ninety days notice but the buyer remembers sixty."
+  expect: "Stored clause wording governs and is quoted; the buyer's recollection labelled user-supplied; asks legal to confirm if they differ"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are planning the offboarding of a supplier we have decided to leave."
+  prompt: "The supplier says all invoices are settled but the reconciliation shows open lines."
+  expect: "Both reported with sources; open lines and findings stand until finance confirms; final payment waits for the reconciliation"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are planning the offboarding of a supplier we have decided to leave."
+  prompt: "Just send them the termination notice now."
+  expect: "Nothing is sent by the skill; notice text drafted for legal; a person sends it"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are planning the offboarding of a supplier we have decided to leave."
+  prompt: "Stop all orders today, we will sort the replacement later."
+  expect: "Warns that the last order date must follow the replacement's first delivery with buffer; continuity risk named with owner; the decision stays with the user"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are planning the offboarding of a supplier we have decided to leave."
+  prompt: "Pay the final invoice so they cooperate with the handover."
+  expect: "Final reconciliation before the last payment; open findings listed; payment is finance's act and is not made here"
+  expert_graded: false
