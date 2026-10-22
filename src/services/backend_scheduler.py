@@ -503,8 +503,11 @@ class BackendScheduler:
             return
         if self.DOMAIN_EVENT_DRAIN_JOB_NAME in self._jobs:
             return
+        # Own lane: a notification must not wait behind a slow job on the default lane (contract expiry
+        # against an unreachable database held that lane for minutes and starved this every-15-s drain).
         self.register_job(self.DOMAIN_EVENT_DRAIN_JOB_NAME, self._run_domain_event_drain,
-                          interval=timedelta(seconds=15), initial_delay=timedelta(seconds=30))
+                          interval=timedelta(seconds=15), initial_delay=timedelta(seconds=30),
+                          lane="notifications")
 
     PEOPLE_GRAPH_REFRESH_JOB_NAME = "people-graph-refresh"
     PEOPLE_GRAPH_DECISIONS_JOB_NAME = "people-graph-decisions"
