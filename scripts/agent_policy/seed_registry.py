@@ -45,6 +45,7 @@ FIXED_TOOLS = {
     "commodity_index_lookup": ["series", "start", "end"],
     "classify_spend": ["items", "query"],
     "similar_items": ["description", "min_similarity", "limit"],
+    "compare_total_cost": ["options", "horizon_years", "cost_of_capital", "buyer_currency", "fx_rates", "fx_table_date", "default_insurance_rate"],
 }
 
 # Tools the two older tool loops offer (services/governance_tools/governed_reasoning.py and

@@ -104,7 +104,8 @@ def landed_cost_total_cost(
     result = _landed.landed_cost(
         lines=lines, buyer_currency=buyer_currency, cross_border=cross_border, incoterm=incoterm,
         evaluation_date=evaluation_date, fx_rates=fx_rates, fx_table_date=fx_table_date,
-        components=components, duty_rate=duty_rate, customs_basis=customs_basis,
+        # The evaluator hands an absent optional input as None; a quote with no stated extras has no components.
+        components=components or (), duty_rate=duty_rate, customs_basis=customs_basis,
         default_insurance_rate=default_insurance_rate, vat_recoverable=vat_recoverable)
     return UNASSESSED if result is None else result
 

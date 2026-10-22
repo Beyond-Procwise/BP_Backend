@@ -974,6 +974,38 @@ def _similarity_tools() -> List[Tool]:
     ]
 
 
+def _cost_tools() -> List[Tool]:
+    """Landed cost then ownership cost for several options in one call, through the registered calculations."""
+    from src.services.cost import compare as CC
+
+    return [
+        Tool(
+            name="compare_total_cost",
+            description=(
+                "Compare 2 to 6 options on total cost of ownership in one call: for each option it runs "
+                "landed_cost.total_cost on the price lines (unit_price, quantity, currency; incoterm; stated "
+                "components; cross_border) and then tco.total_cost over horizon_years at cost_of_capital with "
+                "the option's payment_terms and lifetime_items (maintenance, support, consumables, energy, "
+                "disposal: key, amount, year or day), then ranks by present value and gives the gap to the "
+                "cheapest. Lifetime items go in lifetime_items, never in lines. cost_of_capital comes from the "
+                "negotiation_bounds policy (cost_of_capital_apr) or finance, never assumed. A total marked "
+                "incomplete is a lower bound; a component missing for every option alike does not change the "
+                "ranking. Nothing is estimated."
+            ),
+            parameters={"type": "object", "properties": {
+                "options": {"type": "array", "items": {"type": "object"},
+                            "description": "each: name, lines, incoterm, cross_border, components, payment_terms, lifetime_items"},
+                "horizon_years": {"type": "number"},
+                "cost_of_capital": {"type": "number", "description": "annual rate 0-1, e.g. 0.12"},
+                "buyer_currency": {"type": "string"},
+                "fx_rates": {"type": "object"}, "fx_table_date": {"type": "string"},
+                "default_insurance_rate": {"type": "number"}},
+                "required": ["options", "horizon_years", "cost_of_capital"]},
+            handler=CC.compare,
+        ),
+    ]
+
+
 def build_tools(
     agent_nick: Any,
     *,
@@ -1010,6 +1042,7 @@ def build_tools(
         + _index_tools()
         + _classification_tools()
         + _similarity_tools()
+        + _cost_tools()
     )
     if exclude:
         blocked = set(exclude)
