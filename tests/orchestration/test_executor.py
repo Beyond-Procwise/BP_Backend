@@ -446,3 +446,10 @@ def test_when_rounds_run_out_the_model_gets_one_closing_turn_without_tools(mode,
     assert res.closed_without_tools is True
     assert seen["schemas"][-1] == 0 and "No more tool calls" in seen["last_user"]
     assert ("safety", "From what I gathered: ok.") in s.events
+
+
+def test_the_closing_instruction_forbids_narrating_a_screen():
+    """Live, 2026-10-22: two closing-turn answers read 'You are on the Supplier Communication screen...
+    The system has automatically...', a UI the model made up."""
+    from orchestration import executor as ex
+    assert "do not narrate a screen" in ex.CLOSING_INSTRUCTION and "do not invent a figure" in ex.CLOSING_INSTRUCTION

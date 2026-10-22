@@ -20,8 +20,8 @@ Not for onboarding a new supplier (supplier-onboarding-checklist), for screening
 - The scope: the whole file, a category, a list of suppliers, or one change request.
 - For a change request: what is asked, by whom, through which channel, labelled user-supplied.
 
-- Use `tool:supplier_lookup` for a supplier's record, status and the fields filled or empty (never bank details or personal contacts)
-- Use `tool:supplier_discovery` for near-duplicate names and records for the same items
+- Use `tool:supplier_lookup` for a supplier's record, status and the fields filled or empty (never bank details or personal contacts); given a partial or similar name it lists the candidate records, which is how near-duplicate names are found
+- Use `tool:supplier_discovery` by item or service, for separate records that supply the same things (a second sign of a duplicate); it takes an item, never a supplier name
 - Use `tool:build_spend_cube` for spend and invoice count by supplier, to find dormant records and spend on unonboarded suppliers
 - Use `tool:invoice_reconciliation` for invoices from suppliers whose records are incomplete
 - Use `tool:screening_summary` for records with no screening
@@ -34,7 +34,7 @@ Settings this skill reads from its own configuration, named by key and never res
 ## Workflow
 
 1. Frame the scope and quote the master-data rules: required fields, dormancy period, verification procedure for payment-detail changes.
-2. Duplicates: near-duplicate names and records for the same items via discovery; each pair listed with the evidence (name similarity, shared items, same address if on record) and a proposed survivor, for the owner to confirm; never merged by the skill.
+2. Duplicates: near-duplicate names from the candidates the lookup lists for the name, and records for the same items from discovery by item; each pair listed with the evidence (name similarity, shared items, same address if on record) and a proposed survivor, for the owner to confirm; never merged by the skill.
 3. Completeness: per record the required fields that are empty or stale; records with invoices but no onboarding or screening.
 4. Dormancy: records with no invoices for `config.thresholds.dormant_days` days proposed for deactivation review, with the last invoice date.
 5. Change requests: a request to change bank, address or contact details is never actioned from the skill; the procedure is to verify with the supplier through a contact already on record (never the one in the request) and to have the master-data owner make the change under the policy's control; the request's channel and sender are recorded as facts. The skill shows no bank details, old or new.

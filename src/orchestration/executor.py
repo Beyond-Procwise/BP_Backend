@@ -113,7 +113,8 @@ def _release(w: Wiring, answer: str, result: Any, retried: bool):
 CLOSING_INSTRUCTION = (
     "No more tool calls are available for this request. Write the final answer now from the tool "
     "results above, in the format the instructions ask for. State plainly which steps could not be "
-    "done and what is still needed; do not invent a figure to fill a gap."
+    "done and what is still needed; do not invent a figure to fill a gap. Answer as yourself in plain "
+    "text: do not narrate a screen, a button or something 'the system' did on its own."
 )
 
 
