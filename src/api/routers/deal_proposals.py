@@ -138,7 +138,7 @@ def _confirm(proposal_id: int, confirmed_by: str, expected: Optional[list]) -> d
 
 @router.post("/proposals/generate", summary="Cluster an upload batch into proposed deals")
 def generate(body: GenerateBody, principal=Depends(require_user)) -> dict[str, Any]:
-    gate("deal.write", principal, agent="deal_proposals_api", context={"batch_deal_id": body.batch_deal_id})
+    gate("deal.write", principal, agent="deal_proposals_api", context={"batch_deal_id": body.batch_deal_id, "op": "generate"})
     try:
         return _generate(body.batch_deal_id, body.session_id)
     except Exception as exc:  # atomic failure — no partial proposals (spec §Error handling)

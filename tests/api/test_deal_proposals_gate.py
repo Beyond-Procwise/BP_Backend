@@ -92,3 +92,34 @@ def test_listing_proposals_is_not_a_write_and_is_not_gated(rig, monkeypatch):
                                                                "cursor": lambda s: None})())
     assert http.get("/deals/proposals?batch=B1").status_code == 200
     assert asked == []
+
+
+# ---- through the REAL gate: what 'write' means with no policy row ------------------------------------
+
+def test_with_no_policy_row_a_viewer_is_refused_and_a_buyer_is_allowed(monkeypatch):
+    from src.services import agent_actions, guardrail, rbac
+    from tests.guardrails.test_guardrail_gate import engine_with
+    from tests.guardrails.test_rbac import FakePrincipal
+
+    monkeypatch.setattr(guardrail.policy_observation, "record", lambda **k: True)
+    monkeypatch.setattr(guardrail, "_raise_for_a_human", lambda **k: 1)
+    audit = []
+    monkeypatch.setattr(agent_actions, "record_action_or_fail", lambda **k: audit.append(k))
+    monkeypatch.setattr(rbac, "policy_engine", lambda: engine_with())
+    did = []
+    monkeypatch.setattr(dp, "_confirm", lambda pid, by, expected: did.append(("confirm", pid, by)) or {"deal_id": "D1"})
+
+    def serve(principal):
+        app = FastAPI()
+        app.include_router(dp.router)
+        app.dependency_overrides[dp.require_user] = lambda: principal
+        return TestClient(app, raise_server_exceptions=False)
+
+    viewer = FakePrincipal("sub-viewer", {"cognito:groups": ["bp-viewers"]})
+    buyer = FakePrincipal("sub-buyer", {"cognito:groups": ["bp-buyers"]})
+    body = {"confirmed_by": "ignored"}
+    assert serve(viewer).post("/deals/proposals/7/confirm", json=body).status_code == 403
+    assert did == []
+    assert serve(buyer).post("/deals/proposals/7/confirm", json=body).status_code == 200
+    assert did == [("confirm", 7, "sub-buyer")]
+    assert [a["status"] for a in audit] == ["denied", "allowed"], "both attempts are audited"
