@@ -97,3 +97,15 @@ def test_no_lines_is_said_and_outage_is_not_correctness():
     out = IR.reconcile("S1", rows=down, today=TODAY)
     assert out["found"] is False and out["available"] is False and "correct or incorrect" in out["note"]
     assert IR.reconcile("", rows=_rows())["found"] is False
+
+
+def test_the_summary_sentence_comes_first_and_counts_every_line_including_the_over_billed_ones():
+    out = IR.reconcile("S1", rows=_rows(), today=TODAY)
+    assert list(out)[:2] == ["found", "summary"]
+    s = out["summary"]
+    assert s.startswith("5 invoice lines from Clearwater Logistics 14") and "0 match their PO line exactly" in s
+    assert "2 are billed above the PO" in s and "price_above_po, quantity_above_ordered" in s
+    assert "GBP: price above PO 25.00, quantity above ordered at PO price 200.00" in s
+    assert "1 have no PO line on record" in s and "1 are in a different currency" in s and "1 open findings" in s
+    none = IR.reconcile("S1", rows=_rows(lines=[], receipts=[], findings=[]), today=TODAY)
+    assert none["summary"].startswith("No invoice line")

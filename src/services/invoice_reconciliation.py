@@ -191,10 +191,29 @@ def reconcile(supplier: Any = None, invoice_id: Any = None, po_id: Any = None, s
     findings = [{"finding_id": fid, "rule": rule, "category": cat, "severity": sev, "document_type": dt, "document": pk,
                  "field": field, "observed": obs, "expected": exp, "delta": delta, "notes": notes, "status": status,
                  "detected_at": _plain(at)} for fid, rule, cat, sev, dt, pk, field, obs, exp, delta, notes, status, at in findings_raw]
-    out: Dict[str, Any] = {"found": True, "supplier": {"supplier_id": sid, "name": sname},
+    # A one-sentence summary FIRST, covering every line: live (2026-10-22) the model summarised the lines
+    # it was shown and missed the over-billed ones that the counts carried.
+    over = [k for k in ("price_above_po", "quantity_above_ordered") if any(k in ln.get("kind", "") for ln in lines)]
+    parts = [f"{len(lines)} invoice lines from {sname} in the period",
+             f"{kinds_count.get('matched', 0)} match their PO line exactly"]
+    n_over = sum(1 for ln in lines if ln.get("matched") and ln["kind"] != "matched")
+    if n_over:
+        amounts = "; ".join(f"{ccy}: price above PO {t['price_above_po']:.2f}, quantity above ordered at PO price "
+                            f"{t['quantity_above_ordered_at_po_price']:.2f}" for ccy, t in sorted(totals.items())
+                            if t["price_above_po"] or t["quantity_above_ordered_at_po_price"])
+        parts.append(f"{n_over} are billed above the PO ({', '.join(over)}; {amounts})")
+    else:
+        parts.append("none is billed above the PO on price or quantity")
+    for kind, label in (("no_po_line", "have no PO line on record"), ("currency_differs", "are in a different currency from the PO"),
+                        ("ambiguous_po_lines", "could not be matched to one PO line")):
+        if kinds_count.get(kind):
+            parts.append(f"{kinds_count[kind]} {label}")
+    parts.append(f"{len(findings)} open findings")
+    summary = "; ".join(parts) + "." if lines else f"No invoice line from {sname} in the period."
+    out: Dict[str, Any] = {"found": True, "summary": summary, "supplier": {"supplier_id": sid, "name": sname},
                            "period": {"label": period.label, "start": str(period.start), "end": str(period.end)},
-                           "invoice_id": inv, "po_id": po, "invoice_lines": len(lines), "lines": lines[:MAX_LINES],
-                           "kinds": kinds_count, "differences_by_currency": totals,
+                           "invoice_id": inv, "po_id": po, "invoice_lines": len(lines), "kinds": kinds_count,
+                           "differences_by_currency": totals, "lines": lines[:MAX_LINES],
                            "receipts_by_po": receipts, "pos_without_receipt": [p for p in po_ids if p not in receipts],
                            "open_findings": findings, "open_findings_count": len(findings),
                            "written": False}
