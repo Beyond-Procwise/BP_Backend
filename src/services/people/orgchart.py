@@ -1,7 +1,7 @@
 """Getting the organisation into bp_person: a small-company starter chart, or a feed from the company's own system.
 
 Two ways in, one gate:
-  * onboarding: starter_chart() is a tiny editable template (owner, one approver, one buyer);
+  * onboarding: starter_chart() is the smallest editable template: the signed-in admin as Owner (unlimited); the rest is added by hand;
   * a connected org-chart product (HR system, Microsoft 365 directory, ERP) is an OrgChartProvider whose
     fetch() returns PersonRecords. It is treated like the mailbox connection: the provider is configured by
     an admin, and its output goes through the same import as a hand-entered chart.
