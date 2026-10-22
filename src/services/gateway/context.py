@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
+from src.services.tenant_context import company_label
 from typing import Any, Optional, Tuple
 
 
@@ -11,7 +13,7 @@ class CallerContext:
     role: str
     # None = unrestricted (an admin); a tuple restricts to those buyer ids; an empty tuple sees nothing.
     buyer_scope: Optional[Tuple[str, ...]] = None
-    tenant_id: str = "default"                 # one tenant today; no reseller mapping exists yet
+    tenant_id: str = field(default_factory=company_label)   # one company today; no reseller mapping exists yet
     # None = unrestricted (an Admin); a tuple restricts to those reseller accounts; an empty tuple sees none. From the
     # user->reseller link table (deploy/sql/2026-10-19_user_reseller_link.sql), by the same rules as buyer_scope.
     reseller_account_ids: Optional[Tuple[str, ...]] = ()

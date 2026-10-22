@@ -51,9 +51,10 @@ def embed_document(agent_nick: Any, cur, *, doc_type: str, doc_pk: Any, raw_id: 
     chunks = chunk_text(_full_text(row[0] if row else None))
     if not chunks:
         return 0
-    from src.services.vector_store import DEFAULT_TENANT, outbox
+    from src.services.tenant_context import company_label
+    from src.services.vector_store import outbox
     with _queue_connect() as qconn, qconn.cursor() as qcur:
-        outbox.enqueue(qcur, DEFAULT_TENANT, "documents", f"{doc_type}:{doc_pk}")
+        outbox.enqueue(qcur, company_label(), "documents", f"{doc_type}:{doc_pk}")
     return len(chunks)
 
 

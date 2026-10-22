@@ -280,3 +280,12 @@ def test_a_figure_a_tool_returned_is_not_reported(loop):
     out = _agent().execute(_ctx(), tool_loop=True)
 
     assert out.data["untraced_figures"] == []
+
+
+def test_a_standard_number_is_a_name_not_a_figure():
+    answer = "Ask for ISO 9001, ISO 14001, ISO/IEC 27001 and BS EN 1090 evidence."
+    assert CT.untraced_figures(answer, ["nothing"]) == []
+
+
+def test_a_figure_next_to_the_word_iso_is_still_checked():
+    assert CT.untraced_figures("The ISO audit cost 12,500 GBP.", ["nothing"]) == ["12,500"]

@@ -26,6 +26,13 @@ FIXED_TOOLS = {
     "use_skill": ["name", "part"],
     "check_policy": ["action_type", "annual_value", "approver", "currency", "fx_rate_to_policy_currency",
                      "history_checked", "orders", "requester", "term_months", "total_commitment", "waiver_id"],
+    "search_contracts": ["query", "supplier", "status", "expires_within_days", "limit"],
+    "extract_clauses": ["document_id", "clause_type", "containing"],
+    "redline_compare": ["original", "revised"],
+    "savings_tracker": ["since", "until"],
+    "supplier_discovery": ["item", "country", "preferred_only", "limit"],
+    "supplier_lookup": ["supplier"],
+    "build_spend_cube": ["by", "start", "end", "currency", "top_n"],
 }
 
 # Tools the two older tool loops offer (services/governance_tools/governed_reasoning.py and
@@ -106,4 +113,11 @@ def main(argv: List[str]) -> int:
 
 
 if __name__ == "__main__":
+    # An operator tool acts for the platform across every company; with row-level security on, a tool
+    # that names no company would otherwise see no rows (D-47).
+    import sys as _sys
+    from pathlib import Path as _Path
+    _sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+    from src.services.tenant_context import enter_system as _enter_system
+    _enter_system()
     sys.exit(main(sys.argv[1:]))

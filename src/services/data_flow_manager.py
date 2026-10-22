@@ -627,10 +627,11 @@ class DataFlowManager:
             logger.debug("No knowledge graph points generated for persistence")
             return
 
-        from src.services.vector_store import DEFAULT_TENANT, sources
+        from src.services.tenant_context import company_label
+        from src.services.vector_store import sources
         for point_id, payload in points_by_id.items():
             try:
-                sources.put_source(DEFAULT_TENANT, "knowledge_graph", str(point_id), texts_by_id[point_id], payload)
+                sources.put_source(company_label(), "knowledge_graph", str(point_id), texts_by_id[point_id], payload)
             except Exception:
                 logger.exception("Failed to write knowledge graph source %s", point_id)
 

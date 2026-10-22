@@ -24,10 +24,10 @@ Ask before planning; do not proceed on guessed spend.
 - Deadline and who decides.
 - Our target price and walk-away if the user already has them.
 
+Use `tool:savings_tracker` to see what has already been counted as saved; the expected saving in this plan goes in the plan and is logged later by a person.
 NOT AVAILABLE: commodity_index_lookup. Ask the user for the index move since the last price; without it, the justified part of an increase request cannot be separated and the plan says so.
 NOT AVAILABLE: financial_health_score. Ask whether the supplier is in financial difficulty; do not infer it.
-NOT AVAILABLE: supplier_lookup. Use `tool:get_corpus_facts` for the supplier's history and say what was missing.
-NOT AVAILABLE: savings_tracker. Record the expected saving in the plan; logging it is a separate step.
+Use `tool:supplier_lookup` for the supplier's recorded profile (lead time, Incoterms, currency, insurance) and `tool:get_corpus_facts` for its history; say what was missing.
 NOT AVAILABLE: build_docx. Give the plan as text.
 
 ## Workflow

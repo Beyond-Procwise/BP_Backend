@@ -677,6 +677,134 @@ def _policy_check_tools() -> List[Tool]:
     ]
 
 
+def _contract_tools() -> List[Tool]:
+    """Find contracts, read their stored clauses, compare two wordings. All read-only."""
+    from src.services.contract_tools import clauses as CL
+    from src.services.contract_tools import redline as RL
+    from src.services.contract_tools import search as SE
+
+    return [
+        Tool(
+            name="search_contracts",
+            description=(
+                "Find contracts in the register by words in the title or type, supplier name, status, or "
+                "expiring within N days. Returns dates, value, auto-renewal, renewal term, governing law and "
+                "payment terms as stored. Covers only contracts that were uploaded: no match does not mean "
+                "no contract exists. If it says the register could not be read, say so."
+            ),
+            parameters={"type": "object", "properties": {
+                "query": {"type": "string"}, "supplier": {"type": "string"}, "status": {"type": "string"},
+                "expires_within_days": {"type": "integer"}, "limit": {"type": "integer"}}},
+            handler=SE.search,
+        ),
+        Tool(
+            name="extract_clauses",
+            description=(
+                "Read the clauses already extracted from one uploaded contract, quoted word for word with "
+                "clause number, type and parties. Pass the document_id (or contract_id). Optionally filter by "
+                "clause_type (must_perform, entitled_to, triggered_by, penalised_by, risk_transfer) or by words "
+                "the clause contains. Quote clauses as returned; a clause not listed may still be in the "
+                "contract, so say 'not checked', not 'absent'."
+            ),
+            parameters={"type": "object", "properties": {
+                "document_id": {"type": "string"}, "clause_type": {"type": "string"},
+                "containing": {"type": "string"}}, "required": ["document_id"]},
+            handler=CL.extract,
+        ),
+        Tool(
+            name="redline_compare",
+            description=(
+                "Compare two wordings of a clause or contract and list what was added, removed or replaced, in "
+                "reading order. Pass both texts exactly as the user gave them. It reports wording differences "
+                "only; it does not say whether a change is acceptable."
+            ),
+            parameters={"type": "object", "properties": {
+                "original": {"type": "string"}, "revised": {"type": "string"}},
+                "required": ["original", "revised"]},
+            handler=RL.compare,
+        ),
+    ]
+
+
+def _ledger_tools() -> List[Tool]:
+    """Savings as the value ledger states them. Read-only: logging a saving is a person's act."""
+    from src.services import savings_tracker as ST
+
+    return [
+        Tool(
+            name="savings_tracker",
+            description=(
+                "Read what has been saved so far from the value ledger: saved (avoided + recovered + "
+                "realised), money still only claimed, and a month-by-month split, optionally between two "
+                "dates. It is the same figure the dashboards show. It logs nothing; do not say a saving "
+                "was recorded. If the ledger cannot be read, say so rather than reporting zero."
+            ),
+            parameters={"type": "object", "properties": {
+                "since": {"type": "string", "description": "YYYY-MM-DD, optional."},
+                "until": {"type": "string", "description": "YYYY-MM-DD, optional."}}},
+            handler=ST.track,
+        ),
+    ]
+
+
+def _spend_tools() -> List[Tool]:
+    """Invoiced spend cut by one dimension. Read-only; same figures as the dashboards."""
+    from src.services.analytics import spend_cube as SC
+
+    return [
+        Tool(
+            name="build_spend_cube",
+            description=(
+                "Invoiced spend cut by ONE dimension for a period: by = supplier, month, currency, country, "
+                "region, buyer, payment_terms or status. Defaults to the fiscal year to date and GBP. Returns the "
+                "total, invoice count, and the top cells with share and as-billed amounts; the total equals the "
+                "dashboard. There is no category or business unit. A currency with no rate is left out and "
+                "named; quote that. If spend cannot be read, say so rather than reporting zero."
+            ),
+            parameters={"type": "object", "properties": {
+                "by": {"type": "string", "enum": list(SC.DIMENSIONS)},
+                "start": {"type": "string", "description": "YYYY-MM-DD, optional."},
+                "end": {"type": "string", "description": "YYYY-MM-DD, optional."},
+                "currency": {"type": "string", "description": "ISO code, default GBP."},
+                "top_n": {"type": "integer"}}, "required": ["by"]},
+            handler=SC.build,
+        ),
+    ]
+
+
+def _supplier_tools() -> List[Tool]:
+    """What the platform itself knows about suppliers. Read-only; no bank details or personal contacts."""
+    from src.services import supplier_tools as ST
+
+    return [
+        Tool(
+            name="supplier_discovery",
+            description=(
+                "List suppliers this organisation already deals with that have a PO, invoice or quote line "
+                "matching an item or service, with the evidence counts, preferred flag, country, certifications "
+                "on file and insurance status. It is NOT a market scan: suppliers it does not return may exist. "
+                "Never present a result as a complete market view."
+            ),
+            parameters={"type": "object", "properties": {
+                "item": {"type": "string", "description": "The item or service, e.g. 'laptop'."},
+                "country": {"type": "string"}, "preferred_only": {"type": "boolean"},
+                "limit": {"type": "integer"}}, "required": ["item"]},
+            handler=ST.discover,
+        ),
+        Tool(
+            name="supplier_lookup",
+            description=(
+                "A supplier's recorded profile by name or supplier_id: legal details, preferred flag, risk "
+                "score (or 'not scored'), certifications on file, insurance, currency, Incoterms, lead time. "
+                "It is the master record, not an outside check. If several suppliers match, ask which one."
+            ),
+            parameters={"type": "object", "properties": {"supplier": {"type": "string"}},
+                        "required": ["supplier"]},
+            handler=ST.lookup,
+        ),
+    ]
+
+
 def build_tools(
     agent_nick: Any,
     *,
@@ -704,6 +832,10 @@ def build_tools(
         + _calculation_tools(workflow_id=workflow_id)
         + _skill_tools()
         + _policy_check_tools()
+        + _contract_tools()
+        + _ledger_tools()
+        + _spend_tools()
+        + _supplier_tools()
     )
     if exclude:
         blocked = set(exclude)

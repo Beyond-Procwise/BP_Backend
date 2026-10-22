@@ -487,10 +487,11 @@ class RAGService:
         if logical is None:
             return []
         try:
-            from src.services.vector_store import DEFAULT_TENANT, get_vector_store
+            from src.services.tenant_context import company_label
+            from src.services.vector_store import get_vector_store
             from src.services.vector_store.filters import to_store_filter
             store = getattr(self, "_vector_store", None) or get_vector_store()
-            hits = store.search(DEFAULT_TENANT, list(vector), to_store_filter(query_filter), int(limit), collection=logical)
+            hits = store.search(company_label(), list(vector), to_store_filter(query_filter), int(limit), collection=logical)
         except Exception:
             logger.warning("Vector search failed for collection %s", collection_name, exc_info=True)
             return []
@@ -716,7 +717,8 @@ class RAGService:
         No inline embedding and no vector write here (and no local FAISS/BM25 update: those were in-process caches of what this process had
         upserted since it started, and an asynchronous write cannot feed them). A failure is logged and the caller carries on, as before.
         """
-        from src.services.vector_store import DEFAULT_TENANT, sources
+        from src.services.tenant_context import company_label
+        from src.services.vector_store import sources
 
         default_collection = collection_name or self.primary_collection
         for payload in payloads:
@@ -751,7 +753,7 @@ class RAGService:
             chunk_id = base_payload.get("chunk_id")
             source_id = f"{record_id}:{chunk_id}" if chunk_id is not None else str(record_id)
             try:
-                sources.put_source(DEFAULT_TENANT, self._logical_collection(target) or str(target), source_id, text, base_payload)
+                sources.put_source(company_label(), self._logical_collection(target) or str(target), source_id, text, base_payload)
             except Exception:
                 logger.exception("Vector source write failed for collection %r record %r — document processing continues", target, record_id)
 

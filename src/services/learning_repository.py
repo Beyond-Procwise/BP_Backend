@@ -50,10 +50,11 @@ class LearningRepository:
     # ------------------------------------------------------------------
     def _put(self, content: str, payload: Dict[str, Any], failure: str, *args: Any) -> Optional[str]:
         """A learning record is a SOURCE row (its text and payload); the vector worker embeds it. Returns its id, or None on failure."""
-        from src.services.vector_store import DEFAULT_TENANT, sources
+        from src.services.tenant_context import company_label
+        from src.services.vector_store import sources
         source_id = str(uuid.uuid4())
         try:
-            sources.put_source(DEFAULT_TENANT, "learning", source_id, content, payload)
+            sources.put_source(company_label(), "learning", source_id, content, payload)
         except Exception:
             logger.exception(failure, *args)
             return None
@@ -61,9 +62,10 @@ class LearningRepository:
 
     def _list(self, filters: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:
         """Stored records, newest first, as the same payload dicts that were stored (the store's bookkeeping keys removed)."""
-        from src.services.vector_store import DEFAULT_TENANT, get_vector_store
+        from src.services.tenant_context import company_label
+        from src.services.vector_store import get_vector_store
         try:
-            hits = get_vector_store().list(DEFAULT_TENANT, collection="learning", filters=filters, limit=max(1, min(int(limit), 1000)),
+            hits = get_vector_store().list(company_label(), collection="learning", filters=filters, limit=max(1, min(int(limit), 1000)),
                                            newest_first=True)
         except Exception:
             logger.exception("Failed to list learning records")

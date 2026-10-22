@@ -1,0 +1,22 @@
+should_trigger:
+- Where can we consolidate volume across our business units?
+- Are we buying the same item at different prices in different plants?
+- Identify price harmonisation opportunities across our sites
+- Which categories are too fragmented across suppliers?
+- Where can we leverage scale on spend we buy separately?
+- Build a demand aggregation view across legal entities
+- Five plants buy the same bearings, what is the price spread worth?
+- What is the volume leverage if we pool MRO demand?
+- Show me where several BUs buy the same category from many suppliers
+- Which items should we align prices on across the group?
+should_not_trigger:
+- Is this a hard saving or cost avoidance?
+- Recommend which bidder to award
+- Plan the negotiation with the supplier
+- Which Incoterm should we use?
+- Draft a supplier email
+- Check this order against approval limits
+- Extract invoice lines
+- Write a full category strategy for packaging
+- Clean up one-off tail spend purchases
+- Screen this supplier for sanctions

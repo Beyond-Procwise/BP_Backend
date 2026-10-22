@@ -1,0 +1,53 @@
+# Configurable defaults taken from the skill brief (SC-037). They are this skill's starting points, not governed policy.
+thresholds:
+  material_driver_min_share_pct: 10     # a cost driver at or above this share of price needs an index
+  index_min_correlation: 0.7            # minimum correlation of index with supplier cost history
+  max_indices: 3                        # keep the formula administrable
+  dead_band_min_pct: 2                  # no price change if the move is inside the band (low end)
+  dead_band_max_pct: 3                  # high end of the usual band
+  sharing_ratio_supplier_pct: 50        # share of the move beyond the band that the supplier bears
+  collar_annual_pct: 10                 # per-year cap and floor around the base price, symmetric
+  reopener_index_move_pct: 25           # index move that opens a renegotiation
+  stress_shock_pct: 30                  # up and down shock for the stress test
+  history_months_min: 24                # simulation window, shortest
+  history_months_max: 36                # simulation window, longest
+  uncapped_exposure_escalate_pct: 10    # uncapped exposure above this share of annual spend escalates
+unavailable_tools:
+  - commodity_index_lookup
+  - build_docx
+  - build_xlsx
+  - render_chart
+  - obligation_tracker
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "cap and floor"
+    - "price collar"
+    - "index clause"
+    - "pricing mechanism*"
+    - "price adjustment"
+    - "index-linked"
+    - "index linked"
+    - "indexation"
+    - "indexed pricing"
+    - "price collar*"
+    - "dead band"
+    - "volume tier*"
+    - "rebate tier*"
+    - "price review clause*"
+    - "escalation clause*"
+  support:                       # 1 point each
+    - "index"
+    - "cap"
+    - "floor"
+    - "collar"
+    - "rebate*"
+    - "formula"
+    - "contract"
+    - "long-term"
+    - "supply agreement"
+    - "renewal"
+    - "volatile"
+    - "tier*"
+    - "clause"
+    - "LME"
+    - "pass-through"

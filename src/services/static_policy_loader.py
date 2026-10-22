@@ -182,16 +182,18 @@ class StaticPolicyLoader(DocumentEmbeddingService):
     def _lookup_existing(self, source_path: str) -> Optional[Dict[str, Any]]:
         """The stored metadata of this policy file (its s3_etag says whether it changed), or None."""
         try:
-            from src.services.vector_store import DEFAULT_TENANT, sources
-            return sources.find_source_metadata(DEFAULT_TENANT, "policy", {"source_path": source_path})
+            from src.services.tenant_context import company_label
+            from src.services.vector_store import sources
+            return sources.find_source_metadata(company_label(), "policy", {"source_path": source_path})
         except Exception:
             logger.debug("Static policy lookup failed for %s", source_path, exc_info=True)
             return None
 
     def _purge_existing(self, source_path: str) -> None:
         try:
-            from src.services.vector_store import DEFAULT_TENANT, sources
-            sources.delete_sources_matching(DEFAULT_TENANT, "policy", {"source_path": source_path})
+            from src.services.tenant_context import company_label
+            from src.services.vector_store import sources
+            sources.delete_sources_matching(company_label(), "policy", {"source_path": source_path})
         except Exception:
             logger.warning("Failed to purge stale policy sources for %s", source_path, exc_info=True)
 
@@ -285,14 +287,15 @@ class StaticPolicyLoader(DocumentEmbeddingService):
 
     def _ingest_chunks(self, *, document_id: str, chunks: List[Any], base_metadata: Dict[str, Any]) -> EmbeddedDocument:
         """One policy SOURCE row per chunk (text + the same payload as before); the worker embeds them."""
-        from src.services.vector_store import DEFAULT_TENANT, active_profile, sources
+        from src.services.tenant_context import company_label
+        from src.services.vector_store import active_profile, sources
 
         for idx, chunk in enumerate(chunks):
             payload = {k: v for k, v in base_metadata.items() if k not in DISALLOWED_METADATA_KEYS}
             payload.update({k: v for k, v in chunk.metadata.items() if k not in DISALLOWED_METADATA_KEYS})
             payload.update({"document_type": "policy", "chunk_id": idx, "chunk_index": idx, "embedding_model": active_profile().model})
             payload.pop("content", None)
-            sources.put_source(DEFAULT_TENANT, "policy", f"{document_id}:{idx}", chunk.content, payload)
+            sources.put_source(company_label(), "policy", f"{document_id}:{idx}", chunk.content, payload)
         return EmbeddedDocument(document_id=document_id, collection=self.collection_name, chunk_count=len(chunks), metadata=base_metadata)
 
     def _derive_document_id(self, bucket: str, key: str, etag: Optional[str]) -> str:

@@ -1053,6 +1053,13 @@ try:
 except Exception:
     psycopg2 = None  # type: ignore
 
+# Importing this installs the hook that tells every new database connection which customer it is for
+# (see tenant_context). It patches the driver's connect(), so get_conn() and every direct connection get it.
+try:
+    from services import tenant_context as _tenant_context  # noqa: F401
+except Exception:  # pragma: no cover - the other import name
+    from src.services import tenant_context as _tenant_context  # type: ignore  # noqa: F401
+
 # Maintained for backward compatibility with callers that guard against the
 # previous SQLite fallback. PostgreSQL is now mandatory so the flag is always
 # ``False``.

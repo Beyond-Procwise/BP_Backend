@@ -42,6 +42,8 @@ from pydantic import (
     model_validator,
 )
 
+from src.services.tenant_context import company_label
+
 from src.services.analytics.formatting import (
     EMPTY_AMOUNT,
     format_delta,
@@ -468,7 +470,7 @@ class FactPack(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     pack_id: str
-    tenant_id: str = "default"
+    tenant_id: str = Field(default_factory=company_label)
     report_type_id: str
     scope: Dict[str, Any]
     as_of: str

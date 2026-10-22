@@ -1,0 +1,58 @@
+thresholds:
+  default_period_months: 12          # trailing window when the user gives no period
+  min_classified_coverage_pct: 90    # below this share of classified spend in scope, classification is a gap to state
+  min_bus_buying: 2                  # business units buying the same L4 category for it to be a candidate
+  min_suppliers: 3                   # suppliers in that category for it to be a candidate
+  min_combined_spend: 250000         # in the reporting currency, over the period
+  min_match_confidence: 0.9          # identical-item match by description + spec + unit of measure
+  reference_percentile: 25           # price percentile used as the reference price, not the minimum
+  min_price_observations: 3          # prices per item below which no spread or reference is computed
+  feasibility_min: 1
+  feasibility_max: 5
+unavailable_tools:
+  - classify_spend
+  - landed_cost_calc
+  - build_xlsx
+  - build_pptx
+  - render_chart
+  - embeddings
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "pool demand"
+    - "pooled demand"
+    - "pool*"
+    - "buy the same"
+    - "buy separately"
+    - "align prices"
+    - "price alignment"
+    - "several bus"
+    - "across the group"
+    - "same category"
+    - "demand aggregation"
+    - "consolidat*"
+    - "fragmentation"
+    - "fragmented"
+    - "price harmonisation"
+    - "price harmonization"
+    - "leverage scale"
+    - "volume leverage"
+    - "business units"
+    - "buying separately"
+    - "same item"
+    - "spend cube"
+    - "aggregate demand"
+  support:                       # 1 point each
+    - "sites"
+    - "plants"
+    - "entities"
+    - "suppliers"
+    - "spread"
+    - "volume"
+    - "spend"
+    - "price"
+    - "category"
+    - "bu"
+    - "across"
+    - "pay"
+    - "paying"
+    - "different"

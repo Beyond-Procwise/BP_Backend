@@ -29,8 +29,9 @@ class SupplierRelationshipService:
 
     def _list_pg(self, filters: Dict[str, Any], limit: int) -> List[Any]:
         """Stored records through the VectorStore. Records live in the primary 'documents' collection."""
-        from src.services.vector_store import DEFAULT_TENANT, get_vector_store
-        return list(get_vector_store().list(DEFAULT_TENANT, collection="documents", filters=filters, limit=max(1, min(int(limit), 1000))))
+        from src.services.tenant_context import company_label
+        from src.services.vector_store import get_vector_store
+        return list(get_vector_store().list(company_label(), collection="documents", filters=filters, limit=max(1, min(int(limit), 1000))))
 
     # ------------------------------------------------------------------
     # Public API
