@@ -1006,6 +1006,33 @@ def _cost_tools() -> List[Tool]:
     ]
 
 
+def _reconciliation_tools() -> List[Tool]:
+    """What a supplier invoiced against what we ordered and received, line by line. Read-only."""
+    from src.services import invoice_reconciliation as IR
+
+    return [
+        Tool(
+            name="invoice_reconciliation",
+            description=(
+                "Reconcile a supplier's invoices against our purchase orders in one call: every invoice line "
+                "matched to its PO line (ordered vs invoiced quantity and unit price, the difference by kind: "
+                "price above or below PO, quantity above or below ordered, no PO line, different currency), the "
+                "differences summed per currency, goods receipts recorded per PO (no quantities are recorded, so "
+                "'received' is never known), and the open triage findings on the supplier's documents with the "
+                "values the engine observed and expected. Narrow with invoice_id or po_id and a period (default: "
+                "fiscal year to date). A PO with no receipt recorded is a gap in our records, not proof of "
+                "non-delivery; a finding is a catch to examine, not a verdict. It writes nothing."
+            ),
+            parameters={"type": "object", "properties": {
+                "supplier": {"type": "string", "description": "supplier name or supplier_id"},
+                "invoice_id": {"type": "string"}, "po_id": {"type": "string"},
+                "start": {"type": "string", "description": "YYYY-MM-DD"}, "end": {"type": "string", "description": "YYYY-MM-DD"}},
+                "required": ["supplier"]},
+            handler=IR.reconcile,
+        ),
+    ]
+
+
 def build_tools(
     agent_nick: Any,
     *,
@@ -1043,6 +1070,7 @@ def build_tools(
         + _classification_tools()
         + _similarity_tools()
         + _cost_tools()
+        + _reconciliation_tools()
     )
     if exclude:
         blocked = set(exclude)

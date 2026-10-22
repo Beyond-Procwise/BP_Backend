@@ -19,7 +19,7 @@ Not for validating a single saving claim (savings-methodology), for sizing a poo
 
 - The period for realised value (default the trailing `config.thresholds.default_period_months` months) and the reporting currency.
 - The scope: the whole organisation, a supplier, an item or a category's suppliers.
-- The organisation's rules on what counts as a saving and who may record one, from `tool:get_policy`; the ledger's own rule is quoted as the tool states it.
+- The organisation's rules on what counts as a saving and who may record one: there is no savings policy to look up on this platform, so do not call `tool:get_policy` for one; the ledger's own rule, as `tool:savings_tracker` states it in its note, is the rule to quote. Start with `tool:savings_tracker`, then `tool:list_opportunity_levers`, then the buckets; the round budget is small.
 
 Use `tool:savings_tracker` for the period's saved (avoided, recovered, realised) against claimed money, month by month, as the ledger states them; `tool:list_opportunity_levers` for the levers the platform tracks and what each means; `tool:get_opportunity_bucket` with the supplier and item for the bucket's status, evidence and lever state; `tool:build_spend_cube` by supplier for the spend the pipeline sits on; `tool:similar_items` and `tool:classify_spend` to size the ground for a pooling candidate before handing it to demand-aggregation; `tool:calc_supplier_scorecard` for the price-variance and findings evidence behind a recovery lever; and `tool:run_calculation` with `deal.pct_change` for shares and changes and `deal.realised_savings` where the user gives baseline and new prices with volume.
 
@@ -50,7 +50,7 @@ What counts as a saving and who may record one come from governed policy via `to
 
 ## Output specification
 
-1. Frame: period, currency, scope, saving rules or "not governed", the ledger's definition quoted.
+1. Frame: period, currency, scope, the ledger's definition quoted. Write for the procurement lead in plain words: suppliers, items, levers, amounts and dates; never name tools, tables or how the records are stored.
 2. Realised table: saved by kind, claimed open, by month; share claimed where read.
 3. Open levers table: supplier, item, lever, bucket status, evidence, last evaluated, stalled, value recorded or "not sized".
 4. Candidates not yet in a bucket, with the sizing skill.

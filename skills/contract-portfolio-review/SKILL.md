@@ -18,7 +18,7 @@ Not for deciding one contract's renewal, renegotiation or exit (renewal-and-exit
 ## Inputs and preconditions
 
 - The horizon (default the next `config.thresholds.horizon_days` days) and the period for spend (default the trailing `config.thresholds.spend_period_months` months), the reporting currency, and any scope (a category's suppliers, a region, a business unit the user names).
-- The organisation's renewal rules (who decides, lead times, mandatory re-tender thresholds) from `tool:get_policy`; where none is stated the configured lead times are defaults.
+- The organisation's renewal rules (who decides, lead times, mandatory re-tender thresholds) from ONE call to `tool:get_policy` with the query `approval_threshold_policy` (the only purchasing-authority policy on this platform; there is no renewal-rules policy to search for); where it states nothing about renewals the configured lead times are defaults and the review says so. The round budget is small: policy once, the contracts once, then the trackers.
 
 Use `tool:search_contracts` with `expires_within_days` set to the horizon (and `status` as needed) for the contracts falling due, with their end dates, values, auto-renewal flags and renewal terms as stored; `tool:obligation_tracker` per contract in the pipeline for its calendar and the clauses that carry a notice, review or renewal, quoted word for word; `tool:build_spend_cube` by supplier for the period's spend, matched to the register's suppliers for coverage; `tool:calc_supplier_scorecard` and `tool:screening_summary` for the suppliers behind the largest or soonest contracts; `tool:savings_tracker` for savings recorded against renewals; and `tool:run_calculation` with `deal.pct_change` for shares and changes.
 
@@ -50,7 +50,7 @@ Renewal rules, mandatory re-tender thresholds and who decides come from governed
 
 ## Output specification
 
-1. Frame: horizon, period, currency, scope, rules or "not governed", register coverage caveat.
+1. Frame: horizon, period, currency, scope, rules or "not governed", register coverage caveat. Write every section for the contract owner: contracts, suppliers, dates and clauses in plain words; never name tools, tables, files or how the records are stored.
 2. Overdue and urgent items, each with the clause quoted or "clause not read".
 3. Pipeline table ordered by decision date.
 4. Supplier flags for the largest and soonest contracts.
