@@ -244,7 +244,8 @@ def _is_local_destination(host: str) -> bool:
     return bool(addrs) and all(not _is_global(a) for a in addrs)
 
 
-def _evaluate(purpose: Purpose, destination: str, agent: str = UNKNOWN_AGENT) -> Decision:
+def _evaluate(purpose: Purpose, destination: str, agent: str = UNKNOWN_AGENT,
+              local: Optional[bool] = None, level: str = "public") -> Decision:
     """What the gate does (nothing yet) and what it WOULD do (recorded).
 
     SHADOW MODE (1.20 step a, D-62): the call is always permitted. The decision an egress
@@ -261,8 +262,9 @@ def _evaluate(purpose: Purpose, destination: str, agent: str = UNKNOWN_AGENT) ->
     enforcement, which this record makes visible rather than hidden.
     """
     from src.services import egress_policy
-    verdict = egress_policy.shadow_for(purpose, destination, agent,
-                                       local=_is_local_destination(destination))
+    if local is None:
+        local = _is_local_destination(destination)
+    verdict = egress_policy.shadow_for(purpose, destination, agent, local=local, level=level)
     return Decision(True, "shadow mode: no destination policy is enforced",
                     verdict.effect, verdict.reason, verdict.version)
 
@@ -272,7 +274,8 @@ def _record(*, purpose: Purpose, destination: str, method: str,
             payload_sha256: Optional[str] = None,
             payload_bytes: Optional[int] = None,
             agent: str = UNKNOWN_AGENT,
-            decision: Optional[Decision] = None) -> None:
+            decision: Optional[Decision] = None,
+            classification: Optional[list] = None) -> None:
     """One line per outbound call, whatever the outcome, to the log AND the table.
 
     A refused or failed call still disclosed a hostname and usually the shape of
@@ -300,6 +303,7 @@ def _record(*, purpose: Purpose, destination: str, method: str,
             shadow_decision=decision.shadow if decision else None,
             shadow_reason=decision.shadow_reason if decision else None,
             policy_version=decision.version if decision else None,
+            classification=list(classification or []),
         )
     except Exception:  # noqa: BLE001 - never fail a call over its own audit row
         logger.debug("egress event not queued", exc_info=True)
@@ -358,11 +362,17 @@ def request(
     )
 
     agent = agent or UNKNOWN_AGENT
-    decision = _evaluate(purpose, destination, agent)
+    # What the payload carries (1.20 c): classified only for EXTERNAL destinations, so the local
+    # model host never pays for the scan. The tags ride on every outcome branch's event row.
+    from src.services import egress_classify
+    local = _is_local_destination(destination)
+    body = kwargs.get("json") if kwargs.get("json") is not None else kwargs.get("data")
+    tags: list = [] if local else egress_classify.classify(url, body)
+    decision = _evaluate(purpose, destination, agent, local=local, level=egress_classify.level_of(tags))
     if not decision.permitted:
         _record(purpose=purpose, destination=destination, method=method,
                 outcome="denied", detail=decision.reason,
-                payload_sha256=_sha, payload_bytes=_bytes, agent=agent, decision=decision)
+                payload_sha256=_sha, payload_bytes=_bytes, agent=agent, decision=decision, classification=tags)
         return None
 
     current = url
@@ -373,7 +383,7 @@ def request(
         if not ok:
             _record(purpose=purpose, destination=urlsplit(current).hostname or "?",
                     method=method, outcome="refused", detail=reason,
-                    payload_sha256=_sha, payload_bytes=_bytes, agent=agent, decision=decision)
+                    payload_sha256=_sha, payload_bytes=_bytes, agent=agent, decision=decision, classification=tags)
             return None
 
         try:
@@ -383,7 +393,7 @@ def request(
         except Exception as exc:  # noqa: BLE001
             _record(purpose=purpose, destination=destination, method=method,
                     outcome="error", detail=type(exc).__name__,
-                    payload_sha256=_sha, payload_bytes=_bytes, agent=agent, decision=decision)
+                    payload_sha256=_sha, payload_bytes=_bytes, agent=agent, decision=decision, classification=tags)
             if raise_transport_errors:
                 raise
             return None
@@ -397,12 +407,12 @@ def request(
 
         _record(purpose=purpose, destination=destination, method=method,
                 outcome=f"http_{response.status_code}",
-                payload_sha256=_sha, payload_bytes=_bytes, agent=agent, decision=decision)
+                payload_sha256=_sha, payload_bytes=_bytes, agent=agent, decision=decision, classification=tags)
         return response
 
     _record(purpose=purpose, destination=destination, method=method,
             outcome="refused", detail=f"more than {_MAX_REDIRECTS} redirects",
-            payload_sha256=_sha, payload_bytes=_bytes, agent=agent, decision=decision)
+            payload_sha256=_sha, payload_bytes=_bytes, agent=agent, decision=decision, classification=tags)
     return None
 
 

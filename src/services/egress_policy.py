@@ -36,6 +36,7 @@ from src.services.agent_actions import record_action_or_fail
 from src.services.db import get_conn
 from src.services import egress
 from src.services.egress import Purpose
+from src.services import egress_classify
 
 logger = logging.getLogger(__name__)
 
@@ -57,9 +58,11 @@ SEED_RULES: Dict[str, List[Dict[str, Any]]] = {
         {"purpose": "fx_rates", "hosts": ["open.er-api.com"], "agents": ["*"],
          "note": "currency reference rates; no company text in the request"},
         {"purpose": "mailbox", "hosts": ["graph.microsoft.com", "login.microsoftonline.com"], "agents": ["*"],
-         "note": "the company's own Microsoft 365 mailbox"},
+         "max_classification": "confidential",
+         "note": "the company's own Microsoft 365 mailbox: addresses and message text belong there"},
         {"purpose": "supplier_research", "hosts": ["*"], "agents": ["*"],
-         "note": "public web for supplier research; the address guard still refuses private hosts"},
+         "max_classification": "public",
+         "note": "public web for supplier research: supplier names and generic words only; the address guard still refuses private hosts"},
     ],
     "deny": [
         {"purpose": "model_inference", "hosts": ["api.ollama.com"], "agents": ["*"],
@@ -97,6 +100,7 @@ def _host_matches(pattern: str, host: str) -> bool:
 
 def _rule_ok(rule: Any) -> bool:
     return (isinstance(rule, dict)
+            and (rule.get("max_classification") or "public") in egress_classify.LEVELS   # null reads as public
             and rule.get("purpose") in _PURPOSES
             and isinstance(rule.get("hosts"), list) and rule["hosts"]
             and all(isinstance(h, str) and h.strip() for h in rule["hosts"])
@@ -127,7 +131,9 @@ class Policy:
         # A malformed rule is skipped, never read as "allow everything".
         return [r for r in (got if isinstance(got, list) else []) if _rule_ok(r)]
 
-    def decide(self, purpose: Purpose, host: str, agent: str) -> Verdict:
+    def decide(self, purpose: Purpose, host: str, agent: str, level: str = "public") -> Verdict:
+        """``level`` is what the payload carries (egress_classify); an allow rule's
+        ``max_classification`` (default public) caps it. A deny rule needs no level."""
         for rule in self._rules("deny"):
             if _matches(rule, purpose, host, agent):
                 note = rule.get("note")
@@ -135,7 +141,12 @@ class Policy:
                                        + (f": {note}" if note else ""), self.label)
         for rule in self._rules("allow"):
             if _matches(rule, purpose, host, agent):
-                return Verdict("allow", f"allow rule for {purpose.value} to {host} (agent {agent})", self.label)
+                cap = rule.get("max_classification") or "public"
+                if egress_classify.exceeds(level, cap):
+                    return Verdict("deny", f"the payload is {level} but the allow rule for {purpose.value} "
+                                           f"to {host} permits up to {cap}", self.label)
+                return Verdict("allow", f"allow rule for {purpose.value} to {host} (agent {agent}, "
+                                        f"payload {level} within {cap})", self.label)
         return Verdict("deny", f"no rule allows {purpose.value} to {host} for agent {agent}", self.label)
 
 
@@ -169,10 +180,11 @@ def validate(rules: Any) -> Dict[str, List[Dict[str, Any]]]:
             if not _rule_ok(rule):
                 raise InvalidRules(
                     f"{kind}[{i}] must be {{purpose: one of {sorted(_PURPOSES)}, hosts: [non-empty list], "
-                    f"agents: [non-empty list]}}")
+                    f"agents: [non-empty list], max_classification?: one of {list(egress_classify.LEVELS)}}}")
         out[kind] = [{"purpose": r["purpose"],
                       "hosts": [_clean_host(h, f"{kind}[{i}].hosts") for h in r["hosts"]],
                       "agents": [a.strip() for a in r["agents"]],
+                      **({"max_classification": r["max_classification"]} if r.get("max_classification") else {}),
                       **({"note": r["note"]} if r.get("note") else {})} for i, r in enumerate(got)]
     return out
 
@@ -241,8 +253,8 @@ def _policy() -> Optional[Policy]:
         return loaded
 
 
-def shadow_for(purpose: Purpose, host: str, agent: str, *, local: bool) -> Verdict:
-    """What the gate WOULD decide for this call."""
+def shadow_for(purpose: Purpose, host: str, agent: str, *, local: bool, level: str = "public") -> Verdict:
+    """What the gate WOULD decide for this call; ``level`` is what its payload carries."""
     if local:
         return Verdict("allow", f"local destination {host}", DEFAULT_VERSION)
     try:
@@ -256,7 +268,7 @@ def shadow_for(purpose: Purpose, host: str, agent: str, *, local: bool) -> Verdi
         return Verdict("deny", f"no egress rule allows {purpose.value} to {host} for agent {agent} "
                                f"({DEFAULT_VERSION}: external destinations are denied until a rule allows them)",
                        DEFAULT_VERSION)
-    return policy.decide(purpose, host, agent)
+    return policy.decide(purpose, host, agent, level)
 
 
 # ---- administration --------------------------------------------------------------------------------

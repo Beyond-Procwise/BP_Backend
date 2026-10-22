@@ -13,7 +13,13 @@ SELECT 'EgressPolicy', 'security',
        'Which outside destinations each purpose and agent may call. Local destinations are always allowed. A deny rule beats an allow rule; anything unmatched is denied. In shadow mode the decision is recorded on every egress event and nothing is blocked.',
        $json${
   "policy_identifier": "egress",
-  "history": [{"version": 1, "changed_by": "migration:2026-10-22_egress_policy", "field": "rules"}],
+  "history": [
+    {
+      "version": 1,
+      "changed_by": "migration:2026-10-22_egress_policy",
+      "field": "rules"
+    }
+  ],
   "rules": {
     "allow": [
       {
@@ -35,7 +41,8 @@ SELECT 'EgressPolicy', 'security',
         "agents": [
           "*"
         ],
-        "note": "the company's own Microsoft 365 mailbox"
+        "max_classification": "confidential",
+        "note": "the company's own Microsoft 365 mailbox: addresses and message text belong there"
       },
       {
         "purpose": "supplier_research",
@@ -45,7 +52,8 @@ SELECT 'EgressPolicy', 'security',
         "agents": [
           "*"
         ],
-        "note": "public web for supplier research; the address guard still refuses private hosts"
+        "max_classification": "public",
+        "note": "public web for supplier research: supplier names and generic words only; the address guard still refuses private hosts"
       }
     ],
     "deny": [

@@ -31,7 +31,8 @@ WHAT THE ROWS DO NOT YET CARRY, and why the columns exist anyway
                   nothing judged it. agent / shadow_decision / shadow_reason say who
                   called and what an egress policy WOULD have decided; nothing is
                   enforced from them yet.
-  classification  always empty. There is no data-classification registry.
+  classification  the egress_classify tags found in the payload (1.20 c): email, amount,
+                  document_ref, long_text; empty when nothing was found or the call was local.
 
 Those three being empty is the honest current state of the controls, not an
 oversight in this module. A row that claimed a policy version it did not have
@@ -141,7 +142,8 @@ def record(*, purpose: str, destination: str, method: str, outcome: str,
            detail: str = "", payload_sha256: Optional[str] = None,
            payload_bytes: Optional[int] = None,
            agent: Optional[str] = None, shadow_decision: Optional[str] = None,
-           shadow_reason: Optional[str] = None, policy_version: Optional[str] = None) -> None:
+           shadow_reason: Optional[str] = None, policy_version: Optional[str] = None,
+           classification: Optional[list] = None) -> None:
     """Queue one egress event. Never blocks, never raises.
 
     Called from the request path, so it must cost close to nothing and must not
@@ -162,6 +164,7 @@ def record(*, purpose: str, destination: str, method: str, outcome: str,
         "shadow_decision": shadow_decision,
         "shadow_reason": shadow_reason,
         "policy_version": policy_version,
+        "classification": list(classification or []),
     }
     try:
         _queue.put_nowait(event)
@@ -227,7 +230,7 @@ def _row(event: dict) -> tuple:
         event["payload_sha256"], event["payload_bytes"],
         # policy_version: the SHADOW rule set that decided (1.20 a); NULL when nothing did
         event.get("policy_version"),
-        [],        # classification — no registry yet
+        list(event.get("classification") or []),   # egress_classify tags (1.20 c)
         event.get("agent"), event.get("shadow_decision"), event.get("shadow_reason"),
     )
 
