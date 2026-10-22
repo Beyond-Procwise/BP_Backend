@@ -80,6 +80,7 @@ def test_order_bottom_lists_the_smallest_cells_first_and_says_so():
     assert [c["supplier"] for c in out["cells"]] == ["Tiny", "Beta"]
     assert out["order"] == "bottom" and out["total"] == 1005.0 and out["cell_count"] == 3
     assert "Showing the bottom 2 of 3" in out["note"]
+    assert out["shown"] == {"cells": 2, "amount": 405.0, "invoices": 3, "share_pct": 40.3}
 
 
 def test_order_defaults_to_top_and_an_unknown_order_is_refused_by_name():

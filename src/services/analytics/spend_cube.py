@@ -130,6 +130,9 @@ def build(by: Any = None, start: Any = None, end: Any = None, currency: Any = No
     if order == "bottom":
         out_cells.sort(key=lambda c: (c["amount"] is None, c["amount"] or 0, str(c[by])))
     shown = out_cells[:limit]
+    shown_amount = sum((Decimal(str(c["amount"])) for c in shown if c["amount"] is not None), Decimal(0))
+    shown_summary = {"cells": len(shown), "amount": float(round(shown_amount, 2)), "invoices": sum(c["invoices"] for c in shown),
+                     "share_pct": None if total == 0 else float(round(shown_amount / total * 100, 1))}
     note = f"Invoiced amounts as stored, converted once per currency at {display.rate_note()}."
     if excluded:
         note += (f" No rate for {', '.join(excluded)}: those amounts are left out of the converted figures and "
@@ -139,4 +142,4 @@ def build(by: Any = None, start: Any = None, end: Any = None, currency: Any = No
     return {"found": True, "by": by, "currency": display.target,
             "period": {"label": period.label, "start": str(period.start), "end": str(period.end)},
             "total": float(round(total, 2)), "invoices": invoices, "cell_count": len(out_cells), "order": order,
-            "cells": shown, "excluded_currencies": excluded, "note": note}
+            "cells": shown, "shown": shown_summary, "excluded_currencies": excluded, "note": note}

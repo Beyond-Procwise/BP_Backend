@@ -107,4 +107,5 @@ def test_the_default_period_is_three_years_back_and_a_given_period_is_passed_thr
 
 def test_no_rows_is_an_honest_empty_result_not_an_error():
     out = SR.open_orders("S1", rows=_rows(orders=[]), today=TODAY)
-    assert out["found"] and out["orders"] == [] and out["summary"] == "Kestrel Supplies 8: no purchase orders in the period."
+    assert out["found"] and out["orders"] == [] and out["summary"].startswith("Kestrel Supplies 8: no purchase orders recorded in the period")
+    assert "not that none were placed" in out["note"]

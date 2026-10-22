@@ -183,14 +183,15 @@ def open_orders(supplier: Any = None, start: Any = None, end: Any = None, *, row
         t["invoiced"] = float(round(Decimal(str(t["invoiced"])) + invoiced_d, 2))
     open_count = sum(1 for o in orders if o["open_by_balance"])
     summary = (f"{sname}: {len(orders)} order(s) in the period, {open_count} with an invoiced balance still open."
-               if orders else f"{sname}: no purchase orders in the period.")
+               if orders else f"{sname}: no purchase orders recorded in the period (which says nothing about orders placed outside the records or the contract).")
     return {"found": True, "supplier_id": sid, "supplier": sname, "period": _period(period), "summary": summary,
             "orders": orders, "totals_by_currency": totals, "open_by_balance": open_count,
             "status_not_recorded": status_missing, "written": False,
             "note": "Balance = order total minus invoices on the order in the same currency, both as stored (the "
                     "tax basis of the two may differ: check before quoting a balance as money owed). Invoices in "
                     "another currency are counted, not summed. An order status or expected delivery date that is "
-                    f"'{NOT_RECORDED}' is absent from the records, not closed or on time."}
+                    f"'{NOT_RECORDED}' is absent from the records, not closed or on time. No orders in the period means none are "
+                    "recorded, not that none were placed and not that no agreement exists."}
 
 
 def invoices(supplier: Any = None, invoice_id: Any = None, start: Any = None, end: Any = None, *,

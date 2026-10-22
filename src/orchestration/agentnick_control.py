@@ -792,7 +792,8 @@ def _spend_tools() -> List[Tool]:
                 "Invoiced spend cut by ONE dimension for a period: by = supplier, month, currency, country, "
                 "region, buyer, payment_terms or status. Defaults to the fiscal year to date and GBP. Returns the "
                 "total, invoice count, and the top cells with share and as-billed amounts; the total equals the "
-                "dashboard. order=bottom lists the smallest cells first (the tail); top_n up to 50. "
+                "dashboard. order=bottom lists the smallest cells first (the tail); top_n up to 50; 'shown' sums the cells "
+                "returned (amount, invoices, share of total) so no adding up is needed. "
                 "There is no category or business unit. A currency with no rate is left out and "
                 "named; quote that. If spend cannot be read, say so rather than reporting zero."
             ),
