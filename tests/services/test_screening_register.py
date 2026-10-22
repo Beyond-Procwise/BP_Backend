@@ -33,6 +33,8 @@ def _rows(latest=(), signals=(), suppliers=SUPPLIERS):
             return list(suppliers)
         if "DISTINCT ON (subject)" in sql:
             return list(latest)
+        if "DISTINCT ON (check_type, subject)" in sql:
+            return []
         if "supplier_risk_signals" in sql:
             return list(signals)
         raise AssertionError(sql)
@@ -166,3 +168,40 @@ def test_every_check_type_has_a_tool_name():
     assert {v["tool"] for v in SR.CHECK_TYPES.values()} == {
         "screen_sanctions", "financial_health_score", "esg_rating_lookup", "forced_labour_screen",
         "conflict_minerals_check", "monitor_risk_events"}
+
+
+def test_summary_reads_every_check_type_in_one_call_and_lists_what_is_missing():
+    latest = [("sanctions", "supplier", "clear", None, None, None, "Dow Jones", "DJ-1", dt.date(2026, 10, 1), None, "carol", dt.datetime(2026, 10, 1, 9)),
+              ("sanctions", "director: J Smith", "flagged", None, None, None, "Dow Jones", "DJ-2", dt.date(2026, 9, 1), dt.date(2026, 10, 1), "carol", dt.datetime(2026, 9, 1, 9)),
+              ("financial_health", "supplier", "rated", "BBB", Decimal("0.02"), '{"pd_12m": 0.02}', "D&B", None, dt.date(2026, 6, 1), dt.date(2026, 12, 1), "carol", dt.datetime(2026, 6, 1, 9))]
+    seen = []
+
+    def rows(sql, params):
+        seen.append(sql)
+        if "bp_supplier s" in sql:
+            return SUPPLIERS
+        if "DISTINCT ON (check_type, subject)" in sql:
+            return latest
+        if "supplier_risk_signals" in sql:
+            return []
+        raise AssertionError(sql)
+    out = SR.summary("S1", rows=rows, today=TODAY)
+    assert out["found"] and out["performed_by_this_tool"] is False and len(seen) == 3
+    assert out["checks"]["sanctions"]["performed"] and out["checks"]["sanctions"]["flagged"] and out["checks"]["sanctions"]["expired"]
+    assert out["checks"]["sanctions"]["subjects"] == ["supplier", "director: J Smith"]
+    assert out["checks"]["financial_health"]["checks"][0]["rating"] == "BBB"
+    assert out["not_performed"] == ["esg_rating", "forced_labour", "conflict_minerals", "risk_event"]
+    assert out["flagged"] == ["sanctions"] and out["expired"] == ["sanctions"]
+    assert "not clear" in out["note"] and "No risk signals" in out["note"]
+
+
+def test_summary_with_nothing_recorded_is_not_clear_and_outage_is_told_apart():
+    out = SR.summary("acme", rows=_rows(), today=TODAY)
+    assert out["found"] and len(out["not_performed"]) == 6 and "NOT a clear result" in out["note"]
+
+    def down(sql, params):
+        raise store.StoreUnavailable("db down")
+    out = SR.summary("acme", rows=down)
+    assert out["found"] is False and out["available"] is False and "not a clear result" in out["note"]
+    out = SR.summary("acme", rows=_rows(suppliers=[("S1", "Acme Ltd"), ("S2", "Acme Logistics")]))
+    assert out["ambiguous"]

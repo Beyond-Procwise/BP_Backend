@@ -214,6 +214,67 @@ def lookup(supplier: Any = None, check_type: str = "", *,
     return out
 
 
+_LATEST_ALL_SQL = """
+    SELECT DISTINCT ON (check_type, subject) check_type, subject, result, rating, score, details, provider,
+           reference, checked_on, valid_until, recorded_by, created_date
+      FROM proc.bp_supplier_screening
+     WHERE supplier_id = %s
+     ORDER BY check_type, subject, checked_on DESC, screening_id DESC
+"""
+
+
+def summary(supplier: Any = None, *, rows: Optional[Callable[[str, Sequence[Any]], List[tuple]]] = None,
+            today: Optional[date] = None) -> Dict[str, Any]:
+    """Every check type for one supplier in one read: the latest record per subject, or 'not performed'.
+    Built because a skill that called the six single-check tools in turn spent its whole round budget
+    before it could answer (live, 2026-10-22). Performs no check; no record is never clear."""
+    today = today or date.today()
+    read = rows or store.rows
+    resolved, reply = supplier_resolve.resolve(supplier, rows=read)
+    if reply is not None:
+        if reply.get("available") is False:
+            reply["note"] += " No screening could be looked up, and that is not a clear result."
+        return reply
+    sid, sname = resolved
+    try:
+        latest = read(_LATEST_ALL_SQL, [sid])
+        signals = read(_SIGNALS_SQL, [sid, MAX_SIGNALS])
+    except store.StoreUnavailable:
+        return {"found": False, "available": False,
+                "note": "The screening register could not be read just now. This does not mean no check was "
+                        "recorded, and it is not a clear result."}
+    by_type: Dict[str, List[Dict[str, Any]]] = {}
+    for r in latest:
+        by_type.setdefault(r[0], []).append(_check_row(r[1:], today))
+    checks: Dict[str, Dict[str, Any]] = {}
+    for ct, meta in CHECK_TYPES.items():
+        entries = by_type.get(ct, [])[:MAX_SUBJECTS]
+        performed = [c for c in entries if c["result"] != "not_performed"]
+        checks[ct] = {"check": meta["label"], "tool": meta["tool"], "performed": bool(performed),
+                      "flagged": any(c["result"] == "flagged" for c in entries),
+                      "expired": any(c["expired"] for c in performed),
+                      "subjects": [c["subject"] for c in performed], "checks": entries}
+    not_performed = [ct for ct, c in checks.items() if not c["performed"]]
+    flagged = [ct for ct, c in checks.items() if c["flagged"]]
+    expired = [ct for ct, c in checks.items() if c["expired"]]
+    out: Dict[str, Any] = {"found": True, "supplier": {"supplier_id": sid, "name": sname}, "checks": checks,
+                           "not_performed": not_performed, "flagged": flagged, "expired": expired,
+                           "signals": [{"signal_type": t, "severity": _plain(sev), "source": src,
+                                        "payload": (json.loads(p) if isinstance(p, str) else p) or {},
+                                        "occurred_at": _plain(at)} for t, sev, src, p, at in signals],
+                           "performed_by_this_tool": False}
+    if len(not_performed) == len(CHECK_TYPES):
+        out["note"] = ("No check of any kind is recorded for this supplier. This is NOT a clear result: every check is "
+                       "'not performed' until compliance performs it and records it in the screening register.")
+    else:
+        out["note"] = ("Latest recorded result per check and screened subject, as the provider stated it, with dates. "
+                       "This tool performed no check. A check listed under not_performed is not clear; one under "
+                       "expired needs refreshing; one under flagged blocks until compliance resolves it.")
+    if not signals:
+        out["note"] += " No risk signals are recorded in the platform's own feed for this supplier."
+    return out
+
+
 def history(supplier_id: str, *, rows: Optional[Callable[[str, Sequence[Any]], List[tuple]]] = None,
             limit: int = 100, today: Optional[date] = None) -> List[Dict[str, Any]]:
     """Every recorded check for one supplier_id, newest first (for the screen; no resolution)."""

@@ -35,6 +35,7 @@ FIXED_TOOLS = {
     "build_spend_cube": ["by", "start", "end", "currency", "top_n"],
     "obligation_tracker": ["contract", "supplier", "horizon_days"],
     "calc_supplier_scorecard": ["supplier", "start", "end", "currency"],
+    "screening_summary": ["supplier"],
     "screen_sanctions": ["supplier"],
     "financial_health_score": ["supplier"],
     "esg_rating_lookup": ["supplier"],

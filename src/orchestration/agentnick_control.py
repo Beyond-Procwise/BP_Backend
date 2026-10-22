@@ -874,7 +874,22 @@ def _screening_tools() -> List[Tool]:
     def _handler(check_type: str):
         return lambda supplier=None: SR.lookup(supplier, check_type)
 
-    return [
+    summary = Tool(
+        name="screening_summary",
+        description=(
+            "Every compliance check recorded for one supplier in one call: sanctions, financial health, ESG, "
+            "forced labour, conflict minerals and risk-event review, each with the latest result per screened "
+            "subject, provider, date and validity, plus the platform's own risk signals; and the lists of checks "
+            "not performed, expired and flagged. Use this first for a due-diligence, award or shortlist "
+            "question; use a single-check tool only when one check is asked about. It performs no check; "
+            "'not performed' is never clear. If several suppliers match it asks which."
+        ),
+        parameters={"type": "object", "properties": {
+            "supplier": {"type": "string", "description": "supplier name or supplier_id"}},
+            "required": ["supplier"]},
+        handler=SR.summary,
+    )
+    return [summary] + [
         Tool(
             name=SR.CHECK_TYPES[ct]["tool"],
             description=what[ct] + common,
