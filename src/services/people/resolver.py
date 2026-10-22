@@ -34,6 +34,7 @@ DEFAULT_TARGETS = {
     "comment.mentioned": [],
     # a hand-off names its receiver (explicit); nobody else is told
     "approval.delegated": [],
+    "task.assigned": [],
 }
 FALLBACK_TARGETS = ["entity_owner"]
 

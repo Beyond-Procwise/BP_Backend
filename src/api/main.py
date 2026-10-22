@@ -54,6 +54,7 @@ from api.routers import permission_settings as permission_settings_router_mod
 from api.routers import egress_policy as egress_policy_router_mod
 from api.routers import people as people_router_mod
 from api.routers import messaging as messaging_router_mod
+from api.routers import work as work_router_mod
 from api.routers import people_graph as people_graph_router_mod
 from api.routers import deal_visibility as deal_visibility_router_mod
 from services import tenant_context as _tenant_context
@@ -643,6 +644,7 @@ _AUTHENTICATED_ROUTERS = [
     egress_policy_router_mod.router,
     people_router_mod.router,
     messaging_router_mod.router,
+    work_router_mod.router,
     people_graph_router_mod.router,
     deal_visibility_router_mod.router,
     promotion.router,
