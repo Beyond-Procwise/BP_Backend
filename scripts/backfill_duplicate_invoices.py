@@ -23,7 +23,9 @@ from __future__ import annotations
 import argparse
 
 from src.services.duplicate_invoice_detector import (
-    _already_raised, find_duplicates, load_invoices, payment_evidence, run_detector,
+    _already_raised, _conflict_already_raised, _conflict_note, _conflict_severity, find_duplicates,
+    find_reference_conflicts, load_invoices, load_reference_documents, payment_evidence,
+    run_detector,
 )
 from src.services.extraction.persistence import get_conn
 
@@ -65,6 +67,22 @@ def main() -> int:
             print(f"  score    : {d['score']:.1f}/100 ({d['band']})")
             print(f"  signals  : {_signals(d['link'])}")
             print(f"  recovery : {payment_evidence(d['later'])[1]}\n")
+
+        # One invoice number on two different documents (read from proc.bp_invoice_raw).
+        conflicts = find_reference_conflicts(load_reference_documents(cur))
+        fresh_conflicts = [c for c in conflicts if not _conflict_already_raised(cur, str(c["ref"]))]
+        print(f"{len(conflicts)} same-number conflict(s); {len(fresh_conflicts)} not already recorded\n")
+        for c in fresh_conflicts:
+            print(f"  invoice  : {c['ref']}   ({c['kind'].replace('_', ' ')}, {_conflict_severity(c)})")
+            for d in c["documents"]:
+                flag = "   <- would be flagged" if d is c["later"] else ""
+                print(f"  document : {d.get('source_file')} | {d.get('supplier_name')} | "
+                      f"{float(d['total_amount']):,.2f} {d.get('currency') or ''} | first read raw_id "
+                      f"{d.get('first_raw_id')}{flag}")
+            basis = ("the lower total" if c["difference"] is not None
+                     else "the later document's own total; the currencies differ")
+            print(f"  at risk  : {c['amount']:,.2f} {c['currency'] or ''} ({basis})")
+            print(f"  note     : {_conflict_note(c)}\n")
 
         if not args.apply:
             print("dry run — nothing written. Re-run with --apply once every pair above "

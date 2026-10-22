@@ -496,6 +496,261 @@ def _opportunity_record(dup: dict, rates: Optional[dict] = None) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# One invoice number on two different documents (backlog 1.16)
+# ---------------------------------------------------------------------------
+#
+# The engine above compares invoices of one supplier with an identical total, and skips two
+# documents that share an invoice number. _stg/_trgt keep ONE row per number, so a second
+# document with the same number overwrites the first and the detector never sees two. The
+# permanent record, proc.bp_invoice_raw, still holds both -- so the scan for this case reads
+# from there. Design: specs/2026-10-20-duplicate-invoice-same-reference-design.md.
+
+_COMPANY_SUFFIXES = frozenset({"ltd", "limited", "llp", "inc", "plc", "co", "llc", "corp",
+                               "corporation", "gmbh", "pvt", "private",
+                               # filler that proves nothing about identity
+                               "the", "and", "of", "group"})
+
+# Two names that are not identical but one contains the other ('Borcelle' / 'Borcelle Fauget')
+# are only taken for one supplier when their invoice dates are within this many days.
+_FUZZY_SUPPLIER_DAYS = 90
+
+# Column order of load_reference_documents' SELECT; the dicts it yields use these keys.
+_REF_DOC_COLUMNS = ("raw_id", "first_raw_id", "invoice_id", "source_file", "text_hash",
+                    "supplier_id", "supplier_name", "total_amount", "currency", "invoice_date",
+                    "po_id", "deal_id", "invoice_status", "invoice_paid_date")
+
+_REF_DOCS_SQL = """
+    WITH keyed AS (
+        SELECT r.*, lower(regexp_replace(r.invoice_id, '\\s+', '', 'g')) AS ref_key
+          FROM proc.bp_invoice_raw r WHERE r.invoice_id IS NOT NULL
+    ), multi AS (
+        SELECT ref_key FROM keyed GROUP BY ref_key HAVING COUNT(DISTINCT source_file) > 1
+    )
+    SELECT DISTINCT ON (k.ref_key, k.source_file)
+           k.raw_id,
+           MIN(k.raw_id) OVER (PARTITION BY k.ref_key, k.source_file) AS first_raw_id,
+           k.invoice_id, k.source_file,
+           md5(NULLIF(k.parser_snapshot->>'full_text', '')) AS text_hash,
+           k.supplier_id, k.supplier_name,
+           COALESCE(k.invoice_total_incl_tax, k.invoice_amount) AS total_amount,
+           k.currency, k.invoice_date, k.po_id, NULLIF(k.deal_id, '') AS deal_id,
+           NULL::text AS invoice_status,
+           k.invoice_paid_date
+      FROM keyed k JOIN multi m ON m.ref_key = k.ref_key
+     ORDER BY k.ref_key, k.source_file, k.raw_id DESC
+"""
+
+
+def load_reference_documents(cur) -> list[dict]:
+    """Every distinct DOCUMENT behind an invoice number that appears in more than one file.
+
+    A document is one source file: reading it again -- even with different extracted text
+    after a reader fix -- is the same document, and its latest read is the one used.
+    `raw_id` is that latest read; `first_raw_id` is when the file first arrived, which is what
+    orders documents. `text_hash` is NULL when no text was stored (99.7% of raw invoices today).
+    """
+    cur.execute(_REF_DOCS_SQL)
+    return [dict(zip(_REF_DOC_COLUMNS, row)) for row in cur.fetchall()]
+
+
+def _supplier_words(name: Any) -> frozenset:
+    return frozenset(w for w in _norm_supplier(name).split() if w not in _COMPANY_SUFFIXES)
+
+
+def supplier_family_match(a: Any, b: Any) -> bool:
+    """Do two supplier names read as one supplier? The smaller set of words (company
+    suffixes ignored) must sit entirely inside the larger: 'Borcelle' and 'Borcelle Fauget'
+    agree, 'Acme Ltd' and 'Borcelle Ltd' do not, and a name that is only a suffix says nothing."""
+    wa, wb = _supplier_words(a), _supplier_words(b)
+    if not wa or not wb:
+        return False
+    small, big = (wa, wb) if len(wa) <= len(wb) else (wb, wa)
+    return small <= big
+
+
+def _same_supplier(x: dict, y: dict) -> bool:
+    if x.get("supplier_id") and x.get("supplier_id") == y.get("supplier_id"):
+        return True
+    nx, ny = _norm_supplier(x.get("supplier_name")), _norm_supplier(y.get("supplier_name"))
+    if nx and nx == ny:
+        return True
+    if not supplier_family_match(nx, ny):
+        return False
+    # A contained name is weaker evidence than an equal one, and short numeric invoice numbers
+    # are reused across suppliers: demand the invoices be dated close together as well.
+    dx, dy = _as_date(x.get("invoice_date")), _as_date(y.get("invoice_date"))
+    return dx is None or dy is None or abs((dx - dy).days) <= _FUZZY_SUPPLIER_DAYS
+
+
+def _usable_total(doc: dict) -> Optional[float]:
+    """A total that can be compared: present and positive. A credit note or an unreadable
+    total is never compared -- absent data is not agreement."""
+    try:
+        total = float(doc.get("total_amount"))
+    except (TypeError, ValueError):
+        return None
+    return total if total > 0 else None
+
+
+def find_reference_conflicts(docs: list[dict]) -> list[dict]:
+    """Invoice numbers that sit on two or more different documents of one supplier.
+
+    One result per number: {'ref', 'kind', 'later', 'earlier', 'documents', 'totals',
+    'amount', 'currency', 'difference'}. `kind` is 'same_amount' (one bill sent twice as two
+    files) or 'different_amount' (conflicting versions of one number: only one can be right).
+    The document that ARRIVED later is flagged -- it is the one that should not be paid --
+    against the earliest. `amount` is the least that was overpaid if both were paid: the
+    lower total (the total itself when they agree). Totals in different currencies are
+    flagged but never subtracted; `amount` is then the later document's own total.
+    """
+    # One document per (reference, source file): the latest read speaks for it, the earliest
+    # read says when it arrived. Re-reading a file -- even with different extracted text -- is not
+    # a second document.
+    per_file: dict[tuple, dict] = {}
+    for doc in docs or []:
+        ref = _norm_ref(doc.get("invoice_id"))
+        if not ref or _usable_total(doc) is None:
+            continue
+        key = (ref, doc.get("source_file"))
+        seen = per_file.get(key)
+        if seen is None:
+            per_file[key] = dict(doc, first_raw_id=doc.get("first_raw_id") or doc.get("raw_id"))
+            continue
+        first = min(x for x in (seen.get("first_raw_id"), doc.get("first_raw_id"), doc.get("raw_id")) if x is not None)
+        newest = doc if (doc.get("raw_id") or 0) >= (seen.get("raw_id") or 0) else seen
+        per_file[key] = dict(newest, first_raw_id=first)
+
+    # Identical stored text under two file names is one document sent twice by hand, not a
+    # second bill: merge it (upload-time dedup already flags those). No text stored = no merge.
+    unique: dict[tuple, dict] = {}
+    for (ref, fname), doc in sorted(per_file.items(), key=lambda kv: (kv[1].get("first_raw_id") or 0)):
+        h = doc.get("text_hash")
+        twin = next((k for k, d in unique.items() if k[0] == ref and h and d.get("text_hash") == h), None)
+        if twin is None:
+            unique[(ref, fname)] = doc
+
+    by_ref: dict[str, list[dict]] = {}
+    for (ref, _f), doc in unique.items():
+        by_ref.setdefault(ref, []).append(doc)
+
+    out: list[dict] = []
+    for ref, members in by_ref.items():
+        # Cluster by supplier (transitively): 'Borcelle' ~ 'Borcelle Fauget'.
+        clusters: list[list[dict]] = []
+        for doc in sorted(members, key=lambda d: (d.get("first_raw_id") or 0, str(d.get("source_file")))):
+            home = [c for c in clusters if any(_same_supplier(doc, other) for other in c)]
+            if not home:
+                clusters.append([doc])
+                continue
+            home[0].append(doc)
+            for extra in home[1:]:                      # the new document bridges two clusters
+                home[0].extend(extra)
+                clusters.remove(extra)
+        for cluster in clusters:
+            if len(cluster) < 2:
+                continue
+            cluster.sort(key=lambda d: (d.get("first_raw_id") or 0, str(d.get("source_file"))))
+            earlier, later = cluster[0], cluster[-1]
+            totals = sorted(round(_usable_total(d), 2) for d in cluster)
+            currencies = {(d.get("currency") or "").upper() for d in cluster} - {""}
+            mixed = len(currencies) > 1
+            if mixed:
+                amount, currency, difference = round(_usable_total(later), 2), (later.get("currency") or "").upper() or None, None
+            else:
+                amount, currency = totals[0], (next(iter(currencies)) if currencies else None)
+                difference = round(totals[-1] - totals[0], 2)
+            kind = "same_amount" if (not mixed and difference == 0) else "different_amount"
+            out.append({"ref": str(earlier.get("invoice_id")), "kind": kind, "later": later,
+                        "earlier": earlier, "documents": cluster, "totals": totals,
+                        "amount": amount, "currency": currency, "difference": difference})
+    return sorted(out, key=lambda c: c["ref"])
+
+
+def _doc_label(doc: dict) -> str:
+    name = str(doc.get("source_file") or "unknown file").rsplit("/", 1)[-1]
+    total = _usable_total(doc)
+    cur = (doc.get("currency") or "").upper()
+    return f"{name} ({total:,.2f}{(' ' + cur) if cur else ''})"
+
+
+def _conflict_already_raised(cur, ref: str) -> bool:
+    """Has THIS kind of finding already been raised for the number -- including one a human
+    dismissed? Keyed on the finding's own wording so a pair-scan finding on the same invoice id
+    does not silently suppress it (they say different things)."""
+    cur.execute(
+        "SELECT 1 FROM proc.bp_extraction_discrepancy "
+        "WHERE doc_pk_candidate = %s AND issue_type = 'duplicate_invoice' "
+        "AND notes LIKE %s LIMIT 1",
+        (str(ref), f"invoice {ref} appears on %"),
+    )
+    return cur.fetchone() is not None
+
+
+def _conflict_note(c: dict) -> str:
+    docs = "; ".join(_doc_label(d) for d in c["documents"])
+    head = f"invoice {c['ref']} appears on {len(c['documents'])} different documents: {docs}"
+    if c["kind"] == "same_amount":
+        return f"{head} -- the same total billed twice. Hold payment of the later document until one is confirmed."
+    if c["difference"] is None:
+        return (f"{head} -- the totals are in different currencies, so only one can be the real bill. "
+                "Hold payment until the supplier confirms which.")
+    return (f"{head} -- the totals differ by {c['difference']:,.2f}, so only one can be the real bill. "
+            "Hold payment until the supplier confirms which; paying both overpays by at least "
+            f"{c['amount']:,.2f}.")
+
+
+def _conflict_severity(c: dict) -> str:
+    """Identical totals on one number is a double bill; differing totals need a person to
+    say which is right, so it is raised for confirmation rather than asserted."""
+    return "critical" if c["kind"] == "same_amount" else "warning"
+
+
+def _conflict_opportunity_record(c: dict, rates: Optional[dict] = None) -> dict:
+    """The conflict as something to ACT on: a Duplicate Invoice Recovery item whose impact is
+    the LOWER total (the least overpaid if both were paid, whichever bill was the true one)."""
+    later, earlier = c["later"], c["earlier"]
+    # A payment shown on EITHER document counts: if the earlier one was paid, the later is the
+    # one to stop, and the money already out is what to recover.
+    paid_doc = next((d for d in c["documents"] if d.get("invoice_paid_date")), later)
+    paid_known, phrase = payment_evidence(paid_doc)
+    currency = c["currency"]
+    impact_gbp, _from = _to_gbp(c["amount"], currency, rates)
+    money = (f"{impact_gbp:,.2f} GBP" if impact_gbp is not None
+             else f"{c['amount']:,.2f} {currency or 'unknown currency'}")
+    totals = c["totals"]
+    return {
+        "opportunity_id": f"dupref:{c['ref']}",
+        "opportunity_ref_id": f"same_reference_{c['ref']}",
+        "detector_type": DETECTOR_TYPE,
+        "supplier_id": later.get("supplier_id"),
+        "supplier_name": later.get("supplier_name"),
+        "item_id": str(c["ref"]),
+        "item_description": (
+            f"Recover {'up to ' if c['difference'] is None else ''}{money} — invoice {c['ref']} was issued on {len(c['documents'])} different "
+            f"documents ({'; '.join(_doc_label(d) for d in c['documents'])}); {phrase}"
+        ),
+        "financial_impact_gbp": impact_gbp,
+        "invoice_id": str(c["ref"]),
+        "po_id": later.get("po_id"),
+        "deal_id": later.get("deal_id"),
+        "detected_on": datetime.now(timezone.utc),
+        "source_records": [str(c["ref"]), str(earlier.get("source_file")), str(later.get("source_file"))]
+                          + ([str(later["po_id"])] if later.get("po_id") else []),
+        "calculation_details": {
+            "kind": c["kind"],
+            "duplicate_of": str(c["ref"]),
+            "lower_total": totals[0], "higher_total": totals[-1], "totals": totals,
+            "difference": c["difference"],
+            "amount_native": c["amount"], "currency": currency, "amount_gbp": impact_gbp,
+            "documents": [{"source_file": d.get("source_file"), "total": _usable_total(d),
+                           "first_raw_id": d.get("first_raw_id")} for d in c["documents"]],
+            "payment_confirmed": paid_known,
+            "payment_note": phrase,
+        },
+    }
+
+
 def run_detector(conn=None) -> int:
     """Find duplicates and record the ones not already recorded. Returns rows written.
 
@@ -543,7 +798,23 @@ def _run(conn) -> int:
             _note(dup),
         ))
         written += 1
+
+    # One number on two different documents (read from the permanent raw record).
+    conflicts = find_reference_conflicts(load_reference_documents(cur))
+    for c in conflicts:
+        doc_pk = str(c["ref"])
+        upsert_opportunity(cur, _conflict_opportunity_record(c, rates))
+        opportunities += 1
+        if _conflict_already_raised(cur, doc_pk):     # includes one a human dismissed
+            continue
+        later = c["later"]
+        cur.execute(_INSERT_SQL, (
+            later.get("raw_id"), later.get("source_file"), doc_pk, _conflict_severity(c),
+            f"{c['amount']:.2f}", f"+{c['amount']:.2f}", _conflict_note(c),
+        ))
+        written += 1
     conn.commit()
-    logger.info("duplicate-invoice detector: %s candidate(s), %s new finding(s), "
-                "%s recovery opportunit(y/ies)", len(dups), written, opportunities)
+    logger.info("duplicate-invoice detector: %s candidate(s) + %s same-number conflict(s), "
+                "%s new finding(s), %s recovery opportunit(y/ies)",
+                len(dups), len(conflicts), written, opportunities)
     return written
