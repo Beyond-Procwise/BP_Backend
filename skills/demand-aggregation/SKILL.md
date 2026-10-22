@@ -30,7 +30,7 @@ NOT AVAILABLE: landed_cost_calc. Use `tool:run_calculation` with `landed_cost.to
 NOT AVAILABLE: build_xlsx. Give the opportunity register as a table.
 NOT AVAILABLE: build_pptx. Give the wave plan as text.
 NOT AVAILABLE: render_chart. Describe the heatmap as a category by business unit table and the spread as a small table of low, reference and high prices.
-NOT AVAILABLE: embeddings. Cluster near-identical items by the attributes and descriptions the user gives, and list the matches with their evidence for review.
+Use `tool:similar_items` with an item description to find the near-identical descriptions on this organisation's PO, invoice and quote lines, with their line, supplier and buyer counts and price ranges as billed. Its name similarity is not identity: treat a match as the same item only at or above `config.thresholds.min_match_confidence` AND after the specification and unit of measure are confirmed (or the item codes are the same); list every match with its evidence for review.
 
 ## Workflow
 
