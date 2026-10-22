@@ -1,0 +1,27 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  max_headline_measures: 6    # measures on the summary page
+unavailable_tools:
+  - calc_kpis
+  - query_wms
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "supply chain board pack"
+    - "supply chain pack"
+    - "supply chain report for the board"
+    - "supply chain report to the"
+    - "executive supply chain"
+    - "supply chain executive summary"
+    - "leadership update on the supply chain"
+    - "operations review pack"
+    - "supply chain review for leadership"
+    - "supply chain summary for"
+    - "exec pack on supply"
+    - "board update on supply"
+  support:                       # 1 point each
+    - "board"
+    - "executive"
+    - "leadership"
+    - "supply chain"
+    - "pack"

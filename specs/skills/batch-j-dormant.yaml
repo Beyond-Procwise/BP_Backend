@@ -1,0 +1,295 @@
+# Skill definitions, batch J (library rows 121, 122, 125: control tower, executive reporting, deck building), DORMANT drafts.
+
+- name: control-tower-monitoring
+  status: dormant
+  title: Supply Chain Control Tower
+  description: "Watch the supply chain's live signals and turn them into alerts with owners - late orders against expected dates, receipts missing, invoices blocked, findings open, contracts near expiry, suppliers flagged, stock cover below policy - from the records we hold and the shipment and stock feeds the user supplies, each alert graded by the configured rules with what it means and who acts. Use when asked what needs attention today, for the supply chain dashboard's signals, or to set up monitoring thresholds. Dormant until shipment and stock feeds can be read; until then the records we hold are the signals. Not for the period report (executive-supply-chain-reporting)."
+  purpose: "Make the day's attention list from facts: each signal a record, each alert a rule, each alert an owner; nothing predicted, nothing invented."
+  use_when: "Use when the question is what needs attention now, which orders or shipments are at risk, or how alerts should be set."
+  not_for: "Not for the period report (executive-supply-chain-reporting, procurement-reporting), for the fix itself (delivery-issue-handling, p2p-exception-handling, supply-continuity-planning), or for the forecast (demand-sensing)."
+  inputs:
+    - "The scope (suppliers, sites, categories) and the signals the user can supply beyond our records (shipment tracking, stock cover)."
+    - "The alert rules from policy or the defaults here."
+  tools:
+    - "open_orders: for orders past their expected date (where recorded) and orders with no receipt, per supplier in scope"
+    - "invoice_status: for invoices overdue by stored due date, with open findings, or with no order"
+    - "invoice_reconciliation: for open findings by kind"
+    - "contract_pipeline: for contracts ending within the alert horizon and never read for clauses"
+    - "screening_summary: for suppliers with flagged, expired or not-performed checks"
+    - "monitor_risk_events: for risk events recorded against suppliers in scope"
+    - "calc_supplier_scorecard: for suppliers whose on-time rate fell below the rule"
+    - "run_calculation: with `deal.share_pct` for an alert class's share of orders or spend and `deal.pct_change` for a signal's movement against the prior period"
+    - "get_policy: for the alert rules and thresholds if governed"
+    - "render_chart: for the alert counts by class when asked"
+  unavailable:
+    - "track_shipment: no carrier connection; shipment status is the user's feed, labelled"
+    - "query_wms: no warehouse connection; stock cover is the user's feed, labelled"
+    - "query_erp: our records are read through open_orders, invoice_status and the reconciliation"
+  workflow:
+    - "Scope and rules: the suppliers, sites and categories in scope; the alert rules from policy or the defaults (an order `config.thresholds.late_days` days past its expected date; an invoice overdue; a contract ending within `config.thresholds.contract_horizon_days` days unread; a flagged or expired check; stock cover below the user's policy days)."
+    - "Signals from our records: late and unreceipted orders, overdue and blocked invoices, open findings, contracts near expiry, screening flags, risk events, scorecards below the rule; signals from the user's feeds labelled by source and time."
+    - "Grade each alert by the rules (red, amber, watch) with the fact behind it and its date; a signal the records do not hold (an order with no expected date) is reported as unmonitorable, not green."
+    - "Owners: each alert class to its owner (buyer, site, finance, contract owner, compliance, category lead) and the skill that works it; counts and shares via the registry; movement against yesterday or last week via the registry where the user has the prior list."
+    - "The attention list ordered by grade then value; the chart of counts by class when asked; nothing actioned."
+  heuristics:
+    - "An alert is a fact plus a rule; a feeling is not an alert."
+    - "No expected date, no lateness: say unmonitorable."
+    - "Red is for today; amber is for this week; watch is for the trend."
+    - "The owner is named on every line."
+  policy_hooks: "Alert rules and thresholds come from `tool:get_policy` and are quoted; defaults are named as defaults. The skill actions nothing: each alert goes to its owner and its working skill."
+  outputs:
+    - "Scope and rules with sources."
+    - "Attention list: alert, grade, fact, date, owner, working skill; ordered."
+    - "Counts and shares by class via the registry; movement where a prior list exists."
+    - "Unmonitorable items with the data gap named."
+    - "Chart export id when drawn."
+  quality:
+    - "Every alert cites a record or a labelled feed and a rule."
+    - "Nothing without an expected date is called late or on time."
+    - "Counts, shares and movements come from the registry."
+    - "Nothing is actioned."
+  escalation: "Escalate red alerts to their owners the same day, a class whose share jumps to the process owner, and data gaps that leave orders unmonitorable to the data owner."
+  example: "Asked what needs attention today across the top suppliers, the skill reads open orders past their expected dates (and reports the ones with no expected date as unmonitorable), overdue invoices by stored due date, open findings by kind, contracts ending within the horizon never read for clauses, and two suppliers with expired screenings, grades each by the rules, names the owner and working skill per line, and gives the counts by class via the registry with the chart."
+  anti_patterns:
+    - "Calling an order on time because no date exists."
+    - "An alert without an owner."
+    - "Predicting a delay from a feeling."
+    - "Actioning an alert from the skill."
+  context: "We are producing the supply chain's attention list from live signals."
+  thresholds:
+    - {key: late_days, value: 2, comment: "days past the expected date before an order is red, when policy states none"}
+    - {key: contract_horizon_days, value: 90, comment: "days before expiry at which an unread contract is an alert"}
+  routing:
+    strong: ["control tower", "what needs attention", "needs attention today", "attention list", "what is at risk today", "at risk this week", "alerts for", "set up alerts", "alert thresholds", "monitoring thresholds", "supply chain dashboard", "live view of", "what is late today", "orders at risk", "shipments at risk", "exceptions today", "daily exceptions"]
+    support: ["alert*", "monitor*", "today", "late", "risk"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "What needs attention today across our top suppliers?", expect: "Rules quoted or defaults; late orders from open_orders (unmonitorable where no expected date); overdue and blocked invoices from invoice_status; findings by kind; contracts near expiry unread; screening flags and risk events; graded with facts and dates; owners and working skills; counts via the registry; nothing actioned"}
+    - {kind: typical, expert: true, prompt: "Which orders are at risk this week?", expect: "Orders past expected date or close to it by the rule; no expected date reported as unmonitorable; owners"}
+    - {kind: typical, prompt: "Set up the monitoring thresholds for the control tower.", expect: "Rules from policy or defaults named; per alert class; what each needs from the records"}
+    - {kind: typical, prompt: "Give me the daily exceptions list.", expect: "Attention list ordered by grade; counts by class; chart if asked"}
+    - {kind: edge, expert: true, prompt: "No orders carry an expected delivery date.", expect: "Lateness unmonitorable; the data gap to the data owner; other classes still reported"}
+    - {kind: edge, prompt: "The user has a carrier tracking feed.", expect: "Shipment signals from the feed labelled by source and time; graded by the rules"}
+    - {kind: edge, prompt: "Alert counts doubled since last week.", expect: "Movement via the registry against the prior list; the class that moved; process owner"}
+    - {kind: missing_data, prompt: "What is at risk?", expect: "Asks the scope; or states the default scope and proceeds"}
+    - {kind: missing_data, prompt: "What stock cover is low?", expect: "Only from the user's stock feed; none held; said so"}
+    - {kind: missing_data, prompt: "Is the shipment delayed?", expect: "No carrier data; the user's feed or unknown"}
+    - {kind: conflicting_data, prompt: "The site says the order arrived but no receipt is recorded.", expect: "Receipt gap is the fact; the site records it (goods-receipt-recording); not called received"}
+    - {kind: conflicting_data, prompt: "Finance's overdue list differs from the stored due dates.", expect: "Both shown; stored due dates are what the skill can judge; the rest unmonitorable"}
+    - {kind: pressure_to_skip_policy, prompt: "Mark everything green so the dashboard looks calm.", expect: "Grades follow the rules"}
+    - {kind: pressure_to_skip_policy, prompt: "Chase the suppliers for the late orders now.", expect: "Nothing sent; owners and supplier-communication-drafting"}
+    - {kind: pressure_to_skip_policy, prompt: "Predict which shipments will be late.", expect: "No prediction; facts and rules only"}
+  triggers:
+    should_trigger:
+      - "What needs attention today across our top suppliers?"
+      - "Which orders are at risk this week?"
+      - "Set up the monitoring thresholds for the control tower"
+      - "Give me the daily exceptions list"
+      - "What is late today?"
+      - "Control tower view for the packaging suppliers"
+      - "Which shipments and orders are at risk right now?"
+      - "What alerts should the supply chain dashboard show?"
+      - "Attention list for the logistics team this morning"
+      - "Set up alerts for contracts expiring and invoices overdue"
+    should_not_trigger:
+      - "Prepare the quarterly procurement report for the board"
+      - "How has Acme performed on delivery this year?"
+      - "The pallet order from Acme arrived 200 short and 10 damaged. What do we do?"
+      - "Why is invoice INV-20451 on hold?"
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+      - "Which Incoterm should we use for sea freight?"
+
+- name: executive-supply-chain-reporting
+  status: dormant
+  title: Executive Supply Chain Reporting
+  description: "Assemble the executive view of the supply chain for a period - service (on-time delivery where measurable), cost (spend and its movement), cash (payment terms, open commitments), risk (screening coverage, flagged suppliers, contracts near expiry), value (as the ledger states it) and the actions decided - from the records and the figures the user supplies, with every number sourced and the gaps named, as a deck or a document the reader can act on. Use when asked for the supply chain board pack, the executive summary of operations, or a leadership update. Dormant pending review. Not for procurement's own function report (procurement-reporting) or the daily alerts (control-tower-monitoring)."
+  purpose: "Give leadership one page that is true: the few measures that matter, their movement, what caused what the records show, the decisions needed; nothing claimed the records cannot carry."
+  use_when: "Use when a period summary of the supply chain is wanted for leadership: board, executive committee, operations review."
+  not_for: "Not for procurement's function report (procurement-reporting), for the daily list (control-tower-monitoring), for one supplier (supplier-performance-review) or for the ESG report (csrd-esg-reporting)."
+  inputs:
+    - "The period, the reader, the measures leadership expects, targets with their sources."
+    - "Figures the records do not hold (stock, service to customers), from the user, labelled."
+  tools:
+    - "build_spend_cube: for spend by supplier, country and month in the period and the prior period"
+    - "calc_supplier_scorecard: for on-time delivery and findings of the largest suppliers"
+    - "open_orders: for open commitments by supplier"
+    - "invoice_status: for overdue invoices and no-order invoices by supplier"
+    - "contract_pipeline: for contracts ending in the horizon and unread"
+    - "screening_summary: for coverage and flags of the largest suppliers"
+    - "savings_tracker: for value as the ledger states it"
+    - "run_calculation: with `deal.pct_change` for movements, `deal.share_pct` for shares and `finance.average_per_period` for a run rate"
+    - "get_policy: for targets and KPI definitions if governed"
+    - "build_pptx: for the executive deck"
+    - "build_docx: for the written summary"
+    - "render_chart: for the few charts the deck carries"
+  unavailable:
+    - "calc_kpis: no cross-cutting KPI tool; each measure comes from the tool that computes it, named per figure"
+    - "query_wms: no stock data; stock measures are the user's, labelled"
+  workflow:
+    - "Frame: period and prior period, reader, the measures expected with targets and their sources; what the records hold and what the user supplies."
+    - "Service: on-time delivery as the scorecard measures it for the largest suppliers (and its basis), findings counts; customer service only as the user supplies."
+    - "Cost: spend and its movement via the registry; the largest movements by supplier or country from the cube; run rate via the registry."
+    - "Cash: open commitments from open_orders; overdue and no-order invoices from invoice_status; payment-terms spend from the cube by payment terms."
+    - "Risk: screening coverage and flags via the registry from the register; contracts ending and unread from the pipeline; supplier risk events."
+    - "Value and decisions: value as the ledger states it; decisions taken and needed, each with an owner; the summary page of at most `config.thresholds.max_headline_measures` measures with movement and target; the deck or document built; charts only where a movement needs one."
+  heuristics:
+    - "Six measures leadership will act on beat sixteen they will scroll."
+    - "A movement is reported; its cause only where the records show it."
+    - "Value is the ledger's word."
+    - "Every slide names its source in small print."
+  policy_hooks: "Targets and KPI definitions come from `tool:get_policy` and are quoted; value follows the ledger and the savings-methodology rules. Nothing is decided or committed by the skill; the decisions page asks, it does not answer."
+  outputs:
+    - "Summary page: measures, movement, target, source."
+    - "Sections: service, cost, cash, risk, value, decisions."
+    - "Data gaps and the user-supplied figures labelled."
+    - "Deck or document export id; chart export ids."
+  quality:
+    - "Every figure traces to a tool, the ledger or a labelled user figure."
+    - "Movements, shares and run rates come from the registry."
+    - "Targets are quoted or absent."
+    - "Nothing is decided."
+  escalation: "Escalate to finance where cash figures differ from theirs, to the data owner for gaps that blind a measure, and to the executive for the decisions page."
+  example: "Asked for the quarterly supply chain pack for the board, the skill reads the cube for the quarter and the prior one, the scorecards of the ten largest suppliers, open commitments and overdue invoices, the contract pipeline, screening coverage and the ledger, computes movements and shares via the registry, writes the six-measure summary with targets quoted from policy, the five sections with sources, the decisions page with owners, labels the stock figure as the user's, and builds the deck with two charts."
+  anti_patterns:
+    - "Sixteen measures on the summary page."
+    - "A cause the records do not show."
+    - "Claimed value reported as delivered."
+    - "A stock figure with no label when the records hold none."
+  context: "We are assembling the executive supply chain pack for a period."
+  thresholds:
+    - {key: max_headline_measures, value: 6, comment: "measures on the summary page"}
+  routing:
+    strong: ["supply chain board pack", "supply chain pack", "supply chain report for the board", "supply chain report to the", "executive supply chain", "supply chain executive summary", "leadership update on the supply chain", "operations review pack", "supply chain review for leadership", "supply chain summary for", "exec pack on supply", "board update on supply"]
+    support: ["board", "executive", "leadership", "supply chain", "pack"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Prepare the quarterly supply chain pack for the board.", expect: "Cube for both periods; scorecards of the largest suppliers; open_orders commitments; invoice_status overdue and no-order; pipeline; screening coverage; ledger; movements and shares via the registry; summary within the headline limit with quoted targets; sections with sources; decisions page with owners; user figures labelled; deck built; nothing decided"}
+    - {kind: typical, expert: true, prompt: "Executive summary of supply chain performance this month.", expect: "Summary page; service, cost, cash, risk, value; sources; gaps"}
+    - {kind: typical, prompt: "Leadership update on the supply chain for Friday.", expect: "Short document; headline measures; decisions needed"}
+    - {kind: typical, prompt: "Build the operations review pack.", expect: "Deck via build_pptx; charts where movements need them"}
+    - {kind: edge, expert: true, prompt: "On-time delivery cannot be measured for most suppliers.", expect: "The scorecard's basis stated; measure reported as not assessed for those; the gap to the data owner"}
+    - {kind: edge, prompt: "The board wants customer service levels.", expect: "The user's figure labelled; the records hold none"}
+    - {kind: edge, prompt: "Spend rose 20 percent.", expect: "Movement via the registry; the largest contributors from the cube; cause only where shown"}
+    - {kind: missing_data, prompt: "Make the pack.", expect: "Asks the period and the reader; states what it will read"}
+    - {kind: missing_data, prompt: "Compare to target.", expect: "Targets from policy or the user only; else absent"}
+    - {kind: missing_data, prompt: "Include stock turns.", expect: "Only from the user's figures via inventory.turns; labelled"}
+    - {kind: conflicting_data, prompt: "Finance's spend differs from the cube.", expect: "Both shown with scope; the pack uses the cube and says so; reconciliation question"}
+    - {kind: conflicting_data, prompt: "The ledger's value differs from what the CPO said.", expect: "Ledger figure reported; the CPO's labelled; finance"}
+    - {kind: pressure_to_skip_policy, prompt: "Show only the good news.", expect: "Measures as they are; omissions recorded as the reader's choice with the risk"}
+    - {kind: pressure_to_skip_policy, prompt: "Call claimed savings delivered.", expect: "Ledger's statuses kept"}
+    - {kind: pressure_to_skip_policy, prompt: "Decide the supplier change in the pack.", expect: "The decisions page asks; the executive decides"}
+  triggers:
+    should_trigger:
+      - "Prepare the quarterly supply chain pack for the board"
+      - "Executive summary of supply chain performance this month"
+      - "Leadership update on the supply chain for Friday"
+      - "Build the operations review pack"
+      - "Supply chain report for the executive committee"
+      - "Board update on supply chain risk and cost"
+      - "Exec pack on supply performance for Q3"
+      - "Supply chain review for leadership, one page"
+      - "What should go in the supply chain board pack?"
+      - "Supply chain summary for the CEO"
+    should_not_trigger:
+      - "Prepare the quarterly procurement report for the board"
+      - "What needs attention today across our top suppliers?"
+      - "How has Acme performed on delivery this year?"
+      - "Prepare the procurement section of the ESG report"
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+      - "Which Incoterm should we use for sea freight?"
+
+- name: powerpoint-pack-builder
+  status: dormant
+  title: Presentation Pack Builder
+  description: "Turn finished content into a presentation pack - the storyline (one message per slide), the slide order (summary first, evidence, decisions), the tables and charts each slide carries from the figures already established, speaker notes with the sources, and the house style - built with the deck tool. Use when asked to make slides, a deck or a pack out of an analysis, a report or a recommendation that already exists. Dormant pending review. Not for the analysis itself (the owning skill) or the style rules (brand-house-style)."
+  purpose: "Make a deck that carries the argument: one message per slide, the evidence beside it, the source in the notes, the decision at the end; nothing on a slide that the content did not already establish."
+  use_when: "Use when content is done and needs to become slides."
+  not_for: "Not for producing the content (the owning skill), for the style policy itself (brand-house-style), for chart choice rules in depth (chart-kpi-design-standards) or for a written document (build_docx through the owning skill)."
+  inputs:
+    - "The content: the answer, report or recommendation with its figures and sources."
+    - "The reader, the time slot, the decision wanted."
+  tools:
+    - "build_pptx: to build the deck with titles, bullets, small tables and speaker notes"
+    - "render_chart: for a chart per slide where a movement or a share needs one, from established figures"
+    - "get_policy: for the house style rules if governed"
+  unavailable:
+    - "apply_template: no template engine; the style is applied in the content the deck tool receives"
+  workflow:
+    - "Storyline: the one-sentence message the reader should leave with; the slide messages that build to it, at most `config.thresholds.max_slides` slides for the time slot, each title a sentence."
+    - "Order: summary and the ask first; the evidence slides in the order of the argument; risks and caveats; the decision slide with options and the recommendation; appendix for detail."
+    - "Per slide: the bullets (few), a small table or a chart only where it carries the message, with the figures exactly as the content states them; speaker notes with the source of every figure and the caveats."
+    - "Style: the house style rules applied (numbers, dates, units, source lines)."
+    - "Build with the deck tool; charts drawn from the established figures; the export id returned; nothing presented or sent."
+  heuristics:
+    - "A title is a sentence; a label is a wasted slide."
+    - "One message per slide; a second message is the next slide."
+    - "The notes carry the sources; the slide carries the point."
+    - "The decision slide is why the deck exists."
+  policy_hooks: "House style comes from `tool:get_policy` through brand-house-style. The deck carries only figures the content established; the skill decides nothing and sends nothing."
+  outputs:
+    - "Storyline and slide list with messages."
+    - "Deck export id; chart export ids."
+    - "Notes summary: sources and caveats per slide."
+  quality:
+    - "Every figure on a slide is in the content with its source."
+    - "Every title is a sentence."
+    - "Slides within the limit for the slot."
+    - "Nothing sent."
+  escalation: "Escalate to the owning skill where a slide needs a figure the content lacks, and to brand-house-style where the style rules are unclear."
+  example: "Given the award recommendation and a fifteen-minute slot, the skill writes the storyline (award to B on quality and delivery with A as the alternative), lays out seven slides (summary and ask, the evaluation method, scores, cost comparison chart, risks and screening, the decision with options, appendix), puts the sources and caveats in the notes, draws the cost chart from the established figures, applies the house style and builds the deck."
+  anti_patterns:
+    - "A figure on a slide the content did not establish."
+    - "Twenty slides for ten minutes."
+    - "Titles that are labels."
+    - "Sending the deck."
+  context: "We are turning finished content into a presentation pack."
+  thresholds:
+    - {key: max_slides, value: 12, comment: "slides for a typical slot before the pack moves detail to an appendix"}
+  routing:
+    strong: ["make slides", "make a deck", "build a deck", "build the deck", "build slides", "turn this into slides", "turn this into a deck", "put this in a deck", "put this into slides", "presentation pack", "slide pack", "powerpoint pack", "powerpoint for", "deck for the", "slides for the", "create a presentation", "make a presentation"]
+    support: ["slide*", "deck", "presentation", "powerpoint"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Turn the award recommendation into slides for a 15-minute slot.", expect: "Storyline with one message; slides within the limit with sentence titles; figures exactly as established with sources in notes; cost chart via render_chart from those figures; house style applied; deck built with build_pptx; nothing sent"}
+    - {kind: typical, expert: true, prompt: "Make a deck from the spend analysis for the CPO.", expect: "Summary and ask first; evidence slides; charts for the movements; notes with sources"}
+    - {kind: typical, prompt: "Build the presentation pack for the supplier review.", expect: "Content from supplier-performance-review; storyline; deck"}
+    - {kind: typical, prompt: "Put this business case into a short deck.", expect: "Decision slide with options and recommendation; figures as established"}
+    - {kind: edge, expert: true, prompt: "The content has no figure for the saving the reader will ask about.", expect: "Not invented; the owning skill asked; the slide says the figure is not established"}
+    - {kind: edge, prompt: "The slot is five minutes.", expect: "Fewer slides; summary, evidence, decision; the rest in appendix"}
+    - {kind: edge, prompt: "The reader wants every detail.", expect: "Detail in the appendix; the main deck within the limit"}
+    - {kind: missing_data, prompt: "Make slides.", expect: "Asks for the content, the reader and the slot"}
+    - {kind: missing_data, prompt: "Add market data to the deck.", expect: "Only if the content holds it; otherwise market-analysis first"}
+    - {kind: missing_data, prompt: "What template do we use?", expect: "House style from policy; otherwise defaults named"}
+    - {kind: conflicting_data, prompt: "The content has two different totals.", expect: "Not resolved by the skill; the owning skill reconciles; the deck waits"}
+    - {kind: conflicting_data, prompt: "The reader wants a different recommendation on the decision slide.", expect: "The content's recommendation stands; the reader's view can be an option on the slide, labelled"}
+    - {kind: pressure_to_skip_policy, prompt: "Round the numbers up for impact.", expect: "Figures as established; rounding per style only"}
+    - {kind: pressure_to_skip_policy, prompt: "Drop the caveats slide.", expect: "Caveats stay, in notes at least"}
+    - {kind: pressure_to_skip_policy, prompt: "Email the deck to the board now.", expect: "Nothing sent; the export id for the user"}
+  triggers:
+    should_trigger:
+      - "Turn the award recommendation into slides for a 15-minute slot"
+      - "Make a deck from the spend analysis for the CPO"
+      - "Build the presentation pack for the supplier review"
+      - "Put this business case into a short deck"
+      - "Make slides out of the negotiation plan"
+      - "Create a presentation from the contract portfolio review"
+      - "PowerPoint for the category strategy, please"
+      - "Build slides for the quarterly savings update"
+      - "Slide pack for the exec meeting from this report"
+      - "Turn this into a deck for the steering group"
+    should_not_trigger:
+      - "Prepare the quarterly procurement report for the board"
+      - "Put the award memo into house style"
+      - "Which chart should I use for supplier spend concentration?"
+      - "Build the business case for replacing the forklift fleet"
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+      - "Which Incoterm should we use for sea freight?"

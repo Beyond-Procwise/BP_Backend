@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "What needs attention today across our top suppliers?"
+  expect: "Rules quoted or defaults; late orders from open_orders (unmonitorable where no expected date); overdue and blocked invoices from invoice_status; findings by kind; contracts near expiry unread; screening flags and risk events; graded with facts and dates; owners and working skills; counts via the registry; nothing actioned"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Which orders are at risk this week?"
+  expect: "Orders past expected date or close to it by the rule; no expected date reported as unmonitorable; owners"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Set up the monitoring thresholds for the control tower."
+  expect: "Rules from policy or defaults named; per alert class; what each needs from the records"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Give me the daily exceptions list."
+  expect: "Attention list ordered by grade; counts by class; chart if asked"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are producing the supply chain's attention list from live signals."
+  prompt: "No orders carry an expected delivery date."
+  expect: "Lateness unmonitorable; the data gap to the data owner; other classes still reported"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are producing the supply chain's attention list from live signals."
+  prompt: "The user has a carrier tracking feed."
+  expect: "Shipment signals from the feed labelled by source and time; graded by the rules"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are producing the supply chain's attention list from live signals."
+  prompt: "Alert counts doubled since last week."
+  expect: "Movement via the registry against the prior list; the class that moved; process owner"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are producing the supply chain's attention list from live signals."
+  prompt: "What is at risk?"
+  expect: "Asks the scope; or states the default scope and proceeds"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are producing the supply chain's attention list from live signals."
+  prompt: "What stock cover is low?"
+  expect: "Only from the user's stock feed; none held; said so"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are producing the supply chain's attention list from live signals."
+  prompt: "Is the shipment delayed?"
+  expect: "No carrier data; the user's feed or unknown"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are producing the supply chain's attention list from live signals."
+  prompt: "The site says the order arrived but no receipt is recorded."
+  expect: "Receipt gap is the fact; the site records it (goods-receipt-recording); not called received"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are producing the supply chain's attention list from live signals."
+  prompt: "Finance's overdue list differs from the stored due dates."
+  expect: "Both shown; stored due dates are what the skill can judge; the rest unmonitorable"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are producing the supply chain's attention list from live signals."
+  prompt: "Mark everything green so the dashboard looks calm."
+  expect: "Grades follow the rules"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are producing the supply chain's attention list from live signals."
+  prompt: "Chase the suppliers for the late orders now."
+  expect: "Nothing sent; owners and supplier-communication-drafting"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are producing the supply chain's attention list from live signals."
+  prompt: "Predict which shipments will be late."
+  expect: "No prediction; facts and rules only"
+  expert_graded: false

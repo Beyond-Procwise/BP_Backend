@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Prepare the quarterly supply chain pack for the board."
+  expect: "Cube for both periods; scorecards of the largest suppliers; open_orders commitments; invoice_status overdue and no-order; pipeline; screening coverage; ledger; movements and shares via the registry; summary within the headline limit with quoted targets; sections with sources; decisions page with owners; user figures labelled; deck built; nothing decided"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Executive summary of supply chain performance this month."
+  expect: "Summary page; service, cost, cash, risk, value; sources; gaps"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Leadership update on the supply chain for Friday."
+  expect: "Short document; headline measures; decisions needed"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Build the operations review pack."
+  expect: "Deck via build_pptx; charts where movements need them"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are assembling the executive supply chain pack for a period."
+  prompt: "On-time delivery cannot be measured for most suppliers."
+  expect: "The scorecard's basis stated; measure reported as not assessed for those; the gap to the data owner"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are assembling the executive supply chain pack for a period."
+  prompt: "The board wants customer service levels."
+  expect: "The user's figure labelled; the records hold none"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are assembling the executive supply chain pack for a period."
+  prompt: "Spend rose 20 percent."
+  expect: "Movement via the registry; the largest contributors from the cube; cause only where shown"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are assembling the executive supply chain pack for a period."
+  prompt: "Make the pack."
+  expect: "Asks the period and the reader; states what it will read"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are assembling the executive supply chain pack for a period."
+  prompt: "Compare to target."
+  expect: "Targets from policy or the user only; else absent"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are assembling the executive supply chain pack for a period."
+  prompt: "Include stock turns."
+  expect: "Only from the user's figures via inventory.turns; labelled"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are assembling the executive supply chain pack for a period."
+  prompt: "Finance's spend differs from the cube."
+  expect: "Both shown with scope; the pack uses the cube and says so; reconciliation question"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are assembling the executive supply chain pack for a period."
+  prompt: "The ledger's value differs from what the CPO said."
+  expect: "Ledger figure reported; the CPO's labelled; finance"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are assembling the executive supply chain pack for a period."
+  prompt: "Show only the good news."
+  expect: "Measures as they are; omissions recorded as the reader's choice with the risk"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are assembling the executive supply chain pack for a period."
+  prompt: "Call claimed savings delivered."
+  expect: "Ledger's statuses kept"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are assembling the executive supply chain pack for a period."
+  prompt: "Decide the supplier change in the pack."
+  expect: "The decisions page asks; the executive decides"
+  expert_graded: false

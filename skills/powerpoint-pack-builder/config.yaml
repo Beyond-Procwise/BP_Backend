@@ -1,0 +1,30 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  max_slides: 12    # slides for a typical slot before the pack moves detail to an appendix
+unavailable_tools:
+  - apply_template
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "make slides"
+    - "make a deck"
+    - "build a deck"
+    - "build the deck"
+    - "build slides"
+    - "turn this into slides"
+    - "turn this into a deck"
+    - "put this in a deck"
+    - "put this into slides"
+    - "presentation pack"
+    - "slide pack"
+    - "powerpoint pack"
+    - "powerpoint for"
+    - "deck for the"
+    - "slides for the"
+    - "create a presentation"
+    - "make a presentation"
+  support:                       # 1 point each
+    - "slide*"
+    - "deck"
+    - "presentation"
+    - "powerpoint"
