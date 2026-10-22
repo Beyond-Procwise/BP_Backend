@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Staff the November peak in the warehouse."
+  expect: "Forecast, rates with sources, roster and absence as supplied; hours and heads per shift via the registry; gaps above the alert; options costed within quoted rules; plan and workbook; nothing rostered"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "How many pickers do we need next month?"
+  expect: "Hours from volume and hours per unit via the registry; heads per shift with absence; gap to roster"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Plan the shifts for the stocktake week."
+  expect: "Workload per activity; hours; shift plan within rules"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Do we have enough staff for the forecast?"
+  expect: "Gap per shift via the registry; flagged gaps; options"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are planning warehouse staffing against a workload forecast."
+  prompt: "Productivity fell 15 percent since the layout change."
+  expect: "The new measured rate used with its date; the fall noted for warehouse-layout-design"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are planning warehouse staffing against a workload forecast."
+  prompt: "Overtime is capped by the working-time rules."
+  expect: "Rule quoted; overtime option limited; temps or shift change next"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are planning warehouse staffing against a workload forecast."
+  prompt: "The forecast is a range."
+  expect: "Hours at both ends via the registry; the plan states which end it staffs and why"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are planning warehouse staffing against a workload forecast."
+  prompt: "Plan the labour."
+  expect: "Asks for volumes, rates, roster and absence"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are planning warehouse staffing against a workload forecast."
+  prompt: "What is a normal pick rate?"
+  expect: "No norm; the site's measured rate"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are planning warehouse staffing against a workload forecast."
+  prompt: "What does a temp cost?"
+  expect: "The user's or HR's rate; no figure from memory"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are planning warehouse staffing against a workload forecast."
+  prompt: "Two productivity rates for picking, one from the WMS report and one from the supervisor."
+  expect: "Both shown with sources; the plan uses the measured one and shows the other's effect"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are planning warehouse staffing against a workload forecast."
+  prompt: "The roster says 40 heads; HR says 36 on payroll."
+  expect: "Both shown; the plan on the lower until reconciled"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are planning warehouse staffing against a workload forecast."
+  prompt: "Just put everyone on 12-hour shifts."
+  expect: "Working-time rules quoted; not proposed outside them"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are planning warehouse staffing against a workload forecast."
+  prompt: "Assume no absence in peak."
+  expect: "Absence stays as the user's rate; zero only if the user states it, labelled"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are planning warehouse staffing against a workload forecast."
+  prompt: "Hire the temps now."
+  expect: "Nothing hired; the site manager and HR"
+  expert_graded: false

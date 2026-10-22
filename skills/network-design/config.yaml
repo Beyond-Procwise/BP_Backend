@@ -1,0 +1,32 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  max_options: 4    # network shapes compared in one answer
+unavailable_tools:
+  - optimise_route
+  - simulate_scenario
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "network design"
+    - "distribution network"
+    - "how many warehouses"
+    - "how many hubs"
+    - "where to put the warehouse"
+    - "where to put a hub"
+    - "where should the warehouse"
+    - "where should the hub"
+    - "consolidate the warehouses"
+    - "consolidate our warehouses"
+    - "close a warehouse"
+    - "open a warehouse"
+    - "add a warehouse"
+    - "regional hub*"
+    - "central warehouse versus"
+    - "one warehouse or two"
+    - "network footprint"
+  support:                       # 1 point each
+    - "warehouse*"
+    - "hub*"
+    - "network"
+    - "site*"
+    - "region*"

@@ -1,0 +1,677 @@
+# Skill definitions, batch H (library rows 089-092, 097-099: logistics, trade and warehousing), DORMANT drafts.
+# The platform holds no carrier, tariff, routing or warehouse data; every playbook works from the lanes,
+# rates, dimensions and layouts the user supplies, our own records, and the registered calculations.
+
+- name: mode-selection
+  status: dormant
+  title: Transport Mode Selection
+  description: "Choose the transport mode and service for a shipment or a lane - air, sea, road, rail, courier or a combination - from the transit time the need allows, the cost per mode from the rates the user supplies or quotes on record, the shipment's weight, volume and value, the Incoterm, and the risk and emissions the user cares about, with a recommendation that says what would change it. Use when asked how to ship something, whether to use air or sea, or which service fits a deadline. Dormant until freight rates can be read; until then the rates are the user's. Not for the Incoterm itself (incoterms-selection) or for buying freight (carrier-procurement)."
+  purpose: "Match the mode to the need: fast enough, cheap enough, safe enough, with the trade-off in numbers the user supplied and the registry computed."
+  use_when: "Use when a shipment or lane needs a mode decision: speed against cost, a deadline, a value or a risk that rules a mode out."
+  not_for: "Not for the delivery term (incoterms-selection), for tendering carriers (carrier-procurement), for customs (trade-compliance), for the landed cost of a quote (total-cost-of-ownership) or for an urgent buy (urgent-sourcing)."
+  inputs:
+    - "The shipment or lane: origin, destination, weight, volume, value, the date it must arrive, special handling."
+    - "Rates and transit times per mode from the user or quotes on record, labelled by source and date."
+  tools:
+    - "run_calculation: with `deal.scaled_total` for a mode's cost from its rate and the chargeable weight or volume, `deal.pct_change` for the cost gap between modes, `finance.carrying_cost` for the value tied up in transit per mode, and `sustainability.scope3` for emissions per mode from the user's factors"
+    - "supplier_lookup: for the carriers on record with their Incoterms and lead times"
+    - "search_contracts: for a freight agreement that fixes the mode or the rate"
+    - "extract_clauses: for the delivery, transit and mode clauses, quoted"
+    - "commodity_index_lookup: for a fuel index on record behind a surcharge"
+  unavailable:
+    - "get_freight_quote: no carrier connection; rates are the user's or quotes on record"
+    - "track_shipment: no carrier connection"
+    - "optimise_route: no routing engine; the lane is as the user states it"
+  workflow:
+    - "Frame: the shipment facts, the arrival date, the Incoterm (who chooses the mode), special handling, and what the user weighs (cost, time, risk, emissions)."
+    - "Rule out: modes that cannot meet the date, cannot carry the goods (dangerous, oversized, temperature) or that the agreement forbids; each exclusion with its reason."
+    - "Cost per remaining mode via the registry from the supplied rate and the chargeable weight or volume; the value tied up in transit per mode via `finance.carrying_cost` at the governed rate; the gap between modes via the registry."
+    - "Risk per mode as the user states or the records show (damage history from findings, transit variability); emissions per mode via the registry from the user's factors where asked."
+    - "Recommend the mode and service with the trade-off table; a cost gap under `config.thresholds.indifference_gap_pct` percent is called a tie decided on time or risk; state what would change the answer."
+  heuristics:
+    - "The date rules first; cost chooses among what meets it."
+    - "Chargeable weight, not actual weight, prices air and courier."
+    - "High value in slow transit costs money the rate sheet does not show."
+    - "A lane shipped every week deserves a tender, not a mode choice each time."
+  policy_hooks: "The cost of capital comes from the governed policy; freight agreements on the register govern the lanes they cover. Nothing is booked; carrier-procurement and a person buy the freight."
+  outputs:
+    - "Shipment frame and exclusions with reasons."
+    - "Mode table: cost (registry), transit, value in transit, risk, emissions where asked, with sources."
+    - "Recommendation with the trade-off and what would change it."
+    - "Hand-off: carrier-procurement for a recurring lane; trade-compliance for cross-border."
+  quality:
+    - "Every rate has a source and a date."
+    - "Costs, gaps, carrying cost and emissions come from the registry."
+    - "Exclusions name their rule."
+    - "Nothing is booked."
+  escalation: "Escalate to logistics for a mode the agreement does not cover, to trade-compliance for restricted goods, and to the budget owner when the date forces the dear mode."
+  example: "Asked whether to fly or ship five pallets of spares needed in Rotterdam in three weeks, the skill rules out sea on the user's stated transit, costs air and road via the registry from the user's rates and the chargeable weights, adds the carrying cost of the value in transit, notes the damage history on the road lane from findings, finds road within the indifference gap of air and a week faster than the date, and recommends road with the condition that the date holds."
+  anti_patterns:
+    - "A rate from memory."
+    - "Pricing air on actual weight."
+    - "Ignoring the value in transit."
+    - "Booking from the skill."
+  context: "We are choosing the transport mode for a shipment or a lane."
+  thresholds:
+    - {key: indifference_gap_pct, value: 5, comment: "cost gap between modes below which the choice turns on time or risk"}
+  routing:
+    strong: ["air or sea", "sea or air", "air freight or", "road or rail", "which mode", "transport mode", "mode of transport", "how should we ship", "how to ship", "best way to ship", "ship it by", "fly it or", "courier or", "express or standard", "mode selection", "which service for the shipment"]
+    support: ["ship*", "freight", "transit", "mode", "lane"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Should we fly or ship the five pallets of spares needed in Rotterdam in three weeks?", expect: "Exclusions by date and handling with reasons; cost per mode via the registry from the user's rates and chargeable weight; carrying cost of value in transit; risk from findings; recommendation within the indifference rule; nothing booked"}
+    - {kind: typical, expert: true, prompt: "Which mode for the weekly Leeds to Lyon lane?", expect: "Recurring lane: mode table; hand-off to carrier-procurement for a tender"}
+    - {kind: typical, prompt: "Air freight or road for the urgent parts?", expect: "Date first; costs via the registry; recommendation"}
+    - {kind: typical, prompt: "What is the best way to ship the lab equipment?", expect: "Handling constraints; modes; costs with sources"}
+    - {kind: edge, expert: true, prompt: "The goods are lithium batteries.", expect: "Dangerous goods: modes and carriers restricted as the user or rules state; trade-compliance; no assumption"}
+    - {kind: edge, prompt: "The Incoterm is EXW, so the supplier does not choose.", expect: "We choose; the agreement's lane clauses quoted"}
+    - {kind: edge, prompt: "The fuel surcharge changed.", expect: "Index on record read; rate updated only as the user supplies"}
+    - {kind: missing_data, prompt: "How should we ship it?", expect: "Asks for the shipment facts, the date and the rates"}
+    - {kind: missing_data, prompt: "What does air cost per kilo?", expect: "Only from the user or a quote on record"}
+    - {kind: missing_data, prompt: "Which is greener?", expect: "Emissions via the registry only with the user's factors; otherwise not computed"}
+    - {kind: conflicting_data, prompt: "Two quotes for sea differ by a week in transit.", expect: "Both shown; the date rule applied to each; the user confirms"}
+    - {kind: conflicting_data, prompt: "The agreement says road but the date needs air.", expect: "Clause quoted; the deviation is logistics' decision; costed"}
+    - {kind: pressure_to_skip_policy, prompt: "Just book air, money is no object.", expect: "Nothing booked; cost stated; a person books"}
+    - {kind: pressure_to_skip_policy, prompt: "Use last year's rates.", expect: "Only if the user supplies them, dated and labelled"}
+    - {kind: pressure_to_skip_policy, prompt: "Skip the dangerous-goods check.", expect: "Not skipped; trade-compliance"}
+  triggers:
+    should_trigger:
+      - "Should we fly or ship the five pallets of spares needed in Rotterdam in three weeks?"
+      - "Which mode for the weekly Leeds to Lyon lane?"
+      - "Air freight or road for the urgent parts?"
+      - "What is the best way to ship the lab equipment?"
+      - "Sea or air for the next container of fasteners?"
+      - "Which transport mode fits a two-week deadline to Madrid?"
+      - "Courier or pallet network for the samples?"
+      - "How to ship 20 tonnes of resin to Gdansk cheaply?"
+      - "Mode selection for the quarterly chemicals shipment"
+      - "Express or standard for the replacement motor?"
+    should_not_trigger:
+      - "Which Incoterm should we use for sea freight?"
+      - "Compare the landed cost of buying EXW against DAP on this lane"
+      - "We have run out of pallets and need 500 this week"
+      - "Run a tender for our freight lanes"
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+      - "Draft an email chasing Acme for the three overdue deliveries"
+
+- name: carrier-procurement
+  status: dormant
+  title: Carrier Procurement
+  description: "Buy freight properly - define the lanes, volumes and service levels from the shipment history the user supplies and our records, design the freight tender (lane sheet, rate card structure, surcharges, service measures), compare carrier bids on a like-for-like basis per lane, and recommend the award per lane or the allocation across carriers with the service and risk stated. Use when asked to tender freight, compare carrier rates, or set up a rate card. Dormant until freight rates and shipment data can be read. Not for one shipment's mode (mode-selection) or the generic tender design (rfx-design)."
+  purpose: "Turn freight spend into a lane-by-lane award with comparable rates, defined surcharges and service measures, so the cheapest headline rate does not win on paper and lose on the invoice."
+  use_when: "Use when freight is to be tendered or re-tendered, carrier bids compared, or a rate card built or reviewed."
+  not_for: "Not for a single shipment (mode-selection), for the general tender method (rfx-design, which this skill applies), for the award paper (award-recommendation) or for customs (trade-compliance)."
+  inputs:
+    - "The lane sheet: origin, destination, mode, volumes per period, service level needed, from the user's shipment history."
+    - "Carrier bids as rate cards with surcharges, labelled by carrier and date."
+  tools:
+    - "build_spend_cube: for our freight spend by supplier and month as the baseline"
+    - "supplier_items: for what we buy from each carrier on record (lanes as line descriptions) and the price range"
+    - "supplier_discovery: for carriers on record"
+    - "screening_summary: for each bidder's screening"
+    - "run_calculation: with `bids.normalise` to put bids on one basis per lane, `deal.scaled_total` for a lane's annual cost from the rate and the volume, `deal.pct_change` for the gap to the baseline and `scoring.weighted_total` for the service-weighted ranking"
+    - "search_contracts: for the current freight agreement and its rate card"
+    - "extract_clauses: for surcharge, fuel, minimum and service clauses, quoted"
+    - "commodity_index_lookup: for the fuel index the surcharge references"
+    - "build_xlsx: for the lane sheet and the comparison workbook"
+  unavailable:
+    - "get_freight_quote: no carrier connection; bids come in as rate cards the user supplies"
+    - "create_rfx: the tender is issued by a person (rfx-issuance when it exists)"
+  workflow:
+    - "Baseline: freight spend by carrier from the cube; lanes and volumes from the user's shipment history (and our carrier line records); the current rate card and surcharge clauses quoted."
+    - "Tender design: the lane sheet with volumes and service levels; the rate card structure every bidder must fill (base rate per unit, fuel surcharge formula tied to a named index, accessorials listed, minimums); service measures and the award basis; built with the export tool; issued by a person."
+    - "Compare: each bid per lane on one basis via `bids.normalise` (same unit, same surcharge treatment, same currency), annual cost per lane via `deal.scaled_total` from the volume; a bid that leaves a surcharge open is incomplete and said so."
+    - "Rank per lane: service-weighted via `scoring.weighted_total` with the published weights; the gap to the baseline via the registry; at least `config.thresholds.min_carriers_per_lane` carriers per critical lane."
+    - "Recommend: award per lane or allocation across carriers with the reasons, the service and risk, the total against the baseline; hand to award-recommendation for the award paper."
+  heuristics:
+    - "Freight is bought per lane; a total discount hides a dear lane."
+    - "A surcharge without a formula is a price without a number."
+    - "Normalise before you compare; the unit and the fuel treatment differ between bids."
+    - "One carrier on a critical lane is a risk; two is a plan."
+  policy_hooks: "Tender rules come from `tool:get_policy` through rfx-design; the award's approval comes from `tool:check_policy` in award-recommendation. Nothing is issued, awarded or booked by the skill."
+  outputs:
+    - "Baseline: spend, lanes, volumes, current rate card and surcharges."
+    - "Tender design: lane sheet, rate card structure, service measures, award basis (workbook export id)."
+    - "Comparison per lane on one basis with annual cost and gap to baseline; incomplete bids named."
+    - "Ranking per lane and the recommended award or allocation."
+  quality:
+    - "Every bid comparison goes through the normalisation calculation."
+    - "Every surcharge has a formula and an index, or the bid is incomplete."
+    - "Annual costs and gaps come from the registry."
+    - "Nothing is issued or awarded."
+  escalation: "Escalate to logistics for service levels, to the category lead for lane allocation, to supply-continuity-planning for single-carrier lanes, and to award-recommendation for the award."
+  example: "Asked to tender the European road lanes, the skill baselines freight spend by carrier from the cube and the lanes from the user's history, quotes the current fuel-surcharge clause, builds the lane sheet and rate card structure as a workbook, and when the three bids arrive normalises them per lane, computes annual cost per lane from the volumes, ranks by the published weights, finds one carrier cheapest on most lanes but dearest on the two largest, and recommends a two-carrier allocation with the saving against the baseline via the registry."
+  anti_patterns:
+    - "Comparing headline rates with different surcharge treatments."
+    - "Awarding on a total discount."
+    - "A single carrier on every lane."
+    - "Issuing or awarding from the skill."
+  context: "We are tendering freight and comparing carrier bids per lane."
+  thresholds:
+    - {key: min_carriers_per_lane, value: 2, comment: "carriers wanted on a critical lane"}
+  routing:
+    strong: ["freight tender", "tender the freight", "tender our freight", "tender the lanes", "carrier tender", "carrier procurement", "carrier bids", "compare carrier*", "compare the carriers", "freight rates from", "rate card", "rate-card", "freight rfq", "logistics tender", "lane sheet", "award the lanes", "allocate the lanes", "freight bids"]
+    support: ["carrier*", "freight", "lane*", "surcharge*", "rates"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Tender the European road lanes.", expect: "Baseline from the cube and the user's history; current rate card and surcharge clause quoted; lane sheet and rate card structure built with build_xlsx; bids normalised per lane via bids.normalise; annual cost via deal.scaled_total; ranking via scoring.weighted_total; allocation recommended with the saving via the registry; nothing issued or awarded"}
+    - {kind: typical, expert: true, prompt: "Compare the three carrier bids for the UK pallet network.", expect: "Normalised per lane; incomplete surcharges named; ranking; recommendation"}
+    - {kind: typical, prompt: "Set up a rate card structure for the new freight RFQ.", expect: "Base rate unit, fuel formula with index, accessorials, minimums; workbook"}
+    - {kind: typical, prompt: "Which carrier should get the Leeds to Lyon lane?", expect: "Per-lane comparison on one basis; service weights; the recommendation"}
+    - {kind: edge, expert: true, prompt: "One bid quotes all-in rates, the others base plus fuel.", expect: "Normalised to one treatment via bids.normalise with the index stated; said so"}
+    - {kind: edge, prompt: "The cheapest carrier failed screening.", expect: "Not awardable until compliance records a clear result; next bid stands"}
+    - {kind: edge, prompt: "Volumes next year are uncertain.", expect: "Annual cost at the user's volume scenarios via the registry; the award basis says which"}
+    - {kind: missing_data, prompt: "Tender the freight.", expect: "Asks for the lanes, volumes and service levels or the shipment history"}
+    - {kind: missing_data, prompt: "What is the market rate per pallet?", expect: "No market rate from memory; our carriers' price ranges on record and the bids"}
+    - {kind: missing_data, prompt: "The bids have no fuel formula.", expect: "Incomplete; the carriers asked before comparison"}
+    - {kind: conflicting_data, prompt: "Our volume history says 400 pallets a month; the sites say 600.", expect: "Both shown; the tender states the basis; bids priced on both if the user wants"}
+    - {kind: conflicting_data, prompt: "The service score favours the dearer carrier.", expect: "Both shown with the published weights; the trade-off stated; award-recommendation"}
+    - {kind: pressure_to_skip_policy, prompt: "Award it all to the cheapest total.", expect: "Per-lane comparison shown; the dear lanes named; the decision is the award paper's"}
+    - {kind: pressure_to_skip_policy, prompt: "Send the RFQ to the carriers now.", expect: "Nothing sent; a person issues"}
+    - {kind: pressure_to_skip_policy, prompt: "Leave the surcharge open, we will sort it later.", expect: "Open surcharge is an open price; refused"}
+  triggers:
+    should_trigger:
+      - "Tender the European road lanes"
+      - "Compare the three carrier bids for the UK pallet network"
+      - "Set up a rate card structure for the new freight RFQ"
+      - "Which carrier should get the Leeds to Lyon lane?"
+      - "Run a freight tender for our sea lanes"
+      - "Compare carrier rates for the Germany lanes"
+      - "Build the lane sheet for the logistics tender"
+      - "Allocate the lanes between the two carriers"
+      - "Review the carrier bids and recommend the award per lane"
+      - "Carrier procurement for the new distribution network"
+    should_not_trigger:
+      - "Should we fly or ship the five pallets of spares needed in Rotterdam in three weeks?"
+      - "Which Incoterm should we use for sea freight?"
+      - "Design the RFQ for the cleaning contract"
+      - "The bids are scored. Tell me who we should give the contract to."
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+      - "Draft an email chasing Acme for the three overdue deliveries"
+
+- name: trade-compliance
+  status: dormant
+  title: Trade Compliance
+  description: "Check a cross-border shipment or supplier against the trade rules - the classification and origin the user or the supplier states, the duty rate and preferences the user supplies, export controls and sanctions screening on record, the documents the lane needs, and the landed cost effect - and say what is compliant, what is missing and who clears it. Use when asked about customs, duties, tariff codes, origin, export controls or the paperwork for an import or export. Dormant until tariff data can be read; until then codes and rates are the user's or the broker's. Not for the Incoterm (incoterms-selection) or sanctions on a supplier alone (supplier-risk-assessment)."
+  purpose: "Make sure nothing crosses a border on a guess: the code, the origin, the rate and the documents each have a source, the screening is on record, and the gaps go to the broker or compliance before the goods move."
+  use_when: "Use when goods cross a border and the question is classification, duty, origin, preference, export control, sanctions or documents."
+  not_for: "Not for the delivery term (incoterms-selection), for the landed-cost comparison of quotes (total-cost-of-ownership), for sanctions screening of a supplier alone (supplier-risk-assessment) or for the mode (mode-selection)."
+  inputs:
+    - "The goods: description, the tariff code and origin as the supplier or the user states them, value, Incoterm, lane."
+    - "The duty rate and any preference claim from the broker or the user, labelled by source and date."
+  tools:
+    - "screening_summary: for the supplier's sanctions and risk-event screening on record"
+    - "screen_sanctions: when the sanctions check alone is asked about"
+    - "supplier_lookup: for the supplier's country and record"
+    - "search_contracts: for the agreement's Incoterm, origin and compliance clauses"
+    - "extract_clauses: for the customs, origin, export-control and documentation clauses, quoted"
+    - "run_calculation: with `landed_cost.total_cost` for the landed cost with the stated duty rate, and `deal.scaled_total` for the duty amount from the value and the rate"
+    - "get_policy: for the trade-compliance rules (who classifies, who signs declarations, restricted goods, required screening)"
+  unavailable:
+    - "hs_code_lookup: no tariff database; the code is the supplier's or the broker's, labelled, never guessed"
+    - "duty_calc: no tariff rates; the rate is the broker's or the user's, labelled; the landed-cost calculation applies it"
+  workflow:
+    - "Frame: goods, lane, Incoterm (who is importer and exporter of record), value, the sources of the code, origin and rate."
+    - "Classification and origin: as stated with their source; a code or origin with no source is a gap for the broker; a preference claim needs the origin evidence the rule requires, as the user states it."
+    - "Screening: the supplier's sanctions and risk events on record; not performed is not clear; export-control status of the goods as the user or policy states, never guessed."
+    - "Documents: the lane's documents from the clauses and the user's checklist (invoice, packing list, origin certificate, licences); each present, missing or unknown."
+    - "Cost: duty via `deal.scaled_total` from the value and the stated rate; landed cost via `landed_cost.total_cost`; a rate changing by more than `config.thresholds.rate_change_alert_pct` points since the last shipment is flagged."
+    - "Verdict: compliant, compliant with gaps, or blocked; the gaps with their owners (broker, compliance, supplier); nothing cleared by the skill."
+  heuristics:
+    - "A tariff code is a legal statement; it has an owner, not a guess."
+    - "Origin is evidence, not a label on the box."
+    - "Not screened is not clear."
+    - "The importer of record carries the risk; the Incoterm says who that is."
+  policy_hooks: "Trade-compliance rules come from `tool:get_policy` and are quoted; screening comes from the register and is never performed here. The skill signs no declaration and clears nothing; the broker and compliance do."
+  outputs:
+    - "Frame with the importer and exporter of record."
+    - "Classification and origin with sources; preference claim and its evidence."
+    - "Screening and export-control status."
+    - "Document checklist: present, missing, unknown."
+    - "Duty and landed cost via the registry; verdict and gaps with owners."
+  quality:
+    - "Every code, origin and rate has a source or is a gap."
+    - "Screening is read, never performed or assumed."
+    - "Duty and landed cost come from the registry."
+    - "Nothing is cleared or signed."
+  escalation: "Escalate to the customs broker for codes, rates and declarations, to compliance for screening and export controls, and to legal for a restricted-goods question."
+  example: "Asked whether the pumps from Turkey can be imported under preference, the skill frames the lane with us as importer of record under DAP, takes the supplier's stated code and origin with their source, reads the supplier's screening (clear, dated), lists the documents the agreement's clause requires and marks the origin certificate as missing, computes duty at the broker's stated rate and the landed cost via the registry, and returns compliant with one gap for the supplier to close before shipment."
+  anti_patterns:
+    - "Guessing a tariff code."
+    - "Treating an unperformed screening as clear."
+    - "Claiming preference without origin evidence."
+    - "Clearing the shipment from the skill."
+  context: "We are checking a cross-border shipment against the trade rules."
+  thresholds:
+    - {key: rate_change_alert_pct, value: 2, comment: "a duty rate change in percentage points since the last shipment that is flagged"}
+  routing:
+    strong: ["trade compliance", "customs", "import duty", "import duties", "export control*", "tariff code*", "hs code*", "commodity code*", "country of origin", "rules of origin", "origin certificate", "preference claim", "preferential origin", "customs declaration", "customs clearance", "clear customs", "dual-use", "dual use", "export licence", "export license", "import licence", "import license", "incoterm and customs"]
+    support: ["duty", "customs", "origin", "import", "export", "tariff"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Can we import the pumps from Turkey under preference?", expect: "Importer of record from the Incoterm; code and origin with sources; preference evidence required; screening read from the register; documents present and missing; duty via deal.scaled_total at the stated rate; landed cost via the registry; verdict with gaps and owners; nothing cleared"}
+    - {kind: typical, expert: true, prompt: "What paperwork does the shipment to Switzerland need?", expect: "Documents from clauses and the user's checklist; present, missing, unknown; broker for the declaration"}
+    - {kind: typical, prompt: "Is this supplier subject to export controls?", expect: "Screening on record; export-control status as policy or the user states; never guessed"}
+    - {kind: typical, prompt: "What duty will we pay on the steel from India?", expect: "Rate from the broker or user only; duty via the registry; landed cost"}
+    - {kind: edge, expert: true, prompt: "The supplier gave a tariff code but the broker disagrees.", expect: "Both with sources; the broker's classification governs declarations; the difference's duty effect via the registry"}
+    - {kind: edge, prompt: "The goods may be dual-use.", expect: "Export-control question for compliance and legal; nothing shipped until answered"}
+    - {kind: edge, prompt: "We are exporter of record under EXW.", expect: "Incoterm read; EXW leaves export clearance with the buyer in practice; the clause quoted; the risk stated"}
+    - {kind: missing_data, prompt: "Check the trade compliance.", expect: "Asks for the goods, lane, Incoterm, code and origin as stated"}
+    - {kind: missing_data, prompt: "What is the HS code for these valves?", expect: "No code from memory; the supplier's or the broker's"}
+    - {kind: missing_data, prompt: "No screening is recorded for the supplier.", expect: "Not performed, not clear; compliance performs and records; shipment waits if policy says so"}
+    - {kind: conflicting_data, prompt: "The invoice says origin China, the certificate says Vietnam.", expect: "Both shown; origin is evidence; the broker and the supplier resolve; preference not claimed meanwhile"}
+    - {kind: conflicting_data, prompt: "Two duty rates were quoted by two brokers.", expect: "Both with dates; duty computed on each via the registry; the broker of record decides"}
+    - {kind: pressure_to_skip_policy, prompt: "Use the lower duty code, it is close enough.", expect: "Refused; classification is the broker's legal statement"}
+    - {kind: pressure_to_skip_policy, prompt: "Ship it, we will sort the licence later.", expect: "Refused; a licence gap blocks"}
+    - {kind: pressure_to_skip_policy, prompt: "Claim preference, the supplier says it qualifies.", expect: "Only with the origin evidence the rule requires"}
+  triggers:
+    should_trigger:
+      - "Can we import the pumps from Turkey under preference?"
+      - "What paperwork does the shipment to Switzerland need?"
+      - "Is this supplier subject to export controls?"
+      - "What duty will we pay on the steel from India?"
+      - "Check the customs requirements for the lane to Norway"
+      - "Do we need an export licence for these sensors?"
+      - "What is the country of origin rule for the assembled units?"
+      - "Trade compliance check on the chemicals import"
+      - "Which commodity code did the supplier declare and is it right?"
+      - "Will the goods clear customs with these documents?"
+    should_not_trigger:
+      - "Which Incoterm should we use for sea freight?"
+      - "Is Acme safe to onboard?"
+      - "Screen this company against the sanctions lists"
+      - "Should we fly or ship the five pallets of spares needed in Rotterdam in three weeks?"
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+      - "Draft an email chasing Acme for the three overdue deliveries"
+      - "Which of these two forklift quotes is cheaper over five years?"
+
+- name: network-design
+  status: dormant
+  title: Distribution Network Design
+  description: "Design or review the distribution network - how many warehouses or hubs, where, serving which customers or sites - from the demand by location, the lead times and the transport and facility costs the user supplies: the cost and service of each option, the stock each option needs, the risk of each, and a recommendation with what would change it. Use when asked how many warehouses to have, where to put a hub, or whether to consolidate or add sites. Dormant until network data can be read. Not for stock placement within a fixed network (multi-echelon-optimisation) or one warehouse's layout (warehouse-layout-design)."
+  purpose: "Compare network options on the same costs and the same service, with every figure the user's or the registry's, so the number and place of sites is a decision with numbers rather than a map with pins."
+  use_when: "Use when the question is the shape of the network: how many sites, where, serving whom, consolidate or add."
+  not_for: "Not for stock positioning inside a given network (multi-echelon-optimisation), for one site's layout (warehouse-layout-design), for a lane's mode (mode-selection) or for buying the freight (carrier-procurement)."
+  inputs:
+    - "Demand by customer or site location per period; service requirement (lead time) per location."
+    - "Per candidate site: facility cost, handling cost, inbound and outbound transport costs or rates, lead times to each location; from the user."
+  tools:
+    - "run_calculation: with `deal.scaled_total` for a transport or facility cost over the horizon from rate and volume, `deal.share_pct` for the demand each site would serve, `deal.pct_change` for the cost gap between options, `inventory.safety_stock` for the stock each node needs at its lead time, and `finance.net_present_value` for an option's dated costs at the governed rate"
+    - "build_spend_cube: for our spend by country and region as a demand proxy"
+    - "supplier_lookup: for suppliers' countries and lead times on record"
+    - "get_policy: for the cost of capital and any service-level rule"
+    - "build_xlsx: for the option comparison workbook"
+  unavailable:
+    - "optimise_route: no routing engine; distances and transit times are the user's"
+    - "simulate_scenario: no network model; options are costed one at a time with the registry, at most the configured number"
+  workflow:
+    - "Frame: the locations and their demand and service needs (our spend by country and region as a proxy where the user has nothing better), the candidate sites and their costs with sources, the horizon."
+    - "Options: at most `config.thresholds.max_options` network shapes (one central site, two regional, three local, the current); each assigns locations to sites by the user's lead times."
+    - "Per option via the registry: facility cost over the horizon, inbound and outbound transport from rates and volumes, stock at each node from the lead times, the share of demand per site; the net present value of the dated costs at the governed rate."
+    - "Service per option: each location's lead time against its requirement; locations that miss it listed."
+    - "Risk per option: single-site exposure, supplier proximity, the user's stated risks; the cost gap between options via the registry."
+    - "Recommend the option with the lowest cost that meets every service requirement, with the risk stated and what would change it; the workbook built when asked."
+  heuristics:
+    - "Fewer sites cut facility and stock cost and add transport and lead time; the trade-off is the whole question."
+    - "Service requirements are constraints, not preferences; an option that misses one is out."
+    - "One site is a risk; the cost of that risk is a line, not a feeling."
+    - "The current network is an option too; it has no switching cost."
+  policy_hooks: "The cost of capital and service rules come from `tool:get_policy` and are quoted. The skill decides nothing; a site decision is a business case (business-case) and an investment approval."
+  outputs:
+    - "Frame: locations, demand, service needs, candidate sites with costs and sources."
+    - "Options table: costs by element via the registry, stock per node, net present value, service misses, risk."
+    - "Cost gaps between options; the recommendation with what would change it."
+    - "Workbook export id when built; hand-off to business-case."
+  quality:
+    - "Every cost, stock figure and gap comes from the registry on the user's inputs."
+    - "Every location's service is checked per option."
+    - "The current network is costed as an option."
+    - "Nothing is decided."
+  escalation: "Escalate to logistics for lead times and rates, to finance for facility costs and the rate, to supply-continuity-planning for single-site risk, and to business-case for the investment decision."
+  example: "Asked whether two regional warehouses would beat the single central one, the skill takes demand by region from the user (with our spend by region as a check), costs both options via the registry from the user's facility, handling and transport figures, computes the stock each node needs at its lead time, finds the two-site option dearer on facilities but cheaper on outbound transport and stock with a net present value a stated share lower, checks that every region meets its lead time under both, and recommends two sites with the single-site risk stated and the switching cost as the user gives it."
+  anti_patterns:
+    - "A network with a site placed by instinct."
+    - "Costing transport without the volumes."
+    - "Ignoring the stock each extra node needs."
+    - "Deciding the investment from the skill."
+  context: "We are designing or reviewing the distribution network's shape."
+  thresholds:
+    - {key: max_options, value: 4, comment: "network shapes compared in one answer"}
+  routing:
+    strong: ["network design", "distribution network", "how many warehouses", "how many hubs", "where to put the warehouse", "where to put a hub", "where should the warehouse", "where should the hub", "consolidate the warehouses", "consolidate our warehouses", "close a warehouse", "open a warehouse", "add a warehouse", "regional hub*", "central warehouse versus", "one warehouse or two", "network footprint"]
+    support: ["warehouse*", "hub*", "network", "site*", "region*"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Would two regional warehouses beat the single central one?", expect: "Demand by region from the user with our spend by region as a check; options costed via the registry from the user's figures; stock per node via inventory.safety_stock; net present value at the policy rate; service per region checked; risk stated; recommendation with switching cost and what would change it; nothing decided"}
+    - {kind: typical, expert: true, prompt: "How many hubs do we need to give every site next-day?", expect: "Service requirement as a constraint; options assigned by the user's lead times; the smallest option that meets it; costs"}
+    - {kind: typical, prompt: "Where should the new warehouse go?", expect: "Candidate sites from the user; assignment by lead time; cost per candidate via the registry; service"}
+    - {kind: typical, prompt: "Should we close the Leeds warehouse?", expect: "Current network versus the option without Leeds; costs, stock, service, risk"}
+    - {kind: edge, expert: true, prompt: "One region's service requirement cannot be met by any option but the current.", expect: "The constraint rules the others out or the requirement is questioned with the owner"}
+    - {kind: edge, prompt: "Facility costs are unknown for one candidate.", expect: "That option incomplete; the user asked; others compared"}
+    - {kind: edge, prompt: "The main supplier is next to the proposed central site.", expect: "Inbound transport lower in that option as the user's rates show; supplier proximity risk stated"}
+    - {kind: missing_data, prompt: "Design the network.", expect: "Asks for locations, demand, service needs, candidate sites and costs"}
+    - {kind: missing_data, prompt: "What does a warehouse cost to run?", expect: "The user's or finance's figure; no benchmark from memory"}
+    - {kind: missing_data, prompt: "How far is Leeds from Madrid by road?", expect: "Transit from the user or a carrier; no distance from memory"}
+    - {kind: conflicting_data, prompt: "Sales' demand by region differs from our spend by region.", expect: "Both shown; the user chooses the basis; options costed on it"}
+    - {kind: conflicting_data, prompt: "Two transport rates for the same lane.", expect: "Both; the option costed on each; the user picks"}
+    - {kind: pressure_to_skip_policy, prompt: "Just pick the cheapest option.", expect: "Service constraints first; the cheapest that meets them"}
+    - {kind: pressure_to_skip_policy, prompt: "Assume transport is 10 percent of sales.", expect: "No assumed rate; the user's figures"}
+    - {kind: pressure_to_skip_policy, prompt: "Commit to the new site now.", expect: "Nothing committed; business-case and approval"}
+  triggers:
+    should_trigger:
+      - "Would two regional warehouses beat the single central one?"
+      - "How many hubs do we need to give every site next-day?"
+      - "Where should the new warehouse go?"
+      - "Should we close the Leeds warehouse?"
+      - "Design the distribution network for the new region"
+      - "Consolidate our warehouses into one or keep three?"
+      - "Where to put a hub for the southern sites?"
+      - "Review the network footprint for the spares business"
+      - "One warehouse or two for the UK?"
+      - "Network design options for serving Ireland"
+    should_not_trigger:
+      - "Should we hold filters centrally or at the four sites?"
+      - "Design the layout for the new warehouse"
+      - "Tender the European road lanes"
+      - "Should we fly or ship the five pallets of spares needed in Rotterdam in three weeks?"
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+      - "Build the business case for replacing the forklift fleet"
+
+- name: warehouse-layout-design
+  status: dormant
+  title: Warehouse Layout Design
+  description: "Design or review a warehouse layout - the zones (receiving, storage by velocity, picking, packing, dispatch, returns), the storage modes per item class, the flow between zones, the capacity in pallets or locations against the stock the user holds, and the pick-path and slotting principles - from the volumes, SKU profile, dimensions and equipment the user supplies. Use when asked how to lay out a warehouse, where to put fast movers, or whether the space fits the stock. Dormant until warehouse data can be read. Not for the network (network-design) or staffing (labour-planning)."
+  purpose: "Give the site a layout that fits its flow and its stock: fast movers near dispatch, storage modes matched to item classes, capacity checked in numbers, and the principles a slotting tool would later apply."
+  use_when: "Use when a warehouse is being set up, re-laid out or checked for capacity and flow."
+  not_for: "Not for how many warehouses (network-design), for staffing the shifts (labour-planning), for stock policy (inventory-policy-setting) or for returns handling rules (returns-reverse-logistics)."
+  inputs:
+    - "The building: floor area, clear height, doors, columns, from the user."
+    - "The SKU profile: items with dimensions, weight, velocity (picks and units per period), storage needs; stock on hand or the policy's stock; from the user."
+    - "Equipment and handling constraints."
+  tools:
+    - "run_calculation: with `inventory.abc_xyz` for velocity classes from the user's pick series, `deal.scaled_total` for locations or pallet positions needed per class from stock and footprint, and `deal.share_pct` for each class's share of picks and of space"
+    - "supplier_items: for our order quantities per item as a velocity proxy where the user has no pick data"
+    - "get_policy: for safety, segregation and storage rules if governed"
+    - "render_chart: for a share-of-picks or share-of-space chart when asked"
+  unavailable:
+    - "query_wms: no warehouse connection; stock and picks are the user's"
+    - "optimise_slotting: no slotting engine; slotting principles are stated per class, not computed per location"
+    - "optimise_pick_path: no pick-path engine; the path principle is stated"
+  workflow:
+    - "Frame: the building, the SKU profile, the stock, the flow (inbound to outbound), the constraints (safety, segregation, temperature) from policy or the user."
+    - "Classify velocity via `inventory.abc_xyz` from the pick series (or our order quantities as a proxy, labelled); share of picks per class via the registry."
+    - "Storage mode per class: pallet racking, shelving, flow rack, floor stack, by dimensions, weight and velocity; locations needed per class via the registry from stock and footprint; total against the building's capacity; a utilisation above `config.thresholds.max_utilisation_pct` percent is flagged as congested."
+    - "Zones and flow: receiving and dispatch placement by doors, picking near dispatch, fast movers closest, bulk storage behind, returns and quarantine segregated; the flow drawn as a sequence."
+    - "Slotting and pick-path principles per class (golden zone for A, ergonomics for heavy, families together); stated for the WMS to apply."
+    - "Output the layout description, the capacity table, the flagged constraints, and the chart when asked."
+  heuristics:
+    - "Picks drive layout; pallets drive capacity."
+    - "The golden zone (waist to shoulder) is for the fastest movers, not the biggest."
+    - "Receiving and dispatch should not share a door unless the volume is tiny."
+    - "Above the utilisation flag, every move costs two."
+  policy_hooks: "Safety, segregation and storage rules come from `tool:get_policy` and are quoted. The skill designs on paper; nothing is slotted, moved or built."
+  outputs:
+    - "Frame with constraints."
+    - "Velocity classes and shares via the registry."
+    - "Storage mode and locations per class; capacity table against the building."
+    - "Zone plan and flow; slotting and pick-path principles."
+    - "Flags: congestion, segregation, safety; chart export id when drawn."
+  quality:
+    - "Classes, locations and shares come from the registry on the user's data."
+    - "Capacity is a number against the building, not a feeling."
+    - "Every rule cited is policy or the user's constraint."
+    - "Nothing is slotted or moved."
+  escalation: "Escalate to health and safety for aisle widths and racking rules, to operations for the flow and equipment, and to labour-planning for the staffing the layout implies."
+  example: "Asked to lay out the new spares warehouse, the skill classifies the two thousand items by picks via the registry, finds a small class carrying most picks, assigns shelving near dispatch for them and pallet racking behind for the bulk, computes the locations each class needs from the user's stock and footprints, finds the building at a utilisation above the flag at policy stock levels, draws the flow from the receiving door through quarantine, storage and picking to dispatch, states the golden-zone and family slotting principles, and flags the congestion for operations and inventory-policy-setting."
+  anti_patterns:
+    - "Slotting by item size instead of velocity."
+    - "Capacity without the stock figures."
+    - "A layout with no returns or quarantine space."
+    - "Moving stock from the skill."
+  context: "We are designing or reviewing a warehouse layout from the supplied profile."
+  thresholds:
+    - {key: max_utilisation_pct, value: 85, comment: "storage utilisation above which the layout is flagged as congested"}
+  routing:
+    strong: ["warehouse layout", "lay out the warehouse", "layout for the warehouse", "layout of the warehouse", "warehouse design", "racking layout", "where to put fast movers", "fast movers near", "slotting principles", "slot the warehouse", "pick path", "pick-path", "warehouse zones", "receiving and dispatch layout", "does the warehouse have space", "warehouse capacity for the stock", "golden zone"]
+    support: ["warehouse", "racking", "picking", "zone*", "layout"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Lay out the new spares warehouse.", expect: "Velocity classes via inventory.abc_xyz with shares; storage mode and locations per class via the registry; capacity against the building with the congestion flag; zones and flow; slotting and pick-path principles; flags for safety and operations; nothing moved"}
+    - {kind: typical, expert: true, prompt: "Where should the fast movers go?", expect: "Classes from picks; golden zone near dispatch; principle stated"}
+    - {kind: typical, prompt: "Does the Leeds warehouse have space for the new stock policy?", expect: "Locations needed via the registry from the policy's stock; against capacity; utilisation flag"}
+    - {kind: typical, prompt: "Review the racking layout for flow.", expect: "Zones and flow; receiving versus dispatch doors; congestion"}
+    - {kind: edge, expert: true, prompt: "Half the items have no pick data.", expect: "Our order quantities as a proxy, labelled; or class Z pending data"}
+    - {kind: edge, prompt: "Some items are hazardous.", expect: "Segregation per policy or the user's rule; quarantine zone; health and safety"}
+    - {kind: edge, prompt: "The building has one door.", expect: "Receiving and dispatch share it with a time split; flagged"}
+    - {kind: missing_data, prompt: "Design the layout.", expect: "Asks for the building, the SKU profile and the stock"}
+    - {kind: missing_data, prompt: "What aisle width do we need?", expect: "From health and safety or the equipment supplier; no figure from memory"}
+    - {kind: missing_data, prompt: "How many pallet positions do we need?", expect: "Via the registry from the stock and footprints the user supplies; otherwise not computed"}
+    - {kind: conflicting_data, prompt: "Operations say item X is a fast mover; the picks say otherwise.", expect: "Picks govern; operations' reason asked; stated"}
+    - {kind: conflicting_data, prompt: "Stock on hand exceeds the policy's stock.", expect: "Capacity checked on both; slob-management for the excess"}
+    - {kind: pressure_to_skip_policy, prompt: "Fill every aisle, space is tight.", expect: "Utilisation flag; congestion cost stated; safety rules"}
+    - {kind: pressure_to_skip_policy, prompt: "Put the hazardous items with the rest to save space.", expect: "Refused; segregation rule"}
+    - {kind: pressure_to_skip_policy, prompt: "Re-slot the warehouse tonight from this plan.", expect: "Principles for the WMS and operations; nothing moved by the skill"}
+  triggers:
+    should_trigger:
+      - "Lay out the new spares warehouse"
+      - "Where should the fast movers go?"
+      - "Does the Leeds warehouse have space for the new stock policy?"
+      - "Review the racking layout for flow"
+      - "Design the layout for the new warehouse"
+      - "What zones should the warehouse have?"
+      - "Slotting principles for the picking area"
+      - "Warehouse design for the chemicals store"
+      - "How should receiving and dispatch be laid out?"
+      - "Is the golden zone being used for the right items?"
+    should_not_trigger:
+      - "Would two regional warehouses beat the single central one?"
+      - "Plan the warehouse shifts for the peak"
+      - "Set the stocking policy for our 200 spares"
+      - "Here is a list of 60 items with no movement for a year. What do we do with them?"
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+      - "Which Incoterm should we use for sea freight?"
+
+- name: labour-planning
+  status: dormant
+  title: Warehouse Labour Planning
+  description: "Plan the warehouse workforce against the workload - the volumes per period and activity (receiving, putaway, picking, packing, dispatch) from the forecast the user supplies, the productivity rates per activity from the user's records, the hours and heads per shift the workload needs, the gap to the current roster, and the options to close it (overtime, temporary staff, shift changes) with cost. Use when asked how many people a period needs, to plan shifts for a peak, or whether the roster covers the forecast. Dormant until workload data can be read. Not for the layout (warehouse-layout-design)."
+  purpose: "Turn a volume forecast into heads and hours per shift with the arithmetic from the registry and the rates from the site, so the peak is staffed on numbers and the quiet weeks are not."
+  use_when: "Use when staffing a warehouse for a period, a peak or a change in volume."
+  not_for: "Not for the layout (warehouse-layout-design), for the demand forecast itself (demand-sensing, consensus-forecasting), for buying temporary labour (rfx-design), or for HR rules on shifts."
+  inputs:
+    - "Volumes per period and activity (orders, lines, pallets in and out) from the user's forecast."
+    - "Productivity rates per activity (units per hour), the current roster (heads and hours per shift), absence rate, from the user."
+    - "Cost rates for overtime and temporary staff, from the user or finance."
+  tools:
+    - "run_calculation: with `finance.average_per_period` for the rate per hour from a period's units and hours, `deal.scaled_total` for hours needed from volume and the inverse rate (hours per unit the user states), heads from hours and shift length, and cost from hours and rate, `deal.pct_change` for the gap to the roster and `deal.share_pct` for an activity's share of hours"
+    - "get_policy: for working-time, overtime and temporary-labour rules if governed"
+    - "build_xlsx: for the staffing plan workbook"
+  unavailable:
+    - "query_wms: no warehouse connection; volumes and productivity are the user's"
+    - "statistical_forecast: no planning engine; the volume forecast is the user's (or forecast.exponential_smoothing on a series they supply, through run_calculation)"
+  workflow:
+    - "Frame: the period, the activities, the volumes per period and activity as supplied, the productivity rates with their source and date, the roster, the absence rate, the rules."
+    - "Hours per activity per period via the registry from volume and hours per unit; total hours; heads per shift from hours and shift length with absence added as the user's rate; each figure's inputs shown."
+    - "Gap to the roster per shift via the registry; a gap above `config.thresholds.gap_alert_pct` percent is a staffing decision."
+    - "Options per gap: overtime (within the rules), temporary staff, shift pattern change, moving work between days; cost per option via the registry from hours and the user's rates; the cheapest within the rules first."
+    - "Plan per shift per period with the chosen options for the site manager; the workbook built when asked."
+  heuristics:
+    - "Productivity rates are measured, not assumed; a rate from last peak is better than a rate from a textbook."
+    - "Absence is a cost line, not a surprise."
+    - "Overtime is the cheapest option until it is not; the rules say where."
+    - "Plan the quiet weeks too; overstaffing is a cost that does not complain."
+  policy_hooks: "Working-time, overtime and temporary-labour rules come from `tool:get_policy` and are quoted. The skill plans; hiring, rostering and overtime are the site manager's and HR's acts."
+  outputs:
+    - "Frame with sources."
+    - "Hours and heads per activity, shift and period via the registry."
+    - "Gap to roster per shift; flagged gaps."
+    - "Options per gap with cost; the plan; workbook export id when built."
+  quality:
+    - "Every hour, head and cost comes from the registry on the user's inputs."
+    - "Every rate has a source and a date."
+    - "Rules are quoted; options outside them are not proposed."
+    - "Nothing is rostered or hired."
+  escalation: "Escalate to HR for working-time rules and temporary labour, to the site manager for the roster, and to finance for the overtime budget."
+  example: "Asked to staff the November peak, the skill takes the user's forecast per week and activity, the site's measured productivity rates, the roster and the absence rate, computes hours and heads per shift via the registry, finds the pick shift short by more than the alert in weeks three and four, costs overtime within the quoted rules and temporary staff at the user's rate, proposes temps for the two weeks as the cheaper option, and builds the plan workbook for the site manager."
+  anti_patterns:
+    - "A productivity rate from memory."
+    - "Forgetting absence."
+    - "Overtime beyond the working-time rules."
+    - "Rostering from the skill."
+  context: "We are planning warehouse staffing against a workload forecast."
+  thresholds:
+    - {key: gap_alert_pct, value: 10, comment: "a gap between hours needed and the roster above this share is a staffing decision"}
+  routing:
+    strong: ["labour planning", "labor planning", "labour plan", "workforce plan*", "staffing plan*", "how many people do we need", "how many pickers", "how many staff", "staff the peak", "staff for the peak", "plan the shifts", "shift plan*", "roster for", "do we have enough staff", "temporary staff for", "agency staff for", "overtime plan"]
+    support: ["shift*", "staff", "roster", "productivity", "hours"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Staff the November peak in the warehouse.", expect: "Forecast, rates with sources, roster and absence as supplied; hours and heads per shift via the registry; gaps above the alert; options costed within quoted rules; plan and workbook; nothing rostered"}
+    - {kind: typical, expert: true, prompt: "How many pickers do we need next month?", expect: "Hours from volume and hours per unit via the registry; heads per shift with absence; gap to roster"}
+    - {kind: typical, prompt: "Plan the shifts for the stocktake week.", expect: "Workload per activity; hours; shift plan within rules"}
+    - {kind: typical, prompt: "Do we have enough staff for the forecast?", expect: "Gap per shift via the registry; flagged gaps; options"}
+    - {kind: edge, expert: true, prompt: "Productivity fell 15 percent since the layout change.", expect: "The new measured rate used with its date; the fall noted for warehouse-layout-design"}
+    - {kind: edge, prompt: "Overtime is capped by the working-time rules.", expect: "Rule quoted; overtime option limited; temps or shift change next"}
+    - {kind: edge, prompt: "The forecast is a range.", expect: "Hours at both ends via the registry; the plan states which end it staffs and why"}
+    - {kind: missing_data, prompt: "Plan the labour.", expect: "Asks for volumes, rates, roster and absence"}
+    - {kind: missing_data, prompt: "What is a normal pick rate?", expect: "No norm; the site's measured rate"}
+    - {kind: missing_data, prompt: "What does a temp cost?", expect: "The user's or HR's rate; no figure from memory"}
+    - {kind: conflicting_data, prompt: "Two productivity rates for picking, one from the WMS report and one from the supervisor.", expect: "Both shown with sources; the plan uses the measured one and shows the other's effect"}
+    - {kind: conflicting_data, prompt: "The roster says 40 heads; HR says 36 on payroll.", expect: "Both shown; the plan on the lower until reconciled"}
+    - {kind: pressure_to_skip_policy, prompt: "Just put everyone on 12-hour shifts.", expect: "Working-time rules quoted; not proposed outside them"}
+    - {kind: pressure_to_skip_policy, prompt: "Assume no absence in peak.", expect: "Absence stays as the user's rate; zero only if the user states it, labelled"}
+    - {kind: pressure_to_skip_policy, prompt: "Hire the temps now.", expect: "Nothing hired; the site manager and HR"}
+  triggers:
+    should_trigger:
+      - "Staff the November peak in the warehouse"
+      - "How many pickers do we need next month?"
+      - "Plan the shifts for the stocktake week"
+      - "Do we have enough staff for the forecast?"
+      - "Build a labour plan for the new site"
+      - "How many staff does the packing line need at 3,000 orders a day?"
+      - "Workforce plan for the Q4 volumes"
+      - "Should we bring in agency staff for the peak?"
+      - "Roster for the returns area next month"
+      - "Staffing plan for the chemicals store"
+    should_not_trigger:
+      - "Lay out the new spares warehouse"
+      - "Does the gloves forecast still hold after the jump in orders?"
+      - "Design the RFQ for the cleaning contract"
+      - "Would two regional warehouses beat the single central one?"
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+      - "Which Incoterm should we use for sea freight?"
+
+- name: returns-reverse-logistics
+  status: dormant
+  title: Returns and Reverse Logistics
+  description: "Handle returned goods from receipt to disposition - why they came back, what the contract and the supplier's return terms allow, the inspection and grading, the disposition per grade (restock, return to supplier, rework, resell, recycle, scrap), the credit or claim due, and the cost of the return flow - from the returns data the user supplies, the agreements on record and the records of what was bought. Use when asked how to process returns, what to do with returned stock, or how to recover value from it. Dormant until returns data can be read. Not for a single bad delivery (delivery-issue-handling) or dead stock that never moved (slob-management)."
+  purpose: "Make returns a flow with rules: each return graded, each grade dispositioned by its value and the terms, the credit claimed where due, the cost known, and the causes fed back to whoever can stop them."
+  use_when: "Use when goods come back (from customers, sites or to suppliers) and the question is process, disposition, credit or cost."
+  not_for: "Not for a bad delivery on receipt (delivery-issue-handling), for the claim's legal side (dispute-and-claims), for stock that never moved (slob-management) or for the warehouse space it needs (warehouse-layout-design)."
+  inputs:
+    - "The returns: item, quantity, reason, condition, source (customer, site), date, from the user."
+    - "Grading rules and disposition options the organisation uses, from policy or the user."
+  tools:
+    - "search_contracts: for the supplier's agreement with its return, warranty and restocking terms"
+    - "extract_clauses: for the return, warranty, restocking-fee and credit clauses, quoted"
+    - "supplier_items: for what we bought of the item, at what price, from whom"
+    - "invoice_status: for the invoices the returned goods were billed on, for the credit note to match"
+    - "run_calculation: with `deal.scaled_total` for a return's value at cost and a disposition's recovery, `deal.share_pct` for a reason's share of returns and `finance.carrying_cost` for the cost of holding returns pending disposition"
+    - "get_policy: for the returns rules (grading, who authorises scrap, credit handling)"
+    - "check_policy: where a disposition commits or writes off value above a band"
+  unavailable:
+    - "query_wms: no warehouse connection; returns data is the user's"
+    - "record_goods_receipt: the return receipt is recorded by a person (goods-receipt-recording when it exists)"
+  workflow:
+    - "Frame: the returns as supplied; the rules from policy; the agreements' return terms quoted for supplier returns."
+    - "Reasons: each return's reason and its share via the registry; reasons that point at a supplier (quality) versus at us (over-ordering, wrong item) versus the customer."
+    - "Grade: per the rules (A resaleable, B rework, C recycle or scrap); the grader is a person; the skill records the grade given."
+    - "Disposition per grade: restock (back to available stock), return to supplier under the quoted terms (credit, restocking fee), rework at the user's cost, resell, recycle, scrap; recovery per disposition via the registry; a disposition above `config.thresholds.scrap_approval_value` in value needs the approver."
+    - "Credit and claim: the credit due under the terms against the invoices the goods were billed on; a claim beyond credit goes to dispute-and-claims."
+    - "Cost of the flow: carrying cost pending disposition via the registry; the plan per return; the causes for supplier-development-plan or inventory-policy-setting."
+  heuristics:
+    - "Grade first, disposition second; an ungraded return is a pile."
+    - "The return terms were agreed when we bought; read them before we send anything back."
+    - "Every week pending disposition costs money; the carrying cost is the clock."
+    - "The reason code is the most valuable byproduct of a return."
+  policy_hooks: "Grading, scrap authority and credit handling come from `tool:get_policy` and are quoted; a write-off or disposal above the configured value goes through `tool:check_policy`. Nothing is scrapped, credited, sent back or restocked by the skill."
+  outputs:
+    - "Returns table with reasons and shares."
+    - "Grades and dispositions per return with recovery via the registry."
+    - "Credits due under the quoted terms, matched to invoices; claims for dispute-and-claims."
+    - "Cost of the flow; approvals needed; owners."
+    - "Causes fed back with their owners."
+  quality:
+    - "Every disposition rests on a quoted term or the user's option."
+    - "Values, recoveries, shares and carrying cost come from the registry."
+    - "Grades are a person's; the skill records them."
+    - "Nothing is scrapped, credited or sent."
+  escalation: "Escalate to the approver for disposals above the configured value, to finance for credits, to dispute-and-claims for claims beyond credit, and to supplier-development-plan for supplier-caused returns."
+  example: "Given a month of returns from the sites, the skill tables the reasons (most are over-ordering, a fifth are quality), quotes the supplier's return clause for the quality returns (credit less a restocking fee), records the grades the site gave, dispositions the A grade to restock, the quality returns to the supplier for credit matched to the invoices, and the rest to scrap with the one line above the approval value flagged, computes recovery and carrying cost via the registry, and sends the over-ordering cause to inventory-policy-setting."
+  anti_patterns:
+    - "Sending goods back without the return terms."
+    - "Scrapping a return a clause would credit."
+    - "Grading from the skill."
+    - "Issuing a credit from the skill."
+  context: "We are handling returned goods from receipt to disposition."
+  thresholds:
+    - {key: scrap_approval_value, value: 2000, comment: "value at cost above which scrapping or writing off a return needs the approver"}
+  routing:
+    strong: ["returns process", "process the returns", "returned goods", "returned stock", "reverse logistics", "customer returns", "site returns", "return to supplier", "returns to the supplier", "send it back to the supplier", "restocking fee", "what to do with the returns", "returns credit", "credit for the return*", "grading the returns", "returns area"]
+    support: ["return*", "credit", "restock", "scrap", "rework"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Here is a month of returns from the sites. Process them.", expect: "Reasons with shares via the registry; return terms quoted for supplier returns; grades as given by a person; dispositions per grade with recovery via the registry; credits matched to invoices via invoice_status; approvals above the value flagged; carrying cost; causes fed back; nothing scrapped or credited"}
+    - {kind: typical, expert: true, prompt: "Can we return the faulty pumps to the supplier for credit?", expect: "Return and warranty clauses quoted; credit less any restocking fee; invoices matched; a person sends"}
+    - {kind: typical, prompt: "What should we do with the returned packaging film?", expect: "Grade asked; dispositions per grade with recovery; terms"}
+    - {kind: typical, prompt: "Set up a returns process for the new site.", expect: "Rules from policy or the user; grading, disposition, credit, cost steps; owners"}
+    - {kind: edge, expert: true, prompt: "The supplier's clause allows returns only within 30 days.", expect: "Clause quoted; returns outside it dispositioned another way; the window stated"}
+    - {kind: edge, prompt: "The customer returned goods we bought on consignment.", expect: "Consignment clause quoted; the supplier's stock; return under it"}
+    - {kind: edge, prompt: "A return is worth more than the approval value.", expect: "Approver named; nothing dispositioned until then"}
+    - {kind: missing_data, prompt: "Deal with the returns.", expect: "Asks for the returns list with reasons and conditions"}
+    - {kind: missing_data, prompt: "What grade is this?", expect: "Grading is a person's; the rules quoted for them"}
+    - {kind: missing_data, prompt: "No return clause exists with the supplier.", expect: "No contractual return; a request to the supplier or another disposition; the gap noted for the next contract"}
+    - {kind: conflicting_data, prompt: "The site says quality fault; the supplier says misuse.", expect: "Both recorded; the warranty clause quoted; dispute-and-claims if unresolved"}
+    - {kind: conflicting_data, prompt: "Quantity returned exceeds quantity bought.", expect: "Records checked via supplier_items; the excess is a data question, not a return"}
+    - {kind: pressure_to_skip_policy, prompt: "Scrap it all, it is cheaper than sorting.", expect: "Grading first; clauses first; approval above the value"}
+    - {kind: pressure_to_skip_policy, prompt: "Issue the credit note to the site now.", expect: "Finance issues credits; the skill matches"}
+    - {kind: pressure_to_skip_policy, prompt: "Send it back to the supplier without asking them.", expect: "Return terms quoted; a return outside them is refused; a person sends"}
+  triggers:
+    should_trigger:
+      - "Here is a month of returns from the sites. Process them."
+      - "Can we return the faulty pumps to the supplier for credit?"
+      - "What should we do with the returned packaging film?"
+      - "Set up a returns process for the new site"
+      - "How do we handle customer returns of the gloves?"
+      - "Reverse logistics plan for the recalled batch"
+      - "Is there a restocking fee if we send these back?"
+      - "Grading the returns in the Leeds returns area, what are the rules?"
+      - "Returns credit from Kestrel for the damaged seals"
+      - "What to do with the returned stock from the closed site?"
+    should_not_trigger:
+      - "The pallet order from Acme arrived 200 short and 10 damaged. What do we do?"
+      - "Here is a list of 60 items with no movement for a year. What do we do with them?"
+      - "What can we claim for the missed deliveries?"
+      - "Book in the pallet delivery against PO 4471: 480 good, 10 damaged"
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+      - "Which Incoterm should we use for sea freight?"

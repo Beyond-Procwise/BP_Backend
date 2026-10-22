@@ -1,0 +1,39 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  rate_change_alert_pct: 2    # a duty rate change in percentage points since the last shipment that is flagged
+unavailable_tools:
+  - hs_code_lookup
+  - duty_calc
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "trade compliance"
+    - "customs"
+    - "import duty"
+    - "import duties"
+    - "export control*"
+    - "tariff code*"
+    - "hs code*"
+    - "commodity code*"
+    - "country of origin"
+    - "rules of origin"
+    - "origin certificate"
+    - "preference claim"
+    - "preferential origin"
+    - "customs declaration"
+    - "customs clearance"
+    - "clear customs"
+    - "dual-use"
+    - "dual use"
+    - "export licence"
+    - "export license"
+    - "import licence"
+    - "import license"
+    - "incoterm and customs"
+  support:                       # 1 point each
+    - "duty"
+    - "customs"
+    - "origin"
+    - "import"
+    - "export"
+    - "tariff"

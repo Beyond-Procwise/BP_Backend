@@ -1,0 +1,31 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  scrap_approval_value: 2000    # value at cost above which scrapping or writing off a return needs the approver
+unavailable_tools:
+  - query_wms
+  - record_goods_receipt
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "returns process"
+    - "process the returns"
+    - "returned goods"
+    - "returned stock"
+    - "reverse logistics"
+    - "customer returns"
+    - "site returns"
+    - "return to supplier"
+    - "returns to the supplier"
+    - "send it back to the supplier"
+    - "restocking fee"
+    - "what to do with the returns"
+    - "returns credit"
+    - "credit for the return*"
+    - "grading the returns"
+    - "returns area"
+  support:                       # 1 point each
+    - "return*"
+    - "credit"
+    - "restock"
+    - "scrap"
+    - "rework"

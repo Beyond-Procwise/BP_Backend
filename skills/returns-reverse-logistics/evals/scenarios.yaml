@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Here is a month of returns from the sites. Process them."
+  expect: "Reasons with shares via the registry; return terms quoted for supplier returns; grades as given by a person; dispositions per grade with recovery via the registry; credits matched to invoices via invoice_status; approvals above the value flagged; carrying cost; causes fed back; nothing scrapped or credited"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Can we return the faulty pumps to the supplier for credit?"
+  expect: "Return and warranty clauses quoted; credit less any restocking fee; invoices matched; a person sends"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "What should we do with the returned packaging film?"
+  expect: "Grade asked; dispositions per grade with recovery; terms"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Set up a returns process for the new site."
+  expect: "Rules from policy or the user; grading, disposition, credit, cost steps; owners"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are handling returned goods from receipt to disposition."
+  prompt: "The supplier's clause allows returns only within 30 days."
+  expect: "Clause quoted; returns outside it dispositioned another way; the window stated"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are handling returned goods from receipt to disposition."
+  prompt: "The customer returned goods we bought on consignment."
+  expect: "Consignment clause quoted; the supplier's stock; return under it"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are handling returned goods from receipt to disposition."
+  prompt: "A return is worth more than the approval value."
+  expect: "Approver named; nothing dispositioned until then"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are handling returned goods from receipt to disposition."
+  prompt: "Deal with the returns."
+  expect: "Asks for the returns list with reasons and conditions"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are handling returned goods from receipt to disposition."
+  prompt: "What grade is this?"
+  expect: "Grading is a person's; the rules quoted for them"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are handling returned goods from receipt to disposition."
+  prompt: "No return clause exists with the supplier."
+  expect: "No contractual return; a request to the supplier or another disposition; the gap noted for the next contract"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are handling returned goods from receipt to disposition."
+  prompt: "The site says quality fault; the supplier says misuse."
+  expect: "Both recorded; the warranty clause quoted; dispute-and-claims if unresolved"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are handling returned goods from receipt to disposition."
+  prompt: "Quantity returned exceeds quantity bought."
+  expect: "Records checked via supplier_items; the excess is a data question, not a return"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are handling returned goods from receipt to disposition."
+  prompt: "Scrap it all, it is cheaper than sorting."
+  expect: "Grading first; clauses first; approval above the value"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are handling returned goods from receipt to disposition."
+  prompt: "Issue the credit note to the site now."
+  expect: "Finance issues credits; the skill matches"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are handling returned goods from receipt to disposition."
+  prompt: "Send it back to the supplier without asking them."
+  expect: "Return terms quoted; a return outside them is refused; a person sends"
+  expert_graded: false

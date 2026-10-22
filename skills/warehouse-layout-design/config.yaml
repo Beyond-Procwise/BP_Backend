@@ -1,0 +1,33 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  max_utilisation_pct: 85    # storage utilisation above which the layout is flagged as congested
+unavailable_tools:
+  - query_wms
+  - optimise_slotting
+  - optimise_pick_path
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "warehouse layout"
+    - "lay out the warehouse"
+    - "layout for the warehouse"
+    - "layout of the warehouse"
+    - "warehouse design"
+    - "racking layout"
+    - "where to put fast movers"
+    - "fast movers near"
+    - "slotting principles"
+    - "slot the warehouse"
+    - "pick path"
+    - "pick-path"
+    - "warehouse zones"
+    - "receiving and dispatch layout"
+    - "does the warehouse have space"
+    - "warehouse capacity for the stock"
+    - "golden zone"
+  support:                       # 1 point each
+    - "warehouse"
+    - "racking"
+    - "picking"
+    - "zone*"
+    - "layout"

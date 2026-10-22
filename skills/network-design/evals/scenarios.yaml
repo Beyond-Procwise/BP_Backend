@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Would two regional warehouses beat the single central one?"
+  expect: "Demand by region from the user with our spend by region as a check; options costed via the registry from the user's figures; stock per node via inventory.safety_stock; net present value at the policy rate; service per region checked; risk stated; recommendation with switching cost and what would change it; nothing decided"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "How many hubs do we need to give every site next-day?"
+  expect: "Service requirement as a constraint; options assigned by the user's lead times; the smallest option that meets it; costs"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Where should the new warehouse go?"
+  expect: "Candidate sites from the user; assignment by lead time; cost per candidate via the registry; service"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Should we close the Leeds warehouse?"
+  expect: "Current network versus the option without Leeds; costs, stock, service, risk"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are designing or reviewing the distribution network's shape."
+  prompt: "One region's service requirement cannot be met by any option but the current."
+  expect: "The constraint rules the others out or the requirement is questioned with the owner"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are designing or reviewing the distribution network's shape."
+  prompt: "Facility costs are unknown for one candidate."
+  expect: "That option incomplete; the user asked; others compared"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are designing or reviewing the distribution network's shape."
+  prompt: "The main supplier is next to the proposed central site."
+  expect: "Inbound transport lower in that option as the user's rates show; supplier proximity risk stated"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are designing or reviewing the distribution network's shape."
+  prompt: "Design the network."
+  expect: "Asks for locations, demand, service needs, candidate sites and costs"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are designing or reviewing the distribution network's shape."
+  prompt: "What does a warehouse cost to run?"
+  expect: "The user's or finance's figure; no benchmark from memory"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are designing or reviewing the distribution network's shape."
+  prompt: "How far is Leeds from Madrid by road?"
+  expect: "Transit from the user or a carrier; no distance from memory"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are designing or reviewing the distribution network's shape."
+  prompt: "Sales' demand by region differs from our spend by region."
+  expect: "Both shown; the user chooses the basis; options costed on it"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are designing or reviewing the distribution network's shape."
+  prompt: "Two transport rates for the same lane."
+  expect: "Both; the option costed on each; the user picks"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are designing or reviewing the distribution network's shape."
+  prompt: "Just pick the cheapest option."
+  expect: "Service constraints first; the cheapest that meets them"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are designing or reviewing the distribution network's shape."
+  prompt: "Assume transport is 10 percent of sales."
+  expect: "No assumed rate; the user's figures"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are designing or reviewing the distribution network's shape."
+  prompt: "Commit to the new site now."
+  expect: "Nothing committed; business-case and approval"
+  expert_graded: false

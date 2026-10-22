@@ -1,0 +1,32 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  gap_alert_pct: 10    # a gap between hours needed and the roster above this share is a staffing decision
+unavailable_tools:
+  - query_wms
+  - statistical_forecast
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "labour planning"
+    - "labor planning"
+    - "labour plan"
+    - "workforce plan*"
+    - "staffing plan*"
+    - "how many people do we need"
+    - "how many pickers"
+    - "how many staff"
+    - "staff the peak"
+    - "staff for the peak"
+    - "plan the shifts"
+    - "shift plan*"
+    - "roster for"
+    - "do we have enough staff"
+    - "temporary staff for"
+    - "agency staff for"
+    - "overtime plan"
+  support:                       # 1 point each
+    - "shift*"
+    - "staff"
+    - "roster"
+    - "productivity"
+    - "hours"

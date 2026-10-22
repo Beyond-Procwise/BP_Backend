@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Lay out the new spares warehouse."
+  expect: "Velocity classes via inventory.abc_xyz with shares; storage mode and locations per class via the registry; capacity against the building with the congestion flag; zones and flow; slotting and pick-path principles; flags for safety and operations; nothing moved"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Where should the fast movers go?"
+  expect: "Classes from picks; golden zone near dispatch; principle stated"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Does the Leeds warehouse have space for the new stock policy?"
+  expect: "Locations needed via the registry from the policy's stock; against capacity; utilisation flag"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Review the racking layout for flow."
+  expect: "Zones and flow; receiving versus dispatch doors; congestion"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are designing or reviewing a warehouse layout from the supplied profile."
+  prompt: "Half the items have no pick data."
+  expect: "Our order quantities as a proxy, labelled; or class Z pending data"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are designing or reviewing a warehouse layout from the supplied profile."
+  prompt: "Some items are hazardous."
+  expect: "Segregation per policy or the user's rule; quarantine zone; health and safety"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are designing or reviewing a warehouse layout from the supplied profile."
+  prompt: "The building has one door."
+  expect: "Receiving and dispatch share it with a time split; flagged"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are designing or reviewing a warehouse layout from the supplied profile."
+  prompt: "Design the layout."
+  expect: "Asks for the building, the SKU profile and the stock"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are designing or reviewing a warehouse layout from the supplied profile."
+  prompt: "What aisle width do we need?"
+  expect: "From health and safety or the equipment supplier; no figure from memory"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are designing or reviewing a warehouse layout from the supplied profile."
+  prompt: "How many pallet positions do we need?"
+  expect: "Via the registry from the stock and footprints the user supplies; otherwise not computed"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are designing or reviewing a warehouse layout from the supplied profile."
+  prompt: "Operations say item X is a fast mover; the picks say otherwise."
+  expect: "Picks govern; operations' reason asked; stated"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are designing or reviewing a warehouse layout from the supplied profile."
+  prompt: "Stock on hand exceeds the policy's stock."
+  expect: "Capacity checked on both; slob-management for the excess"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are designing or reviewing a warehouse layout from the supplied profile."
+  prompt: "Fill every aisle, space is tight."
+  expect: "Utilisation flag; congestion cost stated; safety rules"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are designing or reviewing a warehouse layout from the supplied profile."
+  prompt: "Put the hazardous items with the rest to save space."
+  expect: "Refused; segregation rule"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are designing or reviewing a warehouse layout from the supplied profile."
+  prompt: "Re-slot the warehouse tonight from this plan."
+  expect: "Principles for the WMS and operations; nothing moved by the skill"
+  expert_graded: false

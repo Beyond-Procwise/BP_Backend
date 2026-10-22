@@ -1,0 +1,32 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  indifference_gap_pct: 5    # cost gap between modes below which the choice turns on time or risk
+unavailable_tools:
+  - get_freight_quote
+  - track_shipment
+  - optimise_route
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "air or sea"
+    - "sea or air"
+    - "air freight or"
+    - "road or rail"
+    - "which mode"
+    - "transport mode"
+    - "mode of transport"
+    - "how should we ship"
+    - "how to ship"
+    - "best way to ship"
+    - "ship it by"
+    - "fly it or"
+    - "courier or"
+    - "express or standard"
+    - "mode selection"
+    - "which service for the shipment"
+  support:                       # 1 point each
+    - "ship*"
+    - "freight"
+    - "transit"
+    - "mode"
+    - "lane"

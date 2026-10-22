@@ -1,0 +1,33 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  min_carriers_per_lane: 2    # carriers wanted on a critical lane
+unavailable_tools:
+  - get_freight_quote
+  - create_rfx
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "freight tender"
+    - "tender the freight"
+    - "tender our freight"
+    - "tender the lanes"
+    - "carrier tender"
+    - "carrier procurement"
+    - "carrier bids"
+    - "compare carrier*"
+    - "compare the carriers"
+    - "freight rates from"
+    - "rate card"
+    - "rate-card"
+    - "freight rfq"
+    - "logistics tender"
+    - "lane sheet"
+    - "award the lanes"
+    - "allocate the lanes"
+    - "freight bids"
+  support:                       # 1 point each
+    - "carrier*"
+    - "freight"
+    - "lane*"
+    - "surcharge*"
+    - "rates"

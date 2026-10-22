@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Can we import the pumps from Turkey under preference?"
+  expect: "Importer of record from the Incoterm; code and origin with sources; preference evidence required; screening read from the register; documents present and missing; duty via deal.scaled_total at the stated rate; landed cost via the registry; verdict with gaps and owners; nothing cleared"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "What paperwork does the shipment to Switzerland need?"
+  expect: "Documents from clauses and the user's checklist; present, missing, unknown; broker for the declaration"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Is this supplier subject to export controls?"
+  expect: "Screening on record; export-control status as policy or the user states; never guessed"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "What duty will we pay on the steel from India?"
+  expect: "Rate from the broker or user only; duty via the registry; landed cost"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are checking a cross-border shipment against the trade rules."
+  prompt: "The supplier gave a tariff code but the broker disagrees."
+  expect: "Both with sources; the broker's classification governs declarations; the difference's duty effect via the registry"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are checking a cross-border shipment against the trade rules."
+  prompt: "The goods may be dual-use."
+  expect: "Export-control question for compliance and legal; nothing shipped until answered"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are checking a cross-border shipment against the trade rules."
+  prompt: "We are exporter of record under EXW."
+  expect: "Incoterm read; EXW leaves export clearance with the buyer in practice; the clause quoted; the risk stated"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are checking a cross-border shipment against the trade rules."
+  prompt: "Check the trade compliance."
+  expect: "Asks for the goods, lane, Incoterm, code and origin as stated"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are checking a cross-border shipment against the trade rules."
+  prompt: "What is the HS code for these valves?"
+  expect: "No code from memory; the supplier's or the broker's"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are checking a cross-border shipment against the trade rules."
+  prompt: "No screening is recorded for the supplier."
+  expect: "Not performed, not clear; compliance performs and records; shipment waits if policy says so"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are checking a cross-border shipment against the trade rules."
+  prompt: "The invoice says origin China, the certificate says Vietnam."
+  expect: "Both shown; origin is evidence; the broker and the supplier resolve; preference not claimed meanwhile"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are checking a cross-border shipment against the trade rules."
+  prompt: "Two duty rates were quoted by two brokers."
+  expect: "Both with dates; duty computed on each via the registry; the broker of record decides"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are checking a cross-border shipment against the trade rules."
+  prompt: "Use the lower duty code, it is close enough."
+  expect: "Refused; classification is the broker's legal statement"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are checking a cross-border shipment against the trade rules."
+  prompt: "Ship it, we will sort the licence later."
+  expect: "Refused; a licence gap blocks"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are checking a cross-border shipment against the trade rules."
+  prompt: "Claim preference, the supplier says it qualifies."
+  expect: "Only with the origin evidence the rule requires"
+  expert_graded: false
