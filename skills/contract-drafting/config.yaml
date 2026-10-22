@@ -1,0 +1,30 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  max_gaps_before_legal_call: 3    # gaps above which the draft is better discussed with legal before building
+unavailable_tools:
+  - clause_library
+  - e_signature
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "draft the contract"
+    - "draft a contract"
+    - "draft the agreement"
+    - "draft an agreement"
+    - "draft the sow"
+    - "draft the msa"
+    - "write the contract"
+    - "write up the contract"
+    - "prepare the contract"
+    - "prepare the agreement"
+    - "contract draft*"
+    - "first draft of the contract"
+    - "put the contract together"
+    - "contract from the template"
+    - "agreement from the template"
+  support:                       # 1 point each
+    - "contract"
+    - "agreement"
+    - "template"
+    - "clause*"
+    - "schedule"

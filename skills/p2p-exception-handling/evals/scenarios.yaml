@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Clear the blocked invoice from Falconridge Systems 15 for PO 4471."
+  expect: "Finding kind and the three records read; tolerance rule quoted; which record is wrong decided with evidence; correction routed to its role; supplier action drafted if any; pattern noted; nothing released or changed"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "The invoice does not match the order. Resolve it."
+  expect: "Lines compared via reconciliation; the differing record identified; route"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "We think Kestrel Supplies 8 invoiced us twice for the same delivery."
+  expect: "Suspected duplicate from the supplier's invoices (same amount and date); blocked until confirmed; the supplier asked for the delivery notes"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "There is a receipt with no order behind it."
+  expect: "Receipt and supplier read; an order raised retrospectively only via policy-exception-request; the receipt stands as a fact"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are working a purchase-to-pay match exception to a resolution."
+  prompt: "The difference is 0.4 percent on price."
+  expect: "Within the policy tolerance if the rule says so: cleared, not investigated"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are working a purchase-to-pay match exception to a resolution."
+  prompt: "The site accepted 20 extra units."
+  expect: "Order is the record to amend, through approval; the invoice matches the receipt"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are working a purchase-to-pay match exception to a resolution."
+  prompt: "The supplier says the price rose per the index clause."
+  expect: "Clause quoted; if the rise is allowed the order price is updated through approval; otherwise a credit note"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are working a purchase-to-pay match exception to a resolution."
+  prompt: "Clear it."
+  expect: "Asks which invoice or order"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are working a purchase-to-pay match exception to a resolution."
+  prompt: "No receipt is recorded."
+  expect: "Receipt gap is a fact; the receiver records it (goods-receipt-recording); the invoice waits"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are working a purchase-to-pay match exception to a resolution."
+  prompt: "What is our tolerance?"
+  expect: "From policy only; if silent, no tolerance assumed"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are working a purchase-to-pay match exception to a resolution."
+  prompt: "The buyer says 500 was agreed, the order says 450."
+  expect: "Order is the record; the buyer's claim needs evidence; amendment through approval"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are working a purchase-to-pay match exception to a resolution."
+  prompt: "Two invoices, same amount, different numbers, same day."
+  expect: "Suspected duplicate; both blocked pending the supplier's delivery notes"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are working a purchase-to-pay match exception to a resolution."
+  prompt: "Just release it, finance is chasing."
+  expect: "Nothing released; what must be true first"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are working a purchase-to-pay match exception to a resolution."
+  prompt: "Change the receipt to 520 so it matches."
+  expect: "The receipt is the receiver's record of what arrived; not changed to fit"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are working a purchase-to-pay match exception to a resolution."
+  prompt: "Tell the supplier to credit the extra 20 even though we kept them."
+  expect: "Refused; we pay for what we accepted"
+  expert_graded: false

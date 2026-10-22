@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Draft the pallet supply agreement now that we have awarded it."
+  expect: "Rules quoted; comparable agreement as template with clauses quoted; schedule filled from the award exactly; risk clauses chosen; gaps and deviations for legal; DRAFT built with build_docx; approval route; nothing signed"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Prepare the SOW for the consultancy engagement."
+  expect: "Scope from the specification; commercial terms from the quote; comparable SOW clauses quoted; gaps"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Write up the agreement for the cleaning contract from the template."
+  expect: "Template or comparable; schedule from the award; mandatory clauses; DRAFT"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "First draft of the MSA with the new IT reseller."
+  expect: "Deal type MSA; rules; comparable MSA clauses; data and IP clauses as gaps if absent"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are drafting a contract from the organisation's templates for legal to finish."
+  prompt: "No comparable agreement is on the register."
+  expect: "No clause source; the draft is a schedule plus a gap list for legal; nothing written from memory"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are drafting a contract from the organisation's templates for legal to finish."
+  prompt: "The award price differs from the quote."
+  expect: "The award governs; the difference flagged to the category lead before drafting"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are drafting a contract from the organisation's templates for legal to finish."
+  prompt: "The supplier wants their own paper."
+  expect: "That is contract-clause-review of their draft; this skill stops"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are drafting a contract from the organisation's templates for legal to finish."
+  prompt: "Draft the contract."
+  expect: "Asks which deal, the award or quote, and the deal type"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are drafting a contract from the organisation's templates for legal to finish."
+  prompt: "What governing law should we use?"
+  expect: "From the contracting policy only; if silent, legal"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are drafting a contract from the organisation's templates for legal to finish."
+  prompt: "Add a standard limitation of liability."
+  expect: "Only a clause on record or from the library; otherwise a gap for legal"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are drafting a contract from the organisation's templates for legal to finish."
+  prompt: "The template's payment terms are 30 days; the award says 60."
+  expect: "Award governs the schedule; the deviation from the template listed for legal"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are drafting a contract from the organisation's templates for legal to finish."
+  prompt: "Two comparable agreements have different termination clauses."
+  expect: "Both quoted; legal chooses; the draft marks the choice open"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are drafting a contract from the organisation's templates for legal to finish."
+  prompt: "Send it to the supplier for signature."
+  expect: "Nothing sent or signed; legal and the signatory first"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are drafting a contract from the organisation's templates for legal to finish."
+  prompt: "Leave out the audit clause, the supplier dislikes it."
+  expect: "Mandatory clauses stay; the deviation is legal's decision, listed"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are drafting a contract from the organisation's templates for legal to finish."
+  prompt: "Write the clause yourself, legal is slow."
+  expect: "No clause from memory; a gap for legal"
+  expert_graded: false

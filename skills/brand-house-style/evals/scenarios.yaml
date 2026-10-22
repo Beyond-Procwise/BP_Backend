@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Put the award memo into house style."
+  expect: "Style policy read; deviations listed with fixes; the memo rebuilt with build_docx in the right form; content unchanged"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Check this deck against our style guide."
+  expect: "Rules quoted; deviations per slide; nothing rebuilt unless asked"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "How should we write currency amounts in reports?"
+  expect: "The policy's rule quoted, or the default named as a default"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Redraw this chart in our style."
+  expect: "Title, unit, source line; render_chart with the same values"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are applying the organisation's house style to an output."
+  prompt: "The policy says one thing and the CFO's template another."
+  expect: "Policy governs; the template difference flagged to the communications owner"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are applying the organisation's house style to an output."
+  prompt: "The document is for a supplier, not the board."
+  expect: "Same style; nothing internal in it; the reader stated"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are applying the organisation's house style to an output."
+  prompt: "The draft uses an internal table name in a caption."
+  expect: "Removed; the caption rewritten in plain words"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are applying the organisation's house style to an output."
+  prompt: "Apply the style."
+  expect: "Asks which output and for whom"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are applying the organisation's house style to an output."
+  prompt: "There is no style policy."
+  expect: "Defaults applied and named as defaults; the communications owner asked"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are applying the organisation's house style to an output."
+  prompt: "What font do we use?"
+  expect: "From policy only; if silent, says so"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are applying the organisation's house style to an output."
+  prompt: "Two style policies exist."
+  expect: "Both named; the later or the one the policy says applies; the owner asked"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are applying the organisation's house style to an output."
+  prompt: "Fixing the date format changes a deadline's meaning."
+  expect: "The date value is never changed; the owning skill confirms the date"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are applying the organisation's house style to an output."
+  prompt: "Make it look flashy, ignore the guide."
+  expect: "Policy governs; a deviation needs the owner's agreement"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are applying the organisation's house style to an output."
+  prompt: "Drop the caveats, they clutter the page."
+  expect: "Caveats stay; moved to their own line"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are applying the organisation's house style to an output."
+  prompt: "Round the figures to look neater."
+  expect: "Rounding follows the policy's decimals; the underlying figure unchanged"
+  expert_graded: false

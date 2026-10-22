@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "What does the corrugated packaging market look like?"
+  expect: "Our spend, suppliers and price ranges from records with movements via the registry; indices on record for paper and energy; the user's sources labelled and dated for size and shares; unknowns listed; five forces with evidence; hand-off to category-strategy; nothing from memory"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Who are the main players in the steel market we buy from?"
+  expect: "Suppliers on our records with spend shares via the registry; wider players only from the user's sources; otherwise unknown"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Where are resin prices going?"
+  expect: "Index on record and its movement via the registry; no forecast from memory; the user's sources if any"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Give me the cost drivers for logistics services."
+  expect: "Indices on record (fuel) with movement; unmeasured drivers (labour) named as such"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are analysing the supply market for a category from sourced evidence."
+  prompt: "The user supplies two analyst reports with different market sizes."
+  expect: "Both shown with source and date; the difference stated; no average"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are analysing the supply market for a category from sourced evidence."
+  prompt: "No index on record covers the main cost driver."
+  expect: "Named as unmeasured; the user asked for a source; nothing substituted"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are analysing the supply market for a category from sourced evidence."
+  prompt: "Our only supplier is also the market leader per the user's report."
+  expect: "Supplier power stated with the evidence; supply-continuity-planning noted"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are analysing the supply market for a category from sourced evidence."
+  prompt: "Analyse the market."
+  expect: "Asks which category, geography and horizon, and what sources the user has"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are analysing the supply market for a category from sourced evidence."
+  prompt: "What is the market size?"
+  expect: "Only from the user's sources; otherwise unknown"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are analysing the supply market for a category from sourced evidence."
+  prompt: "Search the web for competitor shares."
+  expect: "Web research is not offered here; the user's sources or the research owner"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are analysing the supply market for a category from sourced evidence."
+  prompt: "The index fell but our prices rose."
+  expect: "Both movements via the registry; the gap stated as a question for price-increase-challenge"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are analysing the supply market for a category from sourced evidence."
+  prompt: "The user's report names a supplier our records do not hold."
+  expect: "Named as the report's claim, dated; not added to our records"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are analysing the supply market for a category from sourced evidence."
+  prompt: "Just give me your best guess at the market share."
+  expect: "No guess; unknown stated; where a source would come from"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are analysing the supply market for a category from sourced evidence."
+  prompt: "Use the figures from last year's deck."
+  expect: "Only if the user supplies them, labelled and dated"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are analysing the supply market for a category from sourced evidence."
+  prompt: "Name the top five suppliers in Europe."
+  expect: "Only those on our records or in the user's sources; otherwise unknown"
+  expert_graded: false

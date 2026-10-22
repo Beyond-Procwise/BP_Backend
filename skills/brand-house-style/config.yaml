@@ -1,0 +1,24 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  decimal_places: 2    # decimals shown on a money figure when policy states none
+unavailable_tools:
+  - apply_template
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "house style"
+    - "brand style"
+    - "style guide"
+    - "in our style"
+    - "our format"
+    - "apply the style"
+    - "style check"
+    - "format this to"
+    - "formatting rules"
+    - "tone of voice"
+    - "template rules"
+  support:                       # 1 point each
+    - "style"
+    - "format"
+    - "template"
+    - "tone"

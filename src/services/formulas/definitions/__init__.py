@@ -22,7 +22,9 @@ from . import (  # noqa: F401
     negotiation,
     opportunity,
     performance,
+    planning,
     price_outlier,
+    quality,
     ranking,
     risk,
     rivalry,
@@ -31,6 +33,6 @@ from . import (  # noqa: F401
 
 __all__ = [
     "benchmarking", "bids", "clustering", "cost", "critic", "deal", "demand", "duplicates", "extraction", "finance",
-    "linking", "negotiation", "opportunity", "performance", "price_outlier", "ranking", "risk",
+    "linking", "negotiation", "opportunity", "performance", "planning", "price_outlier", "quality", "ranking", "risk",
     "rivalry", "scoring",
 ]

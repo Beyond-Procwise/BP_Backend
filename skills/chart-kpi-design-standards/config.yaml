@@ -1,0 +1,34 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  max_donut_slices: 6    # slices above which a donut becomes a bar chart
+unavailable_tools:
+  - render_kpi_card
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "which chart"
+    - "what chart"
+    - "chart type"
+    - "best chart"
+    - "right chart"
+    - "chart for this"
+    - "define the kpi"
+    - "define a kpi"
+    - "kpi definition*"
+    - "kpi design"
+    - "design the kpi"
+    - "rag threshold*"
+    - "traffic light threshold*"
+    - "red amber green"
+    - "chart standards"
+    - "chart design"
+    - "how to present this data"
+    - "present this data"
+    - "visualise this"
+    - "visualize this"
+  support:                       # 1 point each
+    - "chart"
+    - "kpi"
+    - "threshold*"
+    - "axis"
+    - "graph"

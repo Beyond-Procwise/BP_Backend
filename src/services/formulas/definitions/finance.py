@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Mapping, Optional, Sequence
 
-from ..contract import COUNT, MONEY, RATIO, ROWS, Output, Term
+from ..contract import COUNT, MONEY, PERCENT, RATIO, ROWS, Output, Term
 from ..registry import GoldenVector, formula
 
 _OWNER = "analytics"
@@ -111,6 +111,37 @@ def carrying_cost(amount=None, annual_rate=None, days=None):
     if a is None or r is None or d is None or a < 0 or r < 0 or d < 0:
         return None
     return round(a * r * d / 365.0, 2)
+
+
+@formula(
+    "finance.early_payment_decision",
+    version="1.0.0",
+    owner=_OWNER,
+    purpose="Whether an early-payment discount beats paying at net days: the discount's annualised return against the cost of capital",
+    effective_from=_FROM,
+    inputs=[
+        Term("discount_pct", PERCENT, "the discount offered, in percent", required=False, minimum=0.0),
+        Term("discount_days", COUNT, "days within which the discount applies", required=False, minimum=0.0),
+        Term("net_days", COUNT, "days to pay without the discount", required=False, minimum=0.0),
+        Term("annual_rate", RATIO, "the cost of capital as a fraction, from the governed policy or finance", required=False, minimum=0.0),
+    ],
+    output=Output("dict", PERCENT, "{annualised_return_pct, cost_of_capital_pct, take_discount}; None when net_days is not after discount_days or an input is absent"),
+    notes=(
+        "The standard comparison: annualised return = discount / (100 - discount) * 365 / (net_days - discount_days). "
+        "take_discount is true when that return beats the cost of capital; whether AP can reliably pay inside the window is the user's statement, not computed here."
+    ),
+    golden=[
+        GoldenVector(inputs={"discount_pct": 2, "discount_days": 10, "net_days": 30, "annual_rate": 0.08}, expected={"annualised_return_pct": 37.24, "cost_of_capital_pct": 8.0, "take_discount": True}, tolerance=0.01),
+        GoldenVector(inputs={"discount_pct": 0.5, "discount_days": 10, "net_days": 60, "annual_rate": 0.08}, expected={"annualised_return_pct": 3.67, "cost_of_capital_pct": 8.0, "take_discount": False}, tolerance=0.01),
+        GoldenVector(inputs={"discount_pct": 2, "discount_days": 30, "net_days": 30, "annual_rate": 0.08}, expected=None),
+    ],
+)
+def early_payment_decision(discount_pct=None, discount_days=None, net_days=None, annual_rate=None):
+    d, dd, nd, r = _num(discount_pct), _num(discount_days), _num(net_days), _num(annual_rate)
+    if d is None or dd is None or nd is None or r is None or d < 0 or d >= 100 or nd <= dd or r < 0:
+        return None
+    annualised = d / (100.0 - d) * 365.0 / (nd - dd) * 100.0
+    return {"annualised_return_pct": round(annualised, 2), "cost_of_capital_pct": round(r * 100.0, 2), "take_discount": annualised > r * 100.0}
 
 
 @formula(

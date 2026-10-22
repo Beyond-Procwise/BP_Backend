@@ -1,0 +1,31 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  max_forces: 5    # market forces written up, each with its evidence
+unavailable_tools:
+  - web_search
+  - web_fetch
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "market analysis"
+    - "market overview"
+    - "market landscape"
+    - "supply market for"
+    - "the market for"
+    - "market size"
+    - "market share*"
+    - "who are the players"
+    - "who are the main suppliers in the market"
+    - "competitors in the market"
+    - "market trend*"
+    - "price trend*"
+    - "where are prices going"
+    - "where is the price going"
+    - "cost drivers for"
+    - "market intelligence"
+    - "market report on"
+  support:                       # 1 point each
+    - "market"
+    - "competitor*"
+    - "trend*"
+    - "index"

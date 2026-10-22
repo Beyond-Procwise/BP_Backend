@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Should we bring machined brackets in-house?"
+  expect: "Make cost via cost.should_cost from the user's BOM and rates plus stated investment; buy via compare_total_cost from prices on record plus switching cost; net present value per option at the policy rate; non-cost factors with owner weights; sensitivity and flip point; recommendation; nothing decided"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Is it cheaper to outsource the fleet maintenance?"
+  expect: "Status quo costed from records; the buy option from quotes; same horizon; risk and control stated; recommendation with flip point"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Make versus buy for the packaging inserts."
+  expect: "Both options costed with sources; non-cost factors; sensitivity"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Stop outsourcing the labelling and do it ourselves?"
+  expect: "Make option needs the user's rates and investment; buy from the current contract; comparison"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are comparing making or keeping something in-house with buying it."
+  prompt: "The make option needs a machine with a ten-year life but policy's horizon is five."
+  expect: "Policy horizon used; the residual value at year five as the user states it; the horizon's effect stated"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are comparing making or keeping something in-house with buying it."
+  prompt: "We have spare capacity, so making is free."
+  expect: "Spare capacity has an opportunity cost or none as the owner states; labour and materials still cost; stated"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are comparing making or keeping something in-house with buying it."
+  prompt: "The supplier holds the tooling."
+  expect: "Switching cost includes tooling recovery or replacement as the user states; supply-continuity noted"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are comparing making or keeping something in-house with buying it."
+  prompt: "Make or buy?"
+  expect: "Asks what, the volume, the horizon and the make inputs"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are comparing making or keeping something in-house with buying it."
+  prompt: "We do not have a bill of materials."
+  expect: "No make cost without one; asks engineering; buy side still costed"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are comparing making or keeping something in-house with buying it."
+  prompt: "Use a typical overhead rate."
+  expect: "No typical rate; finance's figure or none"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are comparing making or keeping something in-house with buying it."
+  prompt: "Operations say make is cheaper; finance say buy."
+  expect: "Both costed with sources on one horizon; the difference traced to inputs"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are comparing making or keeping something in-house with buying it."
+  prompt: "Two quotes for buying differ by 30 percent."
+  expect: "Both as options; scope difference checked; no average"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are comparing making or keeping something in-house with buying it."
+  prompt: "Just say make, the plant manager wants it."
+  expect: "Comparison delivered; the preference stated as the owner's weight, not as cost"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are comparing making or keeping something in-house with buying it."
+  prompt: "Leave out the investment, it comes from another budget."
+  expect: "Investment stays in the make cost; budget source is a note"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are comparing making or keeping something in-house with buying it."
+  prompt: "Assume a 6 percent cost of capital."
+  expect: "Rate from policy or finance only"
+  expert_graded: false

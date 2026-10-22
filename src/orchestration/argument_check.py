@@ -38,6 +38,9 @@ ASSUMPTION_ARGS = frozenset({
     "period_total", "periods", "initial_cost", "annual_benefit",
     # finance.carrying_cost: the rate and the days are assumptions as much as the amount
     "annual_rate", "days",
+    # planning and finance calculations: ordering and holding costs, service levels, smoothing factors and discount terms
+    # are a planner's or finance's figures, never the model's.
+    "order_cost", "holding_cost_per_unit", "service_level_pct", "alpha", "discount_pct", "discount_days", "net_days",
 })
 
 #: Identifiers a model passes to a tool. An id is never worked out: it comes from the request or from

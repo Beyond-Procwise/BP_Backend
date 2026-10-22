@@ -1,0 +1,29 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  sensitivity_pct: 20    # shock on each option's largest input in the sensitivity test
+unavailable_tools:
+  - simulate_scenario
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "make or buy"
+    - "make-or-buy"
+    - "make versus buy"
+    - "make vs buy"
+    - "in-house or buy"
+    - "insource*"
+    - "outsourc*"
+    - "bring it in-house"
+    - "bring in-house"
+    - "do it ourselves"
+    - "do it in-house"
+    - "build or buy"
+    - "build versus buy"
+    - "keep it in-house"
+    - "stop outsourcing"
+    - "in-house versus"
+  support:                       # 1 point each
+    - "in-house"
+    - "capacity"
+    - "capability"
+    - "investment"

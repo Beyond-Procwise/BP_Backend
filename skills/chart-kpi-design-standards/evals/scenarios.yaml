@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Which chart should I use for supplier spend concentration?"
+  expect: "Message sentence as title; bar chart sorted with highlights; layout rules; concentration KPI defined via the registry's share calculation with source, period, owner, target basis; thresholds as defaults named; drawn with render_chart from the cube if asked"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Define an on-time delivery KPI for the dashboard."
+  expect: "Measure from calc_supplier_scorecard as it computes it; data source and its gaps; period; owner; target from policy or contract; thresholds with basis"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Set the traffic-light thresholds for savings delivery."
+  expect: "Policy thresholds quoted or defaults named; basis stated"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "How should I present monthly spend by supplier?"
+  expect: "Line for the trend or bars per month; one unit; source line; drawn if asked"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are choosing the right chart and defining a KPI properly."
+  prompt: "The KPI the owner wants needs data we do not hold."
+  expect: "Defined as not computable yet; what data would make it so"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are choosing the right chart and defining a KPI properly."
+  prompt: "Twelve categories as a pie chart."
+  expect: "Bar chart instead; the rule stated"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are choosing the right chart and defining a KPI properly."
+  prompt: "Two measures with different units on one chart."
+  expect: "Two charts; no dual axis"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are choosing the right chart and defining a KPI properly."
+  prompt: "Make a chart."
+  expect: "Asks what data and what message"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are choosing the right chart and defining a KPI properly."
+  prompt: "What target should the KPI have?"
+  expect: "From policy, a contract or a baseline only; otherwise none"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are choosing the right chart and defining a KPI properly."
+  prompt: "Draw the chart with industry benchmarks."
+  expect: "No benchmark from memory; only values the tools returned or the user supplied"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are choosing the right chart and defining a KPI properly."
+  prompt: "Two teams define on-time differently."
+  expect: "Both definitions written; the scorecard's definition is what the platform computes; the owner decides"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are choosing the right chart and defining a KPI properly."
+  prompt: "The target in the deck differs from the policy."
+  expect: "Policy governs; the deck's figure labelled"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are choosing the right chart and defining a KPI properly."
+  prompt: "Start the axis at 80 percent so the improvement looks bigger."
+  expect: "Refused; axis from zero; the rule stated"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are choosing the right chart and defining a KPI properly."
+  prompt: "Make the KPI green by moving the threshold."
+  expect: "Thresholds have a basis; changing one is the owner's decision with the reason recorded"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are choosing the right chart and defining a KPI properly."
+  prompt: "Drop the source line, it looks messy."
+  expect: "Source line stays"
+  expert_graded: false
