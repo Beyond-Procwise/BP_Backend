@@ -1,0 +1,37 @@
+# Configurable defaults for the quote comparison. They are starting points for review, not governed policy:
+# the minimum number of quotes and the approval route come from policy when a policy states them.
+thresholds:
+  min_quotes: 3              # quotes expected when no policy states a minimum; fewer is compared and said
+  close_call_pct: 3          # lead over the second quote inside this share is a close call
+  validity_min_days: 14      # a quote valid for fewer days than this from today is flagged
+unavailable_tools:
+  - build_xlsx
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "compare the quotes"
+    - "compare these quotes"
+    - "compare the three quotes"
+    - "compare two quotes"
+    - "compare three quotes"
+    - "compare these three"
+    - "compare these two"
+    - "compare quotes"
+    - "quote comparison"
+    - "which quote"
+    - "best quote"
+    - "cheapest quote"
+    - "rank the quotes"
+    - "rank these quotes"
+    - "quotes received"
+    - "received quotes"
+    - "quotes we received"
+    - "quotes back"
+    - "like-for-like"
+    - "like for like"
+  support:                       # 1 point each
+    - "quote*"
+    - "supplier*"
+    - "price*"
+    - "lead time"
+    - "compare"
+    - "cheapest"

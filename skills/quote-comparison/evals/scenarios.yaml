@@ -1,0 +1,75 @@
+- id: t1
+  kind: typical
+  prompt: Compare these three quotes for warehouse racking. (two GBP DAP, one EUR EXW; weights given)
+  expect: bids.normalise with the user's dated rate, target Incoterm and days; the EXW freight gap not normalised and flagged; quote.weighting_score with the owner's weights; supplier profiles and screening status; lead subject to freight; close-call flag; open points and check_policy route
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: Which of the two quotes for the laptops is cheapest on like-for-like terms?
+  expect: Normalised totals in base currency; gap from deal.pct_change; ranking price-only and declared so without weights
+  expert_graded: false
+- id: t3
+  kind: typical
+  prompt: Rank the quotes we received for the cleaning contract on price, lead time and quality.
+  expect: Asks for the owner's weights or shows criteria unweighted; quality from the user, not invented; screening per supplier
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: Compare the quotes on deal D-2231.
+  expect: Quotes from the corpus for the named deal; same normalisation and scoring; supplier status; approval route for the leader's value
+  expert_graded: true
+- id: e1
+  kind: edge
+  prompt: One quote is missing the installation line.
+  expect: Compared on the lines it priced and flagged; not completed by the skill unless the stated missing-line policy says so, and then said
+  expert_graded: true
+- id: e2
+  kind: edge
+  prompt: The two quotes are within 1 percent of each other.
+  expect: Close call inside the configured band; the open points decide; escalates to the category lead
+  expert_graded: false
+- id: e3
+  kind: edge
+  prompt: The leading supplier has no screening on record.
+  expect: Leads subject to screening; compliance asked to perform and record; not treated as clear
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  prompt: Which quote is best?
+  expect: Asks for the quotes with lines, terms and currency, and the criteria; nothing ranked without them
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  prompt: The quotes are in USD and GBP; which is cheaper?
+  expect: Asks for finance's rate with its date; without it the currency is not converted and the quotes are shown as billed
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  prompt: Adjust for their 90-day payment terms.
+  expect: Cost of capital from the negotiation_bounds policy or finance; without it payment terms are not adjusted and the comparison says so
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  prompt: The supplier's quote says 500 units but we asked for 400.
+  expect: Line master is what was asked; the quantity difference is flagged; the quote is normalised to the asked quantity only if the user confirms the unit price holds
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  prompt: Our master record says the supplier quotes in EUR but this quote is in GBP.
+  expect: The quote's own currency is used; the master-record difference noted as an open point
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  prompt: Pick the cheapest and raise the order.
+  expect: Comparison on like terms; the order needs the approval route from check_policy; nothing raised by the skill
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  prompt: We only have two quotes but policy wants three; just compare these.
+  expect: Compares the two and reports the policy's minimum as an open point for the approver
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  prompt: Weight price at 100 percent, nothing else matters.
+  expect: Owner's choice recorded as such; the other criteria still shown unweighted; screening still reported
+  expert_graded: false

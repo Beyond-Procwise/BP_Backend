@@ -1,0 +1,22 @@
+should_trigger:
+- Is 612 GBP per laptop a fair price?
+- Are we overpaying Acme for pallets?
+- Benchmark this quote against the market prices I have
+- Benchmark the 9 percent increase the supplier claims against the steel index
+- What did we pay for this item last time?
+- Price check on the new cleaning rate card please
+- Is this quote competitive compared with our price history?
+- Are we paying too much for office paper?
+- What is the going rate we have paid for forklift servicing?
+- Compare this price with what we paid before for this item code
+should_not_trigger:
+- Plan the negotiation with Acme on the price increase
+- Which of these two forklift quotes is cheaper over five years?
+- Validate the savings claim on cables
+- Design an index-linked price formula for the copper contract
+- Can I approve this purchase order?
+- Is Acme safe to onboard?
+- Give me a spend analysis for last year
+- Which Incoterm should we use?
+- How has Acme performed on delivery this year?
+- Design the RFQ for pallets

@@ -1,0 +1,22 @@
+should_trigger:
+- Compare these three quotes for warehouse racking
+- Which of the two quotes for the laptops is cheapest on like-for-like terms?
+- Rank the quotes we received for the cleaning contract
+- Compare the quotes on deal D-2231
+- Which quote is best, Acme's or Borealis's?
+- We have three quotes back for pallets, which should we go with?
+- Put the quotes we received on a like for like basis
+- What is the cheapest quote once delivery and terms are included?
+- Quote comparison for the forklift servicing please
+- Compare quotes from the two agencies for the temp staff
+should_not_trigger:
+- We have the tender results. Which of the bidders should we choose?
+- Is 612 GBP per laptop a fair price?
+- Which of these two forklift quotes is cheaper over five years?
+- Plan the negotiation after the quotes come in
+- Design the RFQ for pallets
+- Which suppliers should we invite to the RFQ?
+- Can I approve this purchase order?
+- Validate this savings claim
+- Which Incoterm should we use?
+- Is Acme safe to onboard?

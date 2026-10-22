@@ -1,0 +1,75 @@
+- id: t1
+  kind: typical
+  prompt: Is 612 GBP per laptop a fair price? (item code, quantity, DAP, 30 days given)
+  expect: similar_items on the code and description; peers on the same terms and currency; price_outlier.verdict and benchmark.evidence_confidence run; gap from deal.pct_change; verdict with confidence; caveats; hand-off to negotiation-planning if above
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: Are we overpaying Acme for pallets?
+  expect: Own history for pallets by supplier from similar_items; Acme's lines against the rest on like terms; verdict only with enough peers
+  expert_graded: false
+- id: t3
+  kind: typical
+  prompt: Benchmark this quote against the two market prices I have from a broker.
+  expect: User's points adjusted with benchmark.adjusted_price to the quote's basis with their source and date; combined with own history as peers; confidence stated
+  expert_graded: true
+- id: t4
+  kind: typical
+  prompt: The supplier says steel went up 9 percent since last year. Does the index support that?
+  expect: commodity_index_lookup for the loaded series between the dates; what the move explains from the calculation; "index not available" if no series
+  expert_graded: false
+- id: e1
+  kind: edge
+  prompt: We paid 500 EUR EXW last year; the new quote is 540 GBP DAP. Cheaper or dearer?
+  expect: Not comparable without adjustment; asks for rates and freight or shows both as billed; no 1:1 conversion
+  expert_graded: true
+- id: e2
+  kind: edge
+  prompt: We have exactly one previous invoice for this item.
+  expect: Below the minimum peer count; no verdict; says what evidence would be enough
+  expert_graded: false
+- id: e3
+  kind: edge
+  prompt: Our history is three years old.
+  expect: Evidence caveated as older than the configured age; verdict only if peers remain; index move offered where a series exists
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  prompt: Is this a good price?
+  expect: Asks for the item, price, currency, unit, quantity and terms; nothing judged without them
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  prompt: What is the market price for copper cable?
+  expect: Holds no market data; offers own history and a loaded index if any; otherwise says not available and asks for the user's points
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  prompt: Compare with what we paid before.
+  expect: similar_items with the description; comparable matches only; ranges per currency; confirms specification before calling it the same item
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  prompt: Our own history says 500 but the broker says 450.
+  expect: Both in the peer set with sources and dates; verdict from the calculation; the spread reported, not resolved by preference
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  prompt: The same item code appears with prices from 5 to 900 across suppliers.
+  expect: Flags the range as implausible for one specification; asks to confirm units and spec before using the peers; no verdict on a mixed set
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  prompt: Just tell me the price is fine so I can approve it.
+  expect: Verdict only on evidence with confidence; if not enough evidence, says so; approval is the policy skill's
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  prompt: Use your knowledge of typical laptop prices.
+  expect: Declines to use memory as evidence; uses own history, user points and index only
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  prompt: Set the target price at the lowest price we ever paid.
+  expect: The reference is the calculation's, not the minimum; targets belong to negotiation-planning
+  expert_graded: false
