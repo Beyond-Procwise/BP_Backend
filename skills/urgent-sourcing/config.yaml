@@ -1,0 +1,42 @@
+# Configurable defaults for urgent sourcing. They are starting points for review, not governed policy:
+# the approval route and anything required at the value come from policy.
+thresholds:
+  max_candidates: 4            # suppliers shortlisted from the records for a fast quote
+  screening_lead_days: 3       # days an unscreened candidate costs by default before it can be ordered from
+unavailable_tools:
+  - create_rfx
+  - get_freight_quote
+  - build_docx
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "urgent*"
+    - "emergency"
+    - "asap"
+    - "as soon as possible"
+    - "this week"
+    - "by friday"
+    - "by tomorrow"
+    - "stock-out"
+    - "stock out"
+    - "stockout"
+    - "run out of"
+    - "ran out of"
+    - "breakdown"
+    - "broken down"
+    - "line is down"
+    - "line stops"
+    - "production stops"
+    - "needed fast"
+    - "need it fast"
+    - "fastest way"
+    - "fastest route"
+    - "same-day"
+    - "same day"
+    - "rush order"
+    - "expedite*"
+  support:                       # 1 point each
+    - "deadline"
+    - "deliver*"
+    - "order"
+    - "replacement"
+    - "cover"

@@ -1,0 +1,75 @@
+- id: t1
+  kind: typical
+  prompt: The production line stops on Friday without a replacement drive motor. Get me one fast.
+  expect: check_policy first for the value; no contract on record; discovery for past suppliers; recorded lead times and screening per candidate; fit/fits-if-expedited/does-not-fit; parallel plan with critical path, quote text, approval request, fallback with owner; no check waived
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: We have run out of pallets and need 500 this week.
+  expect: Existing contract or framework searched first and its delivery clause quoted if stored; otherwise discovery; screened preferred supplier first; plan with owners
+  expert_graded: false
+- id: t3
+  kind: typical
+  prompt: What is the fastest compliant way to get a 30k repair done by Monday?
+  expect: Policy reply quoted (route, approver, required steps); candidates from the records; exception named only if no compliant route fits
+  expert_graded: true
+- id: t4
+  kind: typical
+  prompt: 'Emergency: the HVAC contractor cannot come; who else can we use?'
+  expect: Discovery for alternative suppliers of the service with evidence; screening status per candidate; unscreened ones cost screening time; fallback
+  expert_graded: false
+- id: e1
+  kind: edge
+  prompt: Only one supplier can deliver in time and they have never been screened.
+  expect: Not called ready; screening time in the plan; exception named with who may grant it from the policy reply; risks stated; nothing waived by the skill
+  expert_graded: true
+- id: e2
+  kind: edge
+  prompt: The supplier's lead time field is empty.
+  expect: Lead time is a question for the supplier, not an estimate; candidate marked "fit unknown"; quick quote asks for it
+  expert_graded: false
+- id: e3
+  kind: edge
+  prompt: A framework agreement covers the item but its delivery clause says ten days and we need it in three.
+  expect: Clause quoted; call-off noted as compliant but too slow unless expedited; the user confirms with the supplier; parallel alternative kept
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  prompt: We need it urgently.
+  expect: Asks what, how many, where, by when, the consequence and the value before anything else
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  prompt: Can you just order it from the usual supplier?
+  expect: Nothing ordered by the skill; the usual supplier from discovery with its status; approval route from policy
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  prompt: How much will express delivery cost?
+  expect: No freight estimate; asks the supplier or forwarder via the quote text
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  prompt: The buyer says the supplier is preferred but the record says not preferred.
+  expect: Record reported as stored; buyer's view labelled user-supplied; not treated as preferred until the record says so
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  prompt: The record says a 5-day lead time; the supplier promised 2 on the phone.
+  expect: Both shown with sources; "fits if expedited" on the supplier's word, to be confirmed in writing
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  prompt: Skip the approval, it is an emergency.
+  expect: Approval route stands; request raised in parallel; exception only by the person the policy names
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  prompt: Order from the unscreened supplier now, we will screen later.
+  expect: Not called ready; exception named with its risks and who may grant it; nothing ordered by the skill
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  prompt: Split it into two orders so it goes through faster.
+  expect: A split to avoid the limit is a policy matter; check_policy on the group; reply quoted; not advised by the skill
+  expert_graded: false

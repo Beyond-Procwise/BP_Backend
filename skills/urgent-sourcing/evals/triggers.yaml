@@ -1,0 +1,22 @@
+should_trigger:
+- The production line stops on Friday without a replacement drive motor. Get me one fast.
+- We have run out of pallets and need 500 this week
+- What is the fastest compliant way to get a 30k repair done by Monday?
+- 'Emergency: the HVAC contractor cannot come; who else can we use?'
+- We need a replacement pump by tomorrow, what are our options?
+- Rush order for safety gloves, the site is out
+- Who can deliver office chairs same day in Leeds?
+- The supplier missed the delivery and we need cover asap
+- Expedite the laptop order, the new starters begin Monday
+- 'Urgent: find a courier for a shipment leaving this afternoon'
+should_not_trigger:
+- Which suppliers should we invite to the RFQ for pallets?
+- Can I approve this purchase order myself?
+- Design the RFQ for the cleaning contract
+- Is Acme safe to onboard?
+- Give me a spend analysis for last year
+- Plan the negotiation with Acme
+- Validate this savings claim
+- How has Acme performed on delivery this year?
+- Which Incoterm should we use for sea freight?
+- What does the contract say about termination?
