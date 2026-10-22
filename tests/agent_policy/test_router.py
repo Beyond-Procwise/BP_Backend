@@ -13,6 +13,9 @@ GOOD = {"X-Gateway-Key": "k1", "X-User-Sub": "u1", "X-User-Email": "u1@x", "X-Us
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setenv("AGENT_POLICY_GATEWAY_KEY", "k1")
+    # N8: with sign-in enforced the identity is the forwarded bearer token, not these headers; these
+    # tests are about the key + header path, which remains the contract only when sign-in is OFF.
+    monkeypatch.setattr("api.auth._active_verifier", lambda: None)
     monkeypatch.setenv("AGENT_POLICY_ORCHESTRATOR_KEY", "o1")
     roles = {"PROCWISE_ADMIN": "Admin", "PROCWISE_VIEWER": "Viewer", "PROCWISE_PROCUMENT_BUYER_ANALYST": "Buyer"}
     monkeypatch.setattr(R, "_role_of", lambda principal: roles.get((principal.claims or {}).get("cognito:groups", [""])[0], "Viewer"))

@@ -61,7 +61,19 @@ def _role_of(principal: Principal) -> str:
 
 
 def gateway_principal(request: Request) -> Principal:
+    """Who is calling through the gateway.
+
+    The shared key proves the PATH (the call came through the gateway). It is not an identity:
+    while sign-in is enforced the identity is the user's own bearer token, forwarded by the gateway
+    and verified here by the same verifier every other route uses (N8 part 1). The x-user-* headers
+    are read only when sign-in is switched off, where they are all there is - as before.
+    Enforced-but-unconfigured refuses (503) rather than falling back to the headers.
+    """
     _key_ok(request.headers.get("x-gateway-key"), "AGENT_POLICY_GATEWAY_KEY")
+    from api.auth import require_user
+    verified = require_user(request)       # 401 without a valid bearer when enforced; None only when off
+    if verified is not None:
+        return verified
     sub = (request.headers.get("x-user-sub") or "").strip()
     if not sub:
         raise HTTPException(status_code=401, detail="not accepted")
