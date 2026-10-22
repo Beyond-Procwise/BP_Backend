@@ -345,6 +345,9 @@ def _is_figure(text: str, start: int, end: int, token: str) -> bool:
     decimal part, or four digits and more."""
     if _STANDARD_BEFORE.search(text[max(0, start - 14):start]):
         return False
+    # "I67890", "PO520561", "SUP-7", "C-2000": digits glued to a letter, digit or hyphen are part of a code.
+    if start > 0 and (text[start - 1].isalnum() or text[start - 1] in "-_"):
+        return False
     if "." in token or len(token.replace(",", "")) >= 4:
         return True
     return bool(_MONEY_BEFORE.search(text[max(0, start - 4):start])
