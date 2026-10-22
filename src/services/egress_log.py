@@ -317,7 +317,7 @@ def flush(batch: Optional[list[dict]] = None) -> int:
             "occurred_at": datetime.now(timezone.utc),
             "purpose": "audit", "destination": "-", "method": "-",
             "outcome": "events_dropped",
-            "detail": f"{dropped} event(s) dropped: the writer could not keep up",
+            "detail": f"{dropped} event(s) dropped: the writer could not keep up or could not write (see the flush log)",
             "payload_sha256": None, "payload_bytes": None,
         })
     if not events:
@@ -349,10 +349,13 @@ def flush(batch: Optional[list[dict]] = None) -> int:
                 globals()["_refused_unaudited"] += refused
         # The batch is lost; admit it. The real events (not the bookkeeping rows) count as dropped so
         # the next successful flush writes the same events_dropped row a full queue would.
+        # ... and the drop count this flush CONSUMED (the gap row it tried to write) goes back too,
+        # or an outage longer than one tick would forget the earlier losses. While the database is
+        # down the writer therefore retries an empty flush every tick: one connect attempt per tick.
         lost = sum(1 for e in events if e.get("purpose") != "audit")
-        if lost:
+        if lost or dropped:
             with _dropped_lock:
-                globals()["_dropped"] += lost
+                globals()["_dropped"] += lost + dropped
         logger.debug("egress log flush failed; %d event(s) lost (admitted as dropped)", len(events), exc_info=True)
         return 0
 

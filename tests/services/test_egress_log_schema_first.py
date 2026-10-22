@@ -54,7 +54,9 @@ class _Conn:
 @pytest.fixture(autouse=True)
 def clean(monkeypatch):
     """Process-wide writer state starts clean, and the REAL writer thread (started by earlier test
-    files) is given an empty queue of its own so it cannot flush through our fake connection."""
+    files) is given an empty queue of its own so it cannot flush through our fake connection.
+    Known residual: that thread's idle tick still calls _take_drops(); if a 2 s tick lands between
+    two flushes of a test that carries a drop count, it can steal the count (microsecond window)."""
     import queue
     monkeypatch.setattr(egress_log, "_writer_failing", False)
     monkeypatch.setattr(egress_log, "_schema_ready", False)
@@ -118,3 +120,27 @@ def test_a_batch_lost_to_a_failed_write_is_admitted_as_a_gap_row(monkeypatch):
     gap = [r for r in written if r[5] == "events_dropped"]
     assert len(gap) == 1 and "3 event(s)" in gap[0][6], "the three lost rows are admitted when the writer recovers"
     assert egress_log._writer_failing is False
+
+
+def test_the_lost_count_survives_an_outage_longer_than_one_tick(monkeypatch):
+    """fail (3 lost) -> fail again with only the gap row -> succeed: the 3 are still admitted."""
+    import src.services.db as db
+    monkeypatch.setattr(egress_log, "_schema_ready", True)
+    monkeypatch.setattr(db, "get_conn", lambda: _Conn([], fail_insert=True))
+    assert egress_log.flush([_event(), _event(), _event()]) == 0
+    assert egress_log.flush([]) == 0, "the idle tick: the gap row alone, and it fails too"
+    written = []
+
+    class _Cur2:
+        def execute(self, *a):
+            pass
+
+        def executemany(self, sql, rows):
+            written.extend(rows)
+
+    class _Conn2(_Conn):
+        def cursor(self):
+            return _Cur2()
+    monkeypatch.setattr(db, "get_conn", lambda: _Conn2([]))
+    assert egress_log.flush([]) == 1
+    assert [r[6] for r in written if r[5] == "events_dropped"][0].startswith("3 event(s)")
