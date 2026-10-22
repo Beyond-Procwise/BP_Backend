@@ -26,6 +26,7 @@ from api.auth import require_user
 # agents.definitions.load_agent_definitions() removes that coupling entirely.
 from agents.definitions import load_agent_definitions
 from repositories import agent_group_repo as repo
+from services import rbac
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,31 @@ def _validate(members: List[Member], links: List[Link]) -> None:
     _validate_links(links, len(members))
 
 
+def _require_owner_or_admin(principal, group: Dict[str, Any]) -> None:
+    """Only the group's creator, or an Admin, may change or delete it (decision D-61).
+
+    Groups are shared: everyone may LIST them, and any signed-in user may CREATE one.
+    A legacy group (creator blank, missing or the old placeholder "system") has no
+    owner, so only an Admin may change it. ``created_by`` is written from the token's
+    subject, so that is what is compared here.
+
+    No principal means sign-in is switched off (the same convention as the support
+    list): nobody is identified, so nothing is refused and behaviour is as it was.
+    """
+    if principal is None:
+        return
+    owner = (group.get("created_by") or "").strip()
+    has_owner = bool(owner) and owner.lower() != "system"
+    if has_owner and owner == (getattr(principal, "subject", None) or ""):
+        return
+    if rbac.effective_role(principal) == "Admin":
+        return
+    who = ("Only the person who created this group, or an Admin, can change or delete it."
+           if has_owner else
+           "This is an older shared group with no owner, so only an Admin can change it.")
+    raise HTTPException(status_code=403, detail=who)
+
+
 @router.get("")
 def list_groups() -> Dict[str, Any]:
     return {"groups": repo.list_active()}
@@ -121,6 +147,7 @@ def update_group(group_id: int, body: GroupPatch,
     current = repo.get(group_id)
     if current is None:
         raise HTTPException(status_code=404, detail="No such group.")
+    _require_owner_or_admin(principal, current)
 
     if body.members is not None:
         if not body.members:
@@ -144,5 +171,9 @@ def update_group(group_id: int, body: GroupPatch,
 
 @router.delete("/{group_id}")
 def delete_group(group_id: int, principal=Depends(require_user)) -> Dict[str, Any]:
+    current = repo.get(group_id)  # only live groups: a deleted one is gone, 404
+    if current is None:
+        raise HTTPException(status_code=404, detail="No such group.")
+    _require_owner_or_admin(principal, current)
     repo.soft_delete(group_id)
     return {"ok": True}
