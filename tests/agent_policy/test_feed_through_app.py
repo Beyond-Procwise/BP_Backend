@@ -18,6 +18,8 @@ from tests.agent_policy.fixtures import FORM_EXAMPLE, REGISTRY, SETTINGS
 
 FEED = "/orchestrator/agent-policies/v2/live"
 EXCERPT = "From 01/04/2026, refunds or credits above $500 need approval from the Finance Manager."
+# A string the output filter must still withhold: an internal route (a date like 01/04/2026 no longer counts, 62116dfc).
+LEAK = "Per /admin/users/list, refunds or credits above $500 need approval from the Finance Manager."
 TO_AGENT = "Do not book a container or retry the tool call; it needs Finance approval."
 
 
@@ -80,7 +82,7 @@ def test_the_screens_writes_are_still_scrubbed(app_client, monkeypatch):
     """The feed and (user ruling 2026-10-08) the screens' READS are exempt -- see
     test_screens_through_app.py. A screen's write answer, here create, is still scrubbed."""
     monkeypatch.setattr(R.repo, "create_draft",
-                        lambda conn, form, actor: {"policyKey": "FIN-0013", "excerpt": EXCERPT})
+                        lambda conn, form, actor: {"policyKey": "FIN-0013", "excerpt": LEAK})
     hdr = {"X-Gateway-Key": "k1", "X-User-Sub": "u1", "X-User-Groups": json.dumps(["PROCWISE_ADMIN"])}
     r = app_client.post("/agent-policies", json={"form": copy.deepcopy(FORM_EXAMPLE)}, headers=hdr)
     assert r.status_code == 200

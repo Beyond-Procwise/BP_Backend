@@ -23,7 +23,7 @@ except Exception:  # pragma: no cover - gracefully degrade without pdfplumber
 from botocore.exceptions import ClientError
 from sentence_transformers import CrossEncoder
 from config.settings import settings
-from qdrant_client import models
+from src.services.vector_store.filter_models import models
 from agents.base_agent import AgentStatus
 from agents.rag_agent import RAGAgent
 from services.redis_client import get_redis_client

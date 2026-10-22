@@ -64,7 +64,7 @@ def run_app(monkeypatch):
         monkeypatch.setattr(awf.reqrepo, "answers_for", lambda rid: {})
         monkeypatch.setattr(
             awf.reqrepo, "create_run",
-            lambda rid, agent_workflow_id, payload, status: statuses.__setitem__(rid, status),
+            lambda rid, agent_workflow_id, payload, status, **_: statuses.__setitem__(rid, status),
         )
         def claim(rid):
             if statuses.get(rid) == "pending":
@@ -79,6 +79,7 @@ def run_app(monkeypatch):
             awf.reqrepo, "get_run",
             lambda rid: {"status": statuses[rid]} if rid in statuses else None,
         )
+        monkeypatch.setattr(awf, "gate", lambda *a, **k: None)   # the audit of workflow.run is not under test here
         monkeypatch.setattr(awf, "pending_requests", lambda *a, **k: [])
         monkeypatch.setattr(awf, "compile_graph", lambda name, graph: graph)
         monkeypatch.setattr(awf, "governance_for", lambda slug: None, raising=False)

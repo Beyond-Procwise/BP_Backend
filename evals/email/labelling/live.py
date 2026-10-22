@@ -28,7 +28,8 @@ Ask = Callable[[str, str], str]
 
 
 def prompts_from_migration() -> Dict[str, str]:
-    text = (SQL / "2026-10-08_email_assurance_prompts.sql").read_text()
+    # The planner prompt is held outside the packs since 2026-10-09; the harness still reads it so a run can measure it.
+    text = (SQL / "2026-10-08_email_assurance_prompts.sql").read_text() + (SQL / "2026-10-09_email_brief_plan_prompt_held.sql").read_text()
     out = {}
     for name, body in re.findall(r"prompt_name = '([a-z_]+)'.*?\$p\$(\{.*?\})\$p\$", text, re.S) or []:
         out[name] = json.loads(body)["prompt_template"]
