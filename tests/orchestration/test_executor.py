@@ -453,3 +453,45 @@ def test_the_closing_instruction_forbids_narrating_a_screen():
     The system has automatically...', a UI the model made up."""
     from orchestration import executor as ex
     assert "do not narrate a screen" in ex.CLOSING_INSTRUCTION and "do not invent a figure" in ex.CLOSING_INSTRUCTION
+
+
+@pytest.mark.parametrize("text, hit", [
+    ("You are on the Tail Spend Management screen, reviewing small repeat purchases.", True),
+    ("You are viewing the Supplier Segmentation report for the packaging category.", True),
+    ("The system has automatically retrieved the supplier's record.", True),
+    ("1. Frame: scope is the packaging suppliers the user named.", False),
+    ("The screen printers are bought from two suppliers on record.", False),
+])
+def test_screen_narration_is_recognised_without_catching_ordinary_prose(text, hit):
+    assert ex.narrates_a_screen(text) is hit
+
+
+@pytest.mark.parametrize("mode", ["whole", "stream"])
+def test_a_closing_answer_that_narrates_a_screen_is_rewritten_once(mode):
+    """Runs 5, 7 and 8 on 2026-10-22: 'You are on the ... screen' survived the closing instruction."""
+    s = Script([{"role": "assistant", "content": "", "tool_calls": [tc("a")]}] * 2
+               + [{"role": "assistant", "content": "You are on the Tail Spend screen. The system has identified two items."},
+                  {"role": "assistant", "content": "Two items from small suppliers are already bought from a contracted supplier."}])
+    w = s.wiring()
+    seen = []
+    inner = w.propose_turn
+
+    def turn(messages, schemas, model, timeout):
+        seen.append([m["content"] for m in messages if m["role"] == "user"][-1])
+        return inner(messages, schemas, model, timeout)
+    w = ex.Wiring(**{**w.__dict__, "propose_turn": turn})
+    fn = ex.run if mode == "whole" else ex.run_stream
+    res = fn(w, "task", [tool("a")], "system", model="m", max_rounds=2, timeout_s=5)
+    assert res.answer == "Two items from small suppliers are already bought from a contracted supplier."
+    assert res.error is None and res.rounds == 4
+    assert "Rewrite it as yourself" in seen[-1] and "No more tool calls" in seen[-2]
+
+
+@pytest.mark.parametrize("mode", ["whole", "stream"])
+def test_when_the_rewrite_comes_back_empty_the_narrating_answer_is_kept(mode):
+    s = Script([{"role": "assistant", "content": "", "tool_calls": [tc("a")]}] * 2
+               + [{"role": "assistant", "content": "You are on the Tail Spend screen. Two items are bought elsewhere."},
+                  {"role": "assistant", "content": ""}])
+    fn = ex.run if mode == "whole" else ex.run_stream
+    res = fn(s.wiring(), "task", [tool("a")], "system", model="m", max_rounds=2, timeout_s=5)
+    assert res.answer.startswith("You are on the Tail Spend screen") and res.error is None

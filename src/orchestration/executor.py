@@ -19,6 +19,8 @@ are kept as they were.
 """
 from __future__ import annotations
 
+import re
+
 import json
 import time
 from dataclasses import dataclass
@@ -118,6 +120,19 @@ CLOSING_INSTRUCTION = (
 )
 
 
+_SCREEN_TALK = re.compile(r"\byou are (?:on|viewing|looking at|in) (?:the|a|an) [^.\n]{0,80}?\b(?:screen|page|view|dashboard|report)\b"
+                          r"|\bthe system has (?:automatically|identified|retrieved|checked|flagged)\b", re.IGNORECASE)
+REWRITE_INSTRUCTION = (
+    "That answer describes a screen or something 'the system' did, which does not exist. Rewrite it as yourself "
+    "in plain text with the same facts and figures and nothing added: no screen, no buttons, no 'the system has'."
+)
+
+
+def narrates_a_screen(text: str) -> bool:
+    """True when an answer talks about a screen, page or 'the system' as if the reader were looking at a UI."""
+    return bool(_SCREEN_TALK.search(text or ""))
+
+
 def _closing_turn(w: Wiring, messages: List[Dict[str, Any]], model: str, timeout_s: int, result: Any,
                   retried: bool, max_rounds: int) -> Any:
     """The round budget is spent and the model is still proposing calls. Live, 2026-10-22: skills with a
@@ -133,6 +148,20 @@ def _closing_turn(w: Wiring, messages: List[Dict[str, Any]], model: str, timeout
         w.log.warning("closing turn failed: %s", exc)
         message = {}
     content = (message or {}).get("content") or ""
+    if content.strip() and narrates_a_screen(content):
+        # Live, 2026-10-22 (runs 5, 7, 8): the closing answer opened "You are on the Tail Spend Management
+        # screen... the system has identified..." despite the instruction. One rewrite is asked for; the
+        # original is kept if the rewrite comes back empty.
+        messages.append({"role": "assistant", "content": content})
+        messages.append({"role": "user", "content": REWRITE_INSTRUCTION})
+        result.rounds += 1
+        try:
+            redo = (w.propose_turn(messages, [], model, timeout_s) or {}).get("content") or ""
+        except Exception as exc:  # noqa: BLE001
+            w.log.warning("closing rewrite failed: %s", exc)
+            redo = ""
+        if redo.strip():
+            content = redo
     if not content.strip():
         result.error = f"max_rounds ({max_rounds}) exhausted without a final answer"
         for earlier in reversed(messages):
