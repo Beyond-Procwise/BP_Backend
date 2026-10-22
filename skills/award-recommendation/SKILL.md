@@ -27,7 +27,7 @@ Ask for these; stop if the integrity items are missing.
 - The procurement regime, if public, and the baseline price for savings.
 
 Use `tool:savings_tracker` only to show what the ledger already counts as saved; the saving on this award is worked out against the baseline and is not logged by this tool.
-Use `tool:screen_sanctions` for the sanctions result compliance recorded, with provider and date. It performs no check: if it says not performed, or the record is expired, record "not performed" and do not recommend an award until compliance performs and records the check.
+Use `tool:screen_sanctions` only when the sanctions check alone is asked about (the summary in step 1 already covers it), with provider and date. It performs no check: if it says not performed, or the record is expired, record "not performed" and do not recommend an award until compliance performs and records the check.
 The single-check tools `tool:financial_health_score`, `tool:esg_rating_lookup` and `tool:forced_labour_screen` are for one check asked about on its own; the summary in step 1 covers them all.
 NOT AVAILABLE: route_approval. Say which approval is needed; a person submits it.
 NOT AVAILABLE: build_docx. Give the memo as text using templates/memo.md.

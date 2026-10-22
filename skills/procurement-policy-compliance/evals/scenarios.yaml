@@ -17,7 +17,7 @@
 - id: e2
   kind: edge
   context: 'We are checking whether this purchase is allowed under our policy and what approval it needs.'
-  prompt: 4 POs of 24,000 to the same supplier from the same cost centre in 3 weeks.
+  prompt: 4 POs of 24,000 to the same supplier from the same buyer in 3 weeks.
   expect: Passes 4 planned orders; check_policy reports a split warning and asks for the combined value to be approved as one request
   expert_graded: true
 - id: e3

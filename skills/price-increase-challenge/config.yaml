@@ -59,6 +59,12 @@ routing:                         # how the orchestrator decides this skill cover
     - "material costs have gone up"
     - "material costs have risen"
     - "their costs have"
+    - "is it justified"
+    - "is that justified"
+    - "justified or not"
+    - "increase justified?"
+    - "increase of"
+    - "justified"
   support:                       # 1 point each
     - "cost"
     - "index"

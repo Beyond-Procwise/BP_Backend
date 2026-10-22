@@ -48,8 +48,10 @@ routing:                         # how the orchestrator decides this skill cover
     - "this saving claim"
     - "for finance to sign"
     - "negotiated discount"
-    - "offsets a"
-    - "offset a"
+    - "offsets a price rise"
+    - "offsets a market"
+    - "offsets the increase"
+    - "offset the increase"
   support:                       # 1 point each
     - "finance"
     - "claim"

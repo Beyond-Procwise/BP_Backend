@@ -1,7 +1,7 @@
 - id: t1
   kind: typical
   prompt: Three suppliers bid for packaging. Scores and prices are in. Who should we award to?
-  expect: Integrity check first; runs scoring.weighted_total and tco.total_cost; recommends rank 1 under the published method; memo with approval from check_policy
+  expect: Integrity check first; runs scoring.weighted_total and compare_total_cost; recommends rank 1 under the published method; memo with approval from check_policy
   expert_graded: true
 - id: t2
   kind: typical

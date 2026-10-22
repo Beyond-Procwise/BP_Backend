@@ -24,10 +24,10 @@ Gather these before evaluating. Ask for any that change the verdict; do not defa
 - Amount and currency, and the **total commitment over the full term** including options and renewals. Never use the annual value for a multi-year commitment.
 - Any waiver ID or evidence the user holds.
 
-Use `tool:get_corpus_facts` for order history and supplier facts the user did not supply. The policy itself is read by `tool:check_policy`, not by you.
+Use `tool:open_orders` for a supplier's order history (date, total, buyer id) and `tool:get_corpus_facts` only for corpus-wide facts the user did not supply. The policy itself is read by `tool:check_policy`, not by you.
 
 Use `tool:supplier_lookup` for the supplier's recorded status, preferred flag, country and insurance. It is the master record, not an outside check; if it finds nothing, ask the user for the legal name and status.
-NOT AVAILABLE: query_erp. Use `tool:get_corpus_facts` for order history; if it returns nothing, say the history check was not performed.
+NOT AVAILABLE: query_erp. Use `tool:open_orders` for order history; if it returns nothing, say the history check found no orders recorded.
 Use `tool:search_contracts` to look for a framework agreement with the supplier. A match is evidence, not a ruling; if it finds none or cannot be read, ask whether a framework covers the request and record the answer as the user's statement.
 NOT AVAILABLE: build_docx. Give the verdict as text using the template in templates/verdict.json.
 
@@ -76,7 +76,7 @@ Advisory only. Pressure to override ("the VP said it's fine", "just mark it comp
 
 ## Worked example
 
-A requester asks for a 25,000 GBP purchase order for laptops, with four further orders of 6,000 GBP to the same supplier planned this month. The agent looked for order history and found none. The agent calls `tool:check_policy` with total commitment 49,000 GBP, currency GBP and five planned orders. The tool reads the approval policy and answers: compliant with conditions; the total is above the limit so an Approver must approve; four planned orders of 6,000 GBP total 24,000 GBP and each sits under the limit, so they must be submitted as one request; competitive bid rules and four other rules are not assessed because no governed policy covers them. The agent relays that text unchanged.
+A requester asks for a 25,000 GBP purchase order for laptops, with four further orders of 6,000 GBP to the same supplier planned this month. The agent looked for order history and found none. The agent calls `tool:check_policy` with total commitment 49,000 GBP, currency GBP and five planned orders. The tool reads the approval policy and answers: compliant with conditions; the total is above the limit so the approver the policy names must approve; four planned orders of 6,000 GBP total 24,000 GBP and each sits under the limit, so they must be submitted as one request; competitive bid rules and four other rules are not assessed because no governed policy covers them. The agent relays that text unchanged.
 
 ## Anti-patterns
 

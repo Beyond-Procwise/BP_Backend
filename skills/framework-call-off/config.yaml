@@ -48,5 +48,4 @@ routing:                         # how the orchestrator decides this skill cover
     - "lot"
     - "agreement"
     - "supplier*"
-    - "award"
     - "competition"

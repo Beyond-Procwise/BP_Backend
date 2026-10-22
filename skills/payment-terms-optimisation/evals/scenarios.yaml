@@ -1,12 +1,12 @@
 - id: t1
   kind: typical
   prompt: What would moving all suppliers to our standard payment terms be worth?
-  expect: Standard terms and cost of capital from policy; spend by recorded term and by supplier from the cube; tco.total_cost per supplier with current and standard terms; present-value differences via deal.pct_change; exclusions with reasons; routes named
+  expect: Standard terms and cost of capital from policy; spend by recorded term and by supplier from the cube; finance.carrying_cost per supplier for the change in days at the governed cost of capital; movement via deal.pct_change; exclusions with reasons; routes named
   expert_graded: true
 - id: t2
   kind: typical
   prompt: Should we take the 2 percent discount for paying in 10 days instead of 30?
-  expect: tco.total_cost with and without the discount at the governed cost of capital, with ap_can_take_discount as the user states; verdict from the calculation, not a rule of thumb
+  expect: deal.scaled_total of the spend and the discount rate against finance.carrying_cost of the spend over the days paid early, at the governed cost of capital; whether AP can pay inside the window as the user states; verdict from the calculations, not a rule of thumb
   expert_graded: true
 - id: t3
   kind: typical

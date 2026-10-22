@@ -36,6 +36,8 @@ routing:                         # how the orchestrator decides this skill cover
     - "last order before"
     - "last order date"
     - "last order with them"
+    - "and move the volume"
+    - "move the volume to"
   support:                       # 1 point each
     - "transition"
     - "handover"

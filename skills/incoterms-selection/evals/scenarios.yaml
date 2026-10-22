@@ -17,7 +17,7 @@
   kind: edge
   context: 'We are choosing the Incoterm for a shipment.'
   prompt: FOB requested for 40 foot containers from Shenzhen.
-  expect: Redirects to FCA with reason; does not draft FOB
+  expect: Recommends FCA with the reason; drafts FOB only with the risk-transfer gap stated beside it
   expert_graded: true
 - id: e2
   kind: edge

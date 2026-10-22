@@ -47,6 +47,9 @@ routing:                         # how the orchestrator decides this skill cover
     - "bypassed the buying"
     - "bypassed the agreed"
     - "bypassed the process"
+    - "bypass the process"
+    - "bypass the buying"
+    - "spend bypass*"
   support:                       # 1 point each
     - "supplier*"
     - "buyer*"

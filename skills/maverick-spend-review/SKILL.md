@@ -61,7 +61,7 @@ The approval limit, the approving role and any preferred-supplier or contract-be
 
 - Every amount comes from the cube or the reconciliation per currency; nothing is summed across currencies or estimated.
 - No pattern is called a breach unless a governed rule states the requirement and the policy tool's reply says so.
-- Buyers and suppliers are named as recorded, with the record that would clear the pattern.
+- Suppliers are named as recorded, with the record that would clear the pattern; buyer ids go to the process owner only.
 - Nothing is raised, blocked or sent.
 
 ## Escalation and approval

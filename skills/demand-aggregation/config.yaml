@@ -46,6 +46,9 @@ routing:                         # how the orchestrator decides this skill cover
     - "across business units"
     - "across the business units"
     - "between business units"
+    - "consolidate volume*"
+    - "across our business units"
+    - "across all business units"
   support:                       # 1 point each
     - "sites"
     - "plants"

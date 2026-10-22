@@ -29,6 +29,8 @@ routing:                         # how the orchestrator decides this skill cover
     - "adverse media"
     - "risk status"
     - "risk profile"
+    - "safe to"
+    - "is it safe"
   support:                       # 1 point each
     - "supplier"
     - "vendor"

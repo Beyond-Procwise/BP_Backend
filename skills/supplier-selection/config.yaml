@@ -44,6 +44,8 @@ routing:                         # how the orchestrator decides this skill cover
     - "selection funnel"
     - "selection funnel"
     - "supplier funnel"
+    - "funnel for the"
+    - "the funnel"
   support:                       # 1 point each
     - "supplier"
     - "suppliers"

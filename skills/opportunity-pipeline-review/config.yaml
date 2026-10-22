@@ -32,6 +32,11 @@ routing:                         # how the orchestrator decides this skill cover
     - "stalled opportunit*"
     - "stalled lever*"
     - "opportunities stalled"
+    - "which levers are open"
+    - "levers are open"
+    - "open levers"
+    - "levers are stuck"
+    - "levers open"
   support:                       # 1 point each
     - "pipeline"
     - "ledger"

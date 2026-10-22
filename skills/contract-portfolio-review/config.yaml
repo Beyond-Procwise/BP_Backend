@@ -37,6 +37,9 @@ routing:                         # how the orchestrator decides this skill cover
     - "which contracts auto"
     - "which contracts expire"
     - "across the whole register"
+    - "renewal pipeline"
+    - "renewals pipeline"
+    - "renewal calendar"
   support:                       # 1 point each
     - "pipeline"
     - "portfolio"
