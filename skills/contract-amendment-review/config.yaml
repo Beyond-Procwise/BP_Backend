@@ -34,5 +34,4 @@ routing:                         # how the orchestrator decides this skill cover
     - "agreement"
     - "clause*"
     - "scope"
-    - "term"
     - "supplier"

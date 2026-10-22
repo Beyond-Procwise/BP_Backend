@@ -1,0 +1,53 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+thresholds:
+  dormant_days: 540    # days without an invoice after which a record is proposed for deactivation review
+unavailable_tools:
+  - update_supplier_record
+  - merge_suppliers
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "master data"
+    - "master-data"
+    - "duplicate supplier*"
+    - "duplicate vendor*"
+    - "duplicate record*"
+    - "duplicate entries"
+    - "duplicates in the supplier"
+    - "supplier record*"
+    - "vendor record*"
+    - "vendor file"
+    - "supplier file"
+    - "vendor master"
+    - "supplier master"
+    - "bank detail*"
+    - "bank account change"
+    - "change of bank"
+    - "changed their bank"
+    - "new bank details"
+    - "new account details"
+    - "remittance detail*"
+    - "clean up the supplier"
+    - "clean up our supplier"
+    - "clean up the vendor"
+    - "cleanse"
+    - "cleansing"
+    - "data quality"
+    - "dormant supplier*"
+    - "dormant vendor*"
+    - "dormant record*"
+    - "inactive supplier*"
+    - "inactive vendor*"
+    - "deactivate the supplier*"
+    - "deactivate the vendor*"
+    - "supplier data"
+    - "vendor data"
+    - "update their address"
+    - "change their address"
+    - "change of address"
+    - "contact details change"
+  support:                       # 1 point each
+    - "record*"
+    - "supplier*"
+    - "vendor*"
+    - "field*"
+    - "duplicate*"

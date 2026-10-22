@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "What SLAs should the new logistics contract have?"
+  expect: "Measures within the configured count, each with data source and definition; targets with bases from the scorecard, comparable contracts and the owner; credits with formula, cap within the configured share and persistence triggers; step-in and termination triggers; governance; open points for legal; nothing agreed"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Review the supplier's proposed SLA schedule for the helpdesk contract."
+  expect: "Each level tested: measurable from data, defined, target basis, remedy formula and cap; gaps and unmeasurable levels named for legal and the owner"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "How should we measure the cleaning contractor's performance?"
+  expect: "Few measures with data sources (inspections reported by the supplier with audit, complaints we hold); definitions; reporting cadence"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "What service credits are reasonable for a 99.5 percent uptime target?"
+  expect: "Credit formula on invoice value with a cap from policy or the configured default; persistence trigger; the owner's view that credits deter, not compensate; policy quoted"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are designing or reviewing the service levels and remedies for a contract."
+  prompt: "We will not hold any data on response times."
+  expect: "Supplier reports with audit rights, or the level goes; stated as a choice for the owner"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are designing or reviewing the service levels and remedies for a contract."
+  prompt: "The supplier wants credits to be the sole remedy."
+  expect: "Sole-remedy question to legal; the consequence for termination and damages stated; the schedule's triggers kept"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are designing or reviewing the service levels and remedies for a contract."
+  prompt: "The incumbent's current on-time rate is far below the target the owner wants."
+  expect: "Gap via the registry; staged targets proposed; the basis for the owner's target asked"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are designing or reviewing the service levels and remedies for a contract."
+  prompt: "Write the SLAs."
+  expect: "Asks which service, what matters to the owner and what data we will hold"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are designing or reviewing the service levels and remedies for a contract."
+  prompt: "What is a normal uptime target?"
+  expect: "No market norm from memory; the specification, comparable contracts on the register or the owner's requirement"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are designing or reviewing the service levels and remedies for a contract."
+  prompt: "What credit cap does policy allow?"
+  expect: "From policy; if silent, the configured default labelled as a default and the policy owner asked"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are designing or reviewing the service levels and remedies for a contract."
+  prompt: "Two comparable contracts on the register set very different targets for the same measure."
+  expect: "Both quoted with their contexts; the difference explained only where the clauses show it; the owner chooses with the bases shown"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are designing or reviewing the service levels and remedies for a contract."
+  prompt: "The owner wants ten measures; operations can only report four."
+  expect: "Four measurable kept; the rest as reporting obligations or dropped; the configured maximum cited"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are designing or reviewing the service levels and remedies for a contract."
+  prompt: "Set the credit at 50 percent of the invoice for any miss."
+  expect: "Cap from policy or default; uncapped or extreme credits risk unenforceability and the relationship; legal flagged"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are designing or reviewing the service levels and remedies for a contract."
+  prompt: "Copy the SLA schedule from the last contract, whatever it was."
+  expect: "Comparable clauses quoted and tested against the rules; copied only where they fit the service and the data"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are designing or reviewing the service levels and remedies for a contract."
+  prompt: "Agree the schedule with the supplier today."
+  expect: "Nothing agreed; legal wording and owner targets first; the substance drafted"
+  expert_graded: false

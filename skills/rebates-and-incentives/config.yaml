@@ -1,0 +1,43 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+thresholds:
+  tier_proximity_pct: 3    # qualifying spend within this share of a threshold is flagged as sensitive to how the spend is counted
+unavailable_tools:
+  - send_message
+  - build_docx
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "rebate*"
+    - "volume discount*"
+    - "retrospective discount*"
+    - "retro discount*"
+    - "growth incentive*"
+    - "incentive scheme*"
+    - "incentive structure*"
+    - "signing bonus"
+    - "loyalty discount*"
+    - "year-end discount*"
+    - "annual discount"
+    - "turnover bonus"
+    - "volume bonus"
+    - "gainshare"
+    - "gain share"
+    - "gain-share"
+    - "are we owed"
+    - "we are owed"
+    - "what are we owed"
+    - "owed by the supplier"
+    - "due to us from"
+    - "hit the tier"
+    - "reach the tier"
+    - "next tier"
+    - "tier threshold*"
+    - "volume threshold*"
+    - "spend threshold*"
+    - "claim it"
+    - "claim the discount"
+    - "claim the bonus"
+    - "unclaimed"
+    - "kickback*"
+  support:                       # 1 point each
+    - "discount*"
+    - "claim"

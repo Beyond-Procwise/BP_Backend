@@ -1,0 +1,37 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+thresholds:
+  direct_award_limit_gbp: 25000    # our policy default above which a call-off needs a mini-competition unless the framework is stricter
+unavailable_tools:
+  - create_rfx
+  - build_docx
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "framework*"
+    - "call-off*"
+    - "call off"
+    - "calling off"
+    - "called off"
+    - "mini-competition*"
+    - "mini competition*"
+    - "further competition"
+    - "direct award*"
+    - "direct-award"
+    - "must we compete"
+    - "compete it"
+    - "or compete"
+    - "compete it out"
+    - "panel agreement*"
+    - "approved panel"
+    - "the panel"
+    - "dynamic purchasing"
+    - "dps"
+    - "lot of the"
+    - "under the agreement"
+    - "under our agreement"
+    - "from the agreement"
+  support:                       # 1 point each
+    - "lot"
+    - "agreement"
+    - "supplier*"
+    - "award"
+    - "competition"

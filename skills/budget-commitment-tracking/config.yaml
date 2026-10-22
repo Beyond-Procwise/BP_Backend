@@ -1,0 +1,47 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+thresholds:
+  overspend_alert_pct: 5    # projected year-end above budget by more than this share is flagged to the owner
+unavailable_tools:
+  - post_accrual
+  - build_chart
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "budget*"
+    - "commitment*"
+    - "committed spend"
+    - "commitments"
+    - "accrual*"
+    - "accrue*"
+    - "forecast spend"
+    - "spend forecast"
+    - "remaining budget"
+    - "budget left"
+    - "left in the budget"
+    - "overspend*"
+    - "over budget"
+    - "under budget"
+    - "underspend*"
+    - "burn rate"
+    - "run rate"
+    - "run-rate"
+    - "cost centre"
+    - "cost center"
+    - "open commitment*"
+    - "open po value"
+    - "open order value"
+    - "uninvoiced"
+    - "not yet invoiced"
+    - "still to be invoiced"
+    - "encumbr*"
+    - "year-end spend"
+    - "year end spend"
+    - "year-end position"
+    - "full-year"
+    - "full year"
+    - "outturn"
+    - "out-turn"
+  support:                       # 1 point each
+    - "budget"
+    - "forecast"
+    - "po*"
+    - "order*"

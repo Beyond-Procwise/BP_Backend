@@ -1,13 +1,13 @@
 should_trigger:
 - "Draft an email chasing Acme for the three overdue deliveries"
-- "Reply to the supplier who asked why their invoice has not been paid"
+- "Reply to the supplier who asked for a copy of the order"
 - "Write to Borealis asking for their insurance certificate"
 - "How do I politely tell a supplier we have chosen someone else?"
 - "Draft a letter to Kestrel about the repeated short deliveries"
 - "What should I say to the supplier who asked for a reference?"
 - "Word a reminder to the supplier about the outstanding paperwork"
-- "Write back to them and ask for a revised delivery schedule"
-- "Let the supplier know we are moving the delivery address next month"
+- "Write back to them and ask for revised dates"
+- "Let the supplier know we are moving to a new site next month"
 - "Chase them for the signed contract, nicely"
 should_not_trigger:
 - "Plan the negotiation with Acme"

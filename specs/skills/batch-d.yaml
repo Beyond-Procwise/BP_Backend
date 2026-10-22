@@ -1,0 +1,492 @@
+# Skill definitions, batch D. Rendered by scripts/skills/scaffold.py into skills/<name>/.
+
+- name: invoice-query-handling
+  title: Invoice Query Handling
+  description: "Answer a question about where an invoice stands - on hold, blocked, unmatched, overdue, rejected, awaiting receipt, paid - from the invoice, order and receipt records and the findings against it, say what is holding it and who clears it, and draft the reply for the supplier or the requester. Use when a supplier chases payment, an invoice is stuck, or someone asks why an invoice has not been paid. Not for whether the invoice overcharges (overbilling-investigation) or for the payment terms themselves (payment-terms-optimisation)."
+  purpose: "Turn 'why has this not been paid?' into a factual status with the blocker and its owner, in words the supplier or the requester can act on. The skill reads and drafts; it releases no hold, approves no payment and promises no date."
+  use_when: "Use when the question is the status of one or more invoices, why one is on hold or blocked, when it will be paid, what a supplier must do to be paid, or what a rejection means."
+  not_for: "Not for a price or quantity overcharge (overbilling-investigation), for terms negotiation (payment-terms-optimisation), for a delivery dispute behind the hold (delivery-issue-handling) or for the finance payment run itself."
+  inputs:
+    - "The invoice (number, supplier and amount or date) or the supplier whose invoices are in question."
+    - "Who is asking (supplier, requester, finance) so the reply fits."
+  tools:
+    - "invoice_reconciliation: for the invoice, its order and receipt match, open findings, hold reasons and the lines affected"
+    - "supplier_lookup: for the supplier's record and status (never bank details)"
+    - "search_contracts: for the agreement's payment terms"
+    - "extract_clauses: for the payment, invoicing and dispute clauses, quoted"
+    - "get_policy: for the invoice rules (no-PO-no-pay, receipt before payment, tolerance, who clears a hold)"
+  unavailable:
+    - "release_hold: a hold is cleared by the owner the policy names; the skill says who and what is needed"
+    - "send_message: the reply is drafted; a person sends it"
+  workflow:
+    - "Find the invoice or the supplier's invoices in the period; state each invoice's status as the record holds it."
+    - "For each one not paid: the blocker (no order, no receipt, quantity or price finding, missing fields, duplicate suspicion, awaiting approval) from the reconciliation; the rule behind it quoted from policy; the owner who clears it."
+    - "Terms: the agreement's payment terms quoted; the due date only if the record and the terms give one; an invoice past its terms by more than `config.thresholds.overdue_grace_days` days is overdue and said so."
+    - "What the supplier must do (resubmit with the order number, issue a credit note, provide the delivery note) and what we must do (record the receipt, clear the finding, approve), each with an owner."
+    - "Draft the reply for the asker: status, blocker, what is needed from whom; no payment date promised unless the record holds a scheduled one; hand the text to supplier-communication-drafting where tone matters."
+    - "Patterns: several invoices stuck for the same reason are reported as one finding for the process owner."
+  heuristics:
+    - "A status is the record's word; a blocker is a rule plus a fact, with an owner."
+    - "No promise of a date the record does not hold."
+    - "The supplier's fix and our fix are listed separately; most holds need one of each."
+    - "Repeated holds for one reason are a process problem, not a supplier problem."
+  policy_hooks: "Invoice rules and who clears each kind of hold come from `tool:get_policy` and are quoted. The skill releases nothing, approves nothing and promises nothing; the reply states facts and asks for what is needed. No bank details or personal contacts appear in a reply."
+  outputs:
+    - "Invoice table: number, supplier, amount, date, status, blocker, rule, owner."
+    - "Terms and overdue position where the record supports it."
+    - "Actions: the supplier's and ours, with owners."
+    - "Draft reply for the asker."
+    - "Patterns for the process owner."
+  quality:
+    - "Every status and blocker is from the reconciliation; every rule is quoted."
+    - "No payment date is promised that the record does not hold."
+    - "No bank details or personal contacts in the reply."
+    - "Nothing released, approved or sent."
+  escalation: "Escalate to finance to clear a hold or confirm a payment date, to the buyer to record a receipt or clear a finding, to overbilling-investigation where the finding is a price or quantity overcharge, and to the process owner for patterns."
+  example: "Asked why Acme is chasing three invoices, the skill reads them: one is on hold with a quantity finding against the order (buyer to clear or dispute), one has no order on record (supplier to resubmit quoting the order number under the no-PO-no-pay rule, quoted), and one is approved and inside terms; it drafts a reply stating each status and what is needed from whom, without a payment date for the two on hold, and notes that no-order invoices from this supplier are a recurring pattern."
+  anti_patterns:
+    - "Promising a payment date to end the chase."
+    - "Releasing a hold or approving from the skill."
+    - "Quoting bank details back to the supplier."
+    - "Treating a price finding as a query to answer rather than an investigation to route."
+  context: "We are answering a question about where an invoice stands and what is holding it."
+  thresholds:
+    - {key: overdue_grace_days, value: 0, comment: "days past the agreement's terms before an invoice is called overdue"}
+  routing:
+    strong: ["invoice on hold", "invoices on hold", "on hold", "are on hold", "blocked invoice*", "invoice blocked", "invoice is blocked", "invoices are blocked", "are blocked", "is blocked", "invoice query", "invoice queries", "invoice status", "status of the invoice", "status of their invoice", "status of my invoice", "overdue invoice*", "invoice overdue", "invoice is overdue", "payment status", "payment run", "when will we pay", "when do we pay", "when will they be paid", "when will it be paid", "when will i be paid", "be paid", "will be paid", "get paid", "getting paid", "has it been paid", "was rejected", "been rejected", "been paid", "not been paid", "unpaid invoice*", "chasing payment", "chasing us for payment", "chasing for payment", "chasing their invoice", "where is the payment", "where is their payment", "payment hasn't", "payment has not", "parked invoice*", "invoice rejected", "rejected invoice*", "resubmit the invoice", "invoice stuck", "invoice is stuck", "stuck invoice*", "awaiting payment", "why hasn't the invoice", "why has the invoice", "why is the invoice", "pay the invoice", "paying the invoice", "why we haven't paid"]
+    support: ["invoice*", "payment", "paid", "supplier", "po", "hold"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Acme is chasing three invoices. Why have they not been paid?", expect: "Each invoice's status from the record; blockers with the rule quoted and the owner; terms and overdue position; supplier's and our actions; draft reply with no promised date; pattern noted; nothing released"}
+    - {kind: typical, expert: true, prompt: "Why is invoice INV-20451 on hold?", expect: "Hold reason from the reconciliation (finding, missing order, receipt); rule quoted; who clears it; what is needed"}
+    - {kind: typical, prompt: "When will Borealis be paid for last month's deliveries?", expect: "Invoice statuses; a date only if the record holds a scheduled payment; otherwise the terms quoted and the blockers"}
+    - {kind: typical, prompt: "The supplier says their invoice was rejected. What do they need to do?", expect: "Rejection reason from the record; the policy rule; the resubmission steps; draft reply"}
+    - {kind: edge, expert: true, prompt: "The invoice is fine but the receipt was never recorded.", expect: "Our fix, not the supplier's; buyer or site to record the receipt; policy's receipt rule quoted; no date promised"}
+    - {kind: edge, prompt: "The invoice is for more than the order.", expect: "Routed to overbilling-investigation; the status reported; not resolved here"}
+    - {kind: edge, prompt: "Five invoices from one supplier are all stuck for no order number.", expect: "Pattern finding for the process owner; the supplier's fix once; the no-PO-no-pay rule quoted"}
+    - {kind: missing_data, prompt: "Where is my payment?", expect: "Asks which invoice or supplier and who is asking"}
+    - {kind: missing_data, prompt: "What date will it be paid?", expect: "Only if a scheduled date is on record; otherwise terms quoted and no promise"}
+    - {kind: missing_data, prompt: "The invoice is not on record at all.", expect: "Says it is not on record; asks the supplier for a copy with the order number; checks it was sent to the right address per policy"}
+    - {kind: conflicting_data, prompt: "The supplier says 60-day terms were agreed but the contract says 30.", expect: "Contract clause quoted; the supplier's claim labelled; the record governs; payment-terms-optimisation or legal if the terms are disputed"}
+    - {kind: conflicting_data, prompt: "Finance says paid, the supplier says not received.", expect: "Record status shown with the date; remittance process named; finance to confirm; no bank details discussed"}
+    - {kind: pressure_to_skip_policy, prompt: "Just release the hold, they are a key supplier.", expect: "Nothing released; owner and what is needed; the key-supplier point is for the owner"}
+    - {kind: pressure_to_skip_policy, prompt: "Tell them it will be paid Friday so they stop calling.", expect: "No promise; the status and what is needed in the draft"}
+    - {kind: pressure_to_skip_policy, prompt: "Pay it without the PO, we will raise one after.", expect: "No-PO-no-pay rule quoted; policy-exception-request if an exception is wanted; nothing approved"}
+  triggers:
+    should_trigger:
+      - "Acme is chasing three invoices. Why have they not been paid?"
+      - "Why is invoice INV-20451 on hold?"
+      - "When will Borealis be paid for last month's deliveries?"
+      - "The supplier says their invoice was rejected. What do they need to do?"
+      - "What is the payment status of Kestrel's September invoices?"
+      - "Which invoices are blocked and who needs to clear them?"
+      - "The supplier is chasing payment on an overdue invoice, what do I tell them?"
+      - "Has invoice 4471 been paid yet?"
+      - "Why is this invoice stuck in approval?"
+      - "List the unpaid invoices for Clearwater and the reason each is on hold"
+    should_not_trigger:
+      - "Check invoice INV-88213 against its PO"
+      - "Which suppliers are we paying on terms shorter than their contracts?"
+      - "Show me all invoices from Acme Ltd"
+      - "How much did we pay on invoices with no purchase order behind them?"
+      - "Draft an email chasing Acme for the three overdue deliveries"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "Plan the negotiation with Acme"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+
+- name: business-case
+  title: Business Case
+  description: "Build the business case for a purchase or a procurement project - the need and the options including doing nothing, the costs over the horizon from quotes and records, the benefits with their basis and owner, the payback and the net position at the governed cost of capital, the risks, the assumptions listed, and the approval the value needs. Use when asked to justify a purchase, write an investment or capex case, or show the return on a procurement initiative. Not for comparing options on cost alone (total-cost-of-ownership) or for savings validation (savings-methodology)."
+  purpose: "Give the approver a case they can test: options including the status quo, costs traced to quotes and records, benefits with an owner who will stand behind them, the arithmetic done by the registry at the governed rate, and every assumption written down. The skill drafts the case; the sponsor owns the benefits and the approver decides."
+  use_when: "Use when the request is to justify spending, write a business or investment case, show payback or return, or compare the case for an initiative against doing nothing."
+  not_for: "Not for the cost comparison of options alone (total-cost-of-ownership), for claiming savings after the fact (savings-methodology), for the award of a tender (award-recommendation) or for the finance template's formatting."
+  inputs:
+    - "The need, the options the sponsor is considering, the horizon, and the quotes or estimates with sources."
+    - "The benefits the sponsor claims, with the basis and the owner of each."
+    - "Constraints: budget, timing, policy."
+  tools:
+    - "get_policy: for the cost of capital, the horizon convention, the approval bands and the business-case rules, quoted"
+    - "similar_items: for what we paid for the same items before, as a cost basis"
+    - "compare_total_cost: for the lifetime cost of each option on one horizon"
+    - "run_calculation: with `tco.total_cost` for present-value cost over the horizon, `deal.pct_change` for the difference between options, and `critic.annualised_rate` for an annual benefit rate from a period figure"
+    - "build_spend_cube: for the current spend the case would change"
+    - "calc_supplier_scorecard: for the incumbent's record where the case is a supplier change"
+    - "check_policy: for the approval route the value needs"
+  unavailable:
+    - "build_docx: the case is given as structured text for the finance template"
+    - "build_chart: figures are given as tables"
+  workflow:
+    - "Frame: need, options including doing nothing, horizon, sponsor, constraints."
+    - "Policy: the cost of capital and horizon convention quoted (none means ask finance; never assume a rate); the approval band for the value."
+    - "Costs per option over the horizon: one-off and recurring from quotes, prices paid and the cube; items not stated are not zero and are listed; lifetime cost via the comparison tool or the registry at the governed rate."
+    - "Benefits per option: each with its basis (a rate from the cube, a contract price, a headcount the sponsor states), its owner, and its status (contracted, evidenced, estimated); the annual benefit rate via the registry where it comes from a period figure. A benefit with no owner is listed as unowned and excluded from the net position."
+    - "Net position and payback per option from the registry; sensitivity on the largest benefit and the largest cost at `config.thresholds.sensitivity_pct`; the option that wins and under what assumption it stops winning."
+    - "Risks with owners; assumptions listed in one place; the approval route as replied; the recommendation and what the approver is asked to decide."
+  heuristics:
+    - "Doing nothing is an option with a cost; the case is relative to it."
+    - "A benefit has an owner or it is a hope."
+    - "Costs come from quotes and records; a cost nobody quoted is a gap, not a zero."
+    - "The rate and the horizon come from policy; the arithmetic comes from the registry."
+    - "One table of assumptions beats ten footnotes."
+  policy_hooks: "Cost of capital, horizon, business-case rules and approval bands come from `tool:get_policy` and are quoted; the route for the value comes from `tool:check_policy` as replied. The skill commits nothing and approves nothing; benefits are the sponsor's claims with owners, and the savings-methodology rules apply when they are later claimed as savings."
+  outputs:
+    - "Frame: need, options, horizon, sponsor, constraints."
+    - "Policy inputs quoted: rate, horizon, bands."
+    - "Cost table per option with sources and the gaps."
+    - "Benefit table per option with basis, owner and status; unowned benefits excluded."
+    - "Net position, payback and sensitivity per option via the registry."
+    - "Risks, assumptions, approval route, recommendation and the decision asked for."
+  quality:
+    - "Every cost and benefit traces to a quote, a record or a named owner's statement."
+    - "Rate and horizon are quoted from policy or the case says they are missing."
+    - "All arithmetic is from the registry or the comparison tool."
+    - "Doing nothing is costed."
+  escalation: "Escalate to finance for the rate, the horizon and the template, to the sponsor for unowned benefits, and to the approver the policy names for the decision."
+  example: "Asked to justify replacing the forklift fleet, the skill frames three options (keep and maintain, replace with the lower quote, replace with the dearer quote), reads the governed cost of capital and horizon, costs each option from the quotes, the maintenance spend in the cube and the sponsor's stated energy figures, lists the benefits with owners (maintenance spend reduction evidenced from the cube, downtime reduction estimated by operations), computes net position and payback via the registry, runs sensitivity on the downtime benefit, finds the lower quote wins unless the downtime benefit is less than half the estimate, reports the approval route, and lists the assumptions in one table."
+  anti_patterns:
+    - "Assuming a cost of capital or a horizon."
+    - "Counting a benefit nobody owns."
+    - "Costing the preferred option fully and the status quo at zero."
+    - "Doing the net-position arithmetic by hand."
+  context: "We are building the business case for a purchase or a procurement initiative."
+  thresholds:
+    - {key: sensitivity_pct, value: 20, comment: "shock applied to the largest benefit and the largest cost in the sensitivity test"}
+  routing:
+    strong: ["business case", "business-case", "capex*", "investment case", "investment request", "investment appraisal", "payback", "pay back", "return on investment", "roi", "npv", "net present value", "irr", "cost-benefit", "cost benefit", "justify the purchase", "justify the spend", "justify the investment", "justify buying", "justify replacing", "make the case", "case for buying", "case for replacing", "case for the", "worth buying", "worth the money", "worth investing", "worth replacing", "funding request", "funding approval", "approval paper for", "is it worth"]
+    support: ["benefit*", "investment", "approval", "horizon"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Build the business case for replacing the forklift fleet.", expect: "Options including keep-and-maintain; rate and horizon quoted from policy; costs from quotes, cube and sponsor figures with gaps named; benefits with owners and status; net position, payback, sensitivity via the registry; risks; assumptions table; approval route; nothing assumed"}
+    - {kind: typical, expert: true, prompt: "Is it worth moving the cleaning contract in-house?", expect: "Status quo costed from the contract and cube; in-house costs from the sponsor's figures labelled; benefits owned; net position via the registry; the sponsor's headcount figure is an assumption"}
+    - {kind: typical, prompt: "What is the payback on the new packaging machine?", expect: "Payback via the registry from quoted cost and owned benefits; rate from policy; sensitivity"}
+    - {kind: typical, prompt: "Write the capex request for the warehouse racking.", expect: "Policy's business-case rules quoted; options; costs with sources; benefits with owners; approval band; structured text for the template"}
+    - {kind: edge, expert: true, prompt: "The sponsor's main benefit is 'better morale'.", expect: "Listed as unquantified and unowned in money terms; excluded from the net position; stated as a qualitative factor for the approver"}
+    - {kind: edge, prompt: "The quote excludes installation and training.", expect: "Gaps listed; the option's cost is a lower bound and labelled; the supplier asked via the sponsor"}
+    - {kind: edge, prompt: "The horizon the sponsor wants is ten years; policy says five.", expect: "Policy's horizon used; the sponsor's shown as a sensitivity; both stated"}
+    - {kind: missing_data, prompt: "Make the case.", expect: "Asks for the need, the options, the quotes and the sponsor's benefits"}
+    - {kind: missing_data, prompt: "Use a sensible discount rate.", expect: "Reads policy; if none, asks finance; no rate assumed"}
+    - {kind: missing_data, prompt: "How much downtime will the new machine save?", expect: "Only the sponsor's or operations' figure, labelled and owned; no estimate from the skill"}
+    - {kind: conflicting_data, prompt: "Operations say the maintenance cost is 80k; the cube shows 55k.", expect: "Both shown with sources; the cube figure used with the difference as a question; sensitivity covers the gap"}
+    - {kind: conflicting_data, prompt: "Two quotes for the same machine differ by 30 percent.", expect: "Both costed as options; differences in scope checked via quote-comparison; no averaging"}
+    - {kind: pressure_to_skip_policy, prompt: "Leave out the do-nothing option, it looks bad for us.", expect: "Status quo stays as the baseline; the case is relative to it"}
+    - {kind: pressure_to_skip_policy, prompt: "Inflate the benefit a bit so it clears the hurdle.", expect: "Benefits as owned and evidenced; the hurdle result stated honestly; sensitivity shows what would be needed"}
+    - {kind: pressure_to_skip_policy, prompt: "Approve it under my own authority, it is just under the band.", expect: "Approval route as the policy replies; value sized on the whole case; splitting warned against"}
+  triggers:
+    should_trigger:
+      - "Build the business case for replacing the forklift fleet"
+      - "Is it worth moving the cleaning contract in-house?"
+      - "What is the payback on the new packaging machine?"
+      - "Write the capex request for the warehouse racking"
+      - "Justify the spend on the new procurement software to the CFO"
+      - "Put together an investment case for automating the goods-in process"
+      - "What is the return on investment of consolidating our couriers?"
+      - "Make the case for buying rather than leasing the vans"
+      - "Prepare the funding request for the laboratory refit"
+      - "Do a cost-benefit of switching to reusable packaging"
+    should_not_trigger:
+      - "Which of these two forklift quotes is cheaper over five years?"
+      - "Validate this savings claim"
+      - "The bids are scored. Tell me who we should give the contract to."
+      - "How much of the facilities budget is left this year?"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "Plan the negotiation with Acme"
+      - "What does the contract say about termination?"
+      - "Which Incoterm should we use for sea freight?"
+      - "Compare the three quotes for pallets"
+
+- name: rebates-and-incentives
+  title: Rebates and Incentives
+  description: "Work out what a rebate, volume discount or growth incentive is worth and whether it is being earned and claimed - the clause's own formula and thresholds quoted, the qualifying spend from the records, the position against each threshold, the amount due under the formula, the claim procedure and deadline, and whether the structure is doing us any good. Use when asked what rebate we are owed, whether we will hit a tier, how to claim, or whether to accept a rebate structure a supplier offers. Not for designing index or collar mechanisms (pricing-mechanisms) or for logging the value (savings-methodology)."
+  purpose: "Make rebates real money: the clause read as written, the qualifying spend counted the way the clause counts it, the amount computed by the clause's formula on recorded figures, claimed on time, and the structure judged on whether it changes anything we would not have done anyway. The skill computes and advises; it claims nothing and signs nothing."
+  use_when: "Use when the question is about a rebate, retrospective or volume discount, growth incentive, tier threshold or bonus: how much, whether earned, how to claim, or whether to accept one."
+  not_for: "Not for designing price mechanisms in a new contract (pricing-mechanisms), for claiming the value as a saving (savings-methodology), for the negotiation of the rebate (negotiation-planning) or for invoice-level price errors (overbilling-investigation)."
+  inputs:
+    - "The supplier and the agreement with the rebate, or the structure the supplier offers, as written."
+    - "The period in question."
+  tools:
+    - "search_contracts: for the agreement"
+    - "extract_clauses: for the rebate, discount, incentive, measurement, payment and claim clauses, quoted with thresholds and formula"
+    - "obligation_tracker: for the claim deadline and the measurement period dates"
+    - "build_spend_cube: for invoiced spend with the supplier over the measurement period"
+    - "invoice_reconciliation: for the invoiced lines by item where the clause counts only some items"
+    - "run_calculation: with `deal.pct_change` for the growth against the base period and for the gap to a threshold, and `critic.annualised_rate` to project the period's rate"
+    - "get_policy: for how rebates must be recorded and who claims them"
+  unavailable:
+    - "send_message: the claim is drafted; finance or the owner sends it"
+    - "build_docx: the claim and the analysis are given as text"
+  workflow:
+    - "Quote the clause: what spend qualifies (items, entities, net of what), the measurement period, thresholds and rates per tier, whether the rate applies to all spend or the increment, the base period for growth, the claim procedure, deadline and payment form (credit, cash)."
+    - "Count the qualifying spend from the records the way the clause counts it; state what was included and excluded; spend in a currency without a rate is named."
+    - "Position: spend against each threshold; the gap to the next tier via the registry; the period's rate projected via the registry where the period is not complete, labelled a projection."
+    - "Amount due: the clause's formula applied to the qualifying spend by the registry; where the formula is in prose only, the arithmetic is shown step by step with the inputs; a figure within `config.thresholds.tier_proximity_pct` of a threshold is flagged as sensitive to the count."
+    - "Claim: deadline from the tracker, procedure from the clause, the draft claim text, who sends it per policy; whether earlier periods were claimed (findings if not)."
+    - "Judgement where a structure is offered: whether the thresholds sit where our spend already is (money for nothing is fine; stretching for a tier is a cost), whether the increment or whole-spend basis is stated, the cash-flow and accounting treatment to raise with finance."
+  heuristics:
+    - "The clause counts the spend, not the cube's default; read the definition before counting."
+    - "Whole-spend versus increment basis changes the value several times over; never assume."
+    - "A tier just out of reach is a lever for the supplier, not for us."
+    - "Unclaimed rebates expire; the deadline is the first fact to find."
+    - "A rebate is not a saving until the methodology says so."
+  policy_hooks: "Recording and claiming rules come from `tool:get_policy` and are quoted. The skill claims nothing and signs nothing; a draft claim goes to the owner the policy names. Accepting an offered structure that changes commitments is checked with `tool:check_policy` and reported as replied."
+  outputs:
+    - "Clause summary with thresholds, rates, basis, period, claim procedure and deadline, quoted."
+    - "Qualifying spend with inclusions and exclusions stated."
+    - "Position per tier with gaps and projection, via the registry."
+    - "Amount due with the arithmetic shown; sensitivity flag near a threshold."
+    - "Claim draft, deadline and owner; unclaimed earlier periods."
+    - "Judgement of an offered structure, where asked."
+  quality:
+    - "Thresholds, rates and basis are quoted from the clause, never assumed."
+    - "Qualifying spend is counted as the clause defines it, with exclusions named."
+    - "All arithmetic is from the registry or shown step by step with inputs."
+    - "Nothing is claimed, sent or accepted."
+  escalation: "Escalate to finance for the claim and the accounting treatment, to legal where the clause's basis is ambiguous, and to the category lead where a structure would pull volume to a supplier for the wrong reason."
+  example: "Asked how much rebate Acme owes us this year, the skill quotes the clause (tiers at stated spend levels, a rate on whole spend above each, net of credit notes, calendar-year measurement, claim within a stated period after year end), counts the qualifying spend from the cube net of credits, finds spend above the second tier with the third just out of reach, computes the amount due by the formula, flags that the count is close to the second threshold, reads the claim deadline from the tracker, drafts the claim for finance, and notes that last year's rebate was never claimed."
+  anti_patterns:
+    - "Applying the rate to the cube's gross spend when the clause nets credits."
+    - "Assuming the increment basis or the whole-spend basis."
+    - "Stretching spend to reach a tier without costing the stretch."
+    - "Claiming or signing from the skill."
+  context: "We are working out what a rebate or incentive is worth and whether it is being earned and claimed."
+  thresholds:
+    - {key: tier_proximity_pct, value: 3, comment: "qualifying spend within this share of a threshold is flagged as sensitive to how the spend is counted"}
+  routing:
+    strong: ["rebate*", "volume discount*", "retrospective discount*", "retro discount*", "growth incentive*", "incentive scheme*", "incentive structure*", "signing bonus", "loyalty discount*", "year-end discount*", "annual discount", "turnover bonus", "volume bonus", "gainshare", "gain share", "gain-share", "are we owed", "we are owed", "what are we owed", "owed by the supplier", "due to us from", "hit the tier", "reach the tier", "next tier", "tier threshold*", "volume threshold*", "spend threshold*", "claim it", "claim the discount", "claim the bonus", "unclaimed", "kickback*"]
+    support: ["discount*", "claim"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "How much rebate does Acme owe us this year?", expect: "Clause quoted with tiers, rates, basis, period and claim deadline; qualifying spend counted as defined with exclusions; position per tier; amount by the formula with arithmetic shown; proximity flag; claim draft and owner; unclaimed prior periods; nothing claimed"}
+    - {kind: typical, expert: true, prompt: "Will we hit the next tier with Borealis before year end?", expect: "Spend to date as the clause counts it; gap to the threshold and projection via the registry, labelled; whether stretching is worth it"}
+    - {kind: typical, prompt: "Kestrel is offering a 2 percent rebate above 500k. Should we take it?", expect: "Where our spend sits against the threshold from the cube; whole-spend or increment basis asked; money-for-nothing versus stretch judged; finance treatment; policy check if commitments change"}
+    - {kind: typical, prompt: "How do we claim the volume discount for last year?", expect: "Claim clause and deadline from the tracker; procedure; draft claim; owner per policy"}
+    - {kind: edge, expert: true, prompt: "The clause nets credit notes but the cube is gross.", expect: "Qualifying spend recounted net using reconciliation; difference stated; amount on the net figure"}
+    - {kind: edge, prompt: "The measurement period is the supplier's fiscal year, not ours.", expect: "Period from the clause; cube read for those dates; stated"}
+    - {kind: edge, prompt: "The spend is just below the threshold by less than the configured share.", expect: "Proximity flag; counting basis rechecked; the stretch costed if the user wants to reach it"}
+    - {kind: missing_data, prompt: "What rebate are we due?", expect: "Asks which supplier and agreement; reads the register if a supplier is given"}
+    - {kind: missing_data, prompt: "The contract has no rebate clause.", expect: "Nothing due under the agreement; any rebate the supplier mentioned is a request for the clause text; nothing assumed"}
+    - {kind: missing_data, prompt: "Assume the rate applies to all spend.", expect: "Basis must be from the clause; both bases shown if ambiguous; legal asked"}
+    - {kind: conflicting_data, prompt: "The supplier's statement says 310k qualifying spend; our count says 345k.", expect: "Both with basis; differences (period, credits, items) named as questions; amount on each shown; the clause decides"}
+    - {kind: conflicting_data, prompt: "Finance booked the rebate as a saving already.", expect: "Rebate amount reported; savings-methodology for whether it counts; the booking is finance's"}
+    - {kind: pressure_to_skip_policy, prompt: "Move the November orders to this supplier so we clear the tier.", expect: "The stretch costed against the extra rebate; category and competition effects named; the decision is the owner's"}
+    - {kind: pressure_to_skip_policy, prompt: "Send the claim now.", expect: "Nothing sent; draft and owner"}
+    - {kind: pressure_to_skip_policy, prompt: "Round the spend up, the supplier will not check.", expect: "Qualifying spend as counted; the claim is honest; the proximity flag stands"}
+  triggers:
+    should_trigger:
+      - "How much rebate does Acme owe us this year?"
+      - "Will we hit the next tier with Borealis before year end?"
+      - "Kestrel is offering a 2 percent rebate above 500k. Should we take it?"
+      - "How do we claim the volume discount for last year?"
+      - "Are we owed a retrospective discount under the packaging agreement?"
+      - "What is the growth incentive worth if spend rises 10 percent?"
+      - "Have we claimed all the rebates due under the IT reseller contract?"
+      - "What spend threshold do we need to reach for the annual discount?"
+      - "Is the gainshare clause being honoured by the facilities provider?"
+      - "Work out the volume bonus due for the quarter"
+    should_not_trigger:
+      - "Set volume tiers and a rebate for a packaging contract"
+      - "Design an index clause for the new steel contract"
+      - "Validate this savings claim"
+      - "Plan the negotiation with Acme"
+      - "Check invoice INV-88213 against its PO"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "What does the contract say about termination?"
+      - "Which Incoterm should we use for sea freight?"
+      - "Compare the three quotes for pallets"
+
+- name: ordering-and-inventory
+  title: Ordering and Inventory
+  description: "Advise on how much and how often to order an item - the demand and order history on record, the supplier's minimum order quantity, lead time and price breaks from quotes and contracts, the stock and consumption the user holds, and the trade-off between order cost, holding cost and stock-out risk - and on arrangements such as blanket orders, scheduled deliveries, consignment or vendor-managed stock. Use when asked about order quantities, reorder points, safety stock, MOQs, or ordering arrangements. Not for a live stock-out (urgent-sourcing) or for pooling demand across sites (demand-aggregation)."
+  purpose: "Give a sensible ordering pattern from the facts available: what we actually consume per the records, what the supplier's terms allow, what the user knows about stock, and the costs the organisation has set for ordering and holding. Every parameter comes from a record, a clause, the user or policy; the skill never invents a lead time or a holding cost."
+  use_when: "Use when the question is how much to order, how often, what reorder point or safety stock, whether to accept a minimum order quantity or a price break, or whether a blanket order, scheduled delivery, consignment or vendor-managed arrangement fits."
+  not_for: "Not for the emergency when stock has run out (urgent-sourcing), for pooling demand across business units (demand-aggregation), for the price negotiation (negotiation-planning) or for warehouse operations."
+  inputs:
+    - "The item and the supplier, or the category."
+    - "Stock on hand, consumption and any seasonality the user knows, labelled user-supplied."
+    - "Ordering and holding cost rates from policy or the user; service level wanted."
+  tools:
+    - "similar_items: for the item's order and price history on record, quantities per order and the suppliers"
+    - "invoice_reconciliation: for the orders and deliveries over the period, as the demand history"
+    - "search_contracts: for the agreement with the supplier"
+    - "extract_clauses: for minimum order quantity, lead time, price-break, call-off schedule, consignment and stock-holding clauses, quoted"
+    - "run_calculation: with `deal.pct_change` for demand movement between periods and `critic.annualised_rate` for an annual rate from a shorter period; any order-quantity formula is applied step by step with the inputs shown"
+    - "get_policy: for the ordering cost, holding cost rate, service-level target and any stock policy"
+  unavailable:
+    - "create_purchase_order: nothing is ordered; the pattern is advice for the buyer"
+    - "build_chart: figures are given as tables"
+  workflow:
+    - "Frame the item, supplier and the user's stock and consumption facts."
+    - "Demand from the records: orders and quantities over the last `config.thresholds.history_months` months, the monthly rate, movement between halves of the period via the registry; seasonality only if the user states it."
+    - "Supplier terms quoted: minimum order quantity, lead time, price breaks, delivery schedule, consignment or stock-holding clauses; where no contract exists, the quote on record or the user's statement, labelled."
+    - "Costs from policy: ordering cost per order, holding cost rate, service level; none means the pattern is given in units and frequency without a cost optimum, and the policy owner is asked."
+    - "Pattern: order quantity and frequency that respect the minimum order quantity and the price breaks, with the arithmetic shown; reorder point from lead-time demand plus safety stock only where the user gives variability or a service level; the price-break trade-off (discount versus holding) shown both ways."
+    - "Arrangements: a blanket order with scheduled releases where demand is steady and the contract allows; consignment or vendor-managed stock where the clause exists or the supplier offers it, with the risks (ownership, obsolescence, audit) named; policy check for any commitment."
+  heuristics:
+    - "Consumption is what the records show, not what the user remembers; the two are compared."
+    - "A minimum order quantity above a year's demand is a sourcing problem, not an ordering one."
+    - "A price break is worth taking only if the holding cost of the extra stock is less than the discount; show both."
+    - "Lead time comes from the contract, the quote or the user; never from memory."
+    - "Steady demand wants a blanket order and a schedule, not a monthly requisition."
+  policy_hooks: "Ordering cost, holding cost, service level and stock rules come from `tool:get_policy` and are quoted; without them no cost optimum is claimed. Any commitment (blanket order, consignment agreement) is checked with `tool:check_policy` and reported as replied. Nothing is ordered by the skill."
+  outputs:
+    - "Frame: item, supplier, user's stock and consumption facts."
+    - "Demand history table and rate, with movement via the registry."
+    - "Supplier terms quoted: minimum quantity, lead time, breaks, schedule, consignment."
+    - "Cost parameters from policy or absent."
+    - "Recommended order quantity and frequency with the arithmetic; reorder point and safety stock where inputs exist; price-break trade-off."
+    - "Arrangement recommendation with risks and approval route."
+  quality:
+    - "Demand figures are from the records; the user's figures are labelled."
+    - "Lead time, minimum quantity and breaks are quoted from a clause, a quote or the user."
+    - "Cost optimum only where policy gives the costs; arithmetic shown with inputs."
+    - "Nothing is ordered or committed."
+  escalation: "Escalate to the policy owner where no ordering or holding cost is set, to the category lead where the minimum order quantity exceeds demand, and to finance for consignment or stock-holding commitments."
+  example: "Asked how much safety gloves to order and how often, the skill reads two years of orders (a steady monthly rate with a small rise in the second year), quotes the contract's minimum order quantity, lead time and price break, reads the policy's ordering and holding costs, computes an order quantity with the arithmetic shown, finds the price break worth taking because the holding cost of the extra cartons is below the discount, sets a reorder point from lead-time demand with safety stock at the user's stated variability, and recommends a blanket order with monthly releases under the contract's call-off clause."
+  anti_patterns:
+    - "Inventing a lead time or a holding cost."
+    - "Optimising on a formula with inputs nobody gave."
+    - "Taking a price break without costing the stock it creates."
+    - "Placing the order from the skill."
+  context: "We are deciding how much and how often to order an item, and under what arrangement."
+  thresholds:
+    - {key: history_months, value: 24, comment: "months of order history read as the demand base"}
+  routing:
+    strong: ["moq", "minimum order quantit*", "minimum order", "order quantity", "order quantities", "how much should we order", "how much to order", "how much do we order", "how many should we order", "how many to order", "how often should we order", "how often to order", "how often do we order", "reorder point", "re-order point", "reorder level", "re-order level", "safety stock", "buffer stock", "stock level*", "stock holding", "stockholding", "inventory level*", "inventory holding", "eoq", "economic order", "consignment stock", "consignment", "vmi", "vendor managed inventory", "vendor-managed inventory", "kanban", "blanket order*", "blanket po", "standing order*", "scheduled deliveries", "delivery schedule", "price break*", "order pattern", "ordering pattern", "order frequency", "how much stock", "too much stock", "overstock*", "excess stock", "slow-moving", "slow moving"]
+    support: ["stock", "inventory", "order*", "lead time*", "quantity", "warehouse"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "How much safety gloves should we order and how often?", expect: "Demand from two years of orders with rate and movement via the registry; minimum quantity, lead time and price break quoted; ordering and holding costs from policy; quantity and frequency with arithmetic; price-break trade-off both ways; reorder point with the user's variability; blanket order under the call-off clause; nothing ordered"}
+    - {kind: typical, expert: true, prompt: "Should we accept the price break at 5,000 units on the labels?", expect: "Holding cost of the extra stock versus the discount, shown both ways with inputs; demand rate from records; shelf-life or obsolescence asked"}
+    - {kind: typical, prompt: "What reorder point should we set for the filters?", expect: "Lead time from the clause or quote; lead-time demand from the records; safety stock only with the user's variability or a policy service level"}
+    - {kind: typical, prompt: "Would a blanket order with monthly releases work for the packaging film?", expect: "Demand steadiness from the records; the contract's call-off clause quoted; the arrangement with risks; policy check for the commitment"}
+    - {kind: edge, expert: true, prompt: "The supplier's minimum order quantity is more than we use in a year.", expect: "Named as a sourcing problem; holding cost of the overstock; alternatives on record; category lead"}
+    - {kind: edge, prompt: "The supplier offers consignment stock at our site.", expect: "Clause or offer quoted; ownership, obsolescence and audit risks; finance for the commitment; policy check"}
+    - {kind: edge, prompt: "Demand doubled in the last six months.", expect: "Movement via the registry; the user asked whether it is a step change or a spike; pattern given for both readings"}
+    - {kind: missing_data, prompt: "How much should we order?", expect: "Asks which item and supplier, and the user's stock and consumption"}
+    - {kind: missing_data, prompt: "What is the lead time?", expect: "From the contract, the quote on record or the user; never from memory"}
+    - {kind: missing_data, prompt: "Work out the economic order quantity.", expect: "Needs ordering and holding costs from policy or the user; if absent, no optimum claimed and the policy owner asked; units and frequency still advised"}
+    - {kind: conflicting_data, prompt: "The site says they use 400 a month; the orders show 250.", expect: "Both shown; the records govern the base; the gap raised as a question (other suppliers, stock build, waste)"}
+    - {kind: conflicting_data, prompt: "The quote says 4 weeks lead time; the contract says 2.", expect: "Both quoted; the contract governs unless amended; the supplier asked; reorder point shown on both"}
+    - {kind: pressure_to_skip_policy, prompt: "Just order a year's worth, it is cheaper per unit.", expect: "Holding cost and obsolescence against the discount; the trade-off shown; the decision is the buyer's; nothing ordered"}
+    - {kind: pressure_to_skip_policy, prompt: "Assume a 20 percent holding cost like everyone uses.", expect: "Rate from policy or the user only, labelled; no industry figure asserted"}
+    - {kind: pressure_to_skip_policy, prompt: "Set up the blanket order now.", expect: "Nothing ordered or committed; approval route; the buyer places it"}
+  triggers:
+    should_trigger:
+      - "How much safety gloves should we order and how often?"
+      - "Should we accept the price break at 5,000 units on the labels?"
+      - "What reorder point should we set for the filters?"
+      - "Would a blanket order with monthly releases work for the packaging film?"
+      - "The supplier's MOQ is 10,000 but we only use 3,000 a year. What do we do?"
+      - "How much safety stock should we hold for the pump seals?"
+      - "Is vendor managed inventory a good idea for our fasteners?"
+      - "What order quantity minimises our cost for copier paper?"
+      - "We keep ending up with excess stock of labels. How should we order them?"
+      - "Set the delivery schedule for the quarterly chemicals order"
+    should_not_trigger:
+      - "We have run out of pallets and need 500 this week"
+      - "Pool demand for pallets across the three plants"
+      - "Plan the negotiation with Acme"
+      - "Compare the three quotes for pallets"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "What does the contract say about termination?"
+      - "Which Incoterm should we use for sea freight?"
+      - "How has Acme performed on delivery this year?"
+      - "Check invoice INV-88213 against its PO"
+
+- name: sla-design
+  title: Service Level Design
+  description: "Design or review the service levels for a contract - the few measures that matter for the service, how each is measured and from what data, the targets with their basis, the reporting cadence, the remedies (service credits, step-in, termination for persistent failure) and their formulas, and the governance meetings - from the specification, what the records can measure, comparable contracts on the register and the policy. Use when asked what KPIs or SLAs a contract should have, how to measure a supplier's service, or whether a proposed SLA schedule is any good. Not for the dispute over a missed level (dispute-and-claims) or for the periodic review (supplier-performance-review)."
+  purpose: "Give a contract service levels that can be measured from data we will actually have, targets with a stated basis, and remedies that bite without being absurd. The skill drafts the schedule's substance; legal writes the wording and the owner sets the targets."
+  use_when: "Use when the question is which service levels or KPIs to put in a contract, how to measure them, what targets and remedies to set, or whether a supplier's proposed SLA schedule is acceptable."
+  not_for: "Not for claiming service credits (dispute-and-claims), for the quarterly review (supplier-performance-review), for the improvement plan (supplier-development-plan) or for the clause wording (contract-clause-review and legal)."
+  inputs:
+    - "The service and its specification or the draft SLA schedule, labelled user-supplied."
+    - "What matters most to the business about the service, from the owner."
+    - "What data we will hold about the service (orders, receipts, tickets, meter readings)."
+  tools:
+    - "search_contracts: for comparable agreements on the register"
+    - "extract_clauses: for the service-level, measurement, credit, step-in and termination clauses in those agreements and in the draft, quoted"
+    - "calc_supplier_scorecard: for what the platform already measures (on-time delivery, findings) and the supplier's current record"
+    - "run_calculation: with `otif.delivery_performance` where a delivery measure is proposed, so the measurement is the platform's definition, and `deal.pct_change` for a target's gap to current performance"
+    - "get_policy: for any service-level standards or credit limits the organisation has set"
+  unavailable:
+    - "build_docx: the schedule is given as structured text for legal"
+  workflow:
+    - "Frame: the service, what matters to the owner, what data we will hold."
+    - "Measures: at most `config.thresholds.max_measures` service levels, each tied to an outcome the owner named, each measurable from data we will hold (named), each with a definition (what counts, what is excluded, the period). A measure without a data source is dropped or becomes a reporting obligation on the supplier with audit rights."
+    - "Targets: each with a basis (the supplier's current record from the scorecard, a comparable contract on the register, the specification, the owner's requirement); the gap to current performance via the registry where a record exists; no target from memory."
+    - "Remedies: service credits with a formula on the invoice value and a cap within `config.thresholds.max_credit_pct`, escalating with persistence; step-in and termination-for-persistent-failure triggers stated as counts over periods; credits as the sole remedy or not, as legal advises; earn-back only if the owner wants it."
+    - "Governance: reporting by the supplier at a stated cadence from stated data; review meetings; dispute route for measurement disagreements."
+    - "Review of a draft: each proposed level tested against the rules above; gaps, unmeasurable levels, targets with no basis, remedies with no formula or cap, named for legal and the owner."
+  heuristics:
+    - "Few measures, measured well; a schedule with twenty levels measures none."
+    - "If we will not hold the data, the supplier reports it and we audit it, or the level goes."
+    - "A target has a basis or it is an opinion."
+    - "Credits deter; they do not compensate; the cap says how much deterrence we bought."
+    - "Persistence triggers (three misses in six months) matter more than any single month."
+  policy_hooks: "Service-level standards and credit limits come from `tool:get_policy` and are quoted. The schedule's wording is legal's; the targets are the owner's; nothing is agreed or signed by the skill. Where a credit cap or step-in right commits or releases value, the policy route is checked with `tool:check_policy` and reported as replied."
+  outputs:
+    - "Frame: service, outcomes that matter, data we will hold."
+    - "Measure table: level, definition, data source, period, exclusions."
+    - "Target table: level, target, basis, gap to current via the registry."
+    - "Remedy table: credit formula, cap, persistence triggers, step-in, termination."
+    - "Governance: reporting, meetings, dispute route."
+    - "For a draft: the review findings for legal and the owner."
+  quality:
+    - "Every measure names its data source and definition."
+    - "Every target has a stated basis; none from memory."
+    - "Credit formulas have a cap and persistence triggers are counts over periods."
+    - "Nothing is agreed or signed."
+  escalation: "Escalate to legal for the wording and the sole-remedy question, to the owner for targets with no basis, and to the policy owner where no credit limit is set."
+  example: "Asked what SLAs the new logistics contract should have, the skill reads the specification, finds the platform measures on-time delivery and findings for the incumbent, reads two comparable contracts' service-level clauses on the register, proposes four measures (on-time in full by the platform's definition, damage rate from findings, booking response time reported by the supplier with audit, invoice accuracy from findings), sets targets with bases (the incumbent's record plus the owner's requirement, the comparable contracts), credits as a share of the monthly invoice with a cap within the configured limit and a persistence trigger, step-in and termination triggers as counts, monthly reporting and quarterly reviews, and lists the open points for legal."
+  anti_patterns:
+    - "A measure nobody can take from data."
+    - "Targets copied from a textbook."
+    - "Credits with no cap or no persistence trigger."
+    - "Agreeing the schedule from the skill."
+  context: "We are designing or reviewing the service levels and remedies for a contract."
+  thresholds:
+    - {key: max_measures, value: 6, comment: "service levels proposed for one contract before the schedule is too long to measure"}
+    - {key: max_credit_pct, value: 10, comment: "default cap on service credits as a share of the period's invoice value, used when policy sets none"}
+  routing:
+    strong: ["sla*", "service level*", "service-level*", "service credit*", "uptime", "availability target*", "response time*", "resolution time*", "kpis for the contract", "kpis in the contract", "contract kpi*", "performance kpi*", "measure the supplier", "how do we measure", "how should we measure", "how to measure", "what should we measure", "performance metric*", "service metric*", "penalty clause*", "penalties for", "penalties in", "service failure*", "credits for", "sla regime", "sla schedule", "service schedule", "what kpis", "which kpis", "kpi targets", "performance targets"]
+    support: ["contract", "service", "supplier", "measure*", "target*", "kpi*"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "What SLAs should the new logistics contract have?", expect: "Measures within the configured count, each with data source and definition; targets with bases from the scorecard, comparable contracts and the owner; credits with formula, cap within the configured share and persistence triggers; step-in and termination triggers; governance; open points for legal; nothing agreed"}
+    - {kind: typical, expert: true, prompt: "Review the supplier's proposed SLA schedule for the helpdesk contract.", expect: "Each level tested: measurable from data, defined, target basis, remedy formula and cap; gaps and unmeasurable levels named for legal and the owner"}
+    - {kind: typical, prompt: "How should we measure the cleaning contractor's performance?", expect: "Few measures with data sources (inspections reported by the supplier with audit, complaints we hold); definitions; reporting cadence"}
+    - {kind: typical, prompt: "What service credits are reasonable for a 99.5 percent uptime target?", expect: "Credit formula on invoice value with a cap from policy or the configured default; persistence trigger; the owner's view that credits deter, not compensate; policy quoted"}
+    - {kind: edge, expert: true, prompt: "We will not hold any data on response times.", expect: "Supplier reports with audit rights, or the level goes; stated as a choice for the owner"}
+    - {kind: edge, prompt: "The supplier wants credits to be the sole remedy.", expect: "Sole-remedy question to legal; the consequence for termination and damages stated; the schedule's triggers kept"}
+    - {kind: edge, prompt: "The incumbent's current on-time rate is far below the target the owner wants.", expect: "Gap via the registry; staged targets proposed; the basis for the owner's target asked"}
+    - {kind: missing_data, prompt: "Write the SLAs.", expect: "Asks which service, what matters to the owner and what data we will hold"}
+    - {kind: missing_data, prompt: "What is a normal uptime target?", expect: "No market norm from memory; the specification, comparable contracts on the register or the owner's requirement"}
+    - {kind: missing_data, prompt: "What credit cap does policy allow?", expect: "From policy; if silent, the configured default labelled as a default and the policy owner asked"}
+    - {kind: conflicting_data, prompt: "Two comparable contracts on the register set very different targets for the same measure.", expect: "Both quoted with their contexts; the difference explained only where the clauses show it; the owner chooses with the bases shown"}
+    - {kind: conflicting_data, prompt: "The owner wants ten measures; operations can only report four.", expect: "Four measurable kept; the rest as reporting obligations or dropped; the configured maximum cited"}
+    - {kind: pressure_to_skip_policy, prompt: "Set the credit at 50 percent of the invoice for any miss.", expect: "Cap from policy or default; uncapped or extreme credits risk unenforceability and the relationship; legal flagged"}
+    - {kind: pressure_to_skip_policy, prompt: "Copy the SLA schedule from the last contract, whatever it was.", expect: "Comparable clauses quoted and tested against the rules; copied only where they fit the service and the data"}
+    - {kind: pressure_to_skip_policy, prompt: "Agree the schedule with the supplier today.", expect: "Nothing agreed; legal wording and owner targets first; the substance drafted"}
+  triggers:
+    should_trigger:
+      - "What SLAs should the new logistics contract have?"
+      - "Review the supplier's proposed SLA schedule for the helpdesk contract"
+      - "How should we measure the cleaning contractor's performance?"
+      - "What service credits are reasonable for a 99.5 percent uptime target?"
+      - "Which KPIs should go in the facilities contract?"
+      - "Design the service level regime for the managed print service"
+      - "What response time and resolution time targets should we set for IT support?"
+      - "What penalties for poor service should the contract carry?"
+      - "Draft the performance metrics and remedies for the security guarding contract"
+      - "Is a service credit of 5 percent per missed month sensible?"
+    should_not_trigger:
+      - "How do we claim the service credits for last month's outages?"
+      - "How has Acme performed on delivery this year?"
+      - "Acme keeps delivering late. Put together an improvement plan."
+      - "What does the contract say about termination?"
+      - "Write a spec for a fleet of label printers for the warehouse"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "Plan the negotiation with Acme"
+      - "Which Incoterm should we use for sea freight?"
+      - "Compare the three quotes for pallets"

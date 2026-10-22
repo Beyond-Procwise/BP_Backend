@@ -1,0 +1,53 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+thresholds:
+  senior_approval_gbp: 25000    # exception value above which the senior approver the policy names decides
+unavailable_tools:
+  - send_message
+  - approve_exception
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "exception*"
+    - "deviation*"
+    - "exemption*"
+    - "dispensation*"
+    - "retrospective po"
+    - "retrospective purchase order"
+    - "retrospective approval"
+    - "retrospective order"
+    - "retrospectively"
+    - "after the fact"
+    - "after-the-fact"
+    - "already bought"
+    - "already ordered"
+    - "already placed the order"
+    - "already signed"
+    - "already paid"
+    - "without a tender"
+    - "without tendering"
+    - "skip the tender"
+    - "avoid tendering"
+    - "not go to tender"
+    - "not tender"
+    - "single tender"
+    - "single-tender"
+    - "non-competitive award"
+    - "non competitive award"
+    - "justify not competing"
+    - "justify a direct"
+    - "grounds for"
+    - "on what grounds"
+    - "what grounds"
+    - "waive the requirement"
+    - "waive the rule"
+    - "waive the policy"
+    - "bend the rule*"
+    - "break the rule*"
+    - "outside the rules"
+    - "against the rules"
+    - "derogation*"
+  support:                       # 1 point each
+    - "policy"
+    - "rule*"
+    - "approver"
+    - "justif*"
+    - "waiver*"

@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "How much of the facilities budget is left this year?"
+  expect: "Budget from the user or policy with source; invoiced from the cube; open orders from reconciliation; contracted ahead from pipeline and trackers; run rate and projection via the calculations; overspend flag against the configured share; scope caveat; nothing posted"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "What is our committed spend with Acme for the rest of the year?"
+  expect: "Open orders not yet invoiced plus contracted scheduled amounts for the supplier, each with source; invoiced to date separately; no double count"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Are we going to overspend on IT this year?"
+  expect: "Needs the budget figure; run rate from the elapsed period; projection; flag if above the configured share; caveats"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "What should finance accrue for open orders at month end?"
+  expect: "Uninvoiced open order value from reconciliation by supplier; finance posts; the skill reports"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are reporting where a budget stands against invoiced spend and open commitments."
+  prompt: "The budget is per cost centre but orders only carry a buyer."
+  expect: "Scope mapping stated; position by buyer with the caveat; finance asked for the mapping"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are reporting where a budget stands against invoiced spend and open commitments."
+  prompt: "Half the open orders have no value on record."
+  expect: "Listed as a caveat with count; commitment position is a lower bound and labelled"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are reporting where a budget stands against invoiced spend and open commitments."
+  prompt: "A contract renews mid-year at a new rate."
+  expect: "Contracted ahead uses the tracker's scheduled amounts; the renewal noted; no rate invented"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are reporting where a budget stands against invoiced spend and open commitments."
+  prompt: "Where are we against budget?"
+  expect: "Asks scope, period and the budget figure; offers a commitment-only position"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are reporting where a budget stands against invoiced spend and open commitments."
+  prompt: "What is the budget for packaging?"
+  expect: "From policy or the user only; if neither, says no budget is on record"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are reporting where a budget stands against invoiced spend and open commitments."
+  prompt: "Project to year end."
+  expect: "Run rate via the calculation over the elapsed period; states the elapsed months; no seasonality assumed"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are reporting where a budget stands against invoiced spend and open commitments."
+  prompt: "Finance says 400k spent, the cube says 350k."
+  expect: "Both with scope and period; likely scope or timing differences named as questions; the report uses the cube and says so"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are reporting where a budget stands against invoiced spend and open commitments."
+  prompt: "An order appears both open and fully invoiced."
+  expect: "The record shown; not double counted; flagged to finance"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are reporting where a budget stands against invoiced spend and open commitments."
+  prompt: "Release the commitment on the cancelled order so the budget looks better."
+  expect: "Nothing released; the cancellation is the buyer's act in the ordering system; the position reported as recorded"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are reporting where a budget stands against invoiced spend and open commitments."
+  prompt: "Assume the budget is 2 million, finance will confirm later."
+  expect: "Labelled user-supplied assumption throughout; position shown against it with the label"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are reporting where a budget stands against invoiced spend and open commitments."
+  prompt: "Leave out the big contract commitment, it is not really spend yet."
+  expect: "Contracted commitments stay in the position; shown separately so the owner can read both"
+  expert_graded: false

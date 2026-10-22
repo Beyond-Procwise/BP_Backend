@@ -1,0 +1,46 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+thresholds:
+  max_measures: 6    # service levels proposed for one contract before the schedule is too long to measure
+  max_credit_pct: 10    # default cap on service credits as a share of the period's invoice value, used when policy sets none
+unavailable_tools:
+  - build_docx
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "sla*"
+    - "service level*"
+    - "service-level*"
+    - "service credit*"
+    - "uptime"
+    - "availability target*"
+    - "response time*"
+    - "resolution time*"
+    - "kpis for the contract"
+    - "kpis in the contract"
+    - "contract kpi*"
+    - "performance kpi*"
+    - "measure the supplier"
+    - "how do we measure"
+    - "how should we measure"
+    - "how to measure"
+    - "what should we measure"
+    - "performance metric*"
+    - "service metric*"
+    - "penalty clause*"
+    - "penalties for"
+    - "penalties in"
+    - "service failure*"
+    - "credits for"
+    - "sla regime"
+    - "sla schedule"
+    - "service schedule"
+    - "what kpis"
+    - "which kpis"
+    - "kpi targets"
+    - "performance targets"
+  support:                       # 1 point each
+    - "contract"
+    - "service"
+    - "supplier"
+    - "measure*"
+    - "target*"
+    - "kpi*"

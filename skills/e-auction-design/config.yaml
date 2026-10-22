@@ -1,0 +1,33 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+thresholds:
+  min_bidders: 3    # qualified independent bidders below which no auction is run
+  max_decrement_pct: 2    # largest bid decrement as a share of the starting price
+unavailable_tools:
+  - run_e_auction
+  - create_rfx
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "auction*"
+    - "e-auction*"
+    - "eauction*"
+    - "reverse auction*"
+    - "bidding event*"
+    - "live bidding"
+    - "online bidding"
+    - "lot structure"
+    - "lotting"
+    - "bid decrement*"
+    - "decrement*"
+    - "bid rounds"
+    - "dutch auction"
+    - "english auction"
+    - "japanese auction"
+    - "bidders compete live"
+    - "run an event"
+    - "sourcing event online"
+  support:                       # 1 point each
+    - "lot*"
+    - "bid*"
+    - "supplier*"
+    - "round*"
+    - "price"

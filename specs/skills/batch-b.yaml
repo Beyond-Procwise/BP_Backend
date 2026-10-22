@@ -77,14 +77,14 @@
   triggers:
     should_trigger:
       - "Draft an email chasing Acme for the three overdue deliveries"
-      - "Reply to the supplier who asked why their invoice has not been paid"
+      - "Reply to the supplier who asked for a copy of the order"
       - "Write to Borealis asking for their insurance certificate"
       - "How do I politely tell a supplier we have chosen someone else?"
       - "Draft a letter to Kestrel about the repeated short deliveries"
       - "What should I say to the supplier who asked for a reference?"
       - "Word a reminder to the supplier about the outstanding paperwork"
-      - "Write back to them and ask for a revised delivery schedule"
-      - "Let the supplier know we are moving the delivery address next month"
+      - "Write back to them and ask for revised dates"
+      - "Let the supplier know we are moving to a new site next month"
       - "Chase them for the signed contract, nicely"
     should_not_trigger:
       - "Plan the negotiation with Acme"
@@ -557,7 +557,7 @@
   thresholds:
     - {key: min_cover_days, value: 30, comment: "stock cover below this many days with no screened alternative is a red gap"}
   routing:
-    strong: ["contingency", "contingency plan*", "continuity plan*", "business continuity", "supply continuity", "continuity of supply", "security of supply", "supply risk*", "supply disruption*", "disruption", "disrupted", "goes bust", "go bust", "went bust", "insolven*", "into administration", "in administration", "bankrupt*", "into liquidation", "receivership", "what if the supplier", "what if they", "if they fail", "if the supplier fails", "supplier fails", "supplier failure", "single point of failure", "backup supplier*", "back-up supplier*", "fallback supplier*", "alternative source*", "alternate source*", "alternative supplier* if", "stockpile", "stockpiling", "force majeure", "factory fire", "port closure", "what is our fallback", "fallback plan", "plan b", "resilien*", "stops supplying", "stop supplying", "stopped supplying", "could not supply", "can't supply", "cannot supply"]
+    strong: ["contingency", "contingency plan*", "continuity plan*", "business continuity", "supply continuity", "continuity of supply", "security of supply", "supply risk*", "supply disruption*", "disruption", "disrupted", "goes bust", "go bust", "went bust", "insolven*", "into administration", "in administration", "bankrupt*", "into liquidation", "receivership", "what if the supplier", "what if they", "what happens if", "if they fail", "if the supplier fails", "supplier fails", "supplier failure", "single point of failure", "backup supplier*", "back-up supplier*", "fallback supplier*", "alternative source*", "alternate source*", "alternative supplier* if", "stockpile", "stockpiling", "force majeure", "factory fire", "port closure", "what is our fallback", "our fallback if", "fallback if", "fallback plan", "plan b", "resilien*", "stops supplying", "stop supplying", "stopped supplying", "could not supply", "can't supply", "cannot supply"]
     support: ["risk", "supply", "supplier*", "plan", "fail*", "stock"]
   scenarios:
     - {kind: typical, expert: true, prompt: "What happens if Acme goes into administration?", expect: "Exposure from the cube by item; alternatives on record with screening status; financial health record and date; insolvency and continuity clauses quoted; gaps coloured by the rule with the user's stock cover; preparations with owners and approval routes; triggers; day-one actions; nothing ordered"}

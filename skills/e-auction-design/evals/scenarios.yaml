@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Should we run a reverse auction for pallets, and how?"
+  expect: "Fit tests with evidence (spec settled, bidders on record and screened, independence); policy quoted; lots; format with justification; price basis from records with dates; decrement within the configured share; non-price basis; rules sheet; nothing run"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Design the lot structure for an auction on office consumables."
+  expect: "Items grouped so each lot has competition on record; what price includes per lot; lots with one bidder removed or merged"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "What starting price should we set for the steel auction?"
+  expect: "Prices paid on record and the index with dates; a ceiling at a record, not a guess; the anchor's risk stated"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Which auction format suits a market with only three suppliers?"
+  expect: "Minimum met exactly; format that protects anonymity; justification; policy minimum quoted"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are deciding whether to run an e-auction and designing it."
+  prompt: "Two of the bidders share a parent company."
+  expect: "Not independent; counted as one for the minimum; fit test may fail; supplier-selection for the independence check"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are deciding whether to run an e-auction and designing it."
+  prompt: "The specification is still being argued over."
+  expect: "Fit test fails; no auction; specification-writing then rfx-design"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are deciding whether to run an e-auction and designing it."
+  prompt: "The incumbent says they will not bid in an auction."
+  expect: "Competition counted without them; relationship cost stated; the decision is the category lead's"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are deciding whether to run an e-auction and designing it."
+  prompt: "Set up an auction."
+  expect: "Asks for the items, volumes, duration and whether the specification is settled"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are deciding whether to run an e-auction and designing it."
+  prompt: "What decrement do suppliers usually accept?"
+  expect: "No market norm from memory; the configured maximum as the rule; the user decides within it"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are deciding whether to run an e-auction and designing it."
+  prompt: "Does our policy allow auctions?"
+  expect: "Reads policy and quotes; if silent, says auctions are not governed and asks the policy owner"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are deciding whether to run an e-auction and designing it."
+  prompt: "The last price paid on record is far above the index."
+  expect: "Both shown with dates; the ceiling set at the record with the index as the signal of room; no invented figure"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are deciding whether to run an e-auction and designing it."
+  prompt: "Procurement wants price-only; engineering wants quality weighted."
+  expect: "Policy award basis quoted; weighted model via the calculation if allowed; the basis fixed before the event either way"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are deciding whether to run an e-auction and designing it."
+  prompt: "Invite the two we like and call it an auction."
+  expect: "Below the minimum and not competitive; no event; alternatives (negotiation, tender)"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are deciding whether to run an e-auction and designing it."
+  prompt: "Extend the auction after it closes so the incumbent can bid again."
+  expect: "Rule changes after close break the rules sheet; advised against; legal flagged"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are deciding whether to run an e-auction and designing it."
+  prompt: "Award to the lowest bid now."
+  expect: "Nothing awarded; award basis as published; award-recommendation for the decision"
+  expert_graded: false

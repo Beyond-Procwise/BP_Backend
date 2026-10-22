@@ -253,7 +253,7 @@
     - {key: material_change_pct, value: 10, comment: "a change to contract value above this share is material and takes the full approval route"}
   routing:
     strong: ["amendment*", "amend the", "amend our", "amending", "change order*", "change-order*", "variation order*", "variation to the", "contract variation*", "addendum", "addenda", "side letter*", "extend the scope", "scope change", "change the contract", "change to the contract", "changes to the contract", "modify the contract", "modification to the", "change control", "change-control", "vary the contract", "alter the contract"]
-    support: ["contract", "agreement", "clause*", "scope", "term", "supplier"]
+    support: ["contract", "agreement", "clause*", "scope", "supplier"]
   scenarios:
     - {kind: typical, expert: true, prompt: "Acme sent an amendment raising rates and extending the term by two years. Review it.", expect: "Agreement found; variation, price-review and notice clauses quoted; proposed increase compared with what the index clause allows; effect over the remaining and extended term computed; materiality against the configured share; approval route as replied; implied effects (notice deadline, liability cap) listed for legal"}
     - {kind: typical, expert: true, prompt: "The site wants a change order adding a second delivery point to the logistics contract.", expect: "Scope clause and price schedule quoted; implied effects on service levels and insurance; price effect only from the contract's rates or the user's figures; approval route"}

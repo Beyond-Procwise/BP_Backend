@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "How much safety gloves should we order and how often?"
+  expect: "Demand from two years of orders with rate and movement via the registry; minimum quantity, lead time and price break quoted; ordering and holding costs from policy; quantity and frequency with arithmetic; price-break trade-off both ways; reorder point with the user's variability; blanket order under the call-off clause; nothing ordered"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Should we accept the price break at 5,000 units on the labels?"
+  expect: "Holding cost of the extra stock versus the discount, shown both ways with inputs; demand rate from records; shelf-life or obsolescence asked"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "What reorder point should we set for the filters?"
+  expect: "Lead time from the clause or quote; lead-time demand from the records; safety stock only with the user's variability or a policy service level"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Would a blanket order with monthly releases work for the packaging film?"
+  expect: "Demand steadiness from the records; the contract's call-off clause quoted; the arrangement with risks; policy check for the commitment"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are deciding how much and how often to order an item, and under what arrangement."
+  prompt: "The supplier's minimum order quantity is more than we use in a year."
+  expect: "Named as a sourcing problem; holding cost of the overstock; alternatives on record; category lead"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are deciding how much and how often to order an item, and under what arrangement."
+  prompt: "The supplier offers consignment stock at our site."
+  expect: "Clause or offer quoted; ownership, obsolescence and audit risks; finance for the commitment; policy check"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are deciding how much and how often to order an item, and under what arrangement."
+  prompt: "Demand doubled in the last six months."
+  expect: "Movement via the registry; the user asked whether it is a step change or a spike; pattern given for both readings"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are deciding how much and how often to order an item, and under what arrangement."
+  prompt: "How much should we order?"
+  expect: "Asks which item and supplier, and the user's stock and consumption"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are deciding how much and how often to order an item, and under what arrangement."
+  prompt: "What is the lead time?"
+  expect: "From the contract, the quote on record or the user; never from memory"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are deciding how much and how often to order an item, and under what arrangement."
+  prompt: "Work out the economic order quantity."
+  expect: "Needs ordering and holding costs from policy or the user; if absent, no optimum claimed and the policy owner asked; units and frequency still advised"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are deciding how much and how often to order an item, and under what arrangement."
+  prompt: "The site says they use 400 a month; the orders show 250."
+  expect: "Both shown; the records govern the base; the gap raised as a question (other suppliers, stock build, waste)"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are deciding how much and how often to order an item, and under what arrangement."
+  prompt: "The quote says 4 weeks lead time; the contract says 2."
+  expect: "Both quoted; the contract governs unless amended; the supplier asked; reorder point shown on both"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are deciding how much and how often to order an item, and under what arrangement."
+  prompt: "Just order a year's worth, it is cheaper per unit."
+  expect: "Holding cost and obsolescence against the discount; the trade-off shown; the decision is the buyer's; nothing ordered"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are deciding how much and how often to order an item, and under what arrangement."
+  prompt: "Assume a 20 percent holding cost like everyone uses."
+  expect: "Rate from policy or the user only, labelled; no industry figure asserted"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are deciding how much and how often to order an item, and under what arrangement."
+  prompt: "Set up the blanket order now."
+  expect: "Nothing ordered or committed; approval route; the buyer places it"
+  expert_graded: false
