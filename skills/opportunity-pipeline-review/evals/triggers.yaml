@@ -1,0 +1,22 @@
+should_trigger:
+- How does the value pipeline look this year?
+- What does the value ledger say we have delivered so far with Acme?
+- Which opportunities are open on the laptop items and where are they stuck?
+- What value opportunities should we pursue next quarter?
+- What does the value ledger say has been realised to date?
+- Show me the open opportunities in the value pipeline
+- Which opportunities are stalled?
+- What is the value delivered so far this year?
+- Give me the opportunity pipeline for the packaging suppliers
+- What is realised versus claimed in the value pipeline this year?
+should_not_trigger:
+- Validate the 120k savings claim on the cable contract
+- Where can we pool laptop demand across business units?
+- Plan the negotiation with Acme on the price increase
+- Give me a spend analysis for last year
+- Has Clearwater been overbilling us?
+- Can I approve this purchase order?
+- Is Acme safe to onboard?
+- Should we renew the Acme contract?
+- Design the RFQ for pallets
+- How has Acme performed on delivery this year?

@@ -1,0 +1,22 @@
+should_trigger:
+- Give me the contract pipeline for the next six months
+- Which contracts auto-renew this year, and have we read their notice clauses across the register?
+- How much of our spend is covered by a contract on record?
+- What is the state of the contract portfolio?
+- Build the contract calendar for the facilities contracts
+- Which contracts are falling due that we need to plan for?
+- Which suppliers have no contract on record across the register?
+- Contract portfolio review for the IT category please
+- Show me the contracts falling due with their decision dates
+- Contract health check across the register
+should_not_trigger:
+- Should we renew the Acme contract or re-tender?
+- List the contracts expiring this year.
+- What does the contract say about termination?
+- Is Acme safe to onboard?
+- Give me a spend analysis for last year
+- Can I approve this purchase order?
+- Plan the negotiation with Acme
+- How has Acme performed on delivery this year?
+- Design the RFQ for pallets
+- Validate this savings claim

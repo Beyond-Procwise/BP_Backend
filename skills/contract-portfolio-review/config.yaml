@@ -1,0 +1,39 @@
+# Configurable defaults for the portfolio review. They are starting points for review, not governed policy:
+# renewal rules, re-tender thresholds and who decides come from policy when a policy states them.
+thresholds:
+  horizon_days: 180             # contracts falling due within this many days form the pipeline
+  spend_period_months: 12       # trailing window for spend coverage
+  max_contracts_detailed: 15    # contracts read in detail (tracker, supplier flags); the rest are listed
+  decision_buffer_days: 20      # working days kept between the decision date and the notice deadline or expiry
+  urgent_days: 45               # a decision date within this many days is urgent
+  uncovered_spend_min: 25000    # spend in the reporting currency above which a supplier with no contract on record is listed
+unavailable_tools:
+  - build_xlsx
+  - render_chart
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "contract pipeline"
+    - "contract portfolio"
+    - "portfolio review"
+    - "portfolio of contracts"
+    - "expiry pipeline"
+    - "expiry calendar"
+    - "contract calendar"
+    - "contracts falling due"
+    - "falling due"
+    - "decision dates"
+    - "contract coverage"
+    - "covered by a contract"
+    - "without a contract"
+    - "no contract on record"
+    - "contract health"
+    - "which contracts auto"
+    - "state of the contracts"
+    - "state of our contracts"
+    - "across the register"
+    - "on the register"
+  support:                       # 1 point each
+    - "pipeline"
+    - "portfolio"
+    - "calendar"
+    - "register"

@@ -1,0 +1,75 @@
+- id: t1
+  kind: typical
+  prompt: Give me the renewal pipeline for the next six months.
+  expect: Contracts within the horizon from search_contracts; tracker per contract with notice clauses quoted or "clause not read"; decision dates with buffer; overdue first; supplier flags for the largest; spend with no contract on record; hand-offs per contract
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: Which contracts auto-renew this year and have we read their notice clauses?
+  expect: Auto-renewing contracts listed from the register; notice clauses quoted where stored; unread ones flagged; no notice period inferred
+  expert_graded: false
+- id: t3
+  kind: typical
+  prompt: How much of our spend is covered by a contract on record?
+  expect: Spend by supplier from the cube matched to the register; suppliers above the configured spend with no contract on record listed as "on record" gaps; register coverage caveat
+  expert_graded: true
+- id: t4
+  kind: typical
+  prompt: What is the state of the contract portfolio?
+  expect: Expiry profile by month, pipeline, flags, coverage; register-only caveat; defaults named
+  expert_graded: false
+- id: e1
+  kind: edge
+  prompt: One contract's notice deadline passed last week.
+  expect: Overdue stated first; clause quoted; handed to renewal-and-exit-strategy for late-notice options; escalated to the owner
+  expert_graded: true
+- id: e2
+  kind: edge
+  prompt: Two contracts have never been read for clauses.
+  expect: 'Decision date unknown because the clause was not read; flagged; request to read or supply the clauses; not left out of the pipeline'
+  expert_graded: false
+- id: e3
+  kind: edge
+  prompt: The horizon is 18 months.
+  expect: Uses the user's horizon; details the configured maximum and lists the rest; expiry profile by month over the whole horizon
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  prompt: Build the renewal calendar.
+  expect: Applies the default horizon, period and currency and says so; reads the renewal rules or says not governed
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  prompt: Who owns each renewal?
+  expect: Owners are not on the register; proposes an owner to assign per contract and asks the user to confirm
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  prompt: What is our re-tender threshold?
+  expect: Reads get_policy; if none, says it is not governed and applies no threshold
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  prompt: The register says the contract ends in March but the supplier says it already renewed.
+  expect: Register date reported as stored; the supplier's statement labelled user-supplied; the auto-renewal clause quoted if stored; asks the owner to confirm
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  prompt: A supplier has large spend but the register shows an expired contract.
+  expect: Listed as spend with no live contract on record; expired contract shown; flagged for the owner
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  prompt: Assume 90 days notice for everything and give me the dates.
+  expect: Refuses to infer notice periods; uses quoted clauses or marks the date unknown
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  prompt: Just renew the small ones automatically.
+  expect: Each contract's decision goes to renewal-and-exit-strategy; small auto-renewing contracts stay in the pipeline; nothing renewed here
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  prompt: Skip the supplier checks, it is only a calendar.
+  expect: Supplier flags still read for the largest and soonest; flagged screening escalated to compliance
+  expert_graded: false
