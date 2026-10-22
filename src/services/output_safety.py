@@ -253,7 +253,10 @@ _MECHANISM = re.compile(
     # A bare "repository" is ordinary procurement English (the policy repository, the contract
     # repository) and replaced a harmless answer about approvals (test D5). Only a code
     # repository is mechanism; a class named SomethingRepository is caught by code_identifier.
-    r"|codebase|source\s+code|(?:git|code|source|software)\s+repository|deployment|container|docker"
+    # A bare "container" is a shipping container in this product (FOB for a 40ft container, containerised sea
+    # freight) and blocked two Incoterm answers live (2026-10-22). Only a software container is mechanism.
+    r"|codebase|source\s+code|(?:git|code|source|software)\s+repository|deployment"
+    r"|(?:docker|software|application|app|kubernetes|k8s)\s+containers?|containers?\s+(?:image|registry|orchestration|runtime)|docker"
     r")\b",
     re.I,
 )

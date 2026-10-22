@@ -410,3 +410,13 @@ def test_the_retry_instruction_asks_for_plain_facts_not_a_tour_of_the_screen():
     low = OS.RETRY_INSTRUCTION.lower()
     assert "the screen they are on" not in low and "button they press" not in low
     assert "do not describe screens" in low and "same facts" in low
+
+
+
+def test_a_shipping_container_is_product_english_but_a_software_container_is_mechanism():
+    """Live, 2026-10-22: two Incoterm answers were withheld for the word 'container'."""
+    for text in ("Under FOB the seller loads the 40ft container on board; for containerised sea freight FCA fits better.",
+                 "Three containers a month from Shenzhen under DAP Rotterdam."):
+        assert osafe.is_safe(text), text
+    for text in ("The extraction runs in a docker container.", "Each worker is a Kubernetes container pulled from the container registry."):
+        assert not osafe.is_safe(text), text
