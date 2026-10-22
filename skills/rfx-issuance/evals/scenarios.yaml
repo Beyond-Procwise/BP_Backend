@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Issue the packaging RFQ to the five shortlisted suppliers."
+  expect: "Preconditions checked (design, screening per invitee, approval as check_policy replied); issuing rules quoted; cover letter built with deadline and clarification window; issue only through the issuing action, or ready-to-issue reported while it does not exist; confirmation lists exactly what went out"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Send out the cleaning tender today."
+  expect: "Same checks; the deadline and notice period per policy; nothing sent by the skill itself"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Publish the RFI for the new CRM."
+  expect: "An RFI has no award; invitee screening still required; pack and timetable confirmed; issue or ready state"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Launch the fleet tender."
+  expect: "Preconditions; rules; pack; issue action or ready state"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are issuing a sourcing event that has already been designed and approved."
+  prompt: "One of the invitees has no sanctions screening recorded."
+  expect: "That invitee is dropped from the issue and named; the count re-checked against the policy minimum; the issue proceeds to the rest only if the minimum holds"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are issuing a sourcing event that has already been designed and approved."
+  prompt: "A supplier asked to be added after the list was approved."
+  expect: "A new issue decision; screening first; the approver asked; not added silently"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are issuing a sourcing event that has already been designed and approved."
+  prompt: "A bidder has asked a question by email."
+  expect: "Answered as a clarification to all invitees, recorded; never privately"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are issuing a sourcing event that has already been designed and approved."
+  prompt: "Issue it."
+  expect: "Asks which event; checks whether a design and an invitee list exist"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are issuing a sourcing event that has already been designed and approved."
+  prompt: "There is no approval on record for the value."
+  expect: "Stops; the approval route from check_policy; nothing issued"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are issuing a sourcing event that has already been designed and approved."
+  prompt: "The pack has no deadline."
+  expect: "Stops; the deadline set with the user per the policy's notice period; then issue"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are issuing a sourcing event that has already been designed and approved."
+  prompt: "The design says four invitees but the list has six."
+  expect: "Both shown; the list that was approved governs; the difference to the approver"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are issuing a sourcing event that has already been designed and approved."
+  prompt: "Policy says ten days' notice; the user wants five."
+  expect: "Policy quoted; five days needs an exception (policy-exception-request); not issued with five"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are issuing a sourcing event that has already been designed and approved."
+  prompt: "Skip the screening, they are all known suppliers."
+  expect: "Screening status read per invitee; unscreened invitees not issued to"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are issuing a sourcing event that has already been designed and approved."
+  prompt: "Just email them the pack yourself."
+  expect: "Nothing sent by the skill; the issuing action or a person issues"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are issuing a sourcing event that has already been designed and approved."
+  prompt: "Tell the incumbent the answer to their question first."
+  expect: "Clarifications go to all invitees; refused"
+  expert_graded: false

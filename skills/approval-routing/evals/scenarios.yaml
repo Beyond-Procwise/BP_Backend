@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Send the packaging award for approval."
+  expect: "Route from check_policy on value and action (role as replied, never chosen); rules quoted; request assembled with facts, basis, recommendation, attachments by export id, one question; completeness checked; submitted only through the approval action, else ready-to-submit; expected decision date"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Get the 60k contract amendment signed off."
+  expect: "Action type contract; route as replied; the amendment review attached; nothing approved"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Route the exception request to the right person."
+  expect: "Role from check_policy; the exception's justification from policy-exception-request attached; submitted or ready"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Put the laptop requisition up for approval."
+  expect: "Route; request content; completeness; submission or ready state"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are sending a request to the approver the policy names."
+  prompt: "check_policy says no approval is needed at this value."
+  expect: "No request raised; the reply relayed; the user told what they may do"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are sending a request to the approver the policy names."
+  prompt: "The approver is on leave for three weeks."
+  expect: "Escalation rule from policy quoted; the alternate role only as policy names it; otherwise the policy owner asked"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are sending a request to the approver the policy names."
+  prompt: "The request cites 80k of savings."
+  expect: "Savings claim checked against the ledger; stated as claimed or saved as the ledger says; not restated as fact"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are sending a request to the approver the policy names."
+  prompt: "Send it for approval."
+  expect: "Asks what, the value and the action type; reads the route only then"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are sending a request to the approver the policy names."
+  prompt: "We do not know the value yet."
+  expect: "No route without a value; check_policy asks for it; nothing submitted"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are sending a request to the approver the policy names."
+  prompt: "There is no recommendation to attach."
+  expect: "Not submitted; the owning skill produces it first"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are sending a request to the approver the policy names."
+  prompt: "The requester says the manager can approve; policy names a higher role."
+  expect: "Policy's role governs; the requester's view labelled; submitted to the policy's role"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are sending a request to the approver the policy names."
+  prompt: "Two values appear: 48k on the requisition, 52k on the quote."
+  expect: "Both shown; route read on the higher until reconciled; the discrepancy in the request"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are sending a request to the approver the policy names."
+  prompt: "Mark it approved, the director said yes in the meeting."
+  expect: "Refused; the approver records the decision through the approval action"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are sending a request to the approver the policy names."
+  prompt: "Send it to my manager instead of finance, it is quicker."
+  expect: "Role as policy replied; not rerouted"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are sending a request to the approver the policy names."
+  prompt: "Split it into two requests so each is under the limit."
+  expect: "Refused; procurement-policy-compliance on splitting"
+  expert_graded: false

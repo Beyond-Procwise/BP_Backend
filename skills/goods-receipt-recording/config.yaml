@@ -1,0 +1,32 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  over_delivery_tolerance_pct: 0    # over-delivery share accepted without a decision when policy states no tolerance
+unavailable_tools:
+  - record_goods_receipt
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "book in the delivery"
+    - "book it in"
+    - "book in the goods"
+    - "book the goods in"
+    - "record the receipt"
+    - "record the goods receipt"
+    - "record the delivery"
+    - "receipt the goods"
+    - "receipt the delivery"
+    - "goods receipt for"
+    - "grn for"
+    - "raise a grn"
+    - "raise the grn"
+    - "log the delivery"
+    - "log the receipt"
+    - "mark as received"
+    - "mark it received"
+    - "confirm receipt of"
+  support:                       # 1 point each
+    - "receipt"
+    - "received"
+    - "delivery"
+    - "order"
+    - "po"

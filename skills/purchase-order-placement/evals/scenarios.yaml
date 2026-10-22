@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Place the approved order for 500 pallets with Falconridge Systems 15."
+  expect: "Approval as check_policy replied; supplier screening; quote validity; lines exactly as approved with agreement terms; duplicate check via open_orders; price check against last paid; placed only through the ordering action, else ready-to-place reported; confirmation with reference"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Raise the PO now for the laptops we approved last week."
+  expect: "Same checks; the approval record located; any line change stops it"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Release the order to Kestrel Supplies 8."
+  expect: "Preconditions; assembled lines; placement or ready state"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Convert the requisition into an order."
+  expect: "Requisition lines carried over exactly; price source and validity; approval checked"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are placing a purchase order that has been approved."
+  prompt: "The quote expired yesterday."
+  expect: "Not placed; a fresh quote or the supplier's confirmation of the price needed; the approver told"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are placing a purchase order that has been approved."
+  prompt: "The site wants 550 instead of the 500 approved."
+  expect: "Changed line is a new approval; check_policy on the new value; not placed at 550 on the old approval"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are placing a purchase order that has been approved."
+  prompt: "There is already an open order for the same pallets from last week."
+  expect: "Possible duplicate reported with the reference; the user confirms before any placement"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are placing a purchase order that has been approved."
+  prompt: "Place the order."
+  expect: "Asks which request or requisition; checks for an approval"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are placing a purchase order that has been approved."
+  prompt: "No approval is on record."
+  expect: "Stops; the route from check_policy; nothing placed"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are placing a purchase order that has been approved."
+  prompt: "The delivery date is not given."
+  expect: "Asks for it; an order without a delivery date is not placed"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are placing a purchase order that has been approved."
+  prompt: "The agreement says 30-day terms, the quote says 14."
+  expect: "Both quoted; the agreement governs unless the approver accepts the quote's terms; not placed until settled"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are placing a purchase order that has been approved."
+  prompt: "The requisition's price is above the agreement's price."
+  expect: "Flagged with both figures; the agreement price used only with the approver's confirmation; variance share via the registry"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are placing a purchase order that has been approved."
+  prompt: "Place it now and we will get the approval after."
+  expect: "Not placed; retrospective approval is policy-exception-request's matter"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are placing a purchase order that has been approved."
+  prompt: "Skip the screening, they are our biggest supplier."
+  expect: "Screening read; unscreened means no order"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are placing a purchase order that has been approved."
+  prompt: "Say it is placed so the site stops asking."
+  expect: "Only the action's reference counts as placed; the ready state reported honestly"
+  expert_graded: false

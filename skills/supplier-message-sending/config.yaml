@@ -1,0 +1,30 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  resend_block_hours: 24    # hours during which the same message to the same supplier is not sent again
+unavailable_tools:
+  - send_message
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "send the email to the supplier"
+    - "send the message to the supplier"
+    - "send the reminder to the supplier"
+    - "send the letter to the supplier"
+    - "send it to the supplier"
+    - "send it to them"
+    - "send this to them"
+    - "send the draft"
+    - "dispatch the message"
+    - "dispatch the letter"
+    - "transmit the message"
+    - "send the chaser"
+    - "send the notice to"
+    - "send them the"
+    - "email the supplier now"
+    - "go ahead and send"
+  support:                       # 1 point each
+    - "send"
+    - "sent"
+    - "supplier"
+    - "message"
+    - "email"

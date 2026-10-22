@@ -14,7 +14,8 @@ use_when, not_for, inputs (list), tools (list of "tool_name: what for"), unavail
 "tool_name: what the agent does instead"), workflow (list of steps), heuristics (list), policy_hooks,
 outputs (list), quality (list), escalation, example, anti_patterns (list), context (one sentence),
 thresholds (list of {key, value, comment}), routing {strong: [...], support: [...]},
-scenarios (list of {kind, prompt, expect, expert?}), triggers {should_trigger: [...], should_not_trigger: [...]} (never yes/no, which YAML reads as booleans).
+scenarios (list of {kind, prompt, expect, expert?}), triggers {should_trigger: [...], should_not_trigger: [...]} (never yes/no, which YAML reads as booleans),
+status (optional: 'dormant' keeps the rendered skill out of routing, listing and use until the line is removed).
 """
 from __future__ import annotations
 
@@ -110,7 +111,10 @@ description: {_q(d['description'])}
 
 
 def render_config(d: dict) -> str:
-    lines = ["# Configurable defaults for this skill. They are starting points for review, not governed policy.", "thresholds:"]
+    lines = ["# Configurable defaults for this skill. They are starting points for review, not governed policy."]
+    if d.get("status") == "dormant":
+        lines.append("status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)")
+    lines.append("thresholds:")
     for t in d.get("thresholds", []):
         lines.append(f"  {t['key']}: {t['value']}    # {t.get('comment', '')}".rstrip())
     unavailable = [u.split(":", 1)[0].strip() for u in d.get("unavailable", [])]

@@ -1,0 +1,32 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  clarification_window_days: 5    # days after issue during which bidders may ask questions, answered to all
+unavailable_tools:
+  - create_rfx
+  - send_message
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "issue the rfq"
+    - "issue the rfp"
+    - "issue the rfi"
+    - "issue the tender"
+    - "issue the event"
+    - "send out the rfq"
+    - "send out the rfp"
+    - "send out the tender"
+    - "publish the tender"
+    - "publish the rfq"
+    - "launch the tender"
+    - "launch the rfq"
+    - "launch the event"
+    - "go live with the tender"
+    - "release the rfq"
+    - "release the tender"
+  support:                       # 1 point each
+    - "rfq"
+    - "rfp"
+    - "rfi"
+    - "tender"
+    - "invitee*"
+    - "bidders"

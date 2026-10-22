@@ -111,3 +111,10 @@ def test_main_reports_a_bad_definition_and_still_writes_the_good_ones(skills_roo
     out = capsys.readouterr().out
     assert "bad-skill: missing example" in out and (skills_root / "good-skill" / "SKILL.md").exists()
     assert not (skills_root / "bad-skill").exists()
+
+
+def test_a_dormant_definition_renders_the_status_line_and_still_passes_the_checker(skills_root):
+    folder = scaffold.write_skill(definition(name="sleepy-skill", status="dormant"))
+    assert yaml.safe_load((folder / "config.yaml").read_text())["status"] == "dormant"
+    assert checks.check_skill(folder, known_tools=KNOWN) == []
+    assert "status" not in yaml.safe_load((scaffold.write_skill(definition()) / "config.yaml").read_text())

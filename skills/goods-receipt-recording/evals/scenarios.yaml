@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Book in the pallet delivery against PO 4471: 480 good, 10 damaged."
+  expect: "Order lines and prior receipts from open_orders; receipt lines as reported with condition, note, date, receiver; shortfall and damage recorded as facts; rules quoted; recorded only through the receiving action, else ready-to-record; hand-off to delivery-issue-handling"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Record the receipt of the laptops that arrived this morning."
+  expect: "Asks for quantities, condition, note and receiver if not given; compares with the order; records or ready state"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Raise a GRN for the cleaning service this month."
+  expect: "A service receipt: period and confirmation from the service owner; recorded against the order line"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Mark the gloves as received."
+  expect: "Quantities and condition asked for; no quantity assumed from the order"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are recording a goods receipt against a purchase order."
+  prompt: "The supplier delivered 1,200 against an order of 1,000."
+  expect: "Received 1,200 recorded as fact; over-delivery beyond tolerance needs a decision (accept or return) handed to delivery-issue-handling; the invoice match told"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are recording a goods receipt against a purchase order."
+  prompt: "A receipt for this delivery note was already recorded last week."
+  expect: "Duplicate named; nothing recorded twice; the user confirms whether this is a second delivery"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are recording a goods receipt against a purchase order."
+  prompt: "The invoice arrived before the goods."
+  expect: "Receipt recorded on arrival only; the invoice stays unmatched until then; finance told"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are recording a goods receipt against a purchase order."
+  prompt: "Book it in."
+  expect: "Asks which order and what the receiver reports"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are recording a goods receipt against a purchase order."
+  prompt: "The delivery note has no quantities."
+  expect: "The receiver counts; nothing recorded from the order quantity"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are recording a goods receipt against a purchase order."
+  prompt: "We do not know who received it."
+  expect: "The receiver's name is part of the record; asked for before recording"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are recording a goods receipt against a purchase order."
+  prompt: "The note says 500 but the count is 480."
+  expect: "480 recorded as received; the note reference kept; difference as a fact"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are recording a goods receipt against a purchase order."
+  prompt: "The order says 2 lines, the delivery has 3 items."
+  expect: "Third item recorded as not on the order; delivery-issue-handling; nothing invented on the order"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are recording a goods receipt against a purchase order."
+  prompt: "Record the full 500 so the invoice clears."
+  expect: "Refused; what arrived is recorded; the match consequence explained"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are recording a goods receipt against a purchase order."
+  prompt: "Skip the inspection, we are busy."
+  expect: "Inspection rule quoted; where policy requires it, the receipt waits"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are recording a goods receipt against a purchase order."
+  prompt: "Record it as received yesterday to hit the month end."
+  expect: "The date is the receipt date; not backdated"
+  expert_graded: false

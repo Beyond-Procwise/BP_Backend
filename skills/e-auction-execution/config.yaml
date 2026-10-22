@@ -1,0 +1,32 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  record_retention_days: 365    # days the full bid record is kept available after close
+unavailable_tools:
+  - run_e_auction
+  - send_message
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "run the auction"
+    - "run the e-auction"
+    - "run the reverse auction"
+    - "set up the auction"
+    - "set up the e-auction"
+    - "open the auction"
+    - "close the auction"
+    - "start the auction"
+    - "launch the auction"
+    - "go live with the auction"
+    - "monitor the auction"
+    - "auction is live"
+    - "auction goes live"
+    - "extend the auction"
+    - "reopen the auction"
+    - "auction set-up"
+    - "auction setup"
+  support:                       # 1 point each
+    - "auction"
+    - "bidder*"
+    - "lot*"
+    - "bids"
+    - "decrement"

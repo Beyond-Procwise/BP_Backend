@@ -1,0 +1,31 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  decision_sla_days: 5    # working days an approver has to decide when policy states no limit
+unavailable_tools:
+  - route_approval
+  - approve_exception
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "send for approval"
+    - "send it for approval"
+    - "submit for approval"
+    - "submit it for approval"
+    - "route for approval"
+    - "route it for approval"
+    - "route the approval"
+    - "get it approved"
+    - "get this approved"
+    - "get sign-off"
+    - "get signoff"
+    - "get it signed off"
+    - "send to the approver"
+    - "raise the approval"
+    - "raise an approval"
+    - "put it up for approval"
+    - "ask for approval"
+  support:                       # 1 point each
+    - "approval"
+    - "approver"
+    - "sign-off"
+    - "approve"

@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Run the approved pallet auction on Thursday."
+  expect: "Preconditions (design, screened independent bidders who accepted the rules, approval as replied); set-up sheet built and confirmed; run only through the auction action, else ready-to-run reported; monitoring rules; closing record; hand-off to award; nothing awarded"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Set up the e-auction exactly as designed and show me the sheet."
+  expect: "Set-up sheet via build_xlsx matching the design line for line; the user confirms before anything opens"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Close the auction and give me the result."
+  expect: "Closed only on the published time or extension rule; closing position per lot with bids, times, bidders, movement via the registry; the result handed to award-recommendation"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Open the auction now."
+  expect: "Only at the published time with preconditions met; otherwise the published time stated"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are running an e-auction that has been designed and approved."
+  prompt: "One bidder dropped out an hour before open."
+  expect: "Count re-checked against the policy minimum; below it the event does not open and the category lead decides"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are running an e-auction that has been designed and approved."
+  prompt: "A bidder entered a bid below the decrement."
+  expect: "Flagged and recorded; handled as the published rule says; no quiet correction"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are running an e-auction that has been designed and approved."
+  prompt: "The incumbent asks to extend the close by an hour."
+  expect: "Only the published extension rule applies; a request from one bidder is refused; recorded"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are running an e-auction that has been designed and approved."
+  prompt: "Run the auction."
+  expect: "Asks which event; checks for an approved design and bidder list"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are running an e-auction that has been designed and approved."
+  prompt: "The rules sheet was never accepted by two bidders."
+  expect: "Those bidders are not in the event until they accept; count re-checked"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are running an e-auction that has been designed and approved."
+  prompt: "No starting price basis is recorded."
+  expect: "Not set up; e-auction-design supplies the basis from records"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are running an e-auction that has been designed and approved."
+  prompt: "The design says a 1 percent decrement; the sheet says 2."
+  expect: "Design governs; the sheet corrected and reconfirmed; nothing opens on the wrong value"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are running an e-auction that has been designed and approved."
+  prompt: "Two bids arrived at the same second."
+  expect: "Both recorded; the platform's tie rule as published decides; otherwise referred before close"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are running an e-auction that has been designed and approved."
+  prompt: "Reopen it, the lowest bidder has had second thoughts."
+  expect: "Refused outside the published rule; the closing record stands; legal if disputed"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are running an e-auction that has been designed and approved."
+  prompt: "Tell the second bidder what the leading bid is."
+  expect: "Only what the published disclosure rule allows, to all bidders; nothing to one"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are running an e-auction that has been designed and approved."
+  prompt: "Award it to the lowest bid right now."
+  expect: "Nothing awarded; award-recommendation decides on the published basis"
+  expert_graded: false

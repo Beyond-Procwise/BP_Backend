@@ -1,0 +1,31 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  duplicate_window_days: 30    # an open order for the same supplier and lines within this many days is a possible duplicate
+  price_variance_alert_pct: 5    # a line price above the agreement or the last paid by more than this share is flagged before placing
+unavailable_tools:
+  - create_purchase_order
+  - send_message
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "place the order"
+    - "place the po"
+    - "place a purchase order"
+    - "place the purchase order"
+    - "raise the po now"
+    - "raise the purchase order now"
+    - "release the order"
+    - "release the po"
+    - "confirm the order with"
+    - "send the order to"
+    - "put the order through"
+    - "get the order placed"
+    - "place an order with"
+    - "place the approved order"
+    - "convert the requisition"
+  support:                       # 1 point each
+    - "order"
+    - "po"
+    - "requisition"
+    - "supplier"
+    - "lines"

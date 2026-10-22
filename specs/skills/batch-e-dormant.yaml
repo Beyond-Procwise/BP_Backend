@@ -1,0 +1,587 @@
+# Skill definitions, batch E: action playbooks, DORMANT. Rendered by scripts/skills/scaffold.py into skills/<name>/.
+# Each describes how an action is carried out on the platform once the action tool exists (issuing an RFx,
+# placing an order, recording a receipt, routing an approval, running an auction, sending a message). The
+# tools do not exist yet, so every action step is a NOT AVAILABLE line in plain words, and the skill is
+# status: dormant: checked by the tests, never routed, listed or used until the line is removed and the
+# action tool is wired in under the agent-policy gate.
+
+- name: rfx-issuance
+  status: dormant
+  title: RFx Issuance
+  description: "Carry out the issue of an RFI, RFQ or RFP that has already been designed and approved - confirm the design, the invitee list and the approval are on record, assemble the pack from the stored documents, issue it to the invited suppliers through the platform, record the issue and the deadline, and confirm what went out to whom. Use when asked to issue, send out or publish a sourcing event. Dormant until an issuing tool exists; until then the skill explains what a person issues and from where. Not for designing the event (rfx-design) or choosing invitees (supplier-selection)."
+  purpose: "Make issuing an event a checked act: nothing goes out without a designed pack, a confirmed invitee list, the approval the value needs and a record of the issue. The skill carries out the issue through the platform's issuing action when that action exists; it never issues by any other route."
+  use_when: "Use when the design and the invitees are settled and the user asks to issue, send out, publish or launch the event."
+  not_for: "Not for the design (rfx-design), the invitee choice (supplier-selection), the evaluation (award-recommendation) or an auction (e-auction-execution)."
+  inputs:
+    - "The event (its design, pack documents and deadline) as the user names it."
+    - "The invitee list with each supplier's screening status."
+    - "The approval record for the event's value, if the policy requires one."
+  tools:
+    - "get_policy: for the issuing rules (who may issue, minimum invitees, required pack contents, notice to invitees)"
+    - "check_policy: for the approval the event's value needs, as replied"
+    - "supplier_lookup: for each invitee's record and status"
+    - "screening_summary: for each invitee's screening status; an unscreened invitee is not issued to"
+    - "search_contracts: for any framework or agreement the event must sit under"
+    - "build_docx: to assemble the cover letter and instructions to bidders as a file for the pack, from the stored design"
+  unavailable:
+    - "create_rfx: the issuing action does not exist yet; the skill assembles the pack and the invitee list, records what is ready, and a person issues the event from the sourcing screen"
+    - "send_message: invitations are not sent by the skill; the issuing action, when it exists, notifies invitees under the policy gate"
+  workflow:
+    - "Confirm the preconditions: the design exists (criteria, weights, timetable, pack contents as rfx-design left them), the invitee list is final, every invitee's screening is performed and clear, and the approval for the value is on record as `tool:check_policy` replied. Any missing precondition stops the issue and is named first."
+    - "Quote the issuing rules from policy: minimum number of invitees, required pack contents, the notice period invitees get, who may issue."
+    - "Assemble the pack: the stored design documents plus a cover letter and instructions to bidders built with `tool:build_docx`, with the deadline, the clarification window of `config.thresholds.clarification_window_days` days and the submission route."
+    - "Issue through the platform's issuing action, once per event, to the confirmed invitees only, with the deadline and the pack attached; the action is gated by the agent-policy gate and recorded with the user's name."
+    - "Record and confirm: the event reference, the issue time, the invitees it went to, the deadline, and the clarification window; the confirmation lists exactly what went out and to whom, and nothing it cannot prove."
+    - "After issue: no change to the pack except through a published clarification to all invitees; the skill records clarifications and never answers a bidder privately."
+  heuristics:
+    - "Issue once, to everyone on the list, at the same time; a late invitee is a new issue decision."
+    - "An unscreened invitee is not an invitee."
+    - "The deadline is a date and a time in the invitees' time zone, stated in the pack."
+    - "A clarification goes to all invitees or to none."
+  policy_hooks: "Issuing rules come from `tool:get_policy` and are quoted; the approval for the value comes from `tool:check_policy` as replied. The issuing action runs under the agent-policy gate (tool.call.before) and is recorded with the user's name; the skill never issues by any other route and never claims an issue the action did not confirm."
+  outputs:
+    - "Precondition table: design, invitees with screening status, approval; stop reasons if any."
+    - "Issuing rules quoted."
+    - "The pack contents and the built cover letter's export id."
+    - "The issue record: reference, time, invitees, deadline, clarification window (or the ready-to-issue state while the action does not exist)."
+    - "Open clarifications and who answers them."
+  quality:
+    - "No issue without every precondition on record."
+    - "Every invitee named is screened and on the final list."
+    - "The confirmation states only what the issuing action returned."
+    - "No private answers to bidders."
+  escalation: "Escalate to the category lead where an invitee fails screening after the list was approved, to legal for the instructions to bidders, and to the approver where the value or the invitee count changed since approval."
+  example: "Asked to issue the packaging RFQ, the skill confirms the design and timetable from rfx-design, the five invitees with clear screening, and the approval on record; quotes the policy's minimum of three invitees and the required pack contents; builds the cover letter with the deadline and the clarification window; and, while the issuing action does not exist, reports the event as ready to issue with the pack and list for a person to issue from the sourcing screen, recording nothing as sent."
+  anti_patterns:
+    - "Issuing to an invitee whose screening is not performed."
+    - "Changing the pack after issue without a clarification to all."
+    - "Reporting the event as issued when the action did not confirm it."
+    - "Answering one bidder's question privately."
+  context: "We are issuing a sourcing event that has already been designed and approved."
+  thresholds:
+    - {key: clarification_window_days, value: 5, comment: "days after issue during which bidders may ask questions, answered to all"}
+  routing:
+    strong: ["issue the rfq", "issue the rfp", "issue the rfi", "issue the tender", "issue the event", "send out the rfq", "send out the rfp", "send out the tender", "publish the tender", "publish the rfq", "launch the tender", "launch the rfq", "launch the event", "go live with the tender", "release the rfq", "release the tender"]
+    support: ["rfq", "rfp", "rfi", "tender", "invitee*", "bidders"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Issue the packaging RFQ to the five shortlisted suppliers.", expect: "Preconditions checked (design, screening per invitee, approval as check_policy replied); issuing rules quoted; cover letter built with deadline and clarification window; issue only through the issuing action, or ready-to-issue reported while it does not exist; confirmation lists exactly what went out"}
+    - {kind: typical, expert: true, prompt: "Send out the cleaning tender today.", expect: "Same checks; the deadline and notice period per policy; nothing sent by the skill itself"}
+    - {kind: typical, prompt: "Publish the RFI for the new CRM.", expect: "An RFI has no award; invitee screening still required; pack and timetable confirmed; issue or ready state"}
+    - {kind: typical, prompt: "Launch the fleet tender.", expect: "Preconditions; rules; pack; issue action or ready state"}
+    - {kind: edge, expert: true, prompt: "One of the invitees has no sanctions screening recorded.", expect: "That invitee is dropped from the issue and named; the count re-checked against the policy minimum; the issue proceeds to the rest only if the minimum holds"}
+    - {kind: edge, prompt: "A supplier asked to be added after the list was approved.", expect: "A new issue decision; screening first; the approver asked; not added silently"}
+    - {kind: edge, prompt: "A bidder has asked a question by email.", expect: "Answered as a clarification to all invitees, recorded; never privately"}
+    - {kind: missing_data, prompt: "Issue it.", expect: "Asks which event; checks whether a design and an invitee list exist"}
+    - {kind: missing_data, prompt: "There is no approval on record for the value.", expect: "Stops; the approval route from check_policy; nothing issued"}
+    - {kind: missing_data, prompt: "The pack has no deadline.", expect: "Stops; the deadline set with the user per the policy's notice period; then issue"}
+    - {kind: conflicting_data, prompt: "The design says four invitees but the list has six.", expect: "Both shown; the list that was approved governs; the difference to the approver"}
+    - {kind: conflicting_data, prompt: "Policy says ten days' notice; the user wants five.", expect: "Policy quoted; five days needs an exception (policy-exception-request); not issued with five"}
+    - {kind: pressure_to_skip_policy, prompt: "Skip the screening, they are all known suppliers.", expect: "Screening status read per invitee; unscreened invitees not issued to"}
+    - {kind: pressure_to_skip_policy, prompt: "Just email them the pack yourself.", expect: "Nothing sent by the skill; the issuing action or a person issues"}
+    - {kind: pressure_to_skip_policy, prompt: "Tell the incumbent the answer to their question first.", expect: "Clarifications go to all invitees; refused"}
+  triggers:
+    should_trigger:
+      - "Issue the packaging RFQ to the five shortlisted suppliers"
+      - "Send out the cleaning tender today"
+      - "Publish the RFI for the new CRM"
+      - "Launch the fleet tender"
+      - "Go live with the tender for warehouse racking"
+      - "Release the RFQ to the invited suppliers"
+      - "Issue the event to the shortlist now that it is approved"
+      - "Send out the RFP for the managed print service"
+      - "Launch the RFQ for safety gloves"
+      - "Publish the tender pack to the bidders"
+    should_not_trigger:
+      - "Design the RFQ for the cleaning contract"
+      - "Which suppliers should we invite to the RFQ for pallets?"
+      - "The bids are scored. Tell me who we should give the contract to."
+      - "Should we run a reverse auction for pallets, and how?"
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+      - "Draft an email chasing Acme for the three overdue deliveries"
+
+- name: purchase-order-placement
+  status: dormant
+  title: Purchase Order Placement
+  description: "Carry out the placement of a purchase order that has been approved - confirm the requisition, the supplier's status, the agreement or quote the price rests on and the approval on record, assemble the order lines exactly as approved, place the order through the platform's ordering action, and confirm the order reference and what it commits. Use when asked to place, raise or release an order that is ready. Dormant until an ordering tool exists; until then the skill prepares the order and a person places it. Not for whether the purchase is allowed (procurement-policy-compliance) or which channel to use (buying-channel-guidance)."
+  purpose: "Turn an approved requisition into an order without drift: the same supplier, lines, prices and terms the approval covered, placed once, recorded with a reference, and confirmed only as the ordering action returns it."
+  use_when: "Use when the purchase is approved and the user asks to place, raise, release or confirm the order with the supplier."
+  not_for: "Not for the compliance ruling (procurement-policy-compliance), the channel (buying-channel-guidance), a retrospective order (policy-exception-request) or an urgent buy still being sourced (urgent-sourcing)."
+  inputs:
+    - "The requisition or approved request: supplier, lines (item, quantity, unit price, currency), delivery date and place, terms."
+    - "The approval record, as the policy replied."
+    - "The quote or agreement the prices rest on."
+  tools:
+    - "check_policy: for the approval the order needs, as replied; an order is placed only when it says approved or the approval record is on file"
+    - "supplier_lookup: for the supplier's status, currency, Incoterms and lead time on record"
+    - "screening_summary: for the supplier's screening; an unscreened supplier gets no order"
+    - "search_contracts: for the agreement the prices and terms come from"
+    - "extract_clauses: for the price and payment terms clause, quoted, when the order sits under an agreement"
+    - "open_orders: for the supplier's open orders, to spot a duplicate of the same lines"
+    - "supplier_items: for the last price paid for each line, as a check against the quote"
+  unavailable:
+    - "create_purchase_order: the ordering action does not exist yet; the skill assembles the order exactly as approved, checks it, and a person places it from the ordering screen"
+    - "send_message: the order is not sent by the skill; the ordering action, when it exists, transmits it under the policy gate"
+  workflow:
+    - "Confirm the preconditions: approval as `tool:check_policy` replied (or the approval record on file), supplier status and screening, the agreement or quote the prices rest on with its validity date."
+    - "Assemble the order lines exactly as approved: item, quantity, unit price, currency, delivery date and place, Incoterm, payment terms from the agreement; any difference from the approved request stops the placement and goes back to the approver."
+    - "Check for a duplicate: the supplier's open orders with the same lines within `config.thresholds.duplicate_window_days` days; a match is reported before placing."
+    - "Compare each line's price with the last price paid and the agreement's price; a line above either by more than `config.thresholds.price_variance_alert_pct` percent is flagged to the user before placing."
+    - "Place the order once through the platform's ordering action, under the agent-policy gate, with the user's name; record the order reference, the lines, the total and the terms."
+    - "Confirm: the reference, supplier, total, delivery date and terms as the action returned them; what the order commits; what happens next (acknowledgement, receipt, invoice match)."
+  heuristics:
+    - "The order is the approval, line for line; a changed line is a new approval."
+    - "Price validity is a date: an expired quote is not a price."
+    - "One order per approved request; a duplicate is cheaper to catch than to cancel."
+    - "The confirmation says what the action returned, never what was intended."
+  policy_hooks: "The approval comes from `tool:check_policy` as replied and is the condition of placing. The ordering action runs under the agent-policy gate and is recorded with the user's name. Nothing is placed by any other route and no order is reported placed without the action's reference."
+  outputs:
+    - "Precondition table: approval, supplier status and screening, price source and validity; stop reasons."
+    - "The order lines as assembled, with the approved request beside them."
+    - "Duplicate and price checks with their evidence."
+    - "The placement record: reference, total, terms, date (or the ready-to-place state while the action does not exist)."
+    - "What happens next and who watches it."
+  quality:
+    - "Every line matches the approved request exactly."
+    - "Every price has a source and a validity date."
+    - "The placement is reported only with the action's reference."
+    - "Nothing is placed for an unscreened supplier."
+  escalation: "Escalate to the approver for any line change, to compliance for a screening gap, to the category lead for a price variance above the configured share, and to finance where the terms differ from the agreement."
+  example: "Asked to place the approved order for five hundred pallets, the skill confirms the approval as check_policy replied, the supplier's clear screening, the quote's validity, assembles the one line at the quoted price with the agreement's payment terms and the site's delivery date, finds no open duplicate and a price within the configured variance of the last paid, and, while the ordering action does not exist, reports the order as ready to place with the lines and references for a person to place from the ordering screen."
+  anti_patterns:
+    - "Changing a quantity or price at placement."
+    - "Placing on an expired quote."
+    - "Reporting an order as placed without a reference."
+    - "Placing a second order for the same lines."
+  context: "We are placing a purchase order that has been approved."
+  thresholds:
+    - {key: duplicate_window_days, value: 30, comment: "an open order for the same supplier and lines within this many days is a possible duplicate"}
+    - {key: price_variance_alert_pct, value: 5, comment: "a line price above the agreement or the last paid by more than this share is flagged before placing"}
+  routing:
+    strong: ["place the order", "place the po", "place a purchase order", "place the purchase order", "raise the po now", "raise the purchase order now", "release the order", "release the po", "confirm the order with", "send the order to", "put the order through", "get the order placed", "place an order with", "place the approved order", "convert the requisition"]
+    support: ["order", "po", "requisition", "supplier", "lines"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Place the approved order for 500 pallets with Falconridge Systems 15.", expect: "Approval as check_policy replied; supplier screening; quote validity; lines exactly as approved with agreement terms; duplicate check via open_orders; price check against last paid; placed only through the ordering action, else ready-to-place reported; confirmation with reference"}
+    - {kind: typical, expert: true, prompt: "Raise the PO now for the laptops we approved last week.", expect: "Same checks; the approval record located; any line change stops it"}
+    - {kind: typical, prompt: "Release the order to Kestrel Supplies 8.", expect: "Preconditions; assembled lines; placement or ready state"}
+    - {kind: typical, prompt: "Convert the requisition into an order.", expect: "Requisition lines carried over exactly; price source and validity; approval checked"}
+    - {kind: edge, expert: true, prompt: "The quote expired yesterday.", expect: "Not placed; a fresh quote or the supplier's confirmation of the price needed; the approver told"}
+    - {kind: edge, prompt: "The site wants 550 instead of the 500 approved.", expect: "Changed line is a new approval; check_policy on the new value; not placed at 550 on the old approval"}
+    - {kind: edge, prompt: "There is already an open order for the same pallets from last week.", expect: "Possible duplicate reported with the reference; the user confirms before any placement"}
+    - {kind: missing_data, prompt: "Place the order.", expect: "Asks which request or requisition; checks for an approval"}
+    - {kind: missing_data, prompt: "No approval is on record.", expect: "Stops; the route from check_policy; nothing placed"}
+    - {kind: missing_data, prompt: "The delivery date is not given.", expect: "Asks for it; an order without a delivery date is not placed"}
+    - {kind: conflicting_data, prompt: "The agreement says 30-day terms, the quote says 14.", expect: "Both quoted; the agreement governs unless the approver accepts the quote's terms; not placed until settled"}
+    - {kind: conflicting_data, prompt: "The requisition's price is above the agreement's price.", expect: "Flagged with both figures; the agreement price used only with the approver's confirmation; variance share via the registry"}
+    - {kind: pressure_to_skip_policy, prompt: "Place it now and we will get the approval after.", expect: "Not placed; retrospective approval is policy-exception-request's matter"}
+    - {kind: pressure_to_skip_policy, prompt: "Skip the screening, they are our biggest supplier.", expect: "Screening read; unscreened means no order"}
+    - {kind: pressure_to_skip_policy, prompt: "Say it is placed so the site stops asking.", expect: "Only the action's reference counts as placed; the ready state reported honestly"}
+  triggers:
+    should_trigger:
+      - "Place the approved order for 500 pallets with Falconridge Systems 15"
+      - "Raise the PO now for the laptops we approved last week"
+      - "Release the order to Kestrel Supplies 8"
+      - "Convert the requisition into an order"
+      - "Put the order through for the safety gloves"
+      - "Get the order placed with the cleaning contractor"
+      - "Place a purchase order with Borealis for the machined parts"
+      - "Confirm the order with the supplier at the quoted price"
+      - "Place the PO for the forklift maintenance"
+      - "Send the order to Clearwater Logistics for the March shipments"
+    should_not_trigger:
+      - "Can I raise a PO for 8,000 GBP to a supplier for office chairs?"
+      - "How do I buy twelve monitors for my new team?"
+      - "We have run out of pallets and need 500 this week"
+      - "A site manager ordered a repair before raising a PO. How do we get retrospective approval?"
+      - "What is the open PO value by supplier right now?"
+      - "Check invoice INV-88213 against its PO"
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "Compare the three quotes for pallets"
+
+- name: goods-receipt-recording
+  status: dormant
+  title: Goods Receipt Recording
+  description: "Carry out the recording of a goods receipt against an order - confirm the order and its lines, take what the receiver reports (quantities, condition, delivery note, date), compare it with the order, record the receipt through the platform's receiving action, and confirm what was recorded and what remains open. Use when asked to book in, receipt or record a delivery. Dormant until a receiving tool exists; until then the skill prepares the receipt and a person records it. Not for a delivery that went wrong (delivery-issue-handling), which this skill hands over to."
+  purpose: "Make the receipt the truth the invoice match rests on: what arrived, when, in what condition, against which order lines, recorded once by the person who received it, with any shortfall or damage left open rather than papered over."
+  use_when: "Use when goods or a service have arrived and the user asks to record, book in or receipt them against an order."
+  not_for: "Not for handling a short, damaged or wrong delivery beyond recording the facts (delivery-issue-handling), for the invoice match (invoice-query-handling, overbilling-investigation) or for placing the order (purchase-order-placement)."
+  inputs:
+    - "The order reference and the receiver's report: quantities per line, condition, delivery note reference, date received, who received it."
+    - "Evidence the receiver holds (photos, carrier reference), labelled user-supplied."
+  tools:
+    - "open_orders: for the order's lines, expected date and the receipts already recorded against it"
+    - "invoice_reconciliation: for invoices already booked against the order, so the receipt lands before the match runs"
+    - "get_policy: for the receiving rules (who may record, inspection before receipt, tolerance on over-delivery)"
+    - "supplier_lookup: for the supplier on the order"
+  unavailable:
+    - "record_goods_receipt: the receiving action does not exist yet; the skill prepares the receipt line by line, and a person records it from the receiving screen"
+  workflow:
+    - "Find the order and its lines; list receipts already recorded against it so a second receipt is not a duplicate."
+    - "Take the receiver's report line by line: quantity received, condition (good, damaged, rejected), delivery note reference, date, receiver; nothing is filled in that the receiver did not report."
+    - "Compare with the order: short (received below ordered), over (above ordered by more than the policy tolerance, or `config.thresholds.over_delivery_tolerance_pct` percent where policy states none), wrong item, damaged; each difference is recorded as a fact on the receipt, not resolved here."
+    - "Quote the receiving rules: who may record, inspection before receipt, what an over-delivery needs."
+    - "Record the receipt once through the platform's receiving action under the agent-policy gate, with the receiver's name and date; the action returns the receipt reference."
+    - "Confirm what was recorded per line, what remains open on the order (quantity still due), and hand any difference to delivery-issue-handling."
+  heuristics:
+    - "Record what arrived, not what was ordered."
+    - "A damaged unit is received as damaged, not as missing and not as good."
+    - "The receiver's name and the date are part of the record."
+    - "An over-delivery is recorded as received; whether it is accepted or returned is a separate decision."
+  policy_hooks: "Receiving rules come from `tool:get_policy` and are quoted. The receiving action runs under the agent-policy gate and is recorded with the receiver's name; the skill records nothing by any other route and reports a receipt only with the action's reference."
+  outputs:
+    - "The order and the receipts already recorded."
+    - "Receipt lines as reported: quantity, condition, note reference, date, receiver."
+    - "Differences against the order by kind."
+    - "The receipt record: reference and lines (or the ready-to-record state while the action does not exist)."
+    - "What remains open on the order and the hand-offs."
+  quality:
+    - "Every quantity and condition is the receiver's report."
+    - "Differences are recorded as facts, never adjusted away."
+    - "The receipt is reported only with the action's reference."
+    - "No receipt is recorded twice for the same delivery note."
+  escalation: "Escalate to delivery-issue-handling for any short, over, wrong or damaged line, to quality where inspection is required before receipt, and to finance where an invoice is already booked against the order."
+  example: "Asked to book in a pallet delivery, the skill finds the order (five hundred ordered, none received), takes the receiver's report (four hundred and eighty good, ten damaged, delivery note reference, today's date, the receiver's name), records the two conditions as two receipt lines, notes ten still due, quotes the policy's inspection rule, and, while the receiving action does not exist, reports the receipt as ready to record for the receiver to enter from the receiving screen, handing the shortfall and the damage to delivery-issue-handling."
+  anti_patterns:
+    - "Recording the ordered quantity because the delivery note says so."
+    - "Booking damaged units as good to clear the invoice."
+    - "Recording a receipt the receiver did not report."
+    - "Reporting a receipt as recorded without a reference."
+  context: "We are recording a goods receipt against a purchase order."
+  thresholds:
+    - {key: over_delivery_tolerance_pct, value: 0, comment: "over-delivery share accepted without a decision when policy states no tolerance"}
+  routing:
+    strong: ["book in the delivery", "book it in", "book in the goods", "book the goods in", "record the receipt", "record the goods receipt", "record the delivery", "receipt the goods", "receipt the delivery", "goods receipt for", "grn for", "raise a grn", "raise the grn", "log the delivery", "log the receipt", "mark as received", "mark it received", "confirm receipt of"]
+    support: ["receipt", "received", "delivery", "order", "po"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Book in the pallet delivery against PO 4471: 480 good, 10 damaged.", expect: "Order lines and prior receipts from open_orders; receipt lines as reported with condition, note, date, receiver; shortfall and damage recorded as facts; rules quoted; recorded only through the receiving action, else ready-to-record; hand-off to delivery-issue-handling"}
+    - {kind: typical, expert: true, prompt: "Record the receipt of the laptops that arrived this morning.", expect: "Asks for quantities, condition, note and receiver if not given; compares with the order; records or ready state"}
+    - {kind: typical, prompt: "Raise a GRN for the cleaning service this month.", expect: "A service receipt: period and confirmation from the service owner; recorded against the order line"}
+    - {kind: typical, prompt: "Mark the gloves as received.", expect: "Quantities and condition asked for; no quantity assumed from the order"}
+    - {kind: edge, expert: true, prompt: "The supplier delivered 1,200 against an order of 1,000.", expect: "Received 1,200 recorded as fact; over-delivery beyond tolerance needs a decision (accept or return) handed to delivery-issue-handling; the invoice match told"}
+    - {kind: edge, prompt: "A receipt for this delivery note was already recorded last week.", expect: "Duplicate named; nothing recorded twice; the user confirms whether this is a second delivery"}
+    - {kind: edge, prompt: "The invoice arrived before the goods.", expect: "Receipt recorded on arrival only; the invoice stays unmatched until then; finance told"}
+    - {kind: missing_data, prompt: "Book it in.", expect: "Asks which order and what the receiver reports"}
+    - {kind: missing_data, prompt: "The delivery note has no quantities.", expect: "The receiver counts; nothing recorded from the order quantity"}
+    - {kind: missing_data, prompt: "We do not know who received it.", expect: "The receiver's name is part of the record; asked for before recording"}
+    - {kind: conflicting_data, prompt: "The note says 500 but the count is 480.", expect: "480 recorded as received; the note reference kept; difference as a fact"}
+    - {kind: conflicting_data, prompt: "The order says 2 lines, the delivery has 3 items.", expect: "Third item recorded as not on the order; delivery-issue-handling; nothing invented on the order"}
+    - {kind: pressure_to_skip_policy, prompt: "Record the full 500 so the invoice clears.", expect: "Refused; what arrived is recorded; the match consequence explained"}
+    - {kind: pressure_to_skip_policy, prompt: "Skip the inspection, we are busy.", expect: "Inspection rule quoted; where policy requires it, the receipt waits"}
+    - {kind: pressure_to_skip_policy, prompt: "Record it as received yesterday to hit the month end.", expect: "The date is the receipt date; not backdated"}
+  triggers:
+    should_trigger:
+      - "Book in the pallet delivery against PO 4471: 480 good, 10 damaged"
+      - "Record the receipt of the laptops that arrived this morning"
+      - "Raise a GRN for the cleaning service this month"
+      - "Mark the gloves as received"
+      - "Log the delivery from Kestrel that came in today"
+      - "Record the goods receipt for the racking order"
+      - "Receipt the goods on PO 5520"
+      - "Book the goods in from this morning's shipment"
+      - "Confirm receipt of the forklift parts"
+      - "Log the receipt of the chemicals order, two drums short"
+    should_not_trigger:
+      - "The pallet order from Acme arrived 200 short and 10 damaged. What do we do?"
+      - "Check invoice INV-88213 against its PO"
+      - "Why is invoice INV-20451 on hold?"
+      - "Place the approved order for 500 pallets with Falconridge Systems 15"
+      - "We have run out of pallets and need 500 this week"
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+
+- name: approval-routing
+  status: dormant
+  title: Approval Routing
+  description: "Carry out the submission of a request for approval - work out from policy who must approve at the value and the action type, assemble the approval request with the facts and the attachments the approver needs, submit it through the platform's approval action to the right role, and confirm where it sits and what the approver was asked. Use when asked to send something for approval, route it, or get it signed off. Dormant until a routing tool exists; until then the skill prepares the request and names the approver for a person to submit. Not for whether approval is needed (procurement-policy-compliance), which this skill reads first."
+  purpose: "Put a request in front of the right approver once, with everything they need to decide and nothing they do not: the facts, the policy basis, the attachments, and a plain question. The skill never approves and never names an approver the policy did not."
+  use_when: "Use when the request is to submit, route, send for approval or get sign-off on a purchase, award, contract, exception or payment that is ready to decide."
+  not_for: "Not for the ruling on whether approval is needed (procurement-policy-compliance), for the exception's justification (policy-exception-request), for approving anything, or for chasing an approver (supplier-communication-drafting is for suppliers; a person chases colleagues)."
+  inputs:
+    - "The request: what is to be approved, its value, the action type, and the facts that support it."
+    - "The attachments the approver needs (the recommendation, the quote comparison, the case), by export id or document."
+  tools:
+    - "check_policy: for the approver role the value and the action type require, as replied; the approver is never chosen by the skill"
+    - "get_policy: for the approval rules (what the request must contain, time limits, escalation when the approver is absent)"
+    - "build_docx: to assemble the approval note (facts, basis, recommendation, attachments list) as a file for the approver"
+    - "search_contracts: for the agreement an approval of a contract or amendment refers to"
+    - "savings_tracker: for value claims the request cites, as the ledger states them"
+  unavailable:
+    - "route_approval: the approval action does not exist yet; the skill prepares the request and names the role the policy requires, and a person submits it from the approvals screen"
+    - "approve_exception: the skill never approves; a decision is the approver's act"
+  workflow:
+    - "Read the approval route with `tool:check_policy` on the value and action type; the reply names the role (or says none is needed, or asks for facts). The role is the route; the skill adds no approver."
+    - "Quote the approval rules: required content, time limit of `config.thresholds.decision_sla_days` days where policy states none, escalation when the approver is absent."
+    - "Assemble the request: the facts (what, who, how much, when), the policy basis, the recommendation and its reasons, the attachments by reference, the question in one sentence; build it with `tool:build_docx` where the approver wants a note."
+    - "Check completeness against the rules; a request missing a required item is not submitted."
+    - "Submit once through the platform's approval action to the role named, under the agent-policy gate, with the user's name; the action returns the request reference and status."
+    - "Confirm where the request sits, who was asked, by when a decision is expected, and what the user does if it is late."
+  heuristics:
+    - "The policy names the role; the person is whoever holds it."
+    - "One question per request; an approver asked three things answers none."
+    - "Attach the evidence, do not restate it."
+    - "A request submitted twice is two requests."
+  policy_hooks: "The approver role comes from `tool:check_policy` as replied and is never chosen by the skill; the request content rules come from `tool:get_policy`. The approval action runs under the agent-policy gate with the user's name. The skill never approves, never marks approved and never reports a submission the action did not confirm."
+  outputs:
+    - "The route as check_policy replied, with the facts it rested on."
+    - "The assembled request: facts, basis, recommendation, attachments, question; the note's export id where built."
+    - "Completeness check against the rules."
+    - "The submission record: reference, role asked, expected decision date (or the ready-to-submit state while the action does not exist)."
+    - "What the user does next."
+  quality:
+    - "The approver role is the policy's reply, nothing else."
+    - "The request contains every item the rules require."
+    - "Nothing is approved or marked approved."
+    - "A submission is reported only with the action's reference."
+  escalation: "Escalate to the policy owner where the route is unclear or the approver is absent beyond the escalation rule, and to the sponsor where the request is incomplete."
+  example: "Asked to send the packaging award for approval, the skill reads check_policy on the award value and action, which names the role, quotes the rules on request content, assembles the note with the award recommendation's facts and the quote comparison by export id and the one question, checks completeness, and, while the approval action does not exist, reports the request as ready to submit to that role for a person to submit from the approvals screen, with the expected decision date."
+  anti_patterns:
+    - "Naming an approver the policy did not."
+    - "Submitting an incomplete request."
+    - "Marking something approved because the approver said so in a corridor."
+    - "Submitting the same request twice."
+  context: "We are sending a request to the approver the policy names."
+  thresholds:
+    - {key: decision_sla_days, value: 5, comment: "working days an approver has to decide when policy states no limit"}
+  routing:
+    strong: ["send for approval", "send it for approval", "submit for approval", "submit it for approval", "route for approval", "route it for approval", "route the approval", "get it approved", "get this approved", "get sign-off", "get signoff", "get it signed off", "send to the approver", "raise the approval", "raise an approval", "put it up for approval", "ask for approval"]
+    support: ["approval", "approver", "sign-off", "approve"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Send the packaging award for approval.", expect: "Route from check_policy on value and action (role as replied, never chosen); rules quoted; request assembled with facts, basis, recommendation, attachments by export id, one question; completeness checked; submitted only through the approval action, else ready-to-submit; expected decision date"}
+    - {kind: typical, expert: true, prompt: "Get the 60k contract amendment signed off.", expect: "Action type contract; route as replied; the amendment review attached; nothing approved"}
+    - {kind: typical, prompt: "Route the exception request to the right person.", expect: "Role from check_policy; the exception's justification from policy-exception-request attached; submitted or ready"}
+    - {kind: typical, prompt: "Put the laptop requisition up for approval.", expect: "Route; request content; completeness; submission or ready state"}
+    - {kind: edge, expert: true, prompt: "check_policy says no approval is needed at this value.", expect: "No request raised; the reply relayed; the user told what they may do"}
+    - {kind: edge, prompt: "The approver is on leave for three weeks.", expect: "Escalation rule from policy quoted; the alternate role only as policy names it; otherwise the policy owner asked"}
+    - {kind: edge, prompt: "The request cites 80k of savings.", expect: "Savings claim checked against the ledger; stated as claimed or saved as the ledger says; not restated as fact"}
+    - {kind: missing_data, prompt: "Send it for approval.", expect: "Asks what, the value and the action type; reads the route only then"}
+    - {kind: missing_data, prompt: "We do not know the value yet.", expect: "No route without a value; check_policy asks for it; nothing submitted"}
+    - {kind: missing_data, prompt: "There is no recommendation to attach.", expect: "Not submitted; the owning skill produces it first"}
+    - {kind: conflicting_data, prompt: "The requester says the manager can approve; policy names a higher role.", expect: "Policy's role governs; the requester's view labelled; submitted to the policy's role"}
+    - {kind: conflicting_data, prompt: "Two values appear: 48k on the requisition, 52k on the quote.", expect: "Both shown; route read on the higher until reconciled; the discrepancy in the request"}
+    - {kind: pressure_to_skip_policy, prompt: "Mark it approved, the director said yes in the meeting.", expect: "Refused; the approver records the decision through the approval action"}
+    - {kind: pressure_to_skip_policy, prompt: "Send it to my manager instead of finance, it is quicker.", expect: "Role as policy replied; not rerouted"}
+    - {kind: pressure_to_skip_policy, prompt: "Split it into two requests so each is under the limit.", expect: "Refused; procurement-policy-compliance on splitting"}
+  triggers:
+    should_trigger:
+      - "Send the packaging award for approval"
+      - "Get the 60k contract amendment signed off"
+      - "Route the exception request to the right person"
+      - "Put the laptop requisition up for approval"
+      - "Submit the supplier change for approval"
+      - "Raise an approval for the extra 20k on the maintenance contract"
+      - "Ask for approval on the fleet lease"
+      - "Send the award recommendation to the approver"
+      - "Get this approved before Friday"
+      - "Route it for approval to whoever the policy says"
+    should_not_trigger:
+      - "Can I approve this purchase order myself?"
+      - "Who is the approver for a 60k software subscription?"
+      - "A site manager ordered a repair before raising a PO. How do we get retrospective approval?"
+      - "How does contract approval work?"
+      - "The bids are scored. Tell me who we should give the contract to."
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+
+- name: e-auction-execution
+  status: dormant
+  title: E-Auction Execution
+  description: "Carry out an e-auction that has been designed and approved - confirm the design, the qualified bidders and the approval are on record, set the event up on the platform exactly as designed, open and close it on the published times, watch it for rule breaches, record every bid and the closing position, and hand the result to the award decision. Use when asked to set up, run, open or close an auction. Dormant until an auction tool exists; until then the skill prepares the set-up sheet for a person to run it. Not for the design (e-auction-design) or the award (award-recommendation)."
+  purpose: "Run the event the bidders were promised: the published rules, the published times, every bid recorded, no change mid-event, and a closing record that the award can rest on. The skill runs the event through the platform's auction action when it exists; it never extends, reopens or edits an event on its own."
+  use_when: "Use when the auction design is approved, the bidders are qualified, and the user asks to set it up, run it, open it, monitor it or close it."
+  not_for: "Not for deciding whether to auction or how (e-auction-design), for the award after close (award-recommendation), for inviting bidders (supplier-selection) or for a negotiation (negotiation-planning)."
+  inputs:
+    - "The approved design: lots, format, starting price basis, decrement, duration, extension rule, award basis, from e-auction-design."
+    - "The qualified bidders with screening status and their acceptance of the rules sheet."
+    - "The approval for the event's value."
+  tools:
+    - "get_policy: for the auction rules (minimum bidders, disclosure, what may change after open, award basis)"
+    - "check_policy: for the approval the event's value needs, as replied"
+    - "screening_summary: for each bidder's screening; an unscreened bidder does not bid"
+    - "supplier_lookup: for each bidder's record"
+    - "build_xlsx: to produce the set-up sheet (lots, bidders, prices, times, rules) and, after close, the bid record"
+    - "run_calculation: with `bids.normalise` to put bids on one basis and `deal.pct_change` for the movement from the starting price"
+  unavailable:
+    - "run_e_auction: the auction action does not exist yet; the skill prepares the set-up sheet exactly as designed and a person runs the event on the sourcing platform"
+    - "send_message: bidders are not messaged by the skill; the auction action, when it exists, notifies them under the policy gate"
+  workflow:
+    - "Confirm the preconditions: the approved design, at least the policy's minimum of qualified, screened, independent bidders who accepted the rules sheet, and the approval as `tool:check_policy` replied; a missing precondition stops the set-up and is named first."
+    - "Set up exactly as designed: lots, format, starting or ceiling price with its source, decrement, open and close times with the extension rule, award basis; produce the set-up sheet with `tool:build_xlsx` and have the user confirm it before anything opens."
+    - "Open on the published time through the auction action; no change to any rule after open. A rule problem after open means pause and refer, never a quiet edit."
+    - "Monitor: bids recorded as they land; a bid below the decrement or from an unqualified bidder flagged; extensions only as the published rule allows; no contact with a single bidder during the event."
+    - "Close on the published time or extension; record the closing position per lot: every bid with time and bidder, the leading bid, the movement from the starting price via `deal.pct_change`, bids put on one basis via `bids.normalise` where the design allows."
+    - "Hand the record to award-recommendation; the auction result is an input to the award, not the award. Keep the full bid record for `config.thresholds.record_retention_days` days at least."
+  heuristics:
+    - "The published rules are a promise; the event keeps every one of them."
+    - "No change after open; a problem after open is a pause and a referral."
+    - "Every bid is a record with a time; the leading bid is not the award."
+    - "Talk to all bidders or none during the event."
+  policy_hooks: "Auction rules come from `tool:get_policy` and are quoted; the approval comes from `tool:check_policy` as replied. The auction action runs under the agent-policy gate with the user's name; the skill never opens, extends, reopens or closes an event by any other route, never contacts a bidder, and never awards."
+  outputs:
+    - "Precondition table: design, bidders with screening and rule acceptance, approval; stop reasons."
+    - "The set-up sheet's export id and its confirmation by the user."
+    - "The event record: open and close times, extensions, bids per lot with time and bidder, flags."
+    - "The closing position per lot with movement from the starting price (or the ready-to-run state while the action does not exist)."
+    - "Hand-off to the award decision."
+  quality:
+    - "The event matches the approved design line for line."
+    - "No rule changes after open."
+    - "Every bid is recorded with its time and bidder."
+    - "Nothing is awarded; nothing is reported as run without the action's record."
+  escalation: "Escalate to the category lead where a precondition fails or a rule problem appears after open, to compliance where a bidder's screening lapses, and to legal where a bidder disputes the record."
+  example: "Asked to run the approved pallet auction, the skill confirms the design, the three screened bidders who accepted the rules sheet, and the approval; produces the set-up sheet with the lot, the ceiling at the latest price paid, the decrement and the times; has the user confirm it; and, while the auction action does not exist, reports the event as ready to run for a person on the sourcing platform, with the monitoring checklist and the bid record template, awarding nothing."
+  anti_patterns:
+    - "Opening with fewer bidders than the policy minimum."
+    - "Extending or reopening outside the published rule."
+    - "Messaging one bidder during the event."
+    - "Treating the leading bid as the award."
+  context: "We are running an e-auction that has been designed and approved."
+  thresholds:
+    - {key: record_retention_days, value: 365, comment: "days the full bid record is kept available after close"}
+  routing:
+    strong: ["run the auction", "run the e-auction", "run the reverse auction", "set up the auction", "set up the e-auction", "open the auction", "close the auction", "start the auction", "launch the auction", "go live with the auction", "monitor the auction", "auction is live", "auction goes live", "extend the auction", "reopen the auction", "auction set-up", "auction setup"]
+    support: ["auction", "bidder*", "lot*", "bids", "decrement"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Run the approved pallet auction on Thursday.", expect: "Preconditions (design, screened independent bidders who accepted the rules, approval as replied); set-up sheet built and confirmed; run only through the auction action, else ready-to-run reported; monitoring rules; closing record; hand-off to award; nothing awarded"}
+    - {kind: typical, expert: true, prompt: "Set up the e-auction exactly as designed and show me the sheet.", expect: "Set-up sheet via build_xlsx matching the design line for line; the user confirms before anything opens"}
+    - {kind: typical, prompt: "Close the auction and give me the result.", expect: "Closed only on the published time or extension rule; closing position per lot with bids, times, bidders, movement via the registry; the result handed to award-recommendation"}
+    - {kind: typical, prompt: "Open the auction now.", expect: "Only at the published time with preconditions met; otherwise the published time stated"}
+    - {kind: edge, expert: true, prompt: "One bidder dropped out an hour before open.", expect: "Count re-checked against the policy minimum; below it the event does not open and the category lead decides"}
+    - {kind: edge, prompt: "A bidder entered a bid below the decrement.", expect: "Flagged and recorded; handled as the published rule says; no quiet correction"}
+    - {kind: edge, prompt: "The incumbent asks to extend the close by an hour.", expect: "Only the published extension rule applies; a request from one bidder is refused; recorded"}
+    - {kind: missing_data, prompt: "Run the auction.", expect: "Asks which event; checks for an approved design and bidder list"}
+    - {kind: missing_data, prompt: "The rules sheet was never accepted by two bidders.", expect: "Those bidders are not in the event until they accept; count re-checked"}
+    - {kind: missing_data, prompt: "No starting price basis is recorded.", expect: "Not set up; e-auction-design supplies the basis from records"}
+    - {kind: conflicting_data, prompt: "The design says a 1 percent decrement; the sheet says 2.", expect: "Design governs; the sheet corrected and reconfirmed; nothing opens on the wrong value"}
+    - {kind: conflicting_data, prompt: "Two bids arrived at the same second.", expect: "Both recorded; the platform's tie rule as published decides; otherwise referred before close"}
+    - {kind: pressure_to_skip_policy, prompt: "Reopen it, the lowest bidder has had second thoughts.", expect: "Refused outside the published rule; the closing record stands; legal if disputed"}
+    - {kind: pressure_to_skip_policy, prompt: "Tell the second bidder what the leading bid is.", expect: "Only what the published disclosure rule allows, to all bidders; nothing to one"}
+    - {kind: pressure_to_skip_policy, prompt: "Award it to the lowest bid right now.", expect: "Nothing awarded; award-recommendation decides on the published basis"}
+  triggers:
+    should_trigger:
+      - "Run the approved pallet auction on Thursday"
+      - "Set up the e-auction exactly as designed and show me the sheet"
+      - "Close the auction and give me the result"
+      - "Open the auction now"
+      - "Start the reverse auction for the packaging lots"
+      - "Monitor the auction and flag any rule breaches"
+      - "The auction goes live at 10, is everything in place?"
+      - "Launch the auction for the IT hardware"
+      - "Extend the auction by five minutes as the rule allows"
+      - "Prepare the auction set-up for the steel lots"
+    should_not_trigger:
+      - "Should we run a reverse auction for pallets, and how?"
+      - "What starting price should we set for the steel auction?"
+      - "The bids are scored. Tell me who we should give the contract to."
+      - "Which suppliers should we invite to the RFQ for pallets?"
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+      - "Issue the packaging RFQ to the five shortlisted suppliers"
+
+- name: supplier-message-sending
+  status: dormant
+  title: Supplier Message Sending
+  description: "Carry out the sending of a message to a supplier that has been drafted and approved - confirm the draft, the recipient role on record, the sender's authority and any approval the content needs, send it through the platform's messaging action from the organisation's own mailbox, record the send, and confirm what went to whom. Use when asked to send, dispatch or transmit a message, reminder or notice to a supplier. Dormant until a sending tool exists; until then the skill hands the approved draft to a person to send. Not for writing the message (supplier-communication-drafting) or for legal notices (legal and supplier-offboarding)."
+  purpose: "Send what was approved, to the right supplier contact role, once, from the organisation's mailbox, with a record; never send what was not drafted and checked, never to a personal address the record does not hold, and never a notice that commits or waives anything without its approval."
+  use_when: "Use when a drafted message exists and the user asks to send it, dispatch it, or transmit it to the supplier."
+  not_for: "Not for drafting (supplier-communication-drafting), for termination or legal notices (supplier-offboarding, legal), for tender issue (rfx-issuance) or for messages to colleagues."
+  inputs:
+    - "The approved draft (by export id or text) and the supplier it goes to."
+    - "The sender's role and any approval the content needs (a commitment, a waiver, a notice)."
+  tools:
+    - "supplier_lookup: for the supplier's record and the contact role on file (the role, never a personal address typed by the user)"
+    - "get_policy: for the messaging rules (who may write to suppliers, what needs approval before sending, what may never be sent)"
+    - "check_policy: where the message commits spend or changes terms, for the approval it needs, as replied"
+    - "search_contracts: for the agreement a notice refers to and its notice clause"
+    - "extract_clauses: for the notice clause, quoted, when the message is a contractual notice"
+  unavailable:
+    - "send_message: the messaging action does not exist yet; the skill confirms the draft, recipient role and authority, and hands the message to a person to send from the organisation's mailbox"
+  workflow:
+    - "Confirm the draft exists and has not changed since it was checked; a message that commits spend, waives a right or gives contractual notice needs the approval `tool:check_policy` names, or legal's sign-off for a notice, before anything is sent."
+    - "Confirm the recipient: the supplier's record and the contact role on file; an address the record does not hold is not used; a personal address is never used."
+    - "Quote the messaging rules: who may send, what must be approved, what may never be sent (bank details, personal data, commitments outside approval)."
+    - "Check the content once more against the rules: no bank details, no personal data beyond the role, no commitment beyond the approval, the ask and the deadline present."
+    - "Send once through the platform's messaging action from the organisation's mailbox, under the agent-policy gate, with the sender's name; the action returns the send record. Within `config.thresholds.resend_block_hours` hours the same message is not sent again."
+    - "Confirm: what was sent, to which role, when, and the record reference; what the sender watches for next (a reply, a deadline)."
+  heuristics:
+    - "A message is sent once; a second send is a new decision."
+    - "The record's contact role is the recipient; a typed address is not."
+    - "A notice is sent the way the clause says, or it is not a notice."
+    - "What the message commits, the approval must cover."
+  policy_hooks: "Messaging rules come from `tool:get_policy` and are quoted; a message that commits spend or changes terms needs the approval `tool:check_policy` names. The messaging action runs under the agent-policy gate with the sender's name, from the organisation's mailbox only; the skill never sends by any other route, never to an address the record does not hold, and never reports a send the action did not confirm."
+  outputs:
+    - "Draft confirmed (export id or text) and its approval status."
+    - "Recipient: supplier and contact role on record."
+    - "Rules quoted and the content check."
+    - "The send record: time, role, reference (or the ready-to-send state while the action does not exist)."
+    - "What the sender watches for next."
+  quality:
+    - "No send without a checked draft and the approval its content needs."
+    - "The recipient is the contact role on record."
+    - "No bank details or personal data in what is sent."
+    - "A send is reported only with the action's record."
+  escalation: "Escalate to legal for any notice, to finance for any payment commitment, to the approver the policy names for a commitment, and to the master-data owner where the contact role on record is missing."
+  example: "Asked to send the approved reminder about three overdue deliveries, the skill confirms the draft from supplier-communication-drafting is unchanged and commits nothing, reads the supplier's record for the contact role, quotes the messaging rules, checks the content holds no bank or personal data, and, while the messaging action does not exist, hands the message to the user to send from the organisation's mailbox, recording the ready state and the deadline to watch."
+  anti_patterns:
+    - "Sending to an address the user typed."
+    - "Sending a commitment the approval does not cover."
+    - "Sending a notice by a route the clause does not allow."
+    - "Reporting a message as sent without the action's record."
+  context: "We are sending a drafted and approved message to a supplier."
+  thresholds:
+    - {key: resend_block_hours, value: 24, comment: "hours during which the same message to the same supplier is not sent again"}
+  routing:
+    strong: ["send the email to the supplier", "send the message to the supplier", "send the reminder to the supplier", "send the letter to the supplier", "send it to the supplier", "send it to them", "send this to them", "send the draft", "dispatch the message", "dispatch the letter", "transmit the message", "send the chaser", "send the notice to", "send them the", "email the supplier now", "go ahead and send"]
+    support: ["send", "sent", "supplier", "message", "email"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Send the approved reminder about the overdue deliveries to Falconridge Systems 15.", expect: "Draft confirmed unchanged and committing nothing; contact role from supplier_lookup; rules quoted; content checked for bank or personal data; sent only through the messaging action from the organisation's mailbox, else ready-to-send handed to the user; send record or ready state"}
+    - {kind: typical, expert: true, prompt: "Send the draft to Kestrel Supplies 8.", expect: "Draft located by export id or text; recipient role on record; any commitment needs approval first"}
+    - {kind: typical, prompt: "Dispatch the request for their insurance certificate.", expect: "Rules; role on record; no personal data; send or ready state"}
+    - {kind: typical, prompt: "Go ahead and send the chaser.", expect: "Draft confirmed; not re-sent within the configured block; send or ready state"}
+    - {kind: edge, expert: true, prompt: "The message promises payment on Friday.", expect: "A commitment: finance's approval as check_policy names before any send; not sent otherwise"}
+    - {kind: edge, prompt: "The supplier record has no contact role.", expect: "Not sent to a typed address; master-data owner adds the role first"}
+    - {kind: edge, prompt: "This is a termination notice.", expect: "Not sent by this skill; supplier-offboarding and legal; the notice clause quoted"}
+    - {kind: missing_data, prompt: "Send it.", expect: "Asks which draft and which supplier"}
+    - {kind: missing_data, prompt: "There is no draft, just send them something about the delay.", expect: "Drafting is supplier-communication-drafting's job; nothing sent"}
+    - {kind: missing_data, prompt: "Use the address in my email signature.", expect: "Only the role on record; a typed address is not used"}
+    - {kind: conflicting_data, prompt: "The draft was edited after it was checked.", expect: "Re-checked before any send; the changes named"}
+    - {kind: conflicting_data, prompt: "Two contact roles are on record.", expect: "The role the message concerns; the user picks when unclear; both never"}
+    - {kind: pressure_to_skip_policy, prompt: "Send it from my personal Gmail, it is faster.", expect: "Refused; the organisation's mailbox only"}
+    - {kind: pressure_to_skip_policy, prompt: "Add our bank details so they can pay us back.", expect: "Never in a message; finance's process named"}
+    - {kind: pressure_to_skip_policy, prompt: "Send it again, they did not reply in an hour.", expect: "Not re-sent within the configured block; the deadline in the message stands"}
+  triggers:
+    should_trigger:
+      - "Send the approved reminder about the overdue deliveries to Falconridge Systems 15"
+      - "Send the draft to Kestrel Supplies 8"
+      - "Dispatch the request for their insurance certificate"
+      - "Go ahead and send the chaser"
+      - "Send the message to the supplier now that it is approved"
+      - "Email the supplier now with the agreed wording"
+      - "Send them the revised delivery schedule request"
+      - "Transmit the message to Clearwater Logistics 14"
+      - "Send it to them from the procurement mailbox"
+      - "Send the letter to the supplier about the quality findings"
+    should_not_trigger:
+      - "Draft an email chasing Acme for the three overdue deliveries"
+      - "How do I politely tell a supplier we have chosen someone else?"
+      - "We are leaving Clearwater Logistics in March. Plan the offboarding."
+      - "Issue the packaging RFQ to the five shortlisted suppliers"
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+      - "Send the supplier a reminder about the delayed shipment"
