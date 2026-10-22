@@ -17,7 +17,7 @@ from typing import Any, Dict, List
 # Tools build_tools() adds besides the agents (orchestration/agentnick_control.py).
 FIXED_TOOLS = {
     "list_governance": ["agent"],
-    "get_policy": ["query"],
+    "get_policy": ["query", "slug", "type", "agent"],
     "get_prompt": ["query"],
     "get_corpus_facts": ["query"],
     "list_calculations": ["family", "name"],
@@ -32,7 +32,7 @@ FIXED_TOOLS = {
     "savings_tracker": ["since", "until"],
     "supplier_discovery": ["item", "country", "preferred_only", "limit"],
     "supplier_lookup": ["supplier"],
-    "build_spend_cube": ["by", "start", "end", "currency", "top_n"],
+    "build_spend_cube": ["by", "start", "end", "currency", "top_n", "order"],
     "obligation_tracker": ["contract", "supplier", "horizon_days"],
     "calc_supplier_scorecard": ["supplier", "start", "end", "currency"],
     "screening_summary": ["supplier"],
@@ -47,6 +47,9 @@ FIXED_TOOLS = {
     "similar_items": ["description", "min_similarity", "limit"],
     "contract_pipeline": ["expires_within_days", "supplier", "status", "detail"],
     "invoice_reconciliation": ["supplier", "invoice_id", "po_id", "start", "end"],
+    "supplier_items": ["supplier", "start", "end"],
+    "open_orders": ["supplier", "start", "end"],
+    "invoice_status": ["supplier", "invoice_id", "start", "end"],
     "compare_total_cost": ["options", "horizon_years", "cost_of_capital", "buyer_currency", "fx_rates", "fx_table_date", "default_insurance_rate"],
 }
 

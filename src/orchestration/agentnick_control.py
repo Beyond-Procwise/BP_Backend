@@ -1052,6 +1052,53 @@ def _reconciliation_tools() -> List[Tool]:
     ]
 
 
+def _supplier_record_tools() -> List[Tool]:
+    """One supplier's own records three ways: items bought, open orders, invoices. Read-only."""
+    from src.services import supplier_records as SR
+
+    period = {"start": {"type": "string", "description": "YYYY-MM-DD"}, "end": {"type": "string", "description": "YYYY-MM-DD"}}
+    sup = {"supplier": {"type": "string", "description": "supplier name or supplier_id"}}
+    return [
+        Tool(
+            name="supplier_items",
+            description=(
+                "What we buy from one supplier: each item on their purchase-order and invoice lines in a period "
+                "(default three years) with line count, quantity, unit-price range as billed, currency and last "
+                "date, per source. Use it to see what a supplier provides before looking for alternatives "
+                "(supplier_discovery takes one of these descriptions). Prices are not normalised across units; "
+                "nothing is estimated. If several suppliers match it asks which."
+            ),
+            parameters={"type": "object", "properties": {**sup, **period}, "required": ["supplier"]},
+            handler=SR.items,
+        ),
+        Tool(
+            name="open_orders",
+            description=(
+                "One supplier's purchase orders in a period (default three years) with, per order: order total, the "
+                "invoices booked against it in the same currency, the balance still open, receipts recorded, the "
+                "stored status and expected delivery date ('not recorded' when absent, which is not closed or on "
+                "time), and totals per currency. The balance is order total minus invoices as stored; the tax basis "
+                "of the two may differ, so check before quoting it as money owed. It writes nothing."
+            ),
+            parameters={"type": "object", "properties": {**sup, **period}, "required": ["supplier"]},
+            handler=SR.open_orders,
+        ),
+        Tool(
+            name="invoice_status",
+            description=(
+                "One supplier's invoices in a period (default three years), or one invoice by id: amount, PO, payment "
+                "terms, status, due date and paid date exactly as stored ('not recorded' when the record holds none, "
+                "which is neither paid nor unpaid), overdue only from a stored due date with no paid date, and the "
+                "count of open findings on each invoice (the hold reasons; invoice_reconciliation shows them in "
+                "full). It never computes a due date from payment terms and promises no payment date."
+            ),
+            parameters={"type": "object", "properties": {**sup, "invoice_id": {"type": "string"}, **period},
+                        "required": ["supplier"]},
+            handler=SR.invoices,
+        ),
+    ]
+
+
 def _pipeline_tools() -> List[Tool]:
     """The contracts falling due, each with its stored calendar and notice clauses, in one call. Read-only."""
     from src.services.contract_tools import pipeline as PL
@@ -1114,6 +1161,7 @@ def build_tools(
         + _similarity_tools()
         + _cost_tools()
         + _reconciliation_tools()
+        + _supplier_record_tools()
         + _pipeline_tools()
     )
     if exclude:
