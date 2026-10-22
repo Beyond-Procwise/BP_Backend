@@ -167,7 +167,14 @@ FRESH = {
         "Our cleaning contractor has asked for 8 percent more from January. How do we respond?",
         "Help me work out what to offer first and what we can give up in the talks with Borealis.",
         "What is our best alternative if this vendor refuses to move on price?",
-        "Draft a strategy for the annual price review meeting with our main steel supplier."],
+        "Draft a strategy for the annual price review meeting with our main steel supplier.",
+        "The supplier wants an 8% increase citing steel; how should we respond?",
+        "Borealis has requested an increase of 5 percent from April. What do we say back?"],
+    "renewal-and-exit-strategy": [
+        "When does the Cloud MSA expire and what notice do we need to give?",
+        "Our facilities contract rolls over in March unless we act. What are the options?",
+        "Should we re-tender the cleaning contract or renew with the incumbent?",
+        "What notice must we give to stop the auto-renewal of the software agreement?"],
     "savings-methodology": [
         "Procurement reports 120k of savings on the cable contract. How would we validate that?",
         "Does a negotiated discount that offsets a market price rise count as a saving?",

@@ -29,6 +29,11 @@ routing:                         # how the orchestrator decides this skill cover
     - "contract expir*"
     - "expiry"
     - "terminate the contract"
+    - "what notice"
+    - "give notice"
+    - "notice do we"
+    - "notice must we"
+    - "expire and"
   support:                       # 1 point each
     - "contract"
     - "supplier"

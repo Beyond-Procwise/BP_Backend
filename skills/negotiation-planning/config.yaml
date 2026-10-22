@@ -25,6 +25,13 @@ routing:                         # how the orchestrator decides this skill cover
     - "last offer"
     - "their offer"
     - "counter their"
+    - "wants an increase"
+    - "asking for an increase"
+    - "increase request"
+    - "requested an increase"
+    - "increase citing"
+    - "how should we respond"
+    - "respond to the supplier"
   support:                       # 1 point each
     - "supplier"
     - "vendor"
