@@ -30,6 +30,14 @@ ASSUMPTION_ARGS = frozenset({
     "early_tolerance_days", "late_tolerance_days", "in_full_tolerance", "sensitivity_pct",
 })
 
+#: Identifiers a model passes to a tool. An id is never worked out: it comes from the request or from
+#: something an earlier tool returned. Live, 2026-10-22: asked about "our steel supplier", the model called
+#: get_opportunity_bucket with item_id "STEEL-PLATE-3MM", an id nothing had returned.
+IDENTIFIER_ARGS = frozenset({
+    "supplier_id", "item_id", "document_id", "waiver_id", "po_id",
+})
+MIN_IDENTIFIER_CHARS = 3
+
 # Tools whose results describe what exists (inputs, ranges, playbooks), not what a value is. Their numbers
 # are never a source: "range [0, 1]" in a catalogue must not make a duty rate of 0 look supplied.
 NON_SOURCE_TOOLS = frozenset({"list_calculations", "list_governance", "list_skills", "use_skill", "get_prompt",
@@ -106,6 +114,51 @@ def _assumption_values(node: Any, path: str = "") -> Iterable[Tuple[str, Any]]:
             yield from _assumption_values(v, f"{path}[{i}]")
 
 
+def _identifier_values(node: Any, path: str = "") -> Iterable[Tuple[str, str]]:
+    """Every identifier string sitting under an identifier name, anywhere in the arguments."""
+    if isinstance(node, Mapping):
+        for k, v in node.items():
+            p = f"{path}.{k}" if path else str(k)
+            if k in IDENTIFIER_ARGS:
+                for leaf_path, leaf in _leaves(v, p):
+                    if isinstance(leaf, str) and len(leaf.strip()) >= MIN_IDENTIFIER_CHARS:
+                        yield leaf_path, leaf.strip()
+            else:
+                yield from _identifier_values(v, p)
+    elif isinstance(node, (list, tuple)):
+        for i, v in enumerate(node):
+            yield from _identifier_values(v, f"{path}[{i}]")
+
+
+def _source_texts(task: str, calls: Sequence[Any], skill_config: Optional[Mapping[str, Any]]) -> List[str]:
+    texts = [task or ""]
+    for c in calls:
+        if (getattr(c, "ok", False) and getattr(c, "result", None) is not None
+                and getattr(c, "name", None) not in NON_SOURCE_TOOLS):
+            texts.append(json.dumps(c.result, default=str))
+    if skill_config:
+        texts.append(json.dumps(skill_config, default=str))
+    return texts
+
+
+def untraced_identifiers(args: Mapping[str, Any], *, task: str, calls: Sequence[Any],
+                         skill_config: Optional[Mapping[str, Any]] = None) -> List[Tuple[str, str]]:
+    """The identifiers in ``args`` that appear in neither the request nor any successful earlier tool
+    result (nor the skill's settings). Compared case-insensitively, as whole strings."""
+    haystack = "\n".join(_source_texts(task, calls, skill_config)).lower()
+    return [(path, value) for path, value in _identifier_values(args) if value.lower() not in haystack]
+
+
+def identifier_refusal(tool: str, found: Sequence[Tuple[str, str]]) -> Dict[str, Any]:
+    listed = "; ".join(f"{p} = {v}" for p, v in found)
+    return {
+        "result": "blocked",
+        "reasonCode": "identifier_not_sourced",
+        "reason": (f"{tool} was not run: {listed} appears in neither the request nor any earlier tool result. "
+                   "Never invent an id. Find it with a lookup or search tool first, or ask the user for it."),
+    }
+
+
 def untraced_assumptions(args: Mapping[str, Any], *, task: str, calls: Sequence[Any],
                          skill_config: Optional[Mapping[str, Any]] = None,
                          today: Optional[date] = None) -> List[Tuple[str, Any]]:
@@ -144,8 +197,11 @@ def make_checker(task: str, skill_config: Optional[Mapping[str, Any]], *,
     """The check for one run: ``(tool_name, args, result_so_far) -> refusal or None``."""
 
     def check(name: str, args: Mapping[str, Any], result: Any) -> Optional[Dict[str, Any]]:
-        found = untraced_assumptions(args, task=task, calls=getattr(result, "calls", []) or [],
-                                     skill_config=skill_config, today=today)
-        return refusal(name, found) if found else None
+        calls = getattr(result, "calls", []) or []
+        found = untraced_assumptions(args, task=task, calls=calls, skill_config=skill_config, today=today)
+        if found:
+            return refusal(name, found)
+        ids = untraced_identifiers(args, task=task, calls=calls, skill_config=skill_config)
+        return identifier_refusal(name, ids) if ids else None
 
     return check
