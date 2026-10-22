@@ -253,7 +253,12 @@ def _resolve_s3_path(s3_path: str, default_bucket: str) -> Tuple[str, str]:
     if value.startswith("s3://"):
         stripped = value[5:]
         bucket_part, _, key_part = stripped.partition("/")
-        bucket_name = bucket_part or default_bucket
+        # Only the configured bucket (1.3c). Any other name - including a different case, since
+        # bucket names are case-sensitive - would let a caller extract from whatever the service's
+        # AWS role can read into this company's tables. The name asked for is not echoed back.
+        if bucket_part and bucket_part != default_bucket:
+            raise ValueError("s3_path must name the configured bucket or no bucket at all")
+        bucket_name = default_bucket
         prefix = key_part
     else:
         bucket_name = default_bucket
