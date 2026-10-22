@@ -911,6 +911,29 @@ def _index_tools() -> List[Tool]:
     ]
 
 
+def _classification_tools() -> List[Tool]:
+    """The organisation's own category taxonomy and product mapping. Read-only; a name match is a draft."""
+    from src.services.analytics import classify_spend as CS
+
+    return [
+        Tool(
+            name="classify_spend",
+            description=(
+                "Classify item descriptions against this organisation's own category taxonomy (five levels with "
+                "UNSPSC codes) and its recorded product-to-category mapping, or look words up in the taxonomy. A "
+                "mapped item comes back 'recorded' with its levels; an unmapped item is 'unclassified' with up to "
+                "three taxonomy rows whose names share words with it, which are a draft for a person to confirm and "
+                "must be labelled 'draft classification', never applied as fact. Reports coverage (recorded share). "
+                "It writes nothing and invents no code."
+            ),
+            parameters={"type": "object", "properties": {
+                "items": {"type": "array", "items": {"type": "string"}, "description": "item descriptions to classify"},
+                "query": {"type": "string", "description": "words to look up in the taxonomy"}}},
+            handler=CS.classify,
+        ),
+    ]
+
+
 def build_tools(
     agent_nick: Any,
     *,
@@ -945,6 +968,7 @@ def build_tools(
         + _performance_tools()
         + _screening_tools()
         + _index_tools()
+        + _classification_tools()
     )
     if exclude:
         blocked = set(exclude)
