@@ -89,6 +89,9 @@ ACTIONS: Dict[str, str] = {
     "document.promote": "write",
     # Bulk-rewrites po_id across every final table. Its own action so who may do it is its own setting.
     "document.renumber": "write",
+    # Deleting one's own exported file record (the store scopes the delete to the creator). A write, not a share:
+    # nothing leaves the tenant.
+    "export.delete": "write",
     "email.draft": "write",
     # The queues the email-learning job leaves for people. Reading them is `read`; deciding one (resolving a data-quality
     # item, accepting a review item, approving YOUR OWN style rule, exporting a candidate) is `write`. Approving an
@@ -135,9 +138,6 @@ ACTIONS: Dict[str, str] = {
     "offer.extraction.confirm": "approve_email",
     # --- sharing (leaves the tenant) -------------------------------------
     "report.export": "share",
-    # Deleting one's own exported file record (the store scopes the delete to the creator). A write, not a share:
-    # nothing leaves the tenant.
-    "export.delete": "write",
     "research.web": "share",
     "supplier.clearance.set": "share",
     # --- configuring -----------------------------------------------------

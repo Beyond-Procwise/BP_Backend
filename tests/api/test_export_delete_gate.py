@@ -63,10 +63,13 @@ def test_a_buyer_deletes_only_as_themselves(serve):
     client = serve(buyer())
     assert client.delete("/exports/abc").json() == {"deleted": "abc"}
     assert client.did == [("abc", "sub-buyer")]          # the store scopes the delete to the caller
-    assert ("export.delete", "allowed") in [(a["action_type"], a["status"]) for a in client.audit]
+    allowed = [a for a in client.audit if (a["action_type"], a["status"]) == ("export.delete", "allowed")]
+    assert allowed and allowed[0]["details"]["export_id"] == "abc"     # the record is named in the audit row
 
 
 def test_no_principal_is_refused(serve):
+    """With no verifier configured require_user yields None; the gate still refuses a write and audits it."""
     client = serve(None)
     assert client.delete("/exports/abc").status_code == 403
     assert client.did == []
+    assert ("export.delete", "denied") in [(a["action_type"], a["status"]) for a in client.audit]
