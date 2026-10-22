@@ -1,0 +1,51 @@
+# Configurable defaults for the onboarding checklist. They are starting points for review, not governed policy:
+# mandatory fields, required checks, insurance minimums and contract-before-order rules come from policy when stated.
+thresholds:
+  insurance_warn_days: 60        # insurance expiring within this many days is "expiring"
+  insurance_min_amount: 1000000  # insurance cover below this (reporting currency) is "below default minimum" unless policy states another
+  required_within_days: 30       # "required" items are needed within this many days of the first order
+unavailable_tools:
+  - onboard_supplier
+  - build_xlsx
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "onboarding checklist"
+    - "onboard the supplier"
+    - "onboard this supplier"
+    - "onboard a new supplier"
+    - "onboard a supplier"
+    - "supplier onboarding"
+    - "vendor onboarding"
+    - "set up the supplier"
+    - "set up this supplier"
+    - "set up a new supplier"
+    - "set up a supplier"
+    - "setting up the supplier"
+    - "supplier setup"
+    - "vendor setup"
+    - "new supplier setup"
+    - "activate the supplier"
+    - "activate this supplier"
+    - "ready to order from"
+    - "ready to use"
+    - "before we can use"
+    - "before we can order"
+    - "missing before we"
+    - "what is missing for"
+    - "add a new supplier"
+    - "add the supplier"
+    - "create the supplier"
+    - "what is missing"
+    - "before a supplier can be used"
+    - "supplier can be used"
+    - "set up the new"
+    - "set up our new"
+    - "order from them"
+  support:                       # 1 point each
+    - "supplier*"
+    - "vendor*"
+    - "onboard*"
+    - "setup"
+    - "master record"
+    - "insurance"
+    - "certif*"

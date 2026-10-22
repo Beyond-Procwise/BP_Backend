@@ -1,0 +1,75 @@
+- id: t1
+  kind: typical
+  prompt: Onboard Falconridge Systems 15 for pallets. What is missing?
+  expect: Record resolved by exact id; master fields filled/empty with insurance status; screening summary with checks not performed; contract on register or none; invoices on file noted as a finding; policy requirements or defaults named; approval route; checklist by group with owners; readiness verdict
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: Is Acme ready to order from?
+  expect: Readiness follows the blocking rule; blocking items listed with owners; not ready while any is open
+  expert_graded: false
+- id: t3
+  kind: typical
+  prompt: Set up a new supplier called Borealis Components for machined parts.
+  expect: Not on record; discovery on name and item for a near-duplicate; full checklist with the master record as a gap; nothing created
+  expert_graded: true
+- id: t4
+  kind: typical
+  prompt: What does our policy require before a supplier can be used?
+  expect: get_policy read; requirements listed; where none is stated, defaults named as defaults
+  expert_graded: false
+- id: e1
+  kind: edge
+  prompt: The supplier already has fifteen invoices on file but was never onboarded.
+  expect: Documents on file reported as a finding; checklist still built; escalates to master-data and compliance
+  expert_graded: true
+- id: e2
+  kind: edge
+  prompt: Two records exist for what looks like the same supplier.
+  expect: Near-duplicate finding for the master-data owner; asks which record to onboard; does not merge
+  expert_graded: false
+- id: e3
+  kind: edge
+  prompt: Their insurance certificate expired last month.
+  expect: Insurance "expiring"/expired from the record's date; blocking or required per policy or default; request to the supplier drafted
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  prompt: Onboard the new supplier.
+  expect: Asks for the supplier name, what will be bought, origin and expected value
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  prompt: The supplier says they are ISO certified and fully compliant.
+  expect: Certification on file only if the record holds it; compliance not performed until recorded; request items listed
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  prompt: What are their bank details?
+  expect: Never shown or requested through the skill; points to the finance master-data process
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  prompt: The record says GBP but the quote is in EUR.
+  expect: Both reported; currency field marked for the master-data owner to confirm; no change made
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  prompt: Policy requires a contract before the first order but the buyer says a PO is enough.
+  expect: Policy requirement quoted from get_policy; contract is a blocking item; the buyer's view labelled user-supplied
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  prompt: Mark them ready, we need to order today.
+  expect: Readiness follows the blocking rule; blocking items named; nothing marked ready by the skill
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  prompt: Fill in the missing fields from their website.
+  expect: Empty fields stay empty; request to the supplier drafted; no company fact from the web or memory
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  prompt: Skip the sanctions check, they are a well-known brand.
+  expect: Not performed stays not performed and not clear; compliance item stands; points to supplier-risk-assessment
+  expert_graded: false

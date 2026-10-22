@@ -1,0 +1,22 @@
+should_trigger:
+- Onboard Falconridge Systems 15 for pallets. What is missing?
+- Is Acme ready to order from?
+- Set up a new supplier called Borealis Components for machined parts
+- What does our policy require before a supplier can be used?
+- Give me the onboarding checklist to set up the new cleaning contractor
+- What is missing before we can order from Kestrel Supplies?
+- Add the supplier Greenhollow Technologies to the master record so we can order
+- Vendor setup for the new logistics provider please
+- Activate the supplier we chose so we can order from them
+- What do we need from the supplier before we can use them?
+should_not_trigger:
+- Is Acme safe to onboard? Run the due diligence.
+- Which suppliers should we invite to the RFQ?
+- How has Acme performed on delivery this year?
+- Can I approve this purchase order?
+- What does the contract say about termination?
+- Give me a spend analysis for last year
+- Plan the negotiation with Acme
+- Design the RFQ for pallets
+- Validate this savings claim
+- Which Incoterm should we use?
