@@ -20,7 +20,9 @@ import importlib.abc
 import importlib.util
 import sys
 
-_SHARED_STATE_MODULES = ("ollama_client", "event_bus")
+# egress holds the caller context every outbound call is audited under; egress_log the audit queue, its writer
+# thread and the writer-failing flag; egress_policy the rule cache and its last-good anchor. One copy each (1.20k).
+_SHARED_STATE_MODULES = ("ollama_client", "event_bus", "egress", "egress_log", "egress_policy")
 _CANONICAL = "src.services."
 
 

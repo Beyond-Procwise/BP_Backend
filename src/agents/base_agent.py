@@ -833,9 +833,13 @@ class BaseAgent:
 
         logger.info("%s: starting", self.__class__.__name__)
         start_ts = datetime.utcnow()
+        from src.services import egress as _egress_audit   # at call time: egress is import-light, this module is not
         try:
             snapshot = self._prepare_context(context)
-            result = self.run_tool_loop(context) if tool_loop else self.run(context)
+            # Every outbound call this run makes (the model, S3, a lookup) is audited under THIS agent's
+            # own slug (1.20k). Before this only a tool-loop turn named its agent; a plain run() read "unknown".
+            with _egress_audit.calling(self._governance_slug()):
+                result = self.run_tool_loop(context) if tool_loop else self.run(context)
             if isinstance(result, AgentOutput):
                 result = self._with_plan(context, result)
                 result = self._with_context_snapshot(context, result, snapshot)
