@@ -52,6 +52,8 @@ def test_ordinary_words_numbers_and_versions_are_not_tagged(text):
 @pytest.mark.parametrize("text", [
     "1," * 32_768, "a" * 65_536, "9" * 65_536, "[" + ",".join(str(i) for i in range(12_000)) + "]",
     "ab@" * 20_000, "£" * 30_000 + "1", "PO " * 20_000, "invoice " * 8_000,
+    "a" * 65_000 + "@x.io",          # one address at the end of a long run: an unanchored pattern is quadratic here
+    "a" * 65_000 + " x@y.io",
 ])
 def test_the_scan_is_linear_on_hostile_input(text):
     import time
