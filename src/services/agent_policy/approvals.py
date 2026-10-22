@@ -131,7 +131,9 @@ def _announce(cur, event_type: str, decision_id: int, actor: str, summary: str, 
     from services.people.wiring import emit_safe
     emit_safe(cur, DomainEvent(
         type=event_type, actor_id=actor, entity_type="approval", entity_id=str(decision_id), summary=summary,
-        event_id=f"{event_type}:{decision_id}{event_key}", data={"link": "/approvals", **data}))
+        event_id=f"{event_type}:{decision_id}{event_key}",
+        # the Agents > Approvals view, opened on this case (the UI honours ?approval=)
+        data={"link": f"/spendiq?view=policies&approval={decision_id}", **data}))
 
 
 # ---------------------------------------------------------------------------- open
