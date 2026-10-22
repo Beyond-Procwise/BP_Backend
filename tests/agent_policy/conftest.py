@@ -60,3 +60,17 @@ def _nobody_is_remembered(request, monkeypatch):
         from api.routers import agent_policies
 
         monkeypatch.setattr(agent_policies, "_remember", lambda principal: None)
+
+
+@pytest.fixture(autouse=True)
+def _gateway_routes_sign_in_off():
+    """N8: with sign-in enforced the gateway-only routes take the identity from the forwarded bearer
+    token and ignore the x-user-* headers. These suites describe the key + header contract, which
+    remains the contract only when sign-in is OFF, so every test here runs in that mode."""
+    from api import auth as _auth
+    previous_mode, previous_verifier = _auth._mode, _auth._verifier
+    _auth._mode, _auth._verifier = "off", None
+    try:
+        yield
+    finally:
+        _auth._mode, _auth._verifier = previous_mode, previous_verifier
