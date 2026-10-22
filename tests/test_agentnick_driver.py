@@ -11,6 +11,7 @@ import pytest
 
 from src.services import agentnick_driver as driver
 from src.services import egress, tool_runtime
+from src.services.ollama_client import load_options
 
 MSGS = [{"role": "system", "content": "SYS"}, {"role": "user", "content": "hi"}]
 TOOLS = [{"type": "function", "function": {"name": "t", "description": "d", "parameters": {"type": "object"}}}]
@@ -51,7 +52,7 @@ def test_chat_sends_the_same_payload_the_tool_loop_always_did(sent):
     call = sent[0]
     assert call["url"] == driver.OLLAMA_CHAT and call["timeout"] == 9 and call["require_global"] is False
     assert call["json"] == {"model": "m", "messages": MSGS, "stream": False, "think": False, "keep_alive": -1,
-                            "options": {"temperature": 0, "num_predict": 2048}, "tools": TOOLS}
+                            "options": {**load_options(), "temperature": 0, "num_predict": 2048}, "tools": TOOLS}
     assert p.content == "hello" and p.tool_calls == [] and p.model == "m"
 
 

@@ -73,6 +73,15 @@ def _sampling() -> Dict[str, Any]:
     return {"temperature": 0, "num_predict": 2048}
 
 
+def _turn_options() -> Dict[str, Any]:
+    """Load-affecting options (the same set every caller and the preload send, so Ollama keeps the one
+    loaded runner) plus the sampling options for a turn. The client is imported at call time: it
+    imports egress itself, and a module-level import here would loop."""
+    from src.services import ollama_client
+
+    return {**ollama_client.load_options(), **_sampling()}
+
+
 def _send(payload: Dict[str, Any], timeout: int, *, stream: bool = False) -> Any:
     kwargs: Dict[str, Any] = dict(
         purpose=egress.Purpose.MODEL_INFERENCE,
@@ -98,7 +107,10 @@ def chat(messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] =
         # off. Leaving this on silently yields blank answers.
         "think": False,
         "keep_alive": -1,
-        "options": _sampling(),
+        # The load-affecting options every caller sends (ollama_client.load_options): a turn that sent
+        # only sampling options asked Ollama for a differently laid-out runner, and on this host that
+        # layout needs more system memory than is free, so the first turn after an unload was a 500.
+        "options": _turn_options(),
     }
     if tools:
         payload["tools"] = tools
@@ -123,7 +135,10 @@ def chat_stream(messages: List[Dict[str, Any]], tools: List[Dict[str, Any]], *,
         "stream": True,
         "think": False,
         "keep_alive": -1,
-        "options": _sampling(),
+        # The load-affecting options every caller sends (ollama_client.load_options): a turn that sent
+        # only sampling options asked Ollama for a differently laid-out runner, and on this host that
+        # layout needs more system memory than is free, so the first turn after an unload was a 500.
+        "options": _turn_options(),
         "tools": tools,
     }
     response = _send(payload, timeout or DEFAULT_TIMEOUT_S, stream=True)
