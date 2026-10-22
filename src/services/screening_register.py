@@ -257,7 +257,12 @@ def summary(supplier: Any = None, *, rows: Optional[Callable[[str, Sequence[Any]
     not_performed = [ct for ct, c in checks.items() if not c["performed"]]
     flagged = [ct for ct, c in checks.items() if c["flagged"]]
     expired = [ct for ct, c in checks.items() if c["expired"]]
-    out: Dict[str, Any] = {"found": True, "supplier": {"supplier_id": sid, "name": sname}, "checks": checks,
+    summary = (f"{sname}: {len(CHECK_TYPES) - len(not_performed)} of {len(CHECK_TYPES)} checks recorded"
+               + (f"; not performed: {', '.join(not_performed)}" if not_performed else "")
+               + (f"; flagged: {', '.join(flagged)}" if flagged else "")
+               + (f"; expired: {', '.join(expired)}" if expired else "")
+               + f"; {len(signals)} risk signals on the platform's feed. A check not performed is not clear.")
+    out: Dict[str, Any] = {"found": True, "summary": summary, "supplier": {"supplier_id": sid, "name": sname}, "checks": checks,
                            "not_performed": not_performed, "flagged": flagged, "expired": expired,
                            "signals": [{"signal_type": t, "severity": _plain(sev), "source": src,
                                         "payload": (json.loads(p) if isinstance(p, str) else p) or {},

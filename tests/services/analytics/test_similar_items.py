@@ -100,3 +100,11 @@ def test_singular_and_plural_wording_match():
     assert SI._singular("batteries") == "battery" and SI._singular("boxes") == "box" and SI._singular("glass") == "glass"
     out = SI.find("laptop computer", rows=_rows())
     assert out["found"] and out["matches"][0]["description"].startswith("Advanced Laptop Computers")
+
+
+def test_the_summary_comes_first_and_counts_every_match():
+    out = SI.find("Advanced Laptop Computers Installation ITM003969", rows=_rows())
+    assert list(out)[:2] == ["found", "summary"]
+    assert out["summary"].startswith("3 recorded descriptions share") and "(1 with the same item code)" in out["summary"]
+    assert "up to 14 suppliers by up to 3 buyers" in out["summary"]
+    assert SI.find("Forklift truck", rows=_rows())["summary"].startswith("No recorded description")

@@ -205,3 +205,10 @@ def test_summary_with_nothing_recorded_is_not_clear_and_outage_is_told_apart():
     assert out["found"] is False and out["available"] is False and "not a clear result" in out["note"]
     out = SR.summary("acme", rows=_rows(suppliers=[("S1", "Acme Ltd"), ("S2", "Acme Logistics")]))
     assert out["ambiguous"]
+
+
+def test_the_summary_comes_first_and_names_what_is_missing_flagged_and_expired():
+    out = SR.summary("acme", rows=_rows(), today=TODAY)
+    assert list(out)[:2] == ["found", "summary"]
+    assert out["summary"].startswith("Acme Ltd: 0 of 6 checks recorded; not performed: sanctions, financial_health")
+    assert out["summary"].endswith("0 risk signals on the platform's feed. A check not performed is not clear.")

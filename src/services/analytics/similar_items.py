@@ -177,7 +177,14 @@ def find(description: Any = None, min_similarity: Any = None, limit: Any = None,
         matches.append(entry)
     matches.sort(key=lambda m: (-m["name_similarity"], -m["lines_total"], m["description"]))
     shown = matches[:cap]
-    out: Dict[str, Any] = {"found": bool(shown), "query": query, "descriptive_words": sorted(want),
+    top_sup = max((m["suppliers_max"] for m in matches), default=0)
+    top_buy = max((m["buyers_max"] for m in matches), default=0)
+    same_code = sum(1 for m in matches if m["same_item_code"])
+    summary = (f"{len(matches)} recorded descriptions share descriptive words with '{query}' at similarity "
+               f"{threshold} or above ({same_code} with the same item code); the widest is bought from up to "
+               f"{top_sup} suppliers by up to {top_buy} buyers. Name similarity is not identity." if matches
+               else f"No recorded description shares enough descriptive words with '{query}' at similarity {threshold}.")
+    out: Dict[str, Any] = {"found": bool(shown), "summary": summary, "query": query, "descriptive_words": sorted(want),
                            "min_similarity": threshold, "match_count": len(matches), "matches": shown,
                            "note": ("name_similarity is the share of descriptive words two descriptions share; it is not "
                                     "identity. Treat a match as the same item only after a person confirms the "

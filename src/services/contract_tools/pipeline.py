@@ -69,7 +69,13 @@ def build(expires_within_days: Any = None, supplier: Any = None, status: Any = N
     listed_only = [{k: c.get(k) for k in ("contract_id", "title", "supplier", "end_date", "auto_renew", "total_value", "currency")}
                    for c in contracts[n_detail:]]
     auto = [c["contract_id"] for c in contracts if c.get("auto_renew")]
-    out: Dict[str, Any] = {"found": bool(contracts), "as_of": today.isoformat(), "horizon_days": horizon,
+    not_read = [i["contract_id"] for i in items if i.get("clauses_read") is False]
+    no_notice = [i["contract_id"] for i in items if i.get("clauses_read") and not i["notice_clauses"]]
+    summary = (f"{len(contracts)} contracts on the register end within {horizon} days; {len(auto)} auto-renew; "
+               f"of the {len(items)} detailed, {len(not_read)} were never read for clauses and {len(no_notice)} have no "
+               f"notice clause stored, so their decision dates are unknown." if contracts
+               else f"No contract on the register ends within {horizon} days.")
+    out: Dict[str, Any] = {"found": bool(contracts), "summary": summary, "as_of": today.isoformat(), "horizon_days": horizon,
                            "contracts_due": len(contracts), "detailed": items, "listed_only": listed_only,
                            "auto_renewing": auto,
                            "not_read_for_clauses": [i["contract_id"] for i in items if i.get("clauses_read") is False],

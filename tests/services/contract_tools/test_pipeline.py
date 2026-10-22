@@ -59,3 +59,10 @@ def test_nothing_due_and_outage_are_told_apart():
         raise store.StoreUnavailable("db down")
     out = pipeline.build(30, rows=down, today=TODAY)
     assert out["found"] is False and out["available"] is False and "does not mean" in out["note"]
+
+
+def test_the_summary_comes_first_and_counts_the_pipeline():
+    out = pipeline.build(180, rows=_rows(), today=TODAY)
+    assert list(out)[:2] == ["found", "summary"]
+    assert out["summary"] == ("3 contracts on the register end within 180 days; 2 auto-renew; of the 3 detailed, 1 were never "
+                              "read for clauses and 1 have no notice clause stored, so their decision dates are unknown.")
