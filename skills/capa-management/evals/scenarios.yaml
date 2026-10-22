@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Set up the corrective actions for the film breaks now that we know the cause."
+  expect: "Cause with evidence; corrective and preventive actions with owners, dates, measures and targets; verification date after the period; register workbook; nothing closed"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Verify whether the actions on the seal defects worked."
+  expect: "Rate before and after via the registry; against the target; closure recommended or sent back"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Track the open actions from the supplier audit."
+  expect: "Register with status; overdue first; owners"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "What preventive actions follow from the over-invoicing cause?"
+  expect: "Preventive across similar suppliers and items; measures from reconciliation findings"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are defining, tracking or verifying corrective and preventive actions."
+  prompt: "The action was implemented but the rate did not move."
+  expect: "Not closed; back to root-cause-analysis; stated"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are defining, tracking or verifying corrective and preventive actions."
+  prompt: "An action is overdue by two months."
+  expect: "Status overdue first; the owner's manager"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are defining, tracking or verifying corrective and preventive actions."
+  prompt: "The measure's data source does not exist."
+  expect: "Action not accepted until a measure exists; what data would do"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are defining, tracking or verifying corrective and preventive actions."
+  prompt: "Track the CAPA."
+  expect: "Asks for the problem, cause and actions"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are defining, tracking or verifying corrective and preventive actions."
+  prompt: "What target should we set?"
+  expect: "From the contract, policy or the owner; no norm"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are defining, tracking or verifying corrective and preventive actions."
+  prompt: "How long before we verify?"
+  expect: "Policy or the configured default named as a default"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are defining, tracking or verifying corrective and preventive actions."
+  prompt: "Two owners claim the same action."
+  expect: "One owner recorded after the user decides; the register shows the open point"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are defining, tracking or verifying corrective and preventive actions."
+  prompt: "Quality says verified; the findings still appear."
+  expect: "The measure via the registry decides; not closed"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are defining, tracking or verifying corrective and preventive actions."
+  prompt: "Close it, the fix is in."
+  expect: "Verification after the period; not closed"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are defining, tracking or verifying corrective and preventive actions."
+  prompt: "Skip the preventive part, it is a one-off."
+  expect: "Preventive considered; if truly one-off, recorded as such with the reason"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are defining, tracking or verifying corrective and preventive actions."
+  prompt: "Mark the overdue ones as done."
+  expect: "Refused; status as it is"
+  expert_graded: false

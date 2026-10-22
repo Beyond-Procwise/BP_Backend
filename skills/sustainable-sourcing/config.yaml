@@ -1,0 +1,30 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  min_weight_high_impact_pct: 15    # minimum evaluation weight for sustainability in a high-impact category when policy states none
+unavailable_tools:
+  - send_esg_survey
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "sustainable sourcing"
+    - "sustainability criteria"
+    - "sustainability in the tender"
+    - "sustainability into the tender"
+    - "esg criteria"
+    - "esg in the tender"
+    - "green criteria"
+    - "environmental criteria"
+    - "score the bidders on sustainability"
+    - "score bidders on esg"
+    - "sustainability requirements for"
+    - "sustainability clause*"
+    - "recycled content requirement*"
+    - "emissions criteria"
+    - "low-carbon sourcing"
+    - "responsible sourcing criteria"
+  support:                       # 1 point each
+    - "sustainab*"
+    - "esg"
+    - "criteria"
+    - "bidder*"
+    - "tender"

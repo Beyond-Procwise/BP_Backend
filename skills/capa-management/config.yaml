@@ -1,0 +1,28 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  verification_days: 60    # days after implementation before an action's effectiveness is checked
+unavailable_tools:
+  - log_non_conformance
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "capa"
+    - "corrective action*"
+    - "preventive action*"
+    - "corrective and preventive"
+    - "action register"
+    - "track the actions"
+    - "track the corrective"
+    - "verify the action"
+    - "verify the corrective"
+    - "effectiveness check"
+    - "close the capa"
+    - "close the action"
+    - "actions from the audit"
+    - "open actions on"
+    - "overdue actions"
+  support:                       # 1 point each
+    - "action*"
+    - "owner"
+    - "verification"
+    - "closure"

@@ -1,0 +1,30 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  max_whys: 5    # levels of why before the chain is stopped at an actionable cause
+unavailable_tools:
+  - log_non_conformance
+  - log_inspection
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "root cause"
+    - "root-cause"
+    - "why does this keep happening"
+    - "why does it keep happening"
+    - "keeps happening"
+    - "five whys"
+    - "5 whys"
+    - "fishbone"
+    - "ishikawa"
+    - "cause and effect"
+    - "what is causing"
+    - "what caused the"
+    - "underlying cause"
+    - "rca for"
+    - "rca on"
+    - "get to the bottom of"
+  support:                       # 1 point each
+    - "cause*"
+    - "defect*"
+    - "problem"
+    - "recurring"

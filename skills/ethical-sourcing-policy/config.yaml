@@ -1,0 +1,35 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  concern_response_days: 5    # working days for compliance to respond to a raised concern when policy sets none
+unavailable_tools:
+  - send_esg_survey
+  - log_non_conformance
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "ethical sourcing"
+    - "ethical sourcing policy"
+    - "code of conduct"
+    - "supplier code of conduct"
+    - "human rights"
+    - "labour standards"
+    - "labor standards"
+    - "child labour"
+    - "child labor"
+    - "forced labour policy"
+    - "forced labor policy"
+    - "modern slavery policy"
+    - "modern slavery statement"
+    - "bribery"
+    - "anti-bribery"
+    - "anti-corruption"
+    - "ethical concern"
+    - "ethics concern"
+    - "whistleblow*"
+    - "does the supplier meet our ethical"
+    - "ethical requirements for suppliers"
+  support:                       # 1 point each
+    - "ethical"
+    - "conduct"
+    - "compliance"
+    - "concern"

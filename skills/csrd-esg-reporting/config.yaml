@@ -1,0 +1,30 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  supplier_specific_target_pct: 50    # share of spend covered by supplier-specific emissions data that counts as the quality target when policy states none
+unavailable_tools:
+  - send_esg_survey
+  - scope3_emissions_calc
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "csrd"
+    - "esg report*"
+    - "sustainability report*"
+    - "scope 3 report*"
+    - "scope 3 from procurement"
+    - "purchased goods emissions"
+    - "supply chain emissions"
+    - "supply-chain emissions"
+    - "procurement section of the"
+    - "esg disclosure*"
+    - "report our scope 3"
+    - "emissions reporting"
+    - "carbon reporting for"
+    - "esg data pack"
+    - "assurance on the esg"
+  support:                       # 1 point each
+    - "esg"
+    - "scope 3"
+    - "emissions"
+    - "report*"
+    - "disclosure"

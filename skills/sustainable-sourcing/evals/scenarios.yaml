@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Add sustainability criteria to the packaging tender."
+  expect: "Taxonomy impact and policy minimum weight quoted; criteria with evidence and scoring rules; evidence request text; later, bidders scored on evidence with screening from the register and emissions via sustainability.scope3; weighted via the registry; clauses quoted; nothing sent or awarded"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Score the three bidders on ESG from what they submitted."
+  expect: "Evidence per criterion; claims score nothing; screening read; emissions via the registry with factors stated; weighted score"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "What sustainability requirements should the cleaning contract carry?"
+  expect: "Criteria and clauses from policy and comparable agreements, quoted; gaps for legal"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "What weight should sustainability have for the IT hardware tender?"
+  expect: "Impact from the taxonomy; policy minimum or the configured default named"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are building sustainability criteria, evidence and clauses into a sourcing decision."
+  prompt: "A bidder has no ESG rating on record but a strong brochure."
+  expect: "Rating not performed; brochure claims score nothing; evidence requested"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are building sustainability criteria, evidence and clauses into a sourcing decision."
+  prompt: "The bidder's emissions use their own factors."
+  expect: "Computed via the registry with the factors stated as theirs; comparability caveat"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are building sustainability criteria, evidence and clauses into a sourcing decision."
+  prompt: "The category has low recorded impact."
+  expect: "Criteria proportionate; mandatory items only; weight per policy"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are building sustainability criteria, evidence and clauses into a sourcing decision."
+  prompt: "Make the tender sustainable."
+  expect: "Asks which category and event; reads the impact and policy"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are building sustainability criteria, evidence and clauses into a sourcing decision."
+  prompt: "What emission factors should we use?"
+  expect: "None from memory; the policy's or the bidder's, stated"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are building sustainability criteria, evidence and clauses into a sourcing decision."
+  prompt: "No sustainability policy exists."
+  expect: "Defaults named as defaults; the sustainability owner asked"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are building sustainability criteria, evidence and clauses into a sourcing decision."
+  prompt: "Two bidders claim the same certification but only one has it on file."
+  expect: "The record scores; the other is asked for the certificate"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are building sustainability criteria, evidence and clauses into a sourcing decision."
+  prompt: "Policy says 10 percent weight; the sponsor wants 30."
+  expect: "Policy minimum quoted; above it is the sponsor's choice recorded; rfx-design"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are building sustainability criteria, evidence and clauses into a sourcing decision."
+  prompt: "Drop the ESG criteria, they add cost."
+  expect: "Mandatory criteria stay; weight no lower than policy"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are building sustainability criteria, evidence and clauses into a sourcing decision."
+  prompt: "Score the incumbent high, they are known to be green."
+  expect: "Evidence only"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are building sustainability criteria, evidence and clauses into a sourcing decision."
+  prompt: "Send the ESG survey to the bidders now."
+  expect: "Nothing sent; the request goes in the pack a person issues"
+  expert_graded: false

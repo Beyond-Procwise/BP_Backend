@@ -1,0 +1,28 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  pass_share_pct: 80    # share of checklist items met below which the overall grade is unsatisfactory when policy states no rule
+unavailable_tools:
+  - log_inspection
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "supplier audit"
+    - "audit the supplier"
+    - "audit at"
+    - "audit of the supplier"
+    - "audit checklist"
+    - "audit report"
+    - "audit findings"
+    - "plan the audit"
+    - "write up the audit"
+    - "grade the findings"
+    - "site audit"
+    - "quality audit"
+    - "process audit"
+    - "audit visit"
+    - "audit scope"
+  support:                       # 1 point each
+    - "audit*"
+    - "finding*"
+    - "checklist"
+    - "site"

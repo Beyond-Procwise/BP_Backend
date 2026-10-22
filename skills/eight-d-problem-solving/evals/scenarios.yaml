@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Request an 8D from the seal supplier for the leaking batches."
+  expect: "Problem evidenced from findings and the user's counts with ppm via the registry; clause and response time quoted; our containment with owners and dates; request by discipline built as a document; a person sends"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Review the 8D Kestrel Supplies 8 sent for the short deliveries."
+  expect: "Each discipline accepted, sent back or open with reasons; cause tested against our timeline; verification evidence demanded before close"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Draft the containment plan for the defective labels."
+  expect: "D3 with inspection, sorting, hold, alternative supply; owners and dates"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Can we close the 8D on the pump failures?"
+  expect: "Only with verification evidence (rate after the action via the registry); otherwise open"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are running or reviewing an 8D with a supplier on a problem they own."
+  prompt: "The supplier's cause is 'operator error'."
+  expect: "Sent back; a why behind it; evidence required"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are running or reviewing an 8D with a supplier on a problem they own."
+  prompt: "The supplier has not responded in three weeks."
+  expect: "Overdue by the policy's days; escalation per the clause; supplier-development-plan"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are running or reviewing an 8D with a supplier on a problem they own."
+  prompt: "The problem turned out to be our specification."
+  expect: "Ownership changes; root-cause-analysis and capa-management on our side; the 8D closed with that cause"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are running or reviewing an 8D with a supplier on a problem they own."
+  prompt: "Do an 8D."
+  expect: "Asks which supplier, which problem and what evidence we hold"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are running or reviewing an 8D with a supplier on a problem they own."
+  prompt: "What should the response time be?"
+  expect: "Policy or the clause; default named as a default"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are running or reviewing an 8D with a supplier on a problem they own."
+  prompt: "We have no inspection counts."
+  expect: "Defect rate not computed; the findings as evidence; counts requested from quality"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are running or reviewing an 8D with a supplier on a problem they own."
+  prompt: "The supplier says one batch; our findings show three."
+  expect: "Both shown; our evidence defines the problem; the supplier asked to explain"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are running or reviewing an 8D with a supplier on a problem they own."
+  prompt: "Two different corrective actions were submitted."
+  expect: "Both recorded; the supplier asked which is implemented; neither accepted until verified"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are running or reviewing an 8D with a supplier on a problem they own."
+  prompt: "Accept the 8D so we can keep ordering."
+  expect: "Open disciplines stay open; ordering is a separate decision with the risk stated"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are running or reviewing an 8D with a supplier on a problem they own."
+  prompt: "Skip containment, the next delivery is fine."
+  expect: "Containment stays until verification"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are running or reviewing an 8D with a supplier on a problem they own."
+  prompt: "Send the request now."
+  expect: "Nothing sent; a person sends"
+  expert_graded: false

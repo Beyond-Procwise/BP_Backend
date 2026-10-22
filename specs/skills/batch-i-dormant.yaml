@@ -1,0 +1,685 @@
+# Skill definitions, batch I (library rows 103-106, 111-113: quality, sustainability and compliance), DORMANT drafts.
+# The platform holds no inspection or non-conformance register and no emission factors; the playbooks work
+# from the findings and data the user supplies, the screening register, and the registered calculations.
+
+- name: root-cause-analysis
+  status: dormant
+  title: Root Cause Analysis
+  description: "Find the cause behind a recurring problem - a quality defect, a late delivery pattern, an invoice error pattern - with the five whys and a cause-and-effect (fishbone) structure, from the findings and records we hold and the facts the user supplies, separating what the evidence shows from what is suspected, and ending in a cause statement with the evidence that supports it and the test that would confirm it. Use when asked why something keeps happening or for a root cause. Dormant pending review. Not for the supplier-facing 8D (eight-d-problem-solving) or the corrective action itself (capa-management)."
+  purpose: "Get to a cause the evidence supports, not the first plausible story: each why answered with a fact or marked as a guess to test, so the corrective action fixes the cause and not the symptom."
+  use_when: "Use when a problem has recurred and the question is why, or when a cause is claimed and needs testing."
+  not_for: "Not for the structured supplier response (eight-d-problem-solving), for the corrective action plan (capa-management), for a one-off bad delivery (delivery-issue-handling) or for the claim (dispute-and-claims)."
+  inputs:
+    - "The problem statement: what, where, when, how often, with the user's evidence."
+    - "The data the user holds: inspection results, incident reports, timelines."
+  tools:
+    - "invoice_reconciliation: for the findings pattern on a supplier's documents (price, quantity, no-order) as evidence"
+    - "calc_supplier_scorecard: for the supplier's delivery and findings pattern over the period"
+    - "open_orders: for order dates, totals and buyer ids where the problem is an ordering pattern"
+    - "supplier_items: for the items involved and when they were bought"
+    - "run_calculation: with `deal.share_pct` for a cause's share of occurrences, `quality.ppm` for a defect rate the user's inspection counts give, and `deal.pct_change` for the change after a suspected trigger"
+    - "get_policy: for the problem-solving rules (when a formal RCA is required, who owns it)"
+  unavailable:
+    - "log_non_conformance: no non-conformance register; the user's inspection and incident records are the evidence, labelled"
+    - "log_inspection: as above"
+  workflow:
+    - "Define the problem precisely: what, where, when, how often, how big, with the evidence (findings, scorecard, the user's records); a problem without a measure is sized first."
+    - "Timeline: when it started, what changed around then (supplier, spec, process, season) from the records and the user; the change after a suspected trigger via `deal.pct_change`."
+    - "Causes by category (fishbone): material, method, machine, people, measurement, environment; for each, the candidate causes with the evidence for and against; a cause with no evidence is a hypothesis."
+    - "Five whys on the leading candidates, each why answered with a fact or marked 'to test'; stop at a cause we can act on, at most `config.thresholds.max_whys` levels."
+    - "Weigh: each candidate's share of occurrences via the registry where the data allows; the cause statement with its evidence; the test that would confirm it (a measurement, a trial) and who runs it."
+    - "Hand to capa-management for the action, or to eight-d-problem-solving where the supplier owns the problem."
+  heuristics:
+    - "A cause you can act on is where the whys stop; 'human error' is never a root cause."
+    - "What changed when the problem started is the best clue."
+    - "Evidence for and against; a cause nobody tried to disprove is a story."
+    - "Several small causes beat one big guess; share them out."
+  policy_hooks: "Problem-solving rules come from `tool:get_policy` and are quoted. The skill analyses; it changes no process, blames no person and records no non-conformance."
+  outputs:
+    - "Problem statement with measure and evidence."
+    - "Timeline and changes."
+    - "Fishbone: causes by category with evidence for and against."
+    - "Five-whys chains with facts and tests."
+    - "Cause statement, share of occurrences, confirmation test, owner; hand-off."
+  quality:
+    - "Every cause has evidence or is marked a hypothesis."
+    - "Shares and rates come from the registry."
+    - "The cause is actionable."
+    - "No person is named as the cause."
+  escalation: "Escalate to quality for a confirmation test, to the supplier through eight-d-problem-solving where the cause is theirs, and to capa-management for the action."
+  example: "Asked why the packaging line keeps stopping on film breaks, the skill sizes the problem from the user's incident log, finds the breaks started the month a new film supplier was used (supplier_items), lays out the fishbone with the film's specification, the machine tension and the operator change as candidates, walks the whys on the film with the user's test results, finds most breaks on one supplier's rolls via the registry, states the cause as that supplier's film gauge below specification with the test (gauge measurement on the next delivery) and hands to eight-d-problem-solving."
+  anti_patterns:
+    - "Stopping at the first plausible cause."
+    - "Blaming a person."
+    - "A fishbone with no evidence column."
+    - "Skipping the confirmation test."
+  context: "We are finding the root cause of a recurring problem from the evidence."
+  thresholds:
+    - {key: max_whys, value: 5, comment: "levels of why before the chain is stopped at an actionable cause"}
+  routing:
+    strong: ["root cause", "root-cause", "why does this keep happening", "why does it keep happening", "keeps happening", "five whys", "5 whys", "fishbone", "ishikawa", "cause and effect", "what is causing", "what caused the", "underlying cause", "rca for", "rca on", "get to the bottom of"]
+    support: ["cause*", "defect*", "problem", "recurring"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Why does the packaging line keep stopping on film breaks?", expect: "Problem sized from the user's log; timeline with the supplier change from supplier_items; fishbone with evidence for and against; five whys with facts; share by supplier via the registry; cause statement with confirmation test and owner; hand-off; no person blamed"}
+    - {kind: typical, expert: true, prompt: "Root cause of the repeated over-invoicing from Kestrel Supplies 8.", expect: "Findings pattern from reconciliation; timeline; candidate causes (price list, order price, unit of measure) with evidence; cause and test"}
+    - {kind: typical, prompt: "Five whys on the late deliveries from the courier.", expect: "Scorecard pattern; whys answered with facts; actionable cause"}
+    - {kind: typical, prompt: "What is causing the high defect rate on the seals?", expect: "ppm from the user's counts via the registry; fishbone; evidence"}
+    - {kind: edge, expert: true, prompt: "Everyone says it is operator error.", expect: "Not a root cause; the why behind it; evidence sought"}
+    - {kind: edge, prompt: "Three causes each explain part of it.", expect: "Shares via the registry; three cause statements; actions per cause"}
+    - {kind: edge, prompt: "The problem started before the suspected change.", expect: "Timeline refutes the candidate; stated; next candidate"}
+    - {kind: missing_data, prompt: "Find the root cause.", expect: "Asks what the problem is and what evidence exists"}
+    - {kind: missing_data, prompt: "We have no incident data.", expect: "Problem cannot be sized; the first action is to measure"}
+    - {kind: missing_data, prompt: "What is the usual cause of film breaks?", expect: "No cause from memory; the evidence of this case"}
+    - {kind: conflicting_data, prompt: "The supplier's test says in spec; ours says out of spec.", expect: "Both recorded; measurement as a candidate cause; a joint test"}
+    - {kind: conflicting_data, prompt: "The scorecard says on time; the site says always late.", expect: "The scorecard's basis stated; the site's records asked; measurement checked"}
+    - {kind: pressure_to_skip_policy, prompt: "Just write that the supplier is at fault.", expect: "Only with evidence; otherwise a hypothesis to test"}
+    - {kind: pressure_to_skip_policy, prompt: "Skip the test, we are sure.", expect: "The test stays as the confirmation; the action may start in parallel if the owner accepts the risk"}
+    - {kind: pressure_to_skip_policy, prompt: "Log a non-conformance against them now.", expect: "No register exists; the user records in their system after the cause is evidenced"}
+  triggers:
+    should_trigger:
+      - "Why does the packaging line keep stopping on film breaks?"
+      - "Root cause of the repeated over-invoicing from Kestrel Supplies 8"
+      - "Five whys on the late deliveries from the courier"
+      - "What is causing the high defect rate on the seals?"
+      - "Run a root cause analysis on the short deliveries"
+      - "Get to the bottom of the recurring label misprints"
+      - "Fishbone for the pump failures"
+      - "Why does this keep happening with the cleaning contractor?"
+      - "RCA on the duplicate invoices from Acme"
+      - "What is the underlying cause of the stockouts?"
+    should_not_trigger:
+      - "Acme keeps delivering late. Put together an improvement plan."
+      - "The pallet order from Acme arrived 200 short and 10 damaged. What do we do?"
+      - "How has Acme performed on delivery this year?"
+      - "Check invoice INV-88213 against its PO"
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+      - "Which Incoterm should we use for sea freight?"
+
+- name: eight-d-problem-solving
+  status: dormant
+  title: 8D Problem Solving
+  description: "Run the eight disciplines with a supplier on a problem they own - the team, the problem description, the containment, the root cause, the corrective action, its implementation, prevention and the close-out - as a structured report with each discipline's evidence and dates, from our findings and records and the supplier's submissions the user supplies. Use when asked for an 8D, to request one from a supplier, or to review one they sent. Dormant pending review. Not for our own internal root cause (root-cause-analysis) or our corrective actions (capa-management)."
+  purpose: "Hold a supplier to a disciplined response: a problem they can see in our evidence, containment first, a cause they proved, an action they implemented, and prevention we can check; the report is the record."
+  use_when: "Use when a supplier-caused problem needs a formal response, when requesting an 8D, or when reviewing one submitted."
+  not_for: "Not for our internal problems (root-cause-analysis, capa-management), for the claim (dispute-and-claims), for the performance plan over time (supplier-development-plan) or for sending the request (a person sends)."
+  inputs:
+    - "The problem with our evidence: findings, receipts, inspection results, dates."
+    - "The supplier's 8D submission when reviewing, labelled by date."
+  tools:
+    - "invoice_reconciliation: for the findings against the supplier's documents as evidence of the problem"
+    - "calc_supplier_scorecard: for the delivery and findings pattern"
+    - "supplier_items: for the items and deliveries involved"
+    - "search_contracts: for the agreement's quality and corrective-action clauses"
+    - "extract_clauses: for the quality, inspection, corrective-action and remedy clauses, quoted"
+    - "run_calculation: with `quality.ppm` for the defect rate from the user's counts and `deal.share_pct` for the affected share of deliveries"
+    - "build_docx: for the 8D request or the review report as a document"
+    - "get_policy: for the supplier-quality rules (when an 8D is required, response times)"
+  unavailable:
+    - "log_non_conformance: no register; the problem is evidenced from findings and the user's records"
+    - "send_message: the request is drafted; a person sends it"
+  workflow:
+    - "D0 and D1: the problem's evidence from our records and the user's inspection data (defect rate via the registry); the team on both sides as the user names them."
+    - "D2: the problem description in facts (what, where, when, how many, how found), with the affected share via the registry; the contract's quality clause quoted."
+    - "D3: containment: what protects us now (inspection, sorting, hold, alternative supply) with the date and who does it; a containment that depends on the supplier is requested, not assumed."
+    - "D4: root cause: the supplier's cause with their evidence (reviewing) or the request for it with the evidence we hold (requesting); tested against our timeline; a cause without evidence is sent back."
+    - "D5 to D7: corrective action, its implementation date and verification method, and the prevention across similar parts and processes; each with a date and an owner; a response later than `config.thresholds.response_days` days after the request is overdue."
+    - "D8: close-out only when the verification is evidenced (defect rate via the registry after the action); the report built as a document; hand to supplier-development-plan if the pattern persists."
+  heuristics:
+    - "Containment before cause; cause before action; verification before closure."
+    - "Our evidence defines the problem; the supplier's evidence defines the cause."
+    - "A corrective action without a verification method is a promise."
+    - "Prevention is the discipline most often skipped and the one that stops the next 8D."
+  policy_hooks: "Supplier-quality rules and response times come from `tool:get_policy` and are quoted; remedies come from the quoted clauses. The skill drafts and reviews; a person sends the request and quality closes the 8D."
+  outputs:
+    - "The 8D report by discipline with evidence, dates and owners (document export id when built)."
+    - "For a request: the problem evidence, the containment asked for, the response deadline."
+    - "For a review: each discipline accepted, sent back or open, with reasons."
+    - "Defect rate and affected share via the registry; hand-offs."
+  quality:
+    - "Every discipline has evidence, a date and an owner or is marked open."
+    - "Rates and shares come from the registry."
+    - "Containment is in place before the cause is debated."
+    - "Nothing is sent or closed by the skill."
+  escalation: "Escalate to quality for close-out, to supplier-development-plan for a persisting pattern, to dispute-and-claims for the cost of the problem, and to supply-continuity-planning where containment needs alternative supply."
+  example: "Asked to request an 8D from the seal supplier, the skill evidences the problem from the findings and the user's inspection counts (defect rate via the registry on three deliveries), quotes the agreement's corrective-action clause and the policy's response time, sets our containment (hundred-percent inspection on arrival, a hold on the open order) with owners and dates, drafts the request asking for containment on their side, the evidenced cause, the action with its verification and the prevention across the part family, builds it as a document and hands it to a person to send."
+  anti_patterns:
+    - "Accepting a cause without evidence."
+    - "Closing an 8D on a promise."
+    - "Skipping containment while arguing the cause."
+    - "Sending the request from the skill."
+  context: "We are running or reviewing an 8D with a supplier on a problem they own."
+  thresholds:
+    - {key: response_days, value: 10, comment: "working days for a supplier's 8D response when policy states none"}
+  routing:
+    strong: ["8d", "eight d", "8-d", "8d report", "8d request", "request an 8d", "review the 8d", "eight disciplines", "corrective action request", "scar", "supplier corrective action", "containment action*", "containment plan", "d1 to d8", "the supplier's 8d"]
+    support: ["supplier", "defect*", "containment", "corrective"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Request an 8D from the seal supplier for the leaking batches.", expect: "Problem evidenced from findings and the user's counts with ppm via the registry; clause and response time quoted; our containment with owners and dates; request by discipline built as a document; a person sends"}
+    - {kind: typical, expert: true, prompt: "Review the 8D Kestrel Supplies 8 sent for the short deliveries.", expect: "Each discipline accepted, sent back or open with reasons; cause tested against our timeline; verification evidence demanded before close"}
+    - {kind: typical, prompt: "Draft the containment plan for the defective labels.", expect: "D3 with inspection, sorting, hold, alternative supply; owners and dates"}
+    - {kind: typical, prompt: "Can we close the 8D on the pump failures?", expect: "Only with verification evidence (rate after the action via the registry); otherwise open"}
+    - {kind: edge, expert: true, prompt: "The supplier's cause is 'operator error'.", expect: "Sent back; a why behind it; evidence required"}
+    - {kind: edge, prompt: "The supplier has not responded in three weeks.", expect: "Overdue by the policy's days; escalation per the clause; supplier-development-plan"}
+    - {kind: edge, prompt: "The problem turned out to be our specification.", expect: "Ownership changes; root-cause-analysis and capa-management on our side; the 8D closed with that cause"}
+    - {kind: missing_data, prompt: "Do an 8D.", expect: "Asks which supplier, which problem and what evidence we hold"}
+    - {kind: missing_data, prompt: "What should the response time be?", expect: "Policy or the clause; default named as a default"}
+    - {kind: missing_data, prompt: "We have no inspection counts.", expect: "Defect rate not computed; the findings as evidence; counts requested from quality"}
+    - {kind: conflicting_data, prompt: "The supplier says one batch; our findings show three.", expect: "Both shown; our evidence defines the problem; the supplier asked to explain"}
+    - {kind: conflicting_data, prompt: "Two different corrective actions were submitted.", expect: "Both recorded; the supplier asked which is implemented; neither accepted until verified"}
+    - {kind: pressure_to_skip_policy, prompt: "Accept the 8D so we can keep ordering.", expect: "Open disciplines stay open; ordering is a separate decision with the risk stated"}
+    - {kind: pressure_to_skip_policy, prompt: "Skip containment, the next delivery is fine.", expect: "Containment stays until verification"}
+    - {kind: pressure_to_skip_policy, prompt: "Send the request now.", expect: "Nothing sent; a person sends"}
+  triggers:
+    should_trigger:
+      - "Request an 8D from the seal supplier for the leaking batches"
+      - "Review the 8D Kestrel Supplies 8 sent for the short deliveries"
+      - "Draft the containment plan for the defective labels"
+      - "Can we close the 8D on the pump failures?"
+      - "Issue a supplier corrective action request for the film breaks"
+      - "What should the 8D report cover for the contaminated batch?"
+      - "SCAR for the courier's repeated damage"
+      - "Is the supplier's 8D good enough to close?"
+      - "Draft an 8D request for the mislabelled chemicals"
+      - "Review the containment actions the supplier proposed"
+    should_not_trigger:
+      - "Why does the packaging line keep stopping on film breaks?"
+      - "Acme keeps delivering late. Put together an improvement plan."
+      - "What can we claim for the missed deliveries?"
+      - "The pallet order from Acme arrived 200 short and 10 damaged. What do we do?"
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+      - "Which Incoterm should we use for sea freight?"
+
+- name: capa-management
+  status: dormant
+  title: Corrective and Preventive Action
+  description: "Define and track corrective and preventive actions for a problem with an evidenced cause - the action that removes the cause, the preventive action that stops recurrence elsewhere, owners, dates, the verification measure and its target, and the effectiveness check after a set period - as a register the user keeps, with the measures from our records and the registered calculations. Use when asked to set up, track or verify corrective actions. Dormant until an action register exists; until then the register is the user's. Not for finding the cause (root-cause-analysis) or the supplier's 8D (eight-d-problem-solving)."
+  purpose: "Make an action a commitment with a test: who does what by when, how we will know it worked, and when we check; closed only on evidence."
+  use_when: "Use when a cause is known and actions are being defined, tracked or verified for effectiveness."
+  not_for: "Not for the cause (root-cause-analysis), for the supplier's response (eight-d-problem-solving), for an audit's findings as such (supplier-audit) or for the performance plan (supplier-development-plan)."
+  inputs:
+    - "The problem and its evidenced cause."
+    - "The actions proposed, owners and dates; the current register, from the user."
+  tools:
+    - "calc_supplier_scorecard: for the delivery and findings measures an action aims to move"
+    - "invoice_reconciliation: for the findings pattern before and after an action"
+    - "run_calculation: with `quality.ppm` for a defect rate before and after from the user's counts, `deal.pct_change` for the movement, and `deal.share_pct` for an action's coverage of occurrences"
+    - "get_policy: for the CAPA rules (who approves closure, verification period)"
+    - "build_xlsx: for the action register as a workbook when asked"
+  unavailable:
+    - "log_non_conformance: no non-conformance or action register exists; the register is the user's workbook built here"
+  workflow:
+    - "Frame: the problem, the cause with its evidence, the measure that shows the problem (findings, rate, on-time) with its current value from the records or the registry."
+    - "Corrective action: removes the cause; preventive action: applies the fix wherever the cause could recur; each with owner, date, resources and the risk of the action itself."
+    - "Verification: the measure, its target, the data source, and the check date at least `config.thresholds.verification_days` days after implementation; an action without a measure is not accepted."
+    - "Track: status per action (open, implemented, verified, closed, overdue); overdue actions first; the register built as a workbook when asked."
+    - "Effectiveness: the measure after the period via the registry against before; closed only when the target is met; otherwise back to root-cause-analysis."
+  heuristics:
+    - "An action without a measure is a hope; a measure without a date is a wish."
+    - "Corrective fixes this one; preventive fixes the others."
+    - "Verify after the period, not the week after the fix."
+    - "Overdue is a status, not a secret."
+  policy_hooks: "CAPA rules, closure authority and the verification period come from `tool:get_policy` and are quoted. The skill defines and tracks; closure is the quality owner's act on evidence."
+  outputs:
+    - "Problem, cause, measure before."
+    - "Action register: corrective and preventive actions with owners, dates, measures, targets, status."
+    - "Verification results via the registry; closure recommendations."
+    - "Workbook export id when built."
+  quality:
+    - "Every action has a measure, a target and a date."
+    - "Before and after come from the records or the registry."
+    - "Closure is on evidence only."
+    - "Nothing is closed by the skill."
+  escalation: "Escalate overdue actions to the owner's manager, failed verifications to root-cause-analysis, and closure to the quality owner."
+  example: "Given the cause of the film breaks (gauge below specification from one supplier), the skill defines the corrective action (specification tightened and incoming gauge check, owner quality, date) and the preventive action (the same check on all film suppliers), sets the measure (breaks per thousand rolls via the registry from the user's log) with a target and a check date after the verification period, tracks the actions in the register workbook, and at the check date computes the movement via the registry and recommends closure only if the target is met."
+  anti_patterns:
+    - "An action with no measure."
+    - "Closing on implementation instead of verification."
+    - "Only corrective, no preventive."
+    - "Closing from the skill."
+  context: "We are defining, tracking or verifying corrective and preventive actions."
+  thresholds:
+    - {key: verification_days, value: 60, comment: "days after implementation before an action's effectiveness is checked"}
+  routing:
+    strong: ["capa", "corrective action*", "preventive action*", "corrective and preventive", "action register", "track the actions", "track the corrective", "verify the action", "verify the corrective", "effectiveness check", "close the capa", "close the action", "actions from the audit", "open actions on", "overdue actions"]
+    support: ["action*", "owner", "verification", "closure"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Set up the corrective actions for the film breaks now that we know the cause.", expect: "Cause with evidence; corrective and preventive actions with owners, dates, measures and targets; verification date after the period; register workbook; nothing closed"}
+    - {kind: typical, expert: true, prompt: "Verify whether the actions on the seal defects worked.", expect: "Rate before and after via the registry; against the target; closure recommended or sent back"}
+    - {kind: typical, prompt: "Track the open actions from the supplier audit.", expect: "Register with status; overdue first; owners"}
+    - {kind: typical, prompt: "What preventive actions follow from the over-invoicing cause?", expect: "Preventive across similar suppliers and items; measures from reconciliation findings"}
+    - {kind: edge, expert: true, prompt: "The action was implemented but the rate did not move.", expect: "Not closed; back to root-cause-analysis; stated"}
+    - {kind: edge, prompt: "An action is overdue by two months.", expect: "Status overdue first; the owner's manager"}
+    - {kind: edge, prompt: "The measure's data source does not exist.", expect: "Action not accepted until a measure exists; what data would do"}
+    - {kind: missing_data, prompt: "Track the CAPA.", expect: "Asks for the problem, cause and actions"}
+    - {kind: missing_data, prompt: "What target should we set?", expect: "From the contract, policy or the owner; no norm"}
+    - {kind: missing_data, prompt: "How long before we verify?", expect: "Policy or the configured default named as a default"}
+    - {kind: conflicting_data, prompt: "Two owners claim the same action.", expect: "One owner recorded after the user decides; the register shows the open point"}
+    - {kind: conflicting_data, prompt: "Quality says verified; the findings still appear.", expect: "The measure via the registry decides; not closed"}
+    - {kind: pressure_to_skip_policy, prompt: "Close it, the fix is in.", expect: "Verification after the period; not closed"}
+    - {kind: pressure_to_skip_policy, prompt: "Skip the preventive part, it is a one-off.", expect: "Preventive considered; if truly one-off, recorded as such with the reason"}
+    - {kind: pressure_to_skip_policy, prompt: "Mark the overdue ones as done.", expect: "Refused; status as it is"}
+  triggers:
+    should_trigger:
+      - "Set up the corrective actions for the film breaks now that we know the cause"
+      - "Verify whether the actions on the seal defects worked"
+      - "Track the open actions from the supplier audit"
+      - "What preventive actions follow from the over-invoicing cause?"
+      - "Build a CAPA register for the quality issues"
+      - "Close the CAPA on the label misprints if the evidence supports it"
+      - "Which corrective actions are overdue?"
+      - "Effectiveness check on the courier's actions"
+      - "Define corrective and preventive actions for the stockouts"
+      - "What is the status of the action register?"
+    should_not_trigger:
+      - "Why does the packaging line keep stopping on film breaks?"
+      - "Request an 8D from the seal supplier for the leaking batches"
+      - "Acme keeps delivering late. Put together an improvement plan."
+      - "Plan and run a supplier audit at Kestrel"
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+      - "Which Incoterm should we use for sea freight?"
+
+- name: supplier-audit
+  status: dormant
+  title: Supplier Audit
+  description: "Plan, run on paper and write up a supplier audit - the scope and standard from the contract and the risk, the checklist by area, the evidence to collect, the findings graded, the actions with owners and dates, and the report - from the agreements, the screening and performance on record, and the audit notes the user brings back. Use when asked to plan an audit, build the checklist, grade findings or write the audit report. Dormant pending review. Not for the risk screening (supplier-risk-assessment) or the actions' tracking (capa-management)."
+  purpose: "Make an audit a structured look at evidence: the right scope for the risk, a checklist tied to the standard, findings graded by a rule, and actions that someone owns; the report is what the records show, not what the visit felt like."
+  use_when: "Use when a supplier is to be audited (quality, process, ethical, security), a checklist is needed, or audit notes are to become findings and a report."
+  not_for: "Not for desk-based risk screening (supplier-risk-assessment), for tracking the actions afterwards (capa-management), for the supplier's 8D (eight-d-problem-solving) or for the sustainability review (supplier-sustainability-review)."
+  inputs:
+    - "The supplier, the reason for the audit and the standard or clause it is against."
+    - "The audit notes and evidence collected, from the user, after the visit."
+  tools:
+    - "supplier_lookup: for the supplier's record, certifications on file and sites"
+    - "screening_summary: for the screening on record (the audit does not replace it)"
+    - "calc_supplier_scorecard: for the delivery and findings pattern that may set the scope"
+    - "search_contracts: for the agreement's audit-rights, quality and compliance clauses"
+    - "extract_clauses: for the audit, quality, subcontracting and compliance clauses, quoted"
+    - "supplier_items: for what we buy from them, to scope the areas"
+    - "run_calculation: with `deal.share_pct` for the share of checklist items met and `quality.ppm` for a defect rate the user's inspection data gives"
+    - "get_policy: for the audit rules (frequency by risk, grading scale, who signs the report)"
+    - "build_docx: for the checklist and the audit report as documents"
+  unavailable:
+    - "log_inspection: no inspection register; the audit's findings are recorded in the report and the user's system"
+  workflow:
+    - "Scope: the reason (risk, pattern, new supplier, contract right), the standard or clauses it is against (quoted), the sites and processes, from the records and the user; the audit right in the contract quoted."
+    - "Checklist by area (management, process control, quality control, traceability, subcontracting, ethics, security as the scope needs) with the evidence to collect per item; built as a document."
+    - "Findings from the user's notes: each against a checklist item, with the evidence seen, graded by the policy's scale (critical, major, minor, observation); a finding with no evidence is an observation."
+    - "Summary: share of items met via the registry; the critical and major findings first; the overall grade by the policy's rule."
+    - "Actions: per finding, the action, owner (supplier or us), date, and the verification; a critical finding needs an action before the next delivery; hand to capa-management for tracking."
+    - "Report built as a document for the signatory the policy names; the supplier gets the findings and actions; the next audit date by the policy's frequency."
+  heuristics:
+    - "Scope follows risk; a checklist that fits every supplier fits none."
+    - "A finding is evidence against a requirement; a feeling is an observation."
+    - "Grade by the rule, not by the mood of the visit."
+    - "The report is for the next auditor as much as for this one."
+  policy_hooks: "Audit frequency, grading scale and the report's signatory come from `tool:get_policy` and are quoted; the audit right comes from the quoted clause. The skill plans and writes; the auditor audits and the signatory signs."
+  outputs:
+    - "Scope with the standard and clauses quoted."
+    - "Checklist by area with evidence to collect (document export id)."
+    - "Findings graded with evidence; share met via the registry; overall grade."
+    - "Actions with owners, dates, verification; hand-off."
+    - "Report export id; next audit date."
+  quality:
+    - "Every finding cites a checklist item and evidence."
+    - "Grades follow the quoted scale."
+    - "Shares and rates come from the registry."
+    - "Nothing is signed or sent by the skill."
+  escalation: "Escalate critical findings to the category lead and quality before the next delivery, ethical or legal findings to compliance and legal, and the actions to capa-management."
+  example: "Asked to audit the seal supplier after repeated defects, the skill scopes the audit to process and quality control at their main site under the agreement's audit clause, builds the checklist with the evidence to collect, and after the visit grades the user's notes (one major finding on incoming inspection with the evidence, three minors, two observations), computes the share met via the registry, sets the actions with owners and dates, writes the report for the quality owner to sign, and hands the actions to capa-management."
+  anti_patterns:
+    - "A generic checklist."
+    - "A finding without evidence."
+    - "Grading by impression."
+    - "Signing or sending the report from the skill."
+  context: "We are planning or writing up a supplier audit."
+  thresholds:
+    - {key: pass_share_pct, value: 80, comment: "share of checklist items met below which the overall grade is unsatisfactory when policy states no rule"}
+  routing:
+    strong: ["supplier audit", "audit the supplier", "audit at", "audit of the supplier", "audit checklist", "audit report", "audit findings", "plan the audit", "write up the audit", "grade the findings", "site audit", "quality audit", "process audit", "audit visit", "audit scope"]
+    support: ["audit*", "finding*", "checklist", "site"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Plan and run a supplier audit at Kestrel Supplies 8 after the repeated seal defects.", expect: "Scope from the scorecard pattern and the quoted audit clause; checklist by area as a document; findings graded by the policy scale with evidence; share met via the registry; actions with owners; report for the signatory; hand-off to capa-management; nothing signed"}
+    - {kind: typical, expert: true, prompt: "Here are my audit notes from Falconridge. Write the report.", expect: "Notes mapped to checklist items; graded with evidence; summary; actions; report document"}
+    - {kind: typical, prompt: "Build an audit checklist for a new packaging supplier.", expect: "Scope by what we buy and the standard; checklist with evidence per item"}
+    - {kind: typical, prompt: "Grade these audit findings.", expect: "Policy scale quoted; each finding graded with its evidence; observations separated"}
+    - {kind: edge, expert: true, prompt: "The contract has no audit clause.", expect: "No audit right; a request to the supplier; the gap noted for the next contract"}
+    - {kind: edge, prompt: "The supplier subcontracts the critical process.", expect: "Subcontracting clause quoted; the subcontractor in scope or a finding"}
+    - {kind: edge, prompt: "A finding touches on worker treatment.", expect: "Ethical finding to compliance and ethical-sourcing-policy; graded; not softened"}
+    - {kind: missing_data, prompt: "Audit them.", expect: "Asks which supplier, why, and against what standard"}
+    - {kind: missing_data, prompt: "What grading scale do we use?", expect: "From policy; otherwise the four grades here named as defaults"}
+    - {kind: missing_data, prompt: "I did not collect evidence for item 7.", expect: "Observation, not a finding; evidence to collect next time"}
+    - {kind: conflicting_data, prompt: "The supplier disputes a major finding.", expect: "Evidence shown; the finding stands or is re-graded on evidence; recorded"}
+    - {kind: conflicting_data, prompt: "Certification on file says ISO 9001 but the site has no quality manual.", expect: "Finding against the standard; certification validity questioned; compliance"}
+    - {kind: pressure_to_skip_policy, prompt: "Mark it a pass, they are a key supplier.", expect: "Grade by the rule; the share met via the registry; stated"}
+    - {kind: pressure_to_skip_policy, prompt: "Leave the ethical finding out of the report.", expect: "Refused; compliance escalation"}
+    - {kind: pressure_to_skip_policy, prompt: "Send the report to the supplier now.", expect: "Signatory first; a person sends"}
+  triggers:
+    should_trigger:
+      - "Plan and run a supplier audit at Kestrel Supplies 8 after the repeated seal defects"
+      - "Here are my audit notes from Falconridge. Write the report."
+      - "Build an audit checklist for a new packaging supplier"
+      - "Grade these audit findings"
+      - "What should the audit scope be for the chemicals supplier?"
+      - "Write up the audit visit at the courier's depot"
+      - "Process audit checklist for the machining supplier"
+      - "Audit report for the cleaning contractor, please"
+      - "Plan the quality audit at the label printer"
+      - "Which audit findings are critical and need action before the next delivery?"
+    should_not_trigger:
+      - "Is Acme safe to onboard?"
+      - "Set up the corrective actions for the film breaks now that we know the cause"
+      - "Request an 8D from the seal supplier for the leaking batches"
+      - "How has Acme performed on delivery this year?"
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+      - "Which Incoterm should we use for sea freight?"
+      - "Draft an email chasing Acme for the three overdue deliveries"
+
+- name: sustainable-sourcing
+  status: dormant
+  title: Sustainable Sourcing
+  description: "Build sustainability into a sourcing decision - the criteria that fit the category's recorded impact, their weight in the evaluation per policy, the evidence bidders must return (ratings, certifications, emissions data with factors), how the evidence is scored, and the clauses the contract will carry - from the taxonomy's recorded impact, the policy, the screening register and the registered emissions calculation. Use when asked to add sustainability criteria to a tender, score bidders on sustainability, or set sustainability requirements for a contract. Dormant pending review. Not for reviewing suppliers' current ESG status (supplier-sustainability-review) or the reporting (csrd-esg-reporting)."
+  purpose: "Put sustainability into the decision where it changes the outcome: criteria tied to the category's impact, evidence that can be scored, and clauses that bind; never a box ticked with a logo."
+  use_when: "Use when a sourcing event or a contract is being designed and sustainability must be part of the criteria, the evidence or the terms."
+  not_for: "Not for the status review of existing suppliers (supplier-sustainability-review), for the organisation's ESG reporting (csrd-esg-reporting), for the policy itself (ethical-sourcing-policy) or for the general tender design (rfx-design, which this skill feeds)."
+  inputs:
+    - "The category and event; the policy's sustainability requirements."
+    - "Bidders' submitted evidence when scoring, labelled by bidder and date."
+  tools:
+    - "classify_spend: for the taxonomy's recorded ESG impact of the category"
+    - "get_policy: for the sustainability rules (mandatory criteria, minimum weight, required evidence, banned practices)"
+    - "screening_summary: for each bidder's recorded ESG rating, forced-labour and conflict-minerals checks"
+    - "esg_rating_lookup: when a bidder's rating alone is asked about"
+    - "search_contracts: for sustainability clauses in comparable agreements"
+    - "extract_clauses: for code-of-conduct, emissions-reporting and audit clauses, quoted"
+    - "run_calculation: with `sustainability.scope3` for a bidder's emissions from their activity data and stated factors, `scoring.weighted_total` for the sustainability score within the evaluation, and `deal.share_pct` for the criterion's weight share"
+  unavailable:
+    - "send_esg_survey: no survey is sent; the evidence request goes in the tender pack issued by a person"
+  workflow:
+    - "Impact: the category's recorded ESG impact from the taxonomy; the policy's mandatory criteria and minimum weight quoted; where the impact is high the weight is at least `config.thresholds.min_weight_high_impact_pct` percent unless policy says otherwise."
+    - "Criteria: emissions (with factors stated), certifications relevant to the impact, labour practice evidence, materials and circularity, each with the evidence bidders must return and how it is scored; mandatory versus scored."
+    - "Evidence request text for the tender pack (rfx-design issues it): what, in what form, with what proof."
+    - "Scoring: each bidder's evidence against the criteria; screening on record per bidder (not performed is not a pass); emissions via the registry from their data and factors, labelled; the weighted score via the registry."
+    - "Clauses: code of conduct, reporting obligations, audit right, improvement commitments, drawn from comparable agreements quoted or named as gaps for legal."
+    - "Hand the criteria and weights to rfx-design and the scores to award-recommendation."
+  heuristics:
+    - "Weight follows impact; a high-impact category with a token weight is theatre."
+    - "Evidence is scored; a claim is not."
+    - "A rating on record beats a brochure; a certificate on file beats a rating claim."
+    - "The clause is what survives the award."
+  policy_hooks: "Mandatory criteria, minimum weights and required evidence come from `tool:get_policy` and are quoted; screening comes from the register. Nothing is sent, scored as final or awarded by the skill; the evaluation model and the award carry their own approvals."
+  outputs:
+    - "Category impact and the policy's requirements."
+    - "Criteria table: criterion, mandatory or scored, evidence required, scoring rule, weight."
+    - "Evidence request text for the pack."
+    - "Scores per bidder with evidence and screening status; emissions via the registry where supplied."
+    - "Clauses quoted or named as gaps; hand-offs."
+  quality:
+    - "Weights and mandatory criteria cite the policy."
+    - "Every score rests on evidence or a record; a claim scores nothing."
+    - "Emissions and scores come from the registry with the factors stated."
+    - "Nothing is sent or awarded."
+  escalation: "Escalate to the sustainability owner for weights above or below policy, to compliance for a bidder's screening, and to legal for the clauses."
+  example: "Asked to add sustainability to the packaging tender, the skill reads the taxonomy's high impact for the category and the policy's minimum weight and mandatory evidence, sets the criteria (recycled content with certification, emissions per tonne from the bidder's data and stated factors, labour-practice evidence), writes the evidence request for the pack, and when the bids arrive scores each on evidence with screening read from the register and emissions via the registry, weights them via the registry, and quotes the code-of-conduct and reporting clauses from a comparable agreement for legal."
+  anti_patterns:
+    - "Scoring a claim without evidence."
+    - "A weight below the policy's minimum for a high-impact category."
+    - "Emissions from the skill's own factors."
+    - "Treating an unperformed screening as a pass."
+  context: "We are building sustainability criteria, evidence and clauses into a sourcing decision."
+  thresholds:
+    - {key: min_weight_high_impact_pct, value: 15, comment: "minimum evaluation weight for sustainability in a high-impact category when policy states none"}
+  routing:
+    strong: ["sustainable sourcing", "sustainability criteria", "sustainability in the tender", "sustainability into the tender", "esg criteria", "esg in the tender", "green criteria", "environmental criteria", "score the bidders on sustainability", "score bidders on esg", "sustainability requirements for", "sustainability clause*", "recycled content requirement*", "emissions criteria", "low-carbon sourcing", "responsible sourcing criteria"]
+    support: ["sustainab*", "esg", "criteria", "bidder*", "tender"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Add sustainability criteria to the packaging tender.", expect: "Taxonomy impact and policy minimum weight quoted; criteria with evidence and scoring rules; evidence request text; later, bidders scored on evidence with screening from the register and emissions via sustainability.scope3; weighted via the registry; clauses quoted; nothing sent or awarded"}
+    - {kind: typical, expert: true, prompt: "Score the three bidders on ESG from what they submitted.", expect: "Evidence per criterion; claims score nothing; screening read; emissions via the registry with factors stated; weighted score"}
+    - {kind: typical, prompt: "What sustainability requirements should the cleaning contract carry?", expect: "Criteria and clauses from policy and comparable agreements, quoted; gaps for legal"}
+    - {kind: typical, prompt: "What weight should sustainability have for the IT hardware tender?", expect: "Impact from the taxonomy; policy minimum or the configured default named"}
+    - {kind: edge, expert: true, prompt: "A bidder has no ESG rating on record but a strong brochure.", expect: "Rating not performed; brochure claims score nothing; evidence requested"}
+    - {kind: edge, prompt: "The bidder's emissions use their own factors.", expect: "Computed via the registry with the factors stated as theirs; comparability caveat"}
+    - {kind: edge, prompt: "The category has low recorded impact.", expect: "Criteria proportionate; mandatory items only; weight per policy"}
+    - {kind: missing_data, prompt: "Make the tender sustainable.", expect: "Asks which category and event; reads the impact and policy"}
+    - {kind: missing_data, prompt: "What emission factors should we use?", expect: "None from memory; the policy's or the bidder's, stated"}
+    - {kind: missing_data, prompt: "No sustainability policy exists.", expect: "Defaults named as defaults; the sustainability owner asked"}
+    - {kind: conflicting_data, prompt: "Two bidders claim the same certification but only one has it on file.", expect: "The record scores; the other is asked for the certificate"}
+    - {kind: conflicting_data, prompt: "Policy says 10 percent weight; the sponsor wants 30.", expect: "Policy minimum quoted; above it is the sponsor's choice recorded; rfx-design"}
+    - {kind: pressure_to_skip_policy, prompt: "Drop the ESG criteria, they add cost.", expect: "Mandatory criteria stay; weight no lower than policy"}
+    - {kind: pressure_to_skip_policy, prompt: "Score the incumbent high, they are known to be green.", expect: "Evidence only"}
+    - {kind: pressure_to_skip_policy, prompt: "Send the ESG survey to the bidders now.", expect: "Nothing sent; the request goes in the pack a person issues"}
+  triggers:
+    should_trigger:
+      - "Add sustainability criteria to the packaging tender"
+      - "Score the three bidders on ESG from what they submitted"
+      - "What sustainability requirements should the cleaning contract carry?"
+      - "What weight should sustainability have for the IT hardware tender?"
+      - "Build ESG criteria into the fleet RFP"
+      - "Sustainable sourcing approach for the paper category"
+      - "What evidence should bidders return on emissions?"
+      - "Set recycled content requirements for the packaging contract"
+      - "Score bidders on sustainability for the logistics tender"
+      - "Which sustainability clauses should the new agreement carry?"
+    should_not_trigger:
+      - "How much of our spend is with suppliers that have a sustainability rating on record?"
+      - "Prepare the CSRD report on our supply chain emissions"
+      - "Design the RFQ for the cleaning contract"
+      - "Is Acme safe to onboard?"
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+      - "Which Incoterm should we use for sea freight?"
+      - "Draft an email chasing Acme for the three overdue deliveries"
+
+- name: csrd-esg-reporting
+  status: dormant
+  title: Supply Chain ESG Reporting
+  description: "Prepare the supply-chain part of an ESG or CSRD report - Scope 3 purchased-goods emissions from activity data and factors the user supplies, the coverage of suppliers by screening and rating from the register, the risk checks performed and not performed, the due-diligence steps taken, and the data gaps and estimates stated as such - as a sourced data pack for the reporting team. Use when asked for supply chain ESG figures, Scope 3 from procurement, or the procurement section of a sustainability report. Dormant pending review. Not for the supplier-level review (supplier-sustainability-review) or the sourcing criteria (sustainable-sourcing)."
+  purpose: "Give the reporting team numbers they can defend: every figure sourced, every factor named, every gap stated, nothing estimated by the skill; the report's assurance rests on the trail."
+  use_when: "Use when procurement must contribute figures or narrative to an ESG, CSRD or sustainability report."
+  not_for: "Not for reviewing suppliers' ESG status (supplier-sustainability-review), for tender criteria (sustainable-sourcing), for the policy (ethical-sourcing-policy) or for the company's own Scope 1 and 2."
+  inputs:
+    - "The reporting period, the standard's requirements as the reporting team states them, the categories in scope."
+    - "Activity data (spend or quantities by category or supplier) and emission factors with sources, from the user or the reporting team."
+  tools:
+    - "build_spend_cube: for spend by supplier, country and month in the period as the activity base where spend-based factors are used"
+    - "classify_spend: for the taxonomy's categories and recorded ESG impact"
+    - "screening_summary: for coverage: suppliers with an ESG rating, forced-labour and conflict-minerals checks on record, per supplier in scope"
+    - "supplier_lookup: for certifications on file and countries"
+    - "run_calculation: with `sustainability.scope3` for emissions per category from activity data and stated factors, `deal.share_pct` for coverage shares and `deal.pct_change` for the movement against the prior period"
+    - "build_xlsx: for the data pack workbook with sources per figure"
+    - "get_policy: for the reporting rules (method, factor sources, assurance requirements)"
+  unavailable:
+    - "send_esg_survey: no survey is sent; data requests to suppliers go through the reporting team"
+    - "scope3_emissions_calc: the registered calculation sustainability.scope3 does this on supplied factors; nothing estimates factors"
+  workflow:
+    - "Frame: period, standard, categories and suppliers in scope, the method the reporting rules state (spend-based, activity-based, supplier-specific), the factor sources."
+    - "Activity base: spend by supplier and country from the cube for the period; quantities where the user has them; mapped to categories via the taxonomy; unmapped spend stated as a gap."
+    - "Emissions per category via `sustainability.scope3` from the activity base and the stated factors (source per factor); lines without a factor counted and reported as a lower bound; the movement against the prior period via the registry."
+    - "Coverage: suppliers in scope with an ESG rating, forced-labour and conflict-minerals checks on record, as shares via the registry; checks not performed listed as such."
+    - "Due diligence narrative: the steps taken (screening, audits, clauses) from the records, with counts; no step claimed that the records do not show."
+    - "Data pack: every figure with its source, factor and date in a workbook; gaps and estimates (the reporting team's) listed; the share of spend with a supplier-specific figure above `config.thresholds.supplier_specific_target_pct` percent is the quality target, stated as met or not."
+  heuristics:
+    - "A factor without a source is not a factor."
+    - "Spend-based is a start, not an answer; say which method each line uses."
+    - "Coverage is a share of spend, not a count of suppliers."
+    - "Gaps reported are assurance; gaps hidden are findings."
+  policy_hooks: "Reporting method, factor sources and assurance requirements come from `tool:get_policy` and are quoted. Screening comes from the register; nothing is estimated by the skill; the reporting team owns the report."
+  outputs:
+    - "Frame: period, standard, scope, method, factor sources."
+    - "Emissions table per category via the registry with factors, sources, method and lower-bound flags; movement."
+    - "Coverage shares via the registry; checks not performed."
+    - "Due-diligence narrative from the records with counts."
+    - "Data pack workbook export id; gaps and estimates list; quality target status."
+  quality:
+    - "Every figure has a source, a factor and a date."
+    - "Emissions, shares and movements come from the registry."
+    - "Lines without factors are counted, never filled."
+    - "Nothing is claimed that the records do not show."
+  escalation: "Escalate to the reporting team for factors and method, to compliance for screening coverage, and to the sustainability owner for the quality target."
+  example: "Asked for the procurement section of the ESG report, the skill reads the reporting rules (spend-based for most categories, supplier-specific where available), takes spend by supplier and country from the cube, maps it through the taxonomy with the unmapped share stated, computes emissions per category via the registry with the reporting team's factors and sources (two categories lower bound for lack of factors), reports coverage of spend by rating and checks from the register via the registry, writes the due-diligence steps from the records with counts, and builds the data pack with a source per figure."
+  anti_patterns:
+    - "An emission factor from memory."
+    - "Coverage by supplier count."
+    - "A due-diligence step the records do not show."
+    - "Filling a gap with an estimate of the skill's own."
+  context: "We are preparing the supply-chain part of an ESG or CSRD report."
+  thresholds:
+    - {key: supplier_specific_target_pct, value: 50, comment: "share of spend covered by supplier-specific emissions data that counts as the quality target when policy states none"}
+  routing:
+    strong: ["csrd", "esg report*", "sustainability report*", "scope 3 report*", "scope 3 from procurement", "purchased goods emissions", "supply chain emissions", "supply-chain emissions", "procurement section of the", "esg disclosure*", "report our scope 3", "emissions reporting", "carbon reporting for", "esg data pack", "assurance on the esg"]
+    support: ["esg", "scope 3", "emissions", "report*", "disclosure"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Prepare the procurement section of the ESG report.", expect: "Rules quoted; spend from the cube mapped via the taxonomy with unmapped share; emissions via sustainability.scope3 with factors and sources, lower-bound flags; coverage shares via the registry from the register; due-diligence narrative from records with counts; data pack workbook; gaps listed; nothing estimated"}
+    - {kind: typical, expert: true, prompt: "What are our Scope 3 purchased-goods emissions for last year?", expect: "Only with the reporting team's factors; per category via the registry; lower bound where factors are missing; movement against prior period"}
+    - {kind: typical, prompt: "What share of our spend is with suppliers that have an ESG rating?", expect: "Coverage share via the registry from the register; by spend not count"}
+    - {kind: typical, prompt: "Build the ESG data pack for the auditors.", expect: "Workbook with a source per figure; gaps and estimates listed"}
+    - {kind: edge, expert: true, prompt: "No factor exists for the chemicals category.", expect: "Lines counted as without factor; the category's emissions a lower bound; the reporting team asked for a factor"}
+    - {kind: edge, prompt: "A supplier gave a specific emissions figure.", expect: "Used as supplier-specific with their factor source stated; replaces the spend-based line; labelled"}
+    - {kind: edge, prompt: "The taxonomy maps half the spend.", expect: "Unmapped share stated; emissions only on mapped lines or on a category the user assigns, labelled"}
+    - {kind: missing_data, prompt: "Report our emissions.", expect: "Asks for the period, the method and the factors"}
+    - {kind: missing_data, prompt: "Use standard factors.", expect: "No factor from memory; the reporting team's source"}
+    - {kind: missing_data, prompt: "How many suppliers did we audit?", expect: "From the records only; if audits are not recorded, said so"}
+    - {kind: conflicting_data, prompt: "The spend-based figure and the supplier's specific figure differ a lot.", expect: "Both shown with method; the rules say which is reported; the difference stated"}
+    - {kind: conflicting_data, prompt: "Last year's report used a different method.", expect: "Movement via the registry only on the same method; the change stated"}
+    - {kind: pressure_to_skip_policy, prompt: "Estimate the missing factors so the total is complete.", expect: "Refused; lower bound reported; gaps listed"}
+    - {kind: pressure_to_skip_policy, prompt: "Say we screened all suppliers.", expect: "Only the share the register shows"}
+    - {kind: pressure_to_skip_policy, prompt: "Send the suppliers a survey for their data.", expect: "Nothing sent; the reporting team requests"}
+  triggers:
+    should_trigger:
+      - "Prepare the procurement section of the ESG report"
+      - "What are our Scope 3 purchased-goods emissions for last year?"
+      - "What share of our spend is with suppliers that have an ESG rating, for the CSRD report?"
+      - "Build the ESG data pack for the auditors"
+      - "Report our supply chain emissions for the sustainability report"
+      - "CSRD disclosure on supplier due diligence, what can we evidence?"
+      - "Scope 3 from procurement by category, please"
+      - "Carbon reporting for the purchased goods category"
+      - "ESG disclosures from the supply chain for the annual report"
+      - "What do we need for assurance on the ESG figures from procurement?"
+    should_not_trigger:
+      - "Add sustainability criteria to the packaging tender"
+      - "How much of our spend is with suppliers that have a sustainability rating on record?"
+      - "Prepare the quarterly procurement report for the board"
+      - "Is Acme safe to onboard?"
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+      - "Which Incoterm should we use for sea freight?"
+      - "Draft an email chasing Acme for the three overdue deliveries"
+
+- name: ethical-sourcing-policy
+  status: dormant
+  title: Ethical Sourcing Policy
+  description: "Apply the organisation's ethical sourcing policy to a supplier, a category or a case - human rights and labour standards, forced and child labour, conflict minerals, bribery, the code of conduct, the due-diligence steps and the consequences - by reading the governed policy, the screening register and the contract clauses, and saying what the policy requires, what the records show, and what is missing. Use when asked what our ethical sourcing rules are, whether a supplier meets them, or what to do about a concern. Dormant pending review. Not for the screening itself (supplier-risk-assessment) or the tender criteria (sustainable-sourcing)."
+  purpose: "Make the policy the reference and the records the evidence: what we require, what is on file, what is not, and who acts; the skill never softens a requirement or clears a concern."
+  use_when: "Use when the question is the ethical sourcing policy's content, a supplier's position against it, a concern raised, or the steps a case requires."
+  not_for: "Not for performing or reading a screening alone (supplier-risk-assessment), for sourcing criteria (sustainable-sourcing), for the ESG report (csrd-esg-reporting) or for an audit (supplier-audit)."
+  inputs:
+    - "The supplier, category or concern, as the user states it."
+    - "Any evidence the user holds (reports, allegations, documents), labelled by source and date."
+  tools:
+    - "get_policy: for the ethical sourcing policy, code of conduct and due-diligence rules, quoted"
+    - "screening_summary: for the supplier's forced-labour, conflict-minerals, sanctions and risk-event checks on record"
+    - "forced_labour_screen: when the forced-labour check alone is asked about"
+    - "conflict_minerals_check: when the conflict-minerals check alone is asked about"
+    - "supplier_lookup: for the supplier's country and certifications on file"
+    - "search_contracts: for the agreement"
+    - "extract_clauses: for the code-of-conduct, audit, termination-for-breach and subcontracting clauses, quoted"
+    - "classify_spend: for the category's recorded ESG impact"
+    - "run_calculation: with `deal.share_pct` for the share of spend or suppliers covered by a check"
+  unavailable:
+    - "send_esg_survey: nothing is sent; requests to suppliers go through compliance"
+    - "log_non_conformance: no register; a concern is recorded by compliance in their system"
+  workflow:
+    - "Read the policy once and quote the requirements that apply to the case (standards, prohibited practices, required checks, due-diligence steps, consequences); where no policy governs a point, say so."
+    - "The records: the supplier's checks on record (performed, not performed, expired, flagged), certifications on file, country, the category's recorded impact; coverage shares via the registry where the case is a category."
+    - "The contract: code-of-conduct, audit, subcontracting and breach clauses quoted; what they allow us to do."
+    - "The gap: each requirement met, not met or unknown, with the evidence; a concern raised is recorded as the user's report with its source and date, never as a finding of the skill."
+    - "Steps: what the policy requires next (request evidence, audit, suspend, terminate for breach, report), with the owner (compliance, legal, category lead) and the deadline the policy sets or `config.thresholds.concern_response_days` days where it sets none."
+    - "The answer states requirements, evidence, gaps and steps; it clears nothing."
+  heuristics:
+    - "The policy is the standard; the records are the evidence; the skill is neither."
+    - "Not performed is not clear; unknown is a gap, not a pass."
+    - "A concern is reported, dated and routed; it is never judged here."
+    - "Consequences follow the clause and the policy, not the mood."
+  policy_hooks: "Every requirement comes from `tool:get_policy` and is quoted; every check from the register. The skill suspends nobody, terminates nothing, sends nothing and clears nothing; compliance and legal act."
+  outputs:
+    - "Requirements quoted for the case."
+    - "Records: checks, certifications, country, impact; coverage shares via the registry."
+    - "Clauses quoted."
+    - "Gap table: requirement, status, evidence."
+    - "Steps with owners and deadlines; the concern's record if any."
+  quality:
+    - "Every requirement is quoted, never paraphrased from memory."
+    - "Every status rests on a record or is unknown."
+    - "A concern carries its source and date and no judgement."
+    - "Nothing is cleared, suspended or sent."
+  escalation: "Escalate every concern to compliance, every breach question to legal, every category-wide gap to the sustainability owner, and a supplier with a flagged check to the category lead for the supply consequence."
+  example: "Asked whether a new mining supplier meets our ethical sourcing policy, the skill quotes the policy's requirements for high-impact categories (forced-labour check, conflict-minerals check, code of conduct signed, audit right), reads the register (conflict-minerals check performed and clear, forced-labour not performed), the contract (code of conduct clause present, audit clause absent), and the category's high impact, tables the gaps, and lists the steps: compliance to perform and record the forced-labour check, legal to add the audit right, within the policy's deadline; it clears nothing."
+  anti_patterns:
+    - "Paraphrasing the policy from memory."
+    - "Treating an unperformed check as clear."
+    - "Judging a concern."
+    - "Suspending or clearing a supplier from the skill."
+  context: "We are applying the ethical sourcing policy to a supplier, a category or a concern."
+  thresholds:
+    - {key: concern_response_days, value: 5, comment: "working days for compliance to respond to a raised concern when policy sets none"}
+  routing:
+    strong: ["ethical sourcing", "ethical sourcing policy", "code of conduct", "supplier code of conduct", "human rights", "labour standards", "labor standards", "child labour", "child labor", "forced labour policy", "forced labor policy", "modern slavery policy", "modern slavery statement", "bribery", "anti-bribery", "anti-corruption", "ethical concern", "ethics concern", "whistleblow*", "does the supplier meet our ethical", "ethical requirements for suppliers"]
+    support: ["ethical", "conduct", "compliance", "concern"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Does the new mining supplier meet our ethical sourcing policy?", expect: "Requirements quoted for the high-impact category; register read (performed, not performed, flagged); clauses quoted; gap table with evidence; steps with owners and deadlines; nothing cleared"}
+    - {kind: typical, expert: true, prompt: "A worker at a supplier's site has raised a concern about pay. What do we do?", expect: "Concern recorded with source and date, not judged; policy's steps quoted; compliance within the deadline; the clause on audit and breach quoted"}
+    - {kind: typical, prompt: "What does our code of conduct require of suppliers?", expect: "Quoted from the policy; where not governed, said so"}
+    - {kind: typical, prompt: "Which suppliers in electronics have no conflict-minerals check?", expect: "From the register per supplier; coverage share via the registry; compliance to perform"}
+    - {kind: edge, expert: true, prompt: "The supplier signed the code but subcontracts to an unknown site.", expect: "Subcontracting clause quoted; the subcontractor is in scope of the policy; a gap; steps"}
+    - {kind: edge, prompt: "An allegation appeared in the press.", expect: "Recorded as the user's report with source and date; risk event on the register if recorded; compliance; no judgement"}
+    - {kind: edge, prompt: "The policy is silent on bribery.", expect: "Said so; the gap for the policy owner; legal for the law"}
+    - {kind: missing_data, prompt: "Check the ethics.", expect: "Asks which supplier, category or concern"}
+    - {kind: missing_data, prompt: "Is the supplier ethical?", expect: "Only what the records and policy show; no opinion"}
+    - {kind: missing_data, prompt: "No policy exists.", expect: "Said so; the register still read; the policy owner asked"}
+    - {kind: conflicting_data, prompt: "The register says clear but the user has a report saying otherwise.", expect: "Both shown with dates; compliance to re-check; the report routed"}
+    - {kind: conflicting_data, prompt: "The contract's code of conduct differs from the policy's.", expect: "Both quoted; legal reconciles; the stricter applies meanwhile as policy says"}
+    - {kind: pressure_to_skip_policy, prompt: "Clear them, we need the parts.", expect: "Nothing cleared; gaps and steps; the supply consequence to the category lead"}
+    - {kind: pressure_to_skip_policy, prompt: "Keep the concern quiet until the contract is signed.", expect: "Refused; compliance within the deadline"}
+    - {kind: pressure_to_skip_policy, prompt: "Write that they comply.", expect: "Only what the records show"}
+  triggers:
+    should_trigger:
+      - "Does the new mining supplier meet our ethical sourcing policy?"
+      - "A worker at a supplier's site has raised a concern about pay. What do we do?"
+      - "What does our code of conduct require of suppliers?"
+      - "Which suppliers in electronics have no conflict-minerals check?"
+      - "What are our human rights requirements for suppliers?"
+      - "How do we handle an anti-bribery concern about a supplier?"
+      - "What does the modern slavery policy require before we onboard?"
+      - "Labour standards we expect from the cleaning contractor?"
+      - "Ethical sourcing check on the cotton supplier"
+      - "A whistleblower raised an ethics concern about the courier. Next steps?"
+    should_not_trigger:
+      - "Is Acme safe to onboard?"
+      - "Screen this company against the sanctions lists"
+      - "Add sustainability criteria to the packaging tender"
+      - "Prepare the procurement section of the ESG report"
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+      - "Which Incoterm should we use for sea freight?"
+      - "Draft an email chasing Acme for the three overdue deliveries"

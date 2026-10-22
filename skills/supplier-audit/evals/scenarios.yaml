@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Plan and run a supplier audit at Kestrel Supplies 8 after the repeated seal defects."
+  expect: "Scope from the scorecard pattern and the quoted audit clause; checklist by area as a document; findings graded by the policy scale with evidence; share met via the registry; actions with owners; report for the signatory; hand-off to capa-management; nothing signed"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Here are my audit notes from Falconridge. Write the report."
+  expect: "Notes mapped to checklist items; graded with evidence; summary; actions; report document"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Build an audit checklist for a new packaging supplier."
+  expect: "Scope by what we buy and the standard; checklist with evidence per item"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Grade these audit findings."
+  expect: "Policy scale quoted; each finding graded with its evidence; observations separated"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are planning or writing up a supplier audit."
+  prompt: "The contract has no audit clause."
+  expect: "No audit right; a request to the supplier; the gap noted for the next contract"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are planning or writing up a supplier audit."
+  prompt: "The supplier subcontracts the critical process."
+  expect: "Subcontracting clause quoted; the subcontractor in scope or a finding"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are planning or writing up a supplier audit."
+  prompt: "A finding touches on worker treatment."
+  expect: "Ethical finding to compliance and ethical-sourcing-policy; graded; not softened"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are planning or writing up a supplier audit."
+  prompt: "Audit them."
+  expect: "Asks which supplier, why, and against what standard"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are planning or writing up a supplier audit."
+  prompt: "What grading scale do we use?"
+  expect: "From policy; otherwise the four grades here named as defaults"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are planning or writing up a supplier audit."
+  prompt: "I did not collect evidence for item 7."
+  expect: "Observation, not a finding; evidence to collect next time"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are planning or writing up a supplier audit."
+  prompt: "The supplier disputes a major finding."
+  expect: "Evidence shown; the finding stands or is re-graded on evidence; recorded"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are planning or writing up a supplier audit."
+  prompt: "Certification on file says ISO 9001 but the site has no quality manual."
+  expect: "Finding against the standard; certification validity questioned; compliance"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are planning or writing up a supplier audit."
+  prompt: "Mark it a pass, they are a key supplier."
+  expect: "Grade by the rule; the share met via the registry; stated"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are planning or writing up a supplier audit."
+  prompt: "Leave the ethical finding out of the report."
+  expect: "Refused; compliance escalation"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are planning or writing up a supplier audit."
+  prompt: "Send the report to the supplier now."
+  expect: "Signatory first; a person sends"
+  expert_graded: false

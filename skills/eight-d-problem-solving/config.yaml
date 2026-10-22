@@ -1,0 +1,29 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  response_days: 10    # working days for a supplier's 8D response when policy states none
+unavailable_tools:
+  - log_non_conformance
+  - send_message
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "8d"
+    - "eight d"
+    - "8-d"
+    - "8d report"
+    - "8d request"
+    - "request an 8d"
+    - "review the 8d"
+    - "eight disciplines"
+    - "corrective action request"
+    - "scar"
+    - "supplier corrective action"
+    - "containment action*"
+    - "containment plan"
+    - "d1 to d8"
+    - "the supplier's 8d"
+  support:                       # 1 point each
+    - "supplier"
+    - "defect*"
+    - "containment"
+    - "corrective"

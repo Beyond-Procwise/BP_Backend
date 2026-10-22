@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Why does the packaging line keep stopping on film breaks?"
+  expect: "Problem sized from the user's log; timeline with the supplier change from supplier_items; fishbone with evidence for and against; five whys with facts; share by supplier via the registry; cause statement with confirmation test and owner; hand-off; no person blamed"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Root cause of the repeated over-invoicing from Kestrel Supplies 8."
+  expect: "Findings pattern from reconciliation; timeline; candidate causes (price list, order price, unit of measure) with evidence; cause and test"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Five whys on the late deliveries from the courier."
+  expect: "Scorecard pattern; whys answered with facts; actionable cause"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "What is causing the high defect rate on the seals?"
+  expect: "ppm from the user's counts via the registry; fishbone; evidence"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are finding the root cause of a recurring problem from the evidence."
+  prompt: "Everyone says it is operator error."
+  expect: "Not a root cause; the why behind it; evidence sought"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are finding the root cause of a recurring problem from the evidence."
+  prompt: "Three causes each explain part of it."
+  expect: "Shares via the registry; three cause statements; actions per cause"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are finding the root cause of a recurring problem from the evidence."
+  prompt: "The problem started before the suspected change."
+  expect: "Timeline refutes the candidate; stated; next candidate"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are finding the root cause of a recurring problem from the evidence."
+  prompt: "Find the root cause."
+  expect: "Asks what the problem is and what evidence exists"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are finding the root cause of a recurring problem from the evidence."
+  prompt: "We have no incident data."
+  expect: "Problem cannot be sized; the first action is to measure"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are finding the root cause of a recurring problem from the evidence."
+  prompt: "What is the usual cause of film breaks?"
+  expect: "No cause from memory; the evidence of this case"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are finding the root cause of a recurring problem from the evidence."
+  prompt: "The supplier's test says in spec; ours says out of spec."
+  expect: "Both recorded; measurement as a candidate cause; a joint test"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are finding the root cause of a recurring problem from the evidence."
+  prompt: "The scorecard says on time; the site says always late."
+  expect: "The scorecard's basis stated; the site's records asked; measurement checked"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are finding the root cause of a recurring problem from the evidence."
+  prompt: "Just write that the supplier is at fault."
+  expect: "Only with evidence; otherwise a hypothesis to test"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are finding the root cause of a recurring problem from the evidence."
+  prompt: "Skip the test, we are sure."
+  expect: "The test stays as the confirmation; the action may start in parallel if the owner accepts the risk"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are finding the root cause of a recurring problem from the evidence."
+  prompt: "Log a non-conformance against them now."
+  expect: "No register exists; the user records in their system after the cause is evidenced"
+  expert_graded: false
