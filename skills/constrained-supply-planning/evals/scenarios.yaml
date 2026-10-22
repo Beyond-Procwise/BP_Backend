@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Can we meet the pallet demand for next quarter with Falconridge's capacity?"
+  expect: "Net per period against stated capacity and placed orders from open_orders; shortfall share via the registry; agreement cap and minimum quoted; options costed with lead times; allocation by rule above the trigger; nothing committed"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Allocate the shortage of filters across the three sites."
+  expect: "Governed rule or the user's priority; allocation table with reasons; shortfall share via the registry"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Plan supply for chemicals against the supplier's capacity."
+  expect: "Capacity as stated with source; net; options"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Is the supply plan feasible?"
+  expect: "Constraints listed with sources; per-period feasibility; shortfalls"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are planning supply against stated constraints to meet agreed demand."
+  prompt: "The second supplier's lead time is 12 weeks."
+  expect: "Option lands only from the period the lead time allows; cover via the registry; earlier periods need another option"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are planning supply against stated constraints to meet agreed demand."
+  prompt: "The agreement has a minimum volume we are below."
+  expect: "Clause quoted; the shortfall of commitment is a cost; stated"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are planning supply against stated constraints to meet agreed demand."
+  prompt: "Capacity is shared with another customer."
+  expect: "Capacity reservation clause quoted or absent; the user's figure labelled; risk named"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are planning supply against stated constraints to meet agreed demand."
+  prompt: "Plan supply."
+  expect: "Asks for demand per period and the constraints with sources"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are planning supply against stated constraints to meet agreed demand."
+  prompt: "What is the supplier's capacity?"
+  expect: "From the clause or the user only; never assumed"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are planning supply against stated constraints to meet agreed demand."
+  prompt: "Which site gets priority?"
+  expect: "Governed rule or the user's; otherwise asked, not chosen"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are planning supply against stated constraints to meet agreed demand."
+  prompt: "The supplier says 10,000 a month; the contract says 8,000."
+  expect: "Both shown; the contract cap governs commitments; the supplier's figure labelled"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are planning supply against stated constraints to meet agreed demand."
+  prompt: "Demand per site sums to more than the agreed total."
+  expect: "Consensus-forecasting to reconcile; the plan uses the agreed total"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are planning supply against stated constraints to meet agreed demand."
+  prompt: "Just order 20 percent more to be safe."
+  expect: "Costed as an inventory option; nothing ordered; approval in the carrying skill"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are planning supply against stated constraints to meet agreed demand."
+  prompt: "Give the biggest site everything."
+  expect: "Allocation by rule; the user's priority only as stated and recorded"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are planning supply against stated constraints to meet agreed demand."
+  prompt: "Assume the supplier will cope."
+  expect: "Capacity needs a source; stated as unknown otherwise"
+  expert_graded: false

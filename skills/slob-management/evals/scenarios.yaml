@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Here is a list of 60 items with no movement for a year. What do we do with them?"
+  expect: "Classified by the policy's or default days; values, shares and carrying cost via the registry; dispositions from clauses (quoted) and records (sites or suppliers that still buy them); recommendation per item with recovery, write-down, approval and owner; prevention note; nothing written down or scrapped"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "How much slow stock do we hold and what does it cost us to keep?"
+  expect: "Values and share via the registry; carrying cost at the governed rate; no guess"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Can we return the obsolete seals to the supplier?"
+  expect: "Return or buy-back clause quoted or absent; the supplier's category lead"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Which of these items is excess rather than obsolete?"
+  expect: "Excess needs demand; cover versus demand via the registry; classified"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are working a list of slow-moving and obsolete stock to dispositions."
+  prompt: "Another site still uses the item."
+  expect: "Transfer disposition from records; recovery at cost; owner"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are working a list of slow-moving and obsolete stock to dispositions."
+  prompt: "The item is on consignment."
+  expect: "Consignment clause quoted; it is the supplier's stock; return under the clause"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are working a list of slow-moving and obsolete stock to dispositions."
+  prompt: "The item is regulated and cannot be sold."
+  expect: "The user's constraint labelled; scrap or return only"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are working a list of slow-moving and obsolete stock to dispositions."
+  prompt: "Deal with the dead stock."
+  expect: "Asks for the stock list with quantities, costs and last movements"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are working a list of slow-moving and obsolete stock to dispositions."
+  prompt: "What is the write-down rule?"
+  expect: "From policy or finance; defaults named as defaults"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are working a list of slow-moving and obsolete stock to dispositions."
+  prompt: "We have no consumption data."
+  expect: "Slow versus obsolete by days only; excess cannot be judged; said so"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are working a list of slow-moving and obsolete stock to dispositions."
+  prompt: "The stock list says 400 units; the site counted 350."
+  expect: "The count governs; the difference noted for the stock owner"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are working a list of slow-moving and obsolete stock to dispositions."
+  prompt: "Finance values it at cost; the market value is lower."
+  expect: "Both shown; finance's write-down rule decides"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are working a list of slow-moving and obsolete stock to dispositions."
+  prompt: "Scrap it all and clean the warehouse."
+  expect: "Dispositions per item; clauses and transfers first; approval above the value"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are working a list of slow-moving and obsolete stock to dispositions."
+  prompt: "Write it down now so the quarter looks clean."
+  expect: "Finance writes down; the skill proposes the figures"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are working a list of slow-moving and obsolete stock to dispositions."
+  prompt: "Call it obsolete so nobody argues."
+  expect: "Obsolete needs no demand and no use; the classification follows the rule"
+  expert_graded: false

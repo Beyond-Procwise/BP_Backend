@@ -1,0 +1,27 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  override_limit_pct: 15    # an adjustment to the baseline above this share needs the documented reason the rules require
+unavailable_tools:
+  - statistical_forecast
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "consensus forecast*"
+    - "consensus number"
+    - "agree the forecast"
+    - "agree on the forecast"
+    - "one forecast"
+    - "reconcile the forecasts"
+    - "reconcile the forecast"
+    - "forecast reconciliation"
+    - "sales forecast versus"
+    - "statistical baseline"
+    - "baseline forecast"
+    - "forecast override*"
+    - "override the forecast"
+    - "forecast inputs from"
+  support:                       # 1 point each
+    - "forecast"
+    - "baseline"
+    - "override*"
+    - "consensus"

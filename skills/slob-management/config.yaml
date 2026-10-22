@@ -1,0 +1,35 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  slow_days: 180    # days without movement after which an item is slow, when policy states none
+  obsolete_days: 365    # days without movement or demand after which an item is obsolete, when policy states none
+  approval_value: 5000    # stock value above which a disposal is a decision for the approver
+unavailable_tools:
+  - detect_slob
+  - query_wms
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "slow-moving stock"
+    - "slow moving stock"
+    - "slow stock"
+    - "obsolete stock"
+    - "obsolete inventory"
+    - "dead stock"
+    - "excess stock"
+    - "excess inventory"
+    - "slob"
+    - "write down the stock"
+    - "write-down"
+    - "write off the stock"
+    - "stock write-off"
+    - "dispose of the stock"
+    - "disposal of stock"
+    - "what to do with the old stock"
+    - "stock that is not moving"
+    - "not moving stock"
+  support:                       # 1 point each
+    - "stock"
+    - "inventory"
+    - "obsolete"
+    - "scrap"
+    - "return"

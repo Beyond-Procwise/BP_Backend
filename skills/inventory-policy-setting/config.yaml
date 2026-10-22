@@ -1,0 +1,31 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  review_period_days: 90    # days between policy reviews when policy states none
+unavailable_tools:
+  - detect_slob
+  - query_wms
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "inventory policy"
+    - "stocking policy"
+    - "stock policy"
+    - "stocking rules"
+    - "service level per"
+    - "service levels for"
+    - "abc classification"
+    - "abc xyz"
+    - "abc/xyz"
+    - "classify the items"
+    - "classify our items"
+    - "classify the stock"
+    - "which items should we stock"
+    - "what to stock"
+    - "stock parameters"
+    - "min max levels"
+    - "min-max levels"
+  support:                       # 1 point each
+    - "inventory"
+    - "stock"
+    - "service level"
+    - "class*"

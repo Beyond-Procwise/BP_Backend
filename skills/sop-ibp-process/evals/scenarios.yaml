@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Prepare this month's S&OP."
+  expect: "Frame; last cycle's accuracy via the registry; consensus changes with assumptions; supply as supplied with agreements ending; gaps with shares and options costed; escalations above the configured share; pack built if asked; nothing decided"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Write up the demand review for the executive meeting."
+  expect: "Consensus per family, accuracy, movements via the registry, assumptions by owner"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "What gaps should go to the executive S&OP?"
+  expect: "Gaps above the configured share with options and owners"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Build the S&OP pack."
+  expect: "Contents assembled; build_pptx; export id"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are preparing or running the monthly sales and operations planning cycle."
+  prompt: "Sales and operations have different numbers for family A."
+  expect: "Not an S&OP number until reconciled; consensus-forecasting; the pack shows the disagreement"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are preparing or running the monthly sales and operations planning cycle."
+  prompt: "A key supply agreement ends mid-horizon."
+  expect: "From the pipeline; a supply risk in the review; renewal-and-exit-strategy"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are preparing or running the monthly sales and operations planning cycle."
+  prompt: "Capacity is unknown for one plant."
+  expect: "Named as unknown; the gap cannot be sized; the owner asked"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are preparing or running the monthly sales and operations planning cycle."
+  prompt: "Run S&OP."
+  expect: "Asks for the period, the families, the forecasts and the supply figures"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are preparing or running the monthly sales and operations planning cycle."
+  prompt: "What is our inventory target?"
+  expect: "From policy or the user; otherwise not governed"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are preparing or running the monthly sales and operations planning cycle."
+  prompt: "Cost the overtime option."
+  expect: "Only with the user's rates; otherwise listed uncosted"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are preparing or running the monthly sales and operations planning cycle."
+  prompt: "Finance's volume differs from the planners'."
+  expect: "Both shown; one consensus to be agreed before the meeting"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are preparing or running the monthly sales and operations planning cycle."
+  prompt: "Last cycle's decision was never actioned."
+  expect: "Carried forward in the decision log with its owner"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are preparing or running the monthly sales and operations planning cycle."
+  prompt: "Just decide to build inventory and skip the meeting."
+  expect: "The meeting decides; the option costed and recommended"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are preparing or running the monthly sales and operations planning cycle."
+  prompt: "Leave the accuracy slide out, it is embarrassing."
+  expect: "Accuracy stays first"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are preparing or running the monthly sales and operations planning cycle."
+  prompt: "Use last month's capacity, nothing changed."
+  expect: "Only if the owner confirms; labelled"
+  expert_graded: false

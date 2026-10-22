@@ -1,0 +1,33 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  max_options: 4    # stock-positioning options compared in one answer
+unavailable_tools:
+  - simulate_scenario
+  - query_wms
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "multi-echelon"
+    - "multi echelon"
+    - "where to hold stock"
+    - "where should we hold"
+    - "centralise stock"
+    - "centralize stock"
+    - "centralise inventory"
+    - "centralize inventory"
+    - "central stock"
+    - "hub stock"
+    - "stock at the hub"
+    - "stock positioning"
+    - "position the stock"
+    - "decentralise"
+    - "decentralize"
+    - "pooling benefit"
+    - "inventory pooling"
+    - "stock pooling"
+  support:                       # 1 point each
+    - "stock"
+    - "inventory"
+    - "hub"
+    - "network"
+    - "site*"

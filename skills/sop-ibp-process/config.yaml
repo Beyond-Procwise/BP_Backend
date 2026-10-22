@@ -1,0 +1,31 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  escalation_gap_pct: 10    # a demand-supply gap above this share of demand goes to the executive meeting
+unavailable_tools:
+  - run_mrp
+  - check_capacity
+  - simulate_scenario
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "s&op"
+    - "s and op"
+    - "sales and operations planning"
+    - "ibp"
+    - "integrated business planning"
+    - "s&op cycle"
+    - "s&op meeting"
+    - "s&op pack"
+    - "planning cycle"
+    - "demand review"
+    - "supply review"
+    - "reconciliation meeting"
+    - "executive s&op"
+    - "pre-s&op"
+    - "monthly planning meeting"
+  support:                       # 1 point each
+    - "cycle"
+    - "meeting"
+    - "pack"
+    - "demand"
+    - "supply"

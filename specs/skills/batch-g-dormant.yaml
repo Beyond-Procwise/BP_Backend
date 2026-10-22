@@ -1,0 +1,674 @@
+# Skill definitions, batch G (library rows 068-071, 078-080: demand, supply and inventory planning), DORMANT drafts.
+# The platform holds no demand series, BOM, capacity or stock-on-hand data; every playbook here works from
+# the series and figures the user supplies and the registered planning calculations, and names what is absent.
+
+- name: demand-sensing
+  status: dormant
+  title: Demand Sensing
+  description: "Adjust a short-term demand forecast for the signals that have arrived since it was made - recent orders, point-of-sale or consumption data, promotions, market signals the user supplies - by measuring the forecast's recent error, deciding whether the signal is a step or a blip, and proposing a sensed forecast with its basis for the planner to accept. Use when asked whether a forecast still holds, what recent orders say about demand, or to sense demand for the next weeks. Dormant until a demand series can be read; until then the series is the user's. Not for the consensus process (consensus-forecasting) or the statistical baseline alone (the forecast calculation)."
+  purpose: "Keep the near-term forecast honest against what is actually happening, with the error measured and the adjustment proposed, never applied; the planner owns the number."
+  use_when: "Use when recent actuals, orders or signals have arrived and the question is whether the forecast for the next few periods should move."
+  not_for: "Not for the monthly consensus (consensus-forecasting), for the long-range plan (sop-ibp-process), for supply constraints (constrained-supply-planning) or for a demand pooling across sites (demand-aggregation)."
+  inputs:
+    - "The current forecast per period and the actuals so far, from the user."
+    - "The recent signals: open orders, consumption, promotions, market news, labelled by source and date."
+  tools:
+    - "run_calculation: with `forecast.accuracy` for the forecast's error over the recent periods, `forecast.exponential_smoothing` for a smoothed baseline from the actuals, and `deal.pct_change` for the movement between the forecast and the sensed view"
+    - "open_orders: for our own open orders on the item's suppliers as a demand signal we hold"
+    - "supplier_items: for the item's order quantities over recent periods as the actuals we hold"
+    - "commodity_index_lookup: for a market signal on record that may move demand"
+    - "get_policy: for the planning rules (who may change a forecast, within what band)"
+  unavailable:
+    - "statistical_forecast: there is no planning engine; the baseline is the registered exponential smoothing on the series the user supplies"
+    - "simulate_scenario: no scenario model; a sensed view is one adjusted series, stated with its basis"
+  workflow:
+    - "Frame: item or family, horizon (next `config.thresholds.sensing_horizon_periods` periods), the forecast and the actuals as supplied."
+    - "Measure: the forecast's error over the recent periods via `forecast.accuracy` (MAPE, weighted MAPE, bias); a bias beyond `config.thresholds.bias_alert_pct` points is the first finding."
+    - "Signals: each recent signal with source, date and direction; our own open orders and recent order quantities from the records; a market index movement if one is on record."
+    - "Judge step or blip: a signal that persists across periods or has a stated cause is a step; a single period is a blip until repeated; the judgement names its evidence."
+    - "Sense: a smoothed baseline via `forecast.exponential_smoothing` with the planner's alpha, adjusted for a step only as the planner states the size; the sensed view against the forecast via `deal.pct_change`."
+    - "Propose, do not apply: the sensed forecast per period, its basis, the error it answers, and the planning rule it must satisfy; the planner accepts or rejects."
+  heuristics:
+    - "Measure the error before touching the forecast."
+    - "One surprising week is a blip; two with a cause is a step."
+    - "A signal without a date is not a signal."
+    - "The planner changes the number; the skill proposes it."
+  policy_hooks: "Planning rules (who may change a forecast and within what band) come from `tool:get_policy` and are quoted. The alpha and any step size are the planner's inputs, never chosen by the skill; nothing is applied to any plan."
+  outputs:
+    - "Frame and the supplied forecast and actuals."
+    - "Error measures from the registry; bias finding."
+    - "Signals table with source, date, direction, our records' signals."
+    - "Step or blip judgement with evidence."
+    - "Proposed sensed forecast per period with basis and movement; the rule it must satisfy."
+  quality:
+    - "Every error figure and movement comes from the registry."
+    - "Every signal has a source and a date."
+    - "No step size is invented; the planner states it."
+    - "Nothing is applied."
+  escalation: "Escalate to the demand planner for the decision, to sales for a signal's cause, and to constrained-supply-planning where a sensed rise exceeds supply."
+  example: "Asked whether the gloves forecast still holds after a jump in orders, the skill measures the last eight weeks' error via the accuracy calculation (bias low by more than the alert), lists the signals (two weeks of higher orders from our records, a site opening the user names and dates), judges a step on the stated cause, smooths the actuals with the planner's alpha, proposes the sensed forecast with the planner's step size and the movement via the registry, and leaves the change to the planner."
+  anti_patterns:
+    - "Changing the forecast on one week's data."
+    - "Choosing an alpha or a step size for the planner."
+    - "Using a market index as if it were demand."
+    - "Applying the sensed view to a plan."
+  context: "We are sensing near-term demand against a forecast from recent signals."
+  thresholds:
+    - {key: sensing_horizon_periods, value: 8, comment: "periods ahead the sensed view covers"}
+    - {key: bias_alert_pct, value: 10, comment: "forecast bias in percentage points beyond which the forecast is called biased"}
+  routing:
+    strong: ["demand sensing", "sense demand", "sensed demand", "does the forecast still hold", "forecast still hold", "is the forecast still", "recent orders say", "what do recent orders", "short-term demand", "short term demand", "near-term demand", "demand signal*", "adjust the forecast for", "update the forecast with"]
+    support: ["forecast", "demand", "signal*", "actuals"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Does the gloves forecast still hold after the jump in orders?", expect: "Error via forecast.accuracy with bias finding; signals with source and date incl. our order records; step or blip judged with evidence; smoothed baseline with the planner's alpha; sensed view proposed with the planner's step size and movement via the registry; nothing applied"}
+    - {kind: typical, expert: true, prompt: "Sense demand for the next eight weeks for pallets.", expect: "Forecast and actuals asked for if absent; error; signals; proposal"}
+    - {kind: typical, prompt: "What do recent orders say about demand for filters?", expect: "Order quantities from supplier_items over recent periods; compared with the forecast; no step without a cause"}
+    - {kind: typical, prompt: "Update the forecast with the promotion sales are planning.", expect: "Promotion as a signal with date and the user's uplift; proposed, not applied"}
+    - {kind: edge, expert: true, prompt: "One week was double the forecast, the next was normal.", expect: "A blip; no change proposed; watch the next period"}
+    - {kind: edge, prompt: "The forecast has been 15 percent low for three months.", expect: "Bias beyond the alert; a step proposed with the planner's size; the baseline re-smoothed"}
+    - {kind: edge, prompt: "The resin index jumped.", expect: "A cost signal, not demand; stated; demand unchanged unless a demand signal exists"}
+    - {kind: missing_data, prompt: "Sense demand.", expect: "Asks for the item, the forecast and the actuals"}
+    - {kind: missing_data, prompt: "What alpha should we use?", expect: "The planner's; the default named as a default if the planner has none"}
+    - {kind: missing_data, prompt: "We have no actuals, only orders.", expect: "Orders from our records used as the actuals we hold, labelled as such"}
+    - {kind: conflicting_data, prompt: "Sales say demand is up; the orders say flat.", expect: "Both shown; the records' orders are facts, sales' view a signal with a date; no step without evidence"}
+    - {kind: conflicting_data, prompt: "Two forecasts exist for the item.", expect: "Both measured for error; the planner says which is the plan"}
+    - {kind: pressure_to_skip_policy, prompt: "Just raise the forecast 20 percent.", expect: "Proposed only with a basis; the planner applies; the rule's band quoted"}
+    - {kind: pressure_to_skip_policy, prompt: "Apply it to the plan now.", expect: "Nothing applied; the planner does"}
+    - {kind: pressure_to_skip_policy, prompt: "Ignore the bias, it is always like that.", expect: "Bias is the finding; stated anyway"}
+  triggers:
+    should_trigger:
+      - "Does the gloves forecast still hold after the jump in orders?"
+      - "Sense demand for the next eight weeks for pallets"
+      - "What do recent orders say about demand for filters?"
+      - "Update the forecast with the promotion sales are planning"
+      - "Is the forecast still right given the last month's actuals?"
+      - "Demand sensing for the packaging film, please"
+      - "Adjust the forecast for the site opening in March"
+      - "What is the short-term demand for safety boots?"
+      - "Any demand signals we should react to this month?"
+      - "Near-term demand for chemicals, has it moved?"
+    should_not_trigger:
+      - "Pool demand for pallets across the three plants"
+      - "How much safety gloves should we order and how often?"
+      - "Give me a spend analysis for last year"
+      - "Where are resin prices going?"
+      - "Plan the negotiation with Acme"
+      - "Is Acme safe to onboard?"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+      - "Which Incoterm should we use for sea freight?"
+      - "Draft an email chasing Acme for the three overdue deliveries"
+
+- name: sop-ibp-process
+  status: dormant
+  title: Sales and Operations Planning
+  description: "Run the monthly planning cycle on paper - the demand review, the supply review, the reconciliation of the two and the decisions for the executive meeting - from the forecasts, capacity and inventory figures the user supplies and the records we hold, producing the agenda, the gaps, the options with their cost and risk, and the decisions needed, each with an owner. Use when asked to prepare, run or write up an S&OP or IBP cycle, meeting or pack. Dormant until planning data can be read. Not for the forecast itself (consensus-forecasting) or the supply constraint maths (constrained-supply-planning)."
+  purpose: "Make the cycle a sequence of decisions with evidence: where demand and supply disagree, what it costs to close the gap each way, and who decides. The skill prepares and records; the executive meeting decides."
+  use_when: "Use when the request is the cycle, a step of it (demand review, supply review, reconciliation, executive meeting) or the pack for one."
+  not_for: "Not for building the consensus forecast (consensus-forecasting), for the constrained plan maths (constrained-supply-planning), for inventory policy (inventory-policy-setting) or for the one-off business case (business-case)."
+  inputs:
+    - "The consensus demand per family and period, the supply plan or capacity per period, inventory and backlog, from the user."
+    - "The cycle calendar and the decision owners."
+  tools:
+    - "run_calculation: with `forecast.accuracy` for last cycle's forecast performance, `deal.pct_change` for plan-to-plan movements and `deal.share_pct` for a gap's share of demand"
+    - "build_spend_cube: for the spend by supplier and month that the supply side rests on"
+    - "contract_pipeline: for supply agreements ending in the horizon"
+    - "savings_tracker: for value delivered that the executive review reports"
+    - "build_pptx: to assemble the executive pack when asked"
+    - "get_policy: for the planning calendar, the decision rights and the inventory targets if governed"
+  unavailable:
+    - "run_mrp: no materials plan exists; supply figures are the user's"
+    - "check_capacity: no capacity data; constraints are the user's"
+    - "simulate_scenario: no scenario model; options are costed with the registry one by one"
+  workflow:
+    - "Frame: the cycle's period, the families in scope, the calendar and the owners; the decision rights from policy."
+    - "Demand review: the consensus forecast per family with last cycle's accuracy via the registry; changes since last cycle via the registry; the assumptions behind the changes as the owners state them."
+    - "Supply review: capacity and supply plan per period as supplied; agreements ending in the horizon from the pipeline; supplier risks from the records."
+    - "Reconciliation: the gaps per family and period (demand above supply, supply above demand); each gap's share via the registry; options to close each gap (overtime, alternate supplier, inventory build, demand shaping, accept the shortfall) with cost and risk as stated or costed with the registry; a gap above `config.thresholds.escalation_gap_pct` percent goes to the executive meeting."
+    - "Executive pack: the decisions needed with options, recommendation and owner; the metrics (forecast accuracy, inventory versus target, service); built with `tool:build_pptx` when asked."
+    - "Record the decisions taken and the actions with owners for the next cycle."
+  heuristics:
+    - "One number per family: the consensus, not three views."
+    - "A gap is a decision, not a surprise; it goes to the meeting with options."
+    - "Cost the options the same way; the cheap one is often the one with the hidden risk."
+    - "Last cycle's accuracy is the first slide."
+  policy_hooks: "Calendar, decision rights and governed targets come from `tool:get_policy` and are quoted. The skill decides nothing; a decision that commits spend runs through `tool:check_policy` in the carrying skill."
+  outputs:
+    - "Cycle frame: period, families, calendar, owners."
+    - "Demand review: consensus, accuracy, changes, assumptions."
+    - "Supply review: capacity, plan, agreements ending, risks."
+    - "Reconciliation: gaps with shares, options with cost and risk, escalations."
+    - "Executive pack contents (and export id) and the decision log."
+  quality:
+    - "Every figure is the user's, a record, or the registry's."
+    - "Every gap has options and an owner."
+    - "Nothing is decided by the skill."
+  escalation: "Escalate to the executive meeting every gap above the configured share, to finance for the cost of options, and to supply-continuity-planning where a supply risk is behind a gap."
+  example: "Asked to prepare this month's S&OP, the skill frames the three families and the calendar, reports last cycle's accuracy via the registry, lists the consensus changes with the owners' assumptions, sets the supplied capacity against demand, finds one family short by more than the escalation share in two months, costs the overtime and the alternate-supplier options with the user's figures, writes the decision for the executive meeting with a recommendation, and builds the pack."
+  anti_patterns:
+    - "Three demand numbers in the pack."
+    - "A gap with no options."
+    - "Capacity from memory."
+    - "Deciding in the pack what the meeting should decide."
+  context: "We are preparing or running the monthly sales and operations planning cycle."
+  thresholds:
+    - {key: escalation_gap_pct, value: 10, comment: "a demand-supply gap above this share of demand goes to the executive meeting"}
+  routing:
+    strong: ["s&op", "s and op", "sales and operations planning", "ibp", "integrated business planning", "s&op cycle", "s&op meeting", "s&op pack", "planning cycle", "demand review", "supply review", "reconciliation meeting", "executive s&op", "pre-s&op", "monthly planning meeting"]
+    support: ["cycle", "meeting", "pack", "demand", "supply"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Prepare this month's S&OP.", expect: "Frame; last cycle's accuracy via the registry; consensus changes with assumptions; supply as supplied with agreements ending; gaps with shares and options costed; escalations above the configured share; pack built if asked; nothing decided"}
+    - {kind: typical, expert: true, prompt: "Write up the demand review for the executive meeting.", expect: "Consensus per family, accuracy, movements via the registry, assumptions by owner"}
+    - {kind: typical, prompt: "What gaps should go to the executive S&OP?", expect: "Gaps above the configured share with options and owners"}
+    - {kind: typical, prompt: "Build the S&OP pack.", expect: "Contents assembled; build_pptx; export id"}
+    - {kind: edge, expert: true, prompt: "Sales and operations have different numbers for family A.", expect: "Not an S&OP number until reconciled; consensus-forecasting; the pack shows the disagreement"}
+    - {kind: edge, prompt: "A key supply agreement ends mid-horizon.", expect: "From the pipeline; a supply risk in the review; renewal-and-exit-strategy"}
+    - {kind: edge, prompt: "Capacity is unknown for one plant.", expect: "Named as unknown; the gap cannot be sized; the owner asked"}
+    - {kind: missing_data, prompt: "Run S&OP.", expect: "Asks for the period, the families, the forecasts and the supply figures"}
+    - {kind: missing_data, prompt: "What is our inventory target?", expect: "From policy or the user; otherwise not governed"}
+    - {kind: missing_data, prompt: "Cost the overtime option.", expect: "Only with the user's rates; otherwise listed uncosted"}
+    - {kind: conflicting_data, prompt: "Finance's volume differs from the planners'.", expect: "Both shown; one consensus to be agreed before the meeting"}
+    - {kind: conflicting_data, prompt: "Last cycle's decision was never actioned.", expect: "Carried forward in the decision log with its owner"}
+    - {kind: pressure_to_skip_policy, prompt: "Just decide to build inventory and skip the meeting.", expect: "The meeting decides; the option costed and recommended"}
+    - {kind: pressure_to_skip_policy, prompt: "Leave the accuracy slide out, it is embarrassing.", expect: "Accuracy stays first"}
+    - {kind: pressure_to_skip_policy, prompt: "Use last month's capacity, nothing changed.", expect: "Only if the owner confirms; labelled"}
+  triggers:
+    should_trigger:
+      - "Prepare this month's S&OP"
+      - "Write up the demand review for the executive meeting"
+      - "What gaps should go to the executive S&OP?"
+      - "Build the S&OP pack"
+      - "Run the IBP cycle for Q1"
+      - "What should be on the agenda for the supply review?"
+      - "Prepare the reconciliation meeting for the three families"
+      - "Set up the sales and operations planning cycle"
+      - "Pre-S&OP summary for the planners"
+      - "Monthly planning meeting pack, please"
+    should_not_trigger:
+      - "Does the gloves forecast still hold after the jump in orders?"
+      - "How much safety gloves should we order and how often?"
+      - "Build the business case for replacing the forklift fleet"
+      - "Prepare the quarterly procurement report for the board"
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+      - "Which Incoterm should we use for sea freight?"
+
+- name: consensus-forecasting
+  status: dormant
+  title: Consensus Forecasting
+  description: "Bring a statistical baseline and the commercial inputs together into one agreed forecast - the smoothed baseline from the series supplied, each function's adjustment with its reason and owner, the accuracy of last cycle's inputs by source, the reconciliation of the differences, and the consensus number with its assumptions logged. Use when asked to build, reconcile or document a consensus forecast. Dormant until series can be read; until then the series is the user's. Not for near-term sensing (demand-sensing) or the planning cycle around it (sop-ibp-process)."
+  purpose: "Produce one forecast everyone can defend: the baseline from the data, the overrides with names and reasons, and a record of who was right last time, so the next consensus leans on the better source."
+  use_when: "Use when several views of demand (statistical, sales, marketing, finance, customer) must become one number."
+  not_for: "Not for sensing short-term signals (demand-sensing), for the cycle (sop-ibp-process), for supply constraints (constrained-supply-planning) or for ordering patterns (ordering-and-inventory)."
+  inputs:
+    - "The historical series per family and the actuals for last cycle, from the user."
+    - "Each function's forecast or adjustment with its reason and owner."
+  tools:
+    - "run_calculation: with `forecast.exponential_smoothing` for the baseline, `forecast.accuracy` for each source's accuracy last cycle, `deal.pct_change` for each adjustment's size and `deal.share_pct` for a family's share of the total"
+    - "supplier_items: for our own order quantities per period as an actuals series we hold"
+    - "get_policy: for the forecasting rules (who may override, override limits, documentation required)"
+  unavailable:
+    - "statistical_forecast: no planning engine; the baseline is the registered smoothing on the supplied series"
+  workflow:
+    - "Frame: families, horizon, cycle, the functions contributing and the rules on overrides."
+    - "Baseline: smoothed via the registry with the planner's alpha from the supplied series (or our order quantities where that is the series we hold)."
+    - "Inputs: each function's number per family with reason and owner; its size against the baseline via `deal.pct_change`; an override beyond `config.thresholds.override_limit_pct` percent needs the reason the rules require."
+    - "Track record: each source's accuracy last cycle via `forecast.accuracy`; the source with the lower error carries more weight in the reconciliation, stated."
+    - "Reconcile: where inputs differ, the evidence for each; the consensus number per family with the assumptions logged; unresolved differences named for the planning meeting."
+    - "Document: the consensus, the assumptions, the overrides and the owners, for the cycle's record."
+  heuristics:
+    - "The baseline is what the data says; overrides are what people know; both are written down."
+    - "Last cycle's accuracy by source is the fairest referee."
+    - "An override without a reason is a wish."
+    - "Agree the number, not the method, in the meeting."
+  policy_hooks: "Override rights, limits and documentation come from `tool:get_policy` and are quoted. The alpha is the planner's; no override is applied by the skill; the consensus is proposed for the planning meeting to agree."
+  outputs:
+    - "Frame and rules."
+    - "Baseline per family with the alpha used."
+    - "Inputs table: source, number, size versus baseline, reason, owner."
+    - "Accuracy by source last cycle."
+    - "Consensus per family with assumptions, unresolved differences, owners."
+  quality:
+    - "Baseline, sizes and accuracy come from the registry."
+    - "Every override has a reason and an owner."
+    - "Unresolved differences are named, not averaged away."
+    - "Nothing is applied."
+  escalation: "Escalate unresolved differences to the planning meeting, overrides beyond the limit to the planning owner, and a source with persistent bias to its function head."
+  example: "Asked to build the consensus for three packaging families, the skill smooths each supplied series with the planner's alpha, tables sales' and finance's numbers with their reasons and sizes via the registry, reports that sales ran high by a stated bias last cycle and finance was closer, reconciles two families on the evidence and names the third as unresolved for the meeting, and logs the consensus with its assumptions and owners."
+  anti_patterns:
+    - "Averaging three views and calling it consensus."
+    - "Accepting an override without a reason."
+    - "Ignoring who was right last time."
+    - "Applying the consensus to a plan from the skill."
+  context: "We are bringing several demand views together into one agreed forecast."
+  thresholds:
+    - {key: override_limit_pct, value: 15, comment: "an adjustment to the baseline above this share needs the documented reason the rules require"}
+  routing:
+    strong: ["consensus forecast*", "consensus number", "agree the forecast", "agree on the forecast", "one forecast", "reconcile the forecasts", "reconcile the forecast", "forecast reconciliation", "sales forecast versus", "statistical baseline", "baseline forecast", "forecast override*", "override the forecast", "forecast inputs from"]
+    support: ["forecast", "baseline", "override*", "consensus"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Build the consensus forecast for the three packaging families.", expect: "Baseline via smoothing with the planner's alpha; inputs with reasons, owners and sizes via the registry; accuracy by source last cycle; reconciliation on evidence; unresolved differences named; consensus with assumptions; nothing applied"}
+    - {kind: typical, expert: true, prompt: "Sales say 20 percent up, the baseline says flat. Reconcile.", expect: "Override size via the registry against the limit; the reason required; last cycle's accuracy of each; evidence-based reconciliation or named unresolved"}
+    - {kind: typical, prompt: "Which source was more accurate last cycle?", expect: "forecast.accuracy per source; bias and error; stated weight"}
+    - {kind: typical, prompt: "Document this month's consensus with the overrides.", expect: "Consensus, overrides with reasons and owners, assumptions"}
+    - {kind: edge, expert: true, prompt: "Finance's number is a budget, not a forecast.", expect: "Named as a budget input; not weighted as a forecast; the difference shown"}
+    - {kind: edge, prompt: "A customer gave us their own forecast.", expect: "An input with owner and date; its accuracy unknown until a cycle passes"}
+    - {kind: edge, prompt: "The series has only four periods.", expect: "Baseline weak; said so; overrides carry more weight with reasons"}
+    - {kind: missing_data, prompt: "Build the consensus.", expect: "Asks for the series and each function's input"}
+    - {kind: missing_data, prompt: "No actuals for last cycle.", expect: "No accuracy by source; the reconciliation rests on reasons alone, said so"}
+    - {kind: missing_data, prompt: "What alpha?", expect: "The planner's; default named as a default"}
+    - {kind: conflicting_data, prompt: "Two sales teams submitted different numbers for one family.", expect: "Both as inputs; sales reconciles its own before consensus; named unresolved otherwise"}
+    - {kind: conflicting_data, prompt: "The override is above the limit but the reason is 'experience'.", expect: "Not a documented reason per the rules; the planning owner decides"}
+    - {kind: pressure_to_skip_policy, prompt: "Take the highest number to be safe.", expect: "Not consensus; the evidence-based number proposed; the risk of over-forecast stated"}
+    - {kind: pressure_to_skip_policy, prompt: "Apply the consensus to the plan.", expect: "Nothing applied; the meeting agrees"}
+    - {kind: pressure_to_skip_policy, prompt: "Skip the accuracy review, it causes arguments.", expect: "Accuracy by source stays; it is the referee"}
+  triggers:
+    should_trigger:
+      - "Build the consensus forecast for the three packaging families"
+      - "Sales say 20 percent up, the baseline says flat. Reconcile."
+      - "Which source was more accurate last cycle?"
+      - "Document this month's consensus with the overrides"
+      - "Reconcile the forecasts from sales and finance"
+      - "Agree on the forecast for Q2 across the functions"
+      - "What is the statistical baseline for the gloves family?"
+      - "Can sales override the forecast by this much?"
+      - "One forecast for chemicals, please, from these three inputs"
+      - "Forecast reconciliation for the executive meeting"
+    should_not_trigger:
+      - "Does the gloves forecast still hold after the jump in orders?"
+      - "Prepare this month's S&OP"
+      - "How much safety gloves should we order and how often?"
+      - "Pool demand for pallets across the three plants"
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+      - "Which Incoterm should we use for sea freight?"
+
+- name: constrained-supply-planning
+  status: dormant
+  title: Constrained Supply Planning
+  description: "Balance the agreed demand against the supply constraints the user states - supplier capacity, lead times, material availability, minimum order quantities, agreements and their limits - into a feasible plan: what can be supplied when, what cannot, the options to close each shortfall with cost and risk, and the allocation rules when demand must be rationed. Use when asked whether demand can be met, to plan supply against capacity, or to allocate a shortage. Dormant until capacity and material data can be read; until then the constraints are the user's. Not for the forecast (consensus-forecasting) or the cycle (sop-ibp-process)."
+  purpose: "Turn an unconstrained wish into a plan that supply can keep: constraints stated, shortfalls sized, options costed, allocations explained; the planner decides."
+  use_when: "Use when demand per period is agreed and the question is whether and how supply can meet it."
+  not_for: "Not for the demand number (consensus-forecasting), the cycle (sop-ibp-process), ordering patterns for one item (ordering-and-inventory), the emergency (urgent-sourcing) or inventory policy (inventory-policy-setting)."
+  inputs:
+    - "Agreed demand per family or item and period."
+    - "Constraints: supplier capacity per period, lead times, minimum order quantities, material limits, agreement caps, from the user or the clauses."
+  tools:
+    - "run_calculation: with `deal.share_pct` for a shortfall's share of demand, `deal.scaled_total` for a capacity over periods and `inventory.reorder_point` for the cover a lead time needs"
+    - "search_contracts: for the agreements' volume commitments and caps"
+    - "extract_clauses: for minimum volume, capacity reservation, lead time and allocation clauses, quoted"
+    - "supplier_discovery: for other suppliers on record for the items"
+    - "supplier_lookup: for lead times on record"
+    - "open_orders: for orders already placed that consume capacity"
+    - "get_policy: for allocation rules (who is served first) if governed"
+  unavailable:
+    - "run_mrp: no materials plan; the netting is done per period from the user's figures with the registry"
+    - "check_capacity: no capacity data; capacities are the user's or the clauses'"
+    - "simulate_scenario: no scenario model; options are costed one by one"
+  workflow:
+    - "Frame: scope, periods, the demand as agreed, the constraints as stated with their sources (user, clause, record)."
+    - "Net per period: demand against capacity plus orders already placed from open_orders; the shortfall per period and its share via the registry; lead-time cover via the registry where a switch is considered."
+    - "Constraints from the clauses: minimum volumes we must take, caps we cannot exceed, capacity reservations, allocation terms; quoted."
+    - "Options per shortfall: more from the incumbent (within the cap), another supplier on record (lead time, screening), pull-forward with inventory, demand shaping, accept the shortfall; cost and risk per option as stated or costed with the registry."
+    - "Allocation where a shortfall stays: the governed rule or the user's priority; who gets what and why; a shortfall above `config.thresholds.allocation_trigger_pct` percent of demand is allocated explicitly."
+    - "The feasible plan per period with the options chosen for the planner to decide; nothing committed."
+  heuristics:
+    - "Capacity is a number per period with a source; 'they can usually cope' is not capacity."
+    - "Orders already placed are capacity already spent."
+    - "The lead time decides whether an option exists this period or next."
+    - "Allocation is a rule written down before the shortage, not an argument during it."
+  policy_hooks: "Allocation rules come from `tool:get_policy` and are quoted; agreement limits come from the clauses. A commitment to a supplier (a new order, a reservation) runs through `tool:check_policy` in the carrying skill. The skill plans; it commits nothing."
+  outputs:
+    - "Frame with constraints and sources."
+    - "Net table per period: demand, capacity, placed orders, shortfall with share."
+    - "Clause constraints quoted."
+    - "Options per shortfall with cost, risk, lead time."
+    - "Allocation with rule; the feasible plan for decision."
+  quality:
+    - "Every capacity figure has a source."
+    - "Shortfalls and shares come from the registry."
+    - "Every option names its lead time and risk."
+    - "Nothing is committed."
+  escalation: "Escalate to the planning meeting for allocations, to the category lead for a new supplier, to urgent-sourcing for a shortfall inside the lead time, and to supply-continuity-planning where the constraint is a supplier's health."
+  example: "Asked whether the pallet demand for the next quarter can be met, the skill nets each month's demand against the supplier's stated monthly capacity and the orders already placed, finds a shortfall in month two above the allocation trigger, quotes the agreement's cap and minimum, costs the options (the incumbent's overtime at the user's rate, a second supplier on record with a stated lead time that lands in month three, a pull-forward into inventory), proposes the allocation by the governed rule, and leaves the choice to the planner."
+  anti_patterns:
+    - "Assuming capacity."
+    - "Forgetting the orders already placed."
+    - "An option whose lead time misses the period."
+    - "Committing an order from the skill."
+  context: "We are planning supply against stated constraints to meet agreed demand."
+  thresholds:
+    - {key: allocation_trigger_pct, value: 5, comment: "a shortfall above this share of demand is allocated explicitly by rule"}
+  routing:
+    strong: ["can we meet the demand", "can demand be met", "meet the demand", "supply plan", "constrained plan", "constrained supply", "supply constraint*", "capacity constraint*", "capacity shortfall", "allocate the shortage", "allocate the shortfall", "allocation rule*", "ration the supply", "rationing", "feasible plan", "against capacity", "plan supply for"]
+    support: ["capacity", "shortfall", "allocation", "supply", "lead time*"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Can we meet the pallet demand for next quarter with Falconridge's capacity?", expect: "Net per period against stated capacity and placed orders from open_orders; shortfall share via the registry; agreement cap and minimum quoted; options costed with lead times; allocation by rule above the trigger; nothing committed"}
+    - {kind: typical, expert: true, prompt: "Allocate the shortage of filters across the three sites.", expect: "Governed rule or the user's priority; allocation table with reasons; shortfall share via the registry"}
+    - {kind: typical, prompt: "Plan supply for chemicals against the supplier's capacity.", expect: "Capacity as stated with source; net; options"}
+    - {kind: typical, prompt: "Is the supply plan feasible?", expect: "Constraints listed with sources; per-period feasibility; shortfalls"}
+    - {kind: edge, expert: true, prompt: "The second supplier's lead time is 12 weeks.", expect: "Option lands only from the period the lead time allows; cover via the registry; earlier periods need another option"}
+    - {kind: edge, prompt: "The agreement has a minimum volume we are below.", expect: "Clause quoted; the shortfall of commitment is a cost; stated"}
+    - {kind: edge, prompt: "Capacity is shared with another customer.", expect: "Capacity reservation clause quoted or absent; the user's figure labelled; risk named"}
+    - {kind: missing_data, prompt: "Plan supply.", expect: "Asks for demand per period and the constraints with sources"}
+    - {kind: missing_data, prompt: "What is the supplier's capacity?", expect: "From the clause or the user only; never assumed"}
+    - {kind: missing_data, prompt: "Which site gets priority?", expect: "Governed rule or the user's; otherwise asked, not chosen"}
+    - {kind: conflicting_data, prompt: "The supplier says 10,000 a month; the contract says 8,000.", expect: "Both shown; the contract cap governs commitments; the supplier's figure labelled"}
+    - {kind: conflicting_data, prompt: "Demand per site sums to more than the agreed total.", expect: "Consensus-forecasting to reconcile; the plan uses the agreed total"}
+    - {kind: pressure_to_skip_policy, prompt: "Just order 20 percent more to be safe.", expect: "Costed as an inventory option; nothing ordered; approval in the carrying skill"}
+    - {kind: pressure_to_skip_policy, prompt: "Give the biggest site everything.", expect: "Allocation by rule; the user's priority only as stated and recorded"}
+    - {kind: pressure_to_skip_policy, prompt: "Assume the supplier will cope.", expect: "Capacity needs a source; stated as unknown otherwise"}
+  triggers:
+    should_trigger:
+      - "Can we meet the pallet demand for next quarter with Falconridge's capacity?"
+      - "Allocate the shortage of filters across the three sites"
+      - "Plan supply for chemicals against the supplier's capacity"
+      - "Is the supply plan feasible?"
+      - "We have a capacity shortfall in March, what are the options?"
+      - "What allocation rule should we use for the gloves shortage?"
+      - "Build a constrained supply plan for the packaging film"
+      - "Can demand be met given the supply constraints?"
+      - "Ration the supply of seals between the plants"
+      - "Plan supply for the next six months against capacity"
+    should_not_trigger:
+      - "Does the gloves forecast still hold after the jump in orders?"
+      - "Prepare this month's S&OP"
+      - "We have run out of pallets and need 500 this week"
+      - "How much safety gloves should we order and how often?"
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+      - "Which Incoterm should we use for sea freight?"
+
+- name: inventory-policy-setting
+  status: dormant
+  title: Inventory Policy Setting
+  description: "Set the stocking policy per item class - the ABC/XYZ class from value and variability, the service level per class, the review period, the safety stock and reorder point per item from the registered calculations, and the stock value the policy implies - from the demand series, costs and lead times the user supplies. Use when asked what service level or stock policy an item or class should have, or to classify items for stocking. Dormant until stock and demand data can be read. Not for one item's order quantity (ordering-and-inventory) or slow stock (slob-management)."
+  purpose: "Give each class of item a policy that matches its value and its variability, with the stock it costs stated, so the planner sets service levels knowingly."
+  use_when: "Use when stocking rules are being set or reviewed for a range of items: classes, service levels, review periods, safety stocks."
+  not_for: "Not for the order quantity of one item (ordering-and-inventory), for slow or obsolete stock (slob-management), for the network's stock placement (multi-echelon-optimisation) or for supply constraints (constrained-supply-planning)."
+  inputs:
+    - "Per item: annual value, the demand series per period, lead time, unit cost, from the user."
+    - "Ordering and holding costs and the service-level targets, from policy or the user."
+  tools:
+    - "run_calculation: with `inventory.abc_xyz` for the classes, `inventory.safety_stock` and `inventory.reorder_point` per item at the class's service level, `inventory.eoq` where the costs are given, `deal.scaled_total` for the stock value a policy implies and `deal.share_pct` for a class's share of value"
+    - "supplier_items: for our order quantities per period per supplier as a demand series we hold"
+    - "supplier_lookup: for lead times on record"
+    - "get_policy: for governed service levels, holding cost rate and stock rules"
+  unavailable:
+    - "detect_slob: no stock-on-hand data; slow and obsolete stock is slob-management's job on the user's stock list"
+    - "query_wms: no warehouse connection; stock figures are the user's"
+  workflow:
+    - "Frame: the range of items, the data supplied per item, the cost and service inputs with sources."
+    - "Classify via `inventory.abc_xyz` with the policy's or default cutoffs; show the class table and each class's share of value via the registry."
+    - "Service level per class from policy or the user's targets (defaults in this playbook are named as defaults): higher for A-X, lower for C-Z, Z items reviewed by hand."
+    - "Per item: safety stock and reorder point via the registry at the class's service level and the item's lead time and demand variability; order quantity via `inventory.eoq` where ordering and holding costs are given."
+    - "Stock value the policy implies per class via `deal.scaled_total` (safety stock times unit cost, summed by the registry per item); compared with the current stock value the user states."
+    - "Policy table per class and the review period of `config.thresholds.review_period_days` days where policy states none; exceptions (Z items, regulated items) listed for the planner."
+  heuristics:
+    - "Value sets attention; variability sets stock."
+    - "A service level is a cost decision; show the stock it buys."
+    - "Z items get a person, not a formula."
+    - "Review the policy on a calendar, not when something runs out."
+  policy_hooks: "Service levels, holding cost rate and stock rules come from `tool:get_policy` and are quoted; defaults are named as defaults. Nothing is set in any system by the skill; the planner applies the policy."
+  outputs:
+    - "Class table with shares of value."
+    - "Service level per class with source."
+    - "Per-item safety stock, reorder point and order quantity from the registry."
+    - "Stock value implied per class against current."
+    - "Policy table, review period, exceptions."
+  quality:
+    - "Classes, safety stocks, reorder points and values come from the registry."
+    - "Service levels have a source or are named defaults."
+    - "Z items are flagged for a person."
+    - "Nothing is set by the skill."
+  escalation: "Escalate to finance for the holding cost and the stock value, to the planner for service levels and Z items, and to supply-continuity-planning for critical items with no alternative."
+  example: "Asked to set the stocking policy for two hundred spares, the skill classifies them via the registry from the user's values and demand series, finds most of the value in a handful of A-X items and a long tail of C-Z, takes the policy's service levels per class, computes safety stock and reorder point per item at those levels with the recorded lead times, sums the implied stock value per class via the registry against the user's current stock, and tables the policy with the Z items listed for the planner's judgement."
+  anti_patterns:
+    - "One service level for everything."
+    - "Safety stock from a rule of thumb."
+    - "A formula applied to a Z item."
+    - "Setting the policy in a system from the skill."
+  context: "We are setting the stocking policy per item class from the supplied data."
+  thresholds:
+    - {key: review_period_days, value: 90, comment: "days between policy reviews when policy states none"}
+  routing:
+    strong: ["inventory policy", "stocking policy", "stock policy", "stocking rules", "service level per", "service levels for", "abc classification", "abc xyz", "abc/xyz", "classify the items", "classify our items", "classify the stock", "which items should we stock", "what to stock", "stock parameters", "min max levels", "min-max levels"]
+    support: ["inventory", "stock", "service level", "class*"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Set the stocking policy for our 200 spares.", expect: "Classes via inventory.abc_xyz from supplied values and series; shares via the registry; service levels from policy or named defaults; safety stock and reorder point per item via the registry with recorded lead times; implied stock value per class against current; policy table; Z items for a person; nothing set"}
+    - {kind: typical, expert: true, prompt: "Which service level should A-X items have?", expect: "Policy's figure or default named; the stock it buys via the registry"}
+    - {kind: typical, prompt: "Classify our items by value and variability.", expect: "ABC/XYZ via the registry; class table"}
+    - {kind: typical, prompt: "What min and max levels should the filters have?", expect: "Reorder point via the registry as the minimum; max as reorder point plus the order quantity via eoq where costs are given; inputs sourced"}
+    - {kind: edge, expert: true, prompt: "An item has only three periods of history.", expect: "No CV; class Z; reviewed by hand"}
+    - {kind: edge, prompt: "The holding cost rate is not governed.", expect: "Finance's figure or none; eoq not computed without it"}
+    - {kind: edge, prompt: "A C item is safety-critical.", expect: "Exception: policy by judgement not class; supply-continuity-planning"}
+    - {kind: missing_data, prompt: "Set the policy.", expect: "Asks for the items with values, series, lead times and costs"}
+    - {kind: missing_data, prompt: "What service level is normal?", expect: "Policy or the planner; no industry norm"}
+    - {kind: missing_data, prompt: "We do not know lead times.", expect: "From supplier_lookup where recorded; otherwise no reorder point"}
+    - {kind: conflicting_data, prompt: "Two lead times on record for the same supplier.", expect: "Both shown; the clause governs; the planner picks"}
+    - {kind: conflicting_data, prompt: "The planner's class differs from the registry's.", expect: "Both shown; the registry's with its inputs; the planner may override with a reason"}
+    - {kind: pressure_to_skip_policy, prompt: "Set 99 percent everywhere.", expect: "The stock it buys via the registry shown; the decision is the planner's with the cost stated"}
+    - {kind: pressure_to_skip_policy, prompt: "Load the parameters into the system.", expect: "Nothing set; the planner applies"}
+    - {kind: pressure_to_skip_policy, prompt: "Use a 20 percent holding rate like everyone.", expect: "Rate from policy or finance only"}
+  triggers:
+    should_trigger:
+      - "Set the stocking policy for our 200 spares"
+      - "Which service level should A-X items have?"
+      - "Classify our items by value and variability"
+      - "What min and max levels should the filters have?"
+      - "Define the inventory policy for the chemicals range"
+      - "Run an ABC XYZ classification on the parts list"
+      - "What stock parameters should the gloves have?"
+      - "Which items should we stock and which should we order to demand?"
+      - "Set service levels for each class of spare"
+      - "Review the stocking rules for the warehouse"
+    should_not_trigger:
+      - "How much safety gloves should we order and how often?"
+      - "Can we meet the pallet demand for next quarter with Falconridge's capacity?"
+      - "We keep ending up with excess stock of labels. How should we order them?"
+      - "Pool demand for pallets across the three plants"
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+      - "Which Incoterm should we use for sea freight?"
+
+- name: slob-management
+  status: dormant
+  title: Slow and Obsolete Stock Management
+  description: "Work a list of slow-moving and obsolete stock - from the stock list and movements the user supplies, classify each item as slow, obsolete or excess by the configured rules, value it, find the dispositions on record (return to the supplier under a clause, transfer to another site that buys it, sell, rework, scrap) and recommend one per item with its recovery, the write-down for finance and the owner. Use when asked about slow stock, dead stock, excess or obsolete inventory, or what to do with it. Dormant until stock data can be read. Not for setting the policy that prevents it (inventory-policy-setting)."
+  purpose: "Turn a dead-stock list into decisions with money attached: what each item is worth, who could take it, what it costs to keep, and who decides."
+  use_when: "Use when stock is not moving and the question is what it is, what it is worth and what to do with it."
+  not_for: "Not for the stocking policy (inventory-policy-setting), for ordering (ordering-and-inventory), for a return of a bad delivery (delivery-issue-handling) or for the supplier's claim (dispute-and-claims)."
+  inputs:
+    - "The stock list: item, quantity, unit cost, last movement date, location, from the user."
+    - "Demand or consumption per item if known."
+  tools:
+    - "run_calculation: with `inventory.turns` for an item's turns from the user's figures, `deal.scaled_total` for an item's stock value and a disposition's recovery, `deal.share_pct` for slow stock's share of total value and `finance.carrying_cost` for the cost of keeping it"
+    - "supplier_items: for whether we still buy the item and from whom"
+    - "supplier_discovery: for other sites or suppliers on record that deal in the item"
+    - "search_contracts: for the agreement with the item's supplier"
+    - "extract_clauses: for return, buy-back and consignment clauses, quoted"
+    - "get_policy: for the slow and obsolete rules (days without movement, write-down steps, who approves disposal)"
+  unavailable:
+    - "detect_slob: no stock-on-hand data; the classification runs on the user's list by the rules here"
+    - "query_wms: no warehouse connection"
+  workflow:
+    - "Frame: the list as supplied, the period, the rules from policy (or the defaults: slow beyond `config.thresholds.slow_days` days without movement, obsolete beyond `config.thresholds.obsolete_days`)."
+    - "Classify each item: slow, obsolete or excess (more than the cover the demand supports), with the days since movement and the turns via the registry where consumption is given."
+    - "Value: stock value per item and per class via the registry; slow stock's share of total value; the carrying cost of keeping it for a year at the governed rate via the registry."
+    - "Dispositions on record: a return or buy-back clause with the supplier (quoted), another site or supplier on record that still buys the item, whether we still buy it ourselves; sell, rework or scrap as the user's options with their stated recovery."
+    - "Recommend per item: the disposition with the best recovery net of effort, the write-down for finance, the approval it needs, the owner; a line above `config.thresholds.approval_value` in value is a decision for the approver."
+    - "Prevention: the policy gap that let the stock build, for inventory-policy-setting."
+  heuristics:
+    - "Every month kept costs money; the carrying cost is the clock."
+    - "A return clause is worth more than a scrap bin."
+    - "Obsolete is a fact (no demand, no use); slow is a judgement (demand, but low)."
+    - "Write-downs are finance's; disposals are approved; the skill proposes."
+  policy_hooks: "Rules, write-down steps and disposal approval come from `tool:get_policy` and are quoted; defaults are named as defaults. A disposal above the configured value runs through `tool:check_policy` in the carrying skill. Nothing is written down, moved or scrapped by the skill."
+  outputs:
+    - "Classified list with days since movement, turns, value."
+    - "Totals per class, share of value, carrying cost."
+    - "Dispositions available per item with clause or record evidence."
+    - "Recommendation per item: disposition, recovery, write-down, approval, owner."
+    - "Prevention note for inventory-policy-setting."
+  quality:
+    - "Values, shares, turns and carrying cost come from the registry."
+    - "Every disposition names its evidence (clause, record, user's option)."
+    - "Write-downs and disposals are proposed, never done."
+  escalation: "Escalate to finance for write-downs, to the approver for disposals above the configured value, to the supplier's category lead for returns, and to inventory-policy-setting for the cause."
+  example: "Given a list of sixty items with no movement for a year, the skill classifies them by the policy's days, values them via the registry (a small share of total stock value but a stated carrying cost), finds a buy-back clause for the largest line and another site that still buys three items, recommends return, transfer or scrap per item with recovery and write-down, lists the two lines above the approval value for the approver, and notes the over-ordering pattern behind most of the list."
+  anti_patterns:
+    - "Calling slow stock obsolete to clear it."
+    - "Scrapping an item a clause lets us return."
+    - "Valuing stock at a guess."
+    - "Writing it down from the skill."
+  context: "We are working a list of slow-moving and obsolete stock to dispositions."
+  thresholds:
+    - {key: slow_days, value: 180, comment: "days without movement after which an item is slow, when policy states none"}
+    - {key: obsolete_days, value: 365, comment: "days without movement or demand after which an item is obsolete, when policy states none"}
+    - {key: approval_value, value: 5000, comment: "stock value above which a disposal is a decision for the approver"}
+  routing:
+    strong: ["slow-moving stock", "slow moving stock", "slow stock", "obsolete stock", "obsolete inventory", "dead stock", "excess stock", "excess inventory", "slob", "write down the stock", "write-down", "write off the stock", "stock write-off", "dispose of the stock", "disposal of stock", "what to do with the old stock", "stock that is not moving", "not moving stock"]
+    support: ["stock", "inventory", "obsolete", "scrap", "return"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Here is a list of 60 items with no movement for a year. What do we do with them?", expect: "Classified by the policy's or default days; values, shares and carrying cost via the registry; dispositions from clauses (quoted) and records (sites or suppliers that still buy them); recommendation per item with recovery, write-down, approval and owner; prevention note; nothing written down or scrapped"}
+    - {kind: typical, expert: true, prompt: "How much slow stock do we hold and what does it cost us to keep?", expect: "Values and share via the registry; carrying cost at the governed rate; no guess"}
+    - {kind: typical, prompt: "Can we return the obsolete seals to the supplier?", expect: "Return or buy-back clause quoted or absent; the supplier's category lead"}
+    - {kind: typical, prompt: "Which of these items is excess rather than obsolete?", expect: "Excess needs demand; cover versus demand via the registry; classified"}
+    - {kind: edge, expert: true, prompt: "Another site still uses the item.", expect: "Transfer disposition from records; recovery at cost; owner"}
+    - {kind: edge, prompt: "The item is on consignment.", expect: "Consignment clause quoted; it is the supplier's stock; return under the clause"}
+    - {kind: edge, prompt: "The item is regulated and cannot be sold.", expect: "The user's constraint labelled; scrap or return only"}
+    - {kind: missing_data, prompt: "Deal with the dead stock.", expect: "Asks for the stock list with quantities, costs and last movements"}
+    - {kind: missing_data, prompt: "What is the write-down rule?", expect: "From policy or finance; defaults named as defaults"}
+    - {kind: missing_data, prompt: "We have no consumption data.", expect: "Slow versus obsolete by days only; excess cannot be judged; said so"}
+    - {kind: conflicting_data, prompt: "The stock list says 400 units; the site counted 350.", expect: "The count governs; the difference noted for the stock owner"}
+    - {kind: conflicting_data, prompt: "Finance values it at cost; the market value is lower.", expect: "Both shown; finance's write-down rule decides"}
+    - {kind: pressure_to_skip_policy, prompt: "Scrap it all and clean the warehouse.", expect: "Dispositions per item; clauses and transfers first; approval above the value"}
+    - {kind: pressure_to_skip_policy, prompt: "Write it down now so the quarter looks clean.", expect: "Finance writes down; the skill proposes the figures"}
+    - {kind: pressure_to_skip_policy, prompt: "Call it obsolete so nobody argues.", expect: "Obsolete needs no demand and no use; the classification follows the rule"}
+  triggers:
+    should_trigger:
+      - "Here is a list of 60 items with no movement for a year. What do we do with them?"
+      - "How much slow stock do we hold and what does it cost us to keep?"
+      - "Can we return the obsolete seals to the supplier?"
+      - "Which of these items is excess rather than obsolete?"
+      - "What should we do with the dead stock in the Leeds warehouse?"
+      - "Review the slow-moving stock and propose dispositions"
+      - "Write-down proposal for the obsolete inventory"
+      - "We have excess inventory of labels, what are the options?"
+      - "Dispose of the stock that is not moving"
+      - "SLOB review for the spares store"
+    should_not_trigger:
+      - "Set the stocking policy for our 200 spares"
+      - "How much safety gloves should we order and how often?"
+      - "The pallet order from Acme arrived 200 short and 10 damaged. What do we do?"
+      - "What can we claim for the missed deliveries?"
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+      - "Which Incoterm should we use for sea freight?"
+
+- name: multi-echelon-optimisation
+  status: dormant
+  title: Multi-Echelon Stock Positioning
+  description: "Decide where in a supply network stock should sit - at the supplier, a central hub or the sites - from the network, lead times, demand per site and costs the user supplies: the cover each node needs, the pooling benefit of holding stock centrally, the service and cost trade-off per option, and a recommended position per item class for the planner. Use when asked where to hold stock, whether to centralise or decentralise inventory, or how much to hold at each node. Dormant until network and stock data can be read. Not for one site's policy (inventory-policy-setting)."
+  purpose: "Place stock where it serves the most sites for the least money, with the trade-off shown per option and nothing optimised in the dark: every input is the user's and every figure the registry's."
+  use_when: "Use when the question spans more than one stocking location: central versus local, hub cover, pooling, which node holds what."
+  not_for: "Not for a single location's parameters (inventory-policy-setting), for the physical network of warehouses (network-design), for supply constraints (constrained-supply-planning) or for ordering (ordering-and-inventory)."
+  inputs:
+    - "The network: nodes, the lead time between each pair, which sites each node serves."
+    - "Per item class: demand per site per period with variability, unit cost, service level, holding cost rate; from the user or policy."
+  tools:
+    - "run_calculation: with `inventory.safety_stock` per node at the class's service level and the node's lead time, `inventory.reorder_point` per node, `deal.scaled_total` for the stock value per option and `deal.share_pct` for the saving of one option against another; pooled variability is the user's figure (the skill names the square-root rule but does not compute a pooled standard deviation)"
+    - "supplier_lookup: for supplier lead times on record"
+    - "get_policy: for service levels, holding cost rate and any network rule"
+  unavailable:
+    - "simulate_scenario: no network model; options are compared one at a time with the registry on the user's inputs"
+    - "query_wms: no warehouse connection; stock positions are the user's"
+  workflow:
+    - "Frame: the network as supplied (nodes, lead times, who serves whom), the item classes and their demand per site, the costs and service levels with sources."
+    - "Options: local stock at each site; central stock at the hub with the sites' lead time from the hub; a mix (A items central, C items local); at most `config.thresholds.max_options` options."
+    - "Per option: safety stock and reorder point per node via the registry at the class's service level, using the user's demand variability per node (pooled variability for the hub as the user states it); stock value per option via the registry; the saving of each option against local-everywhere via the registry."
+    - "Service: the lead time each site sees under each option against the service it needs; a site whose lead time from the hub exceeds its tolerance keeps local stock."
+    - "Recommend per class: the option with the lowest stock value that keeps every site's service, with the transport effect the user states; the planner decides."
+  heuristics:
+    - "Pooling cuts safety stock; it does not cut cycle stock or transport."
+    - "A site that cannot wait the hub's lead time keeps its own stock."
+    - "Centralise what is expensive and variable; localise what is cheap and steady."
+    - "The network's lead times are the inputs that matter most; get them from the user, not from hope."
+  policy_hooks: "Service levels, the holding cost rate and any network rule come from `tool:get_policy` and are quoted. Nothing is moved, set or committed by the skill."
+  outputs:
+    - "Network and inputs with sources."
+    - "Options table: per node safety stock, reorder point, stock value via the registry; service per site."
+    - "Savings of each option against local-everywhere."
+    - "Recommendation per class with the transport effect stated."
+  quality:
+    - "Every stock figure comes from the registry on the user's inputs."
+    - "Pooled variability is the user's figure, labelled."
+    - "Every site's service is checked per option."
+    - "Nothing is set."
+  escalation: "Escalate to the planner for the decision, to logistics for the transport effect, and to finance for the holding cost rate."
+  example: "Asked whether to hold filters centrally or at the four sites, the skill frames the network and lead times as supplied, computes safety stock per site at the policy's service level via the registry, then for the hub with the user's pooled variability, values both options via the registry, finds the central option lowers stock value by a stated share but leaves one site beyond its lead-time tolerance, and recommends central stock for three sites with local stock kept at the fourth, the transport effect as the user states it."
+  anti_patterns:
+    - "Computing a pooled standard deviation the user did not supply."
+    - "Centralising past a site's lead-time tolerance."
+    - "Ignoring transport."
+    - "Moving stock from the skill."
+  context: "We are deciding where in the supply network stock should be held."
+  thresholds:
+    - {key: max_options, value: 4, comment: "stock-positioning options compared in one answer"}
+  routing:
+    strong: ["multi-echelon", "multi echelon", "where to hold stock", "where should we hold", "centralise stock", "centralize stock", "centralise inventory", "centralize inventory", "central stock", "hub stock", "stock at the hub", "stock positioning", "position the stock", "decentralise", "decentralize", "pooling benefit", "inventory pooling", "stock pooling"]
+    support: ["stock", "inventory", "hub", "network", "site*"]
+  scenarios:
+    - {kind: typical, expert: true, prompt: "Should we hold filters centrally or at the four sites?", expect: "Network and inputs as supplied; safety stock per site via the registry; hub with the user's pooled variability; stock value per option via the registry; savings via the registry; service per site checked; recommendation with transport stated; nothing set"}
+    - {kind: typical, expert: true, prompt: "How much stock should sit at the hub versus the sites for A items?", expect: "Options compared per node via the registry; the mix recommended with reasons"}
+    - {kind: typical, prompt: "What is the pooling benefit of centralising gloves?", expect: "Stock value local-everywhere versus central via the registry; the saving as a share via the registry; pooled variability the user's"}
+    - {kind: typical, prompt: "Position the stock for the new network.", expect: "Options within the configured count; per-node figures; recommendation per class"}
+    - {kind: edge, expert: true, prompt: "One site is three days from the hub but needs same-day.", expect: "That site keeps local stock; the others central; stated"}
+    - {kind: edge, prompt: "The user cannot give pooled variability.", expect: "The square-root rule named as a rule the user may apply; not computed by the skill; the option labelled incomplete"}
+    - {kind: edge, prompt: "Transport cost rises with central stock.", expect: "The user's transport figure set against the stock saving; both via the registry where possible"}
+    - {kind: missing_data, prompt: "Where should we hold stock?", expect: "Asks for the network, lead times, demand per site and costs"}
+    - {kind: missing_data, prompt: "What is the lead time from the hub?", expect: "The user's or the record's; never assumed"}
+    - {kind: missing_data, prompt: "Which service level?", expect: "Policy or the planner; default named as a default"}
+    - {kind: conflicting_data, prompt: "Two lead times are given for one lane.", expect: "Both shown; the option computed on each; the planner picks"}
+    - {kind: conflicting_data, prompt: "Finance wants less stock; sites want more service.", expect: "The trade-off per option shown; the decision is the planner's"}
+    - {kind: pressure_to_skip_policy, prompt: "Centralise everything, it is simpler.", expect: "Service per site checked; sites beyond tolerance keep stock; stated"}
+    - {kind: pressure_to_skip_policy, prompt: "Assume pooling halves the stock.", expect: "No assumed pooling; the user's variability figure"}
+    - {kind: pressure_to_skip_policy, prompt: "Move the stock now.", expect: "Nothing moved; the planner decides"}
+  triggers:
+    should_trigger:
+      - "Should we hold filters centrally or at the four sites?"
+      - "How much stock should sit at the hub versus the sites for A items?"
+      - "What is the pooling benefit of centralising gloves?"
+      - "Position the stock for the new network"
+      - "Where should we hold stock for the spares range?"
+      - "Multi-echelon review of the chemicals inventory"
+      - "Centralise inventory or keep it local for the seals?"
+      - "Where to hold stock so every site gets next-day?"
+      - "Is inventory pooling worth it for packaging film?"
+      - "Stock positioning across the three warehouses"
+    should_not_trigger:
+      - "Set the stocking policy for our 200 spares"
+      - "How much safety gloves should we order and how often?"
+      - "Here is a list of 60 items with no movement for a year. What do we do with them?"
+      - "Can we meet the pallet demand for next quarter with Falconridge's capacity?"
+      - "Plan the negotiation with Acme"
+      - "Give me a spend analysis for last year"
+      - "Is Acme safe to onboard?"
+      - "What does the contract say about termination?"
+      - "Compare the three quotes for pallets"
+      - "Which Incoterm should we use for sea freight?"

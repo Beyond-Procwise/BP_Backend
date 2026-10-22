@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Should we hold filters centrally or at the four sites?"
+  expect: "Network and inputs as supplied; safety stock per site via the registry; hub with the user's pooled variability; stock value per option via the registry; savings via the registry; service per site checked; recommendation with transport stated; nothing set"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "How much stock should sit at the hub versus the sites for A items?"
+  expect: "Options compared per node via the registry; the mix recommended with reasons"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "What is the pooling benefit of centralising gloves?"
+  expect: "Stock value local-everywhere versus central via the registry; the saving as a share via the registry; pooled variability the user's"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Position the stock for the new network."
+  expect: "Options within the configured count; per-node figures; recommendation per class"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are deciding where in the supply network stock should be held."
+  prompt: "One site is three days from the hub but needs same-day."
+  expect: "That site keeps local stock; the others central; stated"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are deciding where in the supply network stock should be held."
+  prompt: "The user cannot give pooled variability."
+  expect: "The square-root rule named as a rule the user may apply; not computed by the skill; the option labelled incomplete"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are deciding where in the supply network stock should be held."
+  prompt: "Transport cost rises with central stock."
+  expect: "The user's transport figure set against the stock saving; both via the registry where possible"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are deciding where in the supply network stock should be held."
+  prompt: "Where should we hold stock?"
+  expect: "Asks for the network, lead times, demand per site and costs"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are deciding where in the supply network stock should be held."
+  prompt: "What is the lead time from the hub?"
+  expect: "The user's or the record's; never assumed"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are deciding where in the supply network stock should be held."
+  prompt: "Which service level?"
+  expect: "Policy or the planner; default named as a default"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are deciding where in the supply network stock should be held."
+  prompt: "Two lead times are given for one lane."
+  expect: "Both shown; the option computed on each; the planner picks"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are deciding where in the supply network stock should be held."
+  prompt: "Finance wants less stock; sites want more service."
+  expect: "The trade-off per option shown; the decision is the planner's"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are deciding where in the supply network stock should be held."
+  prompt: "Centralise everything, it is simpler."
+  expect: "Service per site checked; sites beyond tolerance keep stock; stated"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are deciding where in the supply network stock should be held."
+  prompt: "Assume pooling halves the stock."
+  expect: "No assumed pooling; the user's variability figure"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are deciding where in the supply network stock should be held."
+  prompt: "Move the stock now."
+  expect: "Nothing moved; the planner decides"
+  expert_graded: false

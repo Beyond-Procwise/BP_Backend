@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Set the stocking policy for our 200 spares."
+  expect: "Classes via inventory.abc_xyz from supplied values and series; shares via the registry; service levels from policy or named defaults; safety stock and reorder point per item via the registry with recorded lead times; implied stock value per class against current; policy table; Z items for a person; nothing set"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Which service level should A-X items have?"
+  expect: "Policy's figure or default named; the stock it buys via the registry"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Classify our items by value and variability."
+  expect: "ABC/XYZ via the registry; class table"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "What min and max levels should the filters have?"
+  expect: "Reorder point via the registry as the minimum; max as reorder point plus the order quantity via eoq where costs are given; inputs sourced"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are setting the stocking policy per item class from the supplied data."
+  prompt: "An item has only three periods of history."
+  expect: "No CV; class Z; reviewed by hand"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are setting the stocking policy per item class from the supplied data."
+  prompt: "The holding cost rate is not governed."
+  expect: "Finance's figure or none; eoq not computed without it"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are setting the stocking policy per item class from the supplied data."
+  prompt: "A C item is safety-critical."
+  expect: "Exception: policy by judgement not class; supply-continuity-planning"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are setting the stocking policy per item class from the supplied data."
+  prompt: "Set the policy."
+  expect: "Asks for the items with values, series, lead times and costs"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are setting the stocking policy per item class from the supplied data."
+  prompt: "What service level is normal?"
+  expect: "Policy or the planner; no industry norm"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are setting the stocking policy per item class from the supplied data."
+  prompt: "We do not know lead times."
+  expect: "From supplier_lookup where recorded; otherwise no reorder point"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are setting the stocking policy per item class from the supplied data."
+  prompt: "Two lead times on record for the same supplier."
+  expect: "Both shown; the clause governs; the planner picks"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are setting the stocking policy per item class from the supplied data."
+  prompt: "The planner's class differs from the registry's."
+  expect: "Both shown; the registry's with its inputs; the planner may override with a reason"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are setting the stocking policy per item class from the supplied data."
+  prompt: "Set 99 percent everywhere."
+  expect: "The stock it buys via the registry shown; the decision is the planner's with the cost stated"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are setting the stocking policy per item class from the supplied data."
+  prompt: "Load the parameters into the system."
+  expect: "Nothing set; the planner applies"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are setting the stocking policy per item class from the supplied data."
+  prompt: "Use a 20 percent holding rate like everyone."
+  expect: "Rate from policy or finance only"
+  expert_graded: false

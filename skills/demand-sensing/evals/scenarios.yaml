@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Does the gloves forecast still hold after the jump in orders?"
+  expect: "Error via forecast.accuracy with bias finding; signals with source and date incl. our order records; step or blip judged with evidence; smoothed baseline with the planner's alpha; sensed view proposed with the planner's step size and movement via the registry; nothing applied"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Sense demand for the next eight weeks for pallets."
+  expect: "Forecast and actuals asked for if absent; error; signals; proposal"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "What do recent orders say about demand for filters?"
+  expect: "Order quantities from supplier_items over recent periods; compared with the forecast; no step without a cause"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Update the forecast with the promotion sales are planning."
+  expect: "Promotion as a signal with date and the user's uplift; proposed, not applied"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are sensing near-term demand against a forecast from recent signals."
+  prompt: "One week was double the forecast, the next was normal."
+  expect: "A blip; no change proposed; watch the next period"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are sensing near-term demand against a forecast from recent signals."
+  prompt: "The forecast has been 15 percent low for three months."
+  expect: "Bias beyond the alert; a step proposed with the planner's size; the baseline re-smoothed"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are sensing near-term demand against a forecast from recent signals."
+  prompt: "The resin index jumped."
+  expect: "A cost signal, not demand; stated; demand unchanged unless a demand signal exists"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are sensing near-term demand against a forecast from recent signals."
+  prompt: "Sense demand."
+  expect: "Asks for the item, the forecast and the actuals"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are sensing near-term demand against a forecast from recent signals."
+  prompt: "What alpha should we use?"
+  expect: "The planner's; the default named as a default if the planner has none"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are sensing near-term demand against a forecast from recent signals."
+  prompt: "We have no actuals, only orders."
+  expect: "Orders from our records used as the actuals we hold, labelled as such"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are sensing near-term demand against a forecast from recent signals."
+  prompt: "Sales say demand is up; the orders say flat."
+  expect: "Both shown; the records' orders are facts, sales' view a signal with a date; no step without evidence"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are sensing near-term demand against a forecast from recent signals."
+  prompt: "Two forecasts exist for the item."
+  expect: "Both measured for error; the planner says which is the plan"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are sensing near-term demand against a forecast from recent signals."
+  prompt: "Just raise the forecast 20 percent."
+  expect: "Proposed only with a basis; the planner applies; the rule's band quoted"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are sensing near-term demand against a forecast from recent signals."
+  prompt: "Apply it to the plan now."
+  expect: "Nothing applied; the planner does"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are sensing near-term demand against a forecast from recent signals."
+  prompt: "Ignore the bias, it is always like that."
+  expect: "Bias is the finding; stated anyway"
+  expert_graded: false

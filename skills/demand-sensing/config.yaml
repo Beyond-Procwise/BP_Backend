@@ -1,0 +1,29 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+status: dormant                # drafted, checked, not routed, listed or usable until this line goes (services.skills.loader)
+thresholds:
+  sensing_horizon_periods: 8    # periods ahead the sensed view covers
+  bias_alert_pct: 10    # forecast bias in percentage points beyond which the forecast is called biased
+unavailable_tools:
+  - statistical_forecast
+  - simulate_scenario
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "demand sensing"
+    - "sense demand"
+    - "sensed demand"
+    - "does the forecast still hold"
+    - "forecast still hold"
+    - "is the forecast still"
+    - "recent orders say"
+    - "what do recent orders"
+    - "short-term demand"
+    - "short term demand"
+    - "near-term demand"
+    - "demand signal*"
+    - "adjust the forecast for"
+    - "update the forecast with"
+  support:                       # 1 point each
+    - "forecast"
+    - "demand"
+    - "signal*"
+    - "actuals"

@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Build the consensus forecast for the three packaging families."
+  expect: "Baseline via smoothing with the planner's alpha; inputs with reasons, owners and sizes via the registry; accuracy by source last cycle; reconciliation on evidence; unresolved differences named; consensus with assumptions; nothing applied"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Sales say 20 percent up, the baseline says flat. Reconcile."
+  expect: "Override size via the registry against the limit; the reason required; last cycle's accuracy of each; evidence-based reconciliation or named unresolved"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Which source was more accurate last cycle?"
+  expect: "forecast.accuracy per source; bias and error; stated weight"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Document this month's consensus with the overrides."
+  expect: "Consensus, overrides with reasons and owners, assumptions"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are bringing several demand views together into one agreed forecast."
+  prompt: "Finance's number is a budget, not a forecast."
+  expect: "Named as a budget input; not weighted as a forecast; the difference shown"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are bringing several demand views together into one agreed forecast."
+  prompt: "A customer gave us their own forecast."
+  expect: "An input with owner and date; its accuracy unknown until a cycle passes"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are bringing several demand views together into one agreed forecast."
+  prompt: "The series has only four periods."
+  expect: "Baseline weak; said so; overrides carry more weight with reasons"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are bringing several demand views together into one agreed forecast."
+  prompt: "Build the consensus."
+  expect: "Asks for the series and each function's input"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are bringing several demand views together into one agreed forecast."
+  prompt: "No actuals for last cycle."
+  expect: "No accuracy by source; the reconciliation rests on reasons alone, said so"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are bringing several demand views together into one agreed forecast."
+  prompt: "What alpha?"
+  expect: "The planner's; default named as a default"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are bringing several demand views together into one agreed forecast."
+  prompt: "Two sales teams submitted different numbers for one family."
+  expect: "Both as inputs; sales reconciles its own before consensus; named unresolved otherwise"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are bringing several demand views together into one agreed forecast."
+  prompt: "The override is above the limit but the reason is 'experience'."
+  expect: "Not a documented reason per the rules; the planning owner decides"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are bringing several demand views together into one agreed forecast."
+  prompt: "Take the highest number to be safe."
+  expect: "Not consensus; the evidence-based number proposed; the risk of over-forecast stated"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are bringing several demand views together into one agreed forecast."
+  prompt: "Apply the consensus to the plan."
+  expect: "Nothing applied; the meeting agrees"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are bringing several demand views together into one agreed forecast."
+  prompt: "Skip the accuracy review, it causes arguments."
+  expect: "Accuracy by source stays; it is the referee"
+  expert_graded: false
