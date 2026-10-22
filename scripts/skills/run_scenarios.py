@@ -22,8 +22,10 @@ from types import SimpleNamespace
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
+# The repo root must come BEFORE src: src/scripts would otherwise shadow the top-level scripts package for
+# anything imported after this module (tests/agent_policy failed to collect, 2026-10-22).
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT))
 
 
 def _nick():
