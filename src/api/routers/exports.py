@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Response
 
 from api.auth import require_user
+from api.endpoint_gate import require as gate
 from src.services import export_store, rbac
 from src.services.contract_tools import store
 
@@ -55,6 +56,9 @@ def get_export(export_id: str, principal=Depends(require_user)):
 
 @router.delete("/{export_id}")
 def delete_export(export_id: str, principal=Depends(require_user)):
+    # A write, so it asks the gate first (RT-24: this route landed without one and the ratchet went
+    # red); the store still deletes only a record the caller created, so the scope is unchanged.
+    gate("export.delete", principal, agent="ExportsRouter", context={"export_id": export_id})
     try:
         gone = export_store.delete(export_id, created_by=_subject(principal))
     except store.StoreUnavailable:

@@ -18,6 +18,12 @@ RECORD = {"export_id": "abc", "kind": "xlsx", "filename": "spend.xlsx", "media_t
           "title": "Spend", "content": b"PK..", "size_bytes": 4, "source": "agent", "created_by": "carol", "created_date": "2026-10-22T18:00:00"}
 
 
+@pytest.fixture(autouse=True)
+def _no_gate(monkeypatch):
+    """The gate on delete (RT-24) has its own suite; here every call is allowed."""
+    monkeypatch.setattr(r, "gate", lambda *a, **k: None)
+
+
 @pytest.fixture()
 def rig(monkeypatch):
     calls = []

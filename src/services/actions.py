@@ -135,6 +135,9 @@ ACTIONS: Dict[str, str] = {
     "offer.extraction.confirm": "approve_email",
     # --- sharing (leaves the tenant) -------------------------------------
     "report.export": "share",
+    # Deleting one's own exported file record (the store scopes the delete to the creator). A write, not a share:
+    # nothing leaves the tenant.
+    "export.delete": "write",
     "research.web": "share",
     "supplier.clearance.set": "share",
     # --- configuring -----------------------------------------------------
