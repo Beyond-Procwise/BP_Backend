@@ -55,6 +55,8 @@ ACTIONS: Dict[str, str] = {
     # Recording what a sanctions, credit, ESG, forced-labour, conflict-minerals or risk-event check found.
     # A write by a named person into an append-only register; agents only read it.
     "supplier.screening.record": "write",
+    # Loading a published commodity/price index series into the index register (append-only; agents only read it).
+    "index_series.record": "write",
     "sales.detect": "write",   # creates opportunity rows
     "contract.write": "write",
     "deal.write": "write",

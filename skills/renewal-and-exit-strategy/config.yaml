@@ -10,7 +10,6 @@ thresholds:                      # configurable defaults for review, not policy
   buffer_business_days: 10       # plan must finish this long before the notice deadline
   escalate_days_to_deadline: 30
 unavailable_tools:
-  - commodity_index_lookup
   - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending

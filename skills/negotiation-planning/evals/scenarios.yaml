@@ -51,7 +51,7 @@
 - id: m3
   kind: missing_data
   prompt: Is their increase justified by the index?
-  expect: 'commodity_index_lookup NOT AVAILABLE: asks for the index move'
+  expect: 'Calls commodity_index_lookup; with no loaded series says index history is not available and asks for the index move, labelled user-supplied'
   expert_graded: false
 - id: c1
   kind: conflicting_data

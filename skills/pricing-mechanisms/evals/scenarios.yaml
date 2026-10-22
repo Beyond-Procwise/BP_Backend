@@ -51,7 +51,7 @@
 - id: m3
   kind: missing_data
   prompt: What is the correlation of the energy index with the supplier's costs?
-  expect: 'No series and no commodity_index_lookup: not available; asks for data'
+  expect: 'Calls commodity_index_lookup; the series is not loaded, so index history is not available; asks for the code, source and series; no estimate'
   expert_graded: false
 - id: c1
   kind: conflicting_data

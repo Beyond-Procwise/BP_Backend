@@ -5,7 +5,6 @@ thresholds:
   finance_review_min_annualised: 100000 # in the reporting currency, per initiative
   escalate_above_annualised: 1000000
 unavailable_tools:
-  - commodity_index_lookup
   - build_xlsx
   - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)

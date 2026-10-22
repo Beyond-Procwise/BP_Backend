@@ -887,6 +887,30 @@ def _screening_tools() -> List[Tool]:
     ]
 
 
+def _index_tools() -> List[Tool]:
+    """Published index series a person loaded into the index register. Read-only; nothing is estimated."""
+    from src.services import commodity_index as CI
+
+    return [
+        Tool(
+            name="commodity_index_lookup",
+            description=(
+                "Read a published commodity or price index series from the index register: the series as a "
+                "person loaded it (code, publisher, unit, source), its dated values in a window, and the move "
+                "between the first and last recorded points in that window. Pass the series code, or words to "
+                "find it; with no series it lists what is loaded. It subscribes to no publisher and estimates, "
+                "interpolates and forecasts nothing: a series not loaded is 'index history not available'. "
+                "Check that the supplier does not influence the index before using it."
+            ),
+            parameters={"type": "object", "properties": {
+                "series": {"type": "string", "description": "series code, or words from its description or publisher"},
+                "start": {"type": "string", "description": "YYYY-MM-DD"},
+                "end": {"type": "string", "description": "YYYY-MM-DD"}}},
+            handler=CI.lookup,
+        ),
+    ]
+
+
 def build_tools(
     agent_nick: Any,
     *,
@@ -920,6 +944,7 @@ def build_tools(
         + _supplier_tools()
         + _performance_tools()
         + _screening_tools()
+        + _index_tools()
     )
     if exclude:
         blocked = set(exclude)

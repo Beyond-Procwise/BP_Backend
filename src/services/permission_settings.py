@@ -78,6 +78,11 @@ CATALOGUE: Tuple[Setting, ...] = (
             "found on a supplier, with the provider and date. Agents only read these results.",
             "ScreeningRecordAuthorityPolicy", "screening_record_authority",
             ("supplier.screening.record",), "Admin"),
+    Setting("index_series_record", "Who may load commodity index series",
+            "Load a published index or price series (code, publisher, dated values) into the index register that "
+            "index-linked pricing, price-increase splits and savings neutralisation read. Agents only read it.",
+            "IndexSeriesRecordAuthorityPolicy", "index_series_record_authority",
+            ("index_series.record",), "Admin"),
     Setting("po_renumber", "Who may renumber purchase orders in bulk",
             "Rewrite the purchase-order number across all final records.",
             "PoRenumberAuthorityPolicy", "po_renumber_authority",

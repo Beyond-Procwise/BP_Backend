@@ -40,7 +40,7 @@ READ_ONLY_TOOLS = frozenset({
     "savings_tracker", "build_spend_cube", "supplier_discovery", "supplier_lookup",
     "obligation_tracker", "calc_supplier_scorecard",
     "screen_sanctions", "financial_health_score", "esg_rating_lookup", "forced_labour_screen",
-    "conflict_minerals_check", "monitor_risk_events",
+    "conflict_minerals_check", "monitor_risk_events", "commodity_index_lookup",
 })
 
 #: Told to every answering agent, so one whose instructions say "send" or
