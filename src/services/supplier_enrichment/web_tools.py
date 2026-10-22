@@ -127,6 +127,7 @@ def fetch_url(url: str) -> str:
     response = egress_get(
         url,
         purpose=Purpose.SUPPLIER_RESEARCH,
+        agent=SEARCH_AGENT,          # the outside-research agent: what an egress rule may be scoped to
         allowed_ports=_ALLOWED_PORTS,
         follow_redirects=True,
         timeout=10,

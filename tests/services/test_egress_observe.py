@@ -116,3 +116,17 @@ def test_an_observed_payload_is_classified_and_the_cap_judges_it(events, monkeyp
     e = events[-1]
     assert sorted(e["classification"]) == ["amount", "document_ref"]
     assert e["shadow_decision"] == "deny" and "commercial" in e["shadow_reason"]
+
+
+def test_fetch_url_carries_the_research_agents_name(events, monkeypatch):
+    from src.services.supplier_enrichment import web_tools
+
+    class Page:
+        status_code, headers, text = 200, {"Content-Type": "text/html"}, "<p>hi</p>"
+
+        def raise_for_status(self):
+            pass
+    monkeypatch.setattr(egress.requests, "request", lambda m, u, **kw: Page())
+    assert web_tools.fetch_url("https://borcelle.example/about") == "hi"
+    assert events[-1]["agent"] == web_tools.SEARCH_AGENT == "supplier_research"
+    assert events[-1]["purpose"] == "supplier_research"
