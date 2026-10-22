@@ -7,9 +7,6 @@ thresholds:
   single_supplier_alert_pct: 30    # one supplier above this share of spend is a dependence alert
   coverage_floor_pct: 90           # recorded classification coverage below this is a gap to state
   similarity_min: 0.6              # name similarity at or above which a description is a duplication candidate
-unavailable_tools:
-  - build_xlsx
-  - render_chart
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "spend analysis"

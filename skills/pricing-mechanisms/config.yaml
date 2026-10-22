@@ -12,10 +12,6 @@ thresholds:
   history_months_min: 24                # simulation window, shortest
   history_months_max: 36                # simulation window, longest
   uncapped_exposure_escalate_pct: 10    # uncapped exposure above this share of annual spend escalates
-unavailable_tools:
-  - build_docx
-  - build_xlsx
-  - render_chart
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "cap and floor"

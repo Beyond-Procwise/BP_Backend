@@ -6,7 +6,6 @@ thresholds:
 unavailable_tools:
   - create_rfx
   - get_freight_quote
-  - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "urgent*"

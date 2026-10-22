@@ -22,8 +22,7 @@ Not for whether one purchase is allowed (procurement-policy-compliance), for one
 
 Use `tool:build_spend_cube` by supplier, by buyer and by payment terms or status for the period's invoiced spend; `tool:invoice_status` per supplier of interest for the invoices with no order recorded (count and amount per currency) and `tool:invoice_reconciliation` for the open findings; `tool:open_orders` per supplier for its orders with date, total and buyer id; `tool:contract_pipeline` with a long horizon for the register's live contracts and `tool:search_contracts` by supplier to see whether a supplier is contracted; `tool:supplier_lookup` and `tool:supplier_discovery` for preferred flags and the suppliers already used for an item; `tool:similar_items` to find the same thing bought from several suppliers; `tool:check_policy` with a group of orders to test a suspected split; and `tool:run_calculation` with `deal.share_pct` for shares.
 
-NOT AVAILABLE: build_xlsx. Give the registers as text tables.
-NOT AVAILABLE: render_chart. Give the pattern totals as a table.
+Use `tool:build_xlsx` when the user asks for a spreadsheet of the figures, with the tables as the tools returned them. Use `tool:render_chart` when the user asks for a chart, with the values the tools returned.
 
 ## Workflow
 

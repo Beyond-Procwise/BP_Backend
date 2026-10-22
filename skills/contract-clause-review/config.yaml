@@ -4,8 +4,6 @@ thresholds:
   redline_max_chars: 20000          # two wordings longer than this are compared clause by clause
   escalate_liability_multiple: 2    # exposure above this multiple of annual contract value escalates
   notice_buffer_days: 10            # business days of buffer kept before any notice deadline a plan depends on
-unavailable_tools:
-  - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "redline*"

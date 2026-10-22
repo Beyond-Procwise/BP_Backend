@@ -3,7 +3,6 @@ thresholds:
   direct_award_limit_gbp: 25000    # our policy default above which a call-off needs a mini-competition unless the framework is stricter
 unavailable_tools:
   - create_rfx
-  - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "call-off*"

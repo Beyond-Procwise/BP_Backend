@@ -27,8 +27,8 @@ Not for designing a new framework (rfx-design), for the award decision after a m
 - Use `tool:screening_summary` for each lot supplier's screening status
 - Use `tool:get_policy` for the organisation's rule on direct awards and mini-competitions
 - Use `tool:check_policy` for the approval the call-off value needs
+- Use `tool:build_docx` when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated
 NOT AVAILABLE: create_rfx. the mini-competition is issued by a person on the sourcing platform; the skill gives the design
-NOT AVAILABLE: build_docx. the call-off guidance is given as text
 
 Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.direct_award_limit_gbp`.
 

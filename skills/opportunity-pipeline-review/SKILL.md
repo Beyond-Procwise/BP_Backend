@@ -23,8 +23,7 @@ Not for validating a single saving claim (savings-methodology), for sizing a poo
 
 Use `tool:savings_tracker` for the period's saved (avoided, recovered, realised) against claimed money, month by month, as the ledger states them; `tool:list_opportunity_levers` for the levers the platform tracks and what each means; `tool:get_opportunity_bucket` with the supplier_id and item_id (the item_id from `tool:supplier_items` or `tool:similar_items`, never guessed) for the bucket's status, evidence and lever state; `tool:build_spend_cube` by supplier for the spend the pipeline sits on; `tool:similar_items` and `tool:classify_spend` to size the ground for a pooling candidate before handing it to demand-aggregation; `tool:calc_supplier_scorecard` for the price-variance and findings evidence behind a recovery lever; and `tool:run_calculation` with `deal.share_pct` for shares and `deal.pct_change` for changes and `deal.realised_savings` where the user gives baseline and new prices with volume.
 
-NOT AVAILABLE: build_xlsx. Give the pipeline as a text table.
-NOT AVAILABLE: render_chart. Describe the monthly profile as a table.
+Use `tool:build_xlsx` when the user asks for a spreadsheet of the figures, with the tables as the tools returned them. Use `tool:render_chart` when the user asks for a chart, with the values the tools returned.
 
 ## Workflow
 

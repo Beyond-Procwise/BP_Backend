@@ -7,9 +7,6 @@ thresholds:
   decision_buffer_days: 20      # working days kept between the decision date and the notice deadline or expiry
   urgent_days: 45               # a decision date within this many days is urgent
   uncovered_spend_min: 25000    # spend in the reporting currency above which a supplier with no contract on record is listed
-unavailable_tools:
-  - build_xlsx
-  - render_chart
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "contract pipeline"

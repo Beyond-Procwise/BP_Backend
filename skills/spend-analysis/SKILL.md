@@ -23,8 +23,7 @@ Not for a single figure ("how much did we spend with X", which the Ask box answe
 
 Use `tool:build_spend_cube` for invoiced spend cut by supplier, month, currency, country, region, buyer, payment terms or status; its totals equal the dashboards and its note states the conversion rule and any currency left out. Invoices carry no category, no business unit and no price per item: say so. Use `tool:classify_spend` for classification coverage of item descriptions against the taxonomy, `tool:similar_items` to find a thing bought under different descriptions, `tool:supplier_lookup` and `tool:supplier_discovery` for who the suppliers are, `tool:savings_tracker` for what the value ledger says has been saved, `tool:get_corpus_facts` for corpus-wide counts (never for one item's spend), and `tool:run_calculation` with `deal.share_pct` for shares and `deal.pct_change` for changes between periods.
 
-NOT AVAILABLE: build_xlsx. Give the tables as text tables the user can paste.
-NOT AVAILABLE: render_chart. Describe the pareto and the trend as tables.
+Use `tool:build_xlsx` when the user asks for a spreadsheet of the figures, with the tables as the tools returned them. Use `tool:render_chart` when the user asks for a chart, with the values the tools returned.
 
 ## Workflow
 

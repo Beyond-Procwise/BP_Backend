@@ -1,8 +1,6 @@
 # Configurable defaults for this skill. They are starting points for review, not governed policy.
 thresholds:
   min_completeness_pct: 80    # completeness score below which the specification is not ready to issue
-unavailable_tools:
-  - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "spec for"

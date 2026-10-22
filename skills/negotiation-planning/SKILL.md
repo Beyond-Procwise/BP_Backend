@@ -28,7 +28,8 @@ Use `tool:savings_tracker` to see what has already been counted as saved; the ex
 Use `tool:commodity_index_lookup` with the series code (or words) and the window from the last price date to today for the index move between the recorded points; quote the series, publisher and dates. If no series is loaded, index history is not available: ask the user for the index move and label it user-supplied; without either, the justified part of an increase request cannot be separated and the plan says so.
 Use `tool:financial_health_score` for the financial health assessment compliance recorded (provider, rating, score, date). If none is recorded, say the supplier's financial position is not assessed; do not infer it.
 Use `tool:supplier_lookup` for the supplier's recorded profile (lead time, Incoterms, currency, insurance) and `tool:get_corpus_facts` for its history; say what was missing.
-NOT AVAILABLE: build_docx. Give the plan as text.
+
+Use `tool:build_docx` when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated.
 
 ## Workflow
 

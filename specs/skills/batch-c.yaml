@@ -23,8 +23,8 @@
     said as such)'
   - 'invoice_status: for where a specific invoice sits: status, due and paid dates as stored and its open-finding count'
   - 'invoice_reconciliation: for the open findings on a supplier''s documents in full, when a finding is what stops an item'
-  unavailable:
-  - 'build_docx: the walk-through is given as text'
+  - 'build_docx: when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated'
+  unavailable: []
   workflow:
   - 'Frame: which process or stage, for whom, and whether a specific item is in question.'
   - 'Read what governs: the policies and rules that exist for the stages asked about; quote the ones that apply; name the stages where nothing is governed
@@ -401,9 +401,9 @@
   - 'screening_summary: for each lot supplier''s screening status'
   - 'get_policy: for the organisation''s rule on direct awards and mini-competitions'
   - 'check_policy: for the approval the call-off value needs'
+  - 'build_docx: when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated'
   unavailable:
   - 'create_rfx: the mini-competition is issued by a person on the sourcing platform; the skill gives the design'
-  - 'build_docx: the call-off guidance is given as text'
   workflow:
   - Frame the need and find the frameworks on the register whose scope and lots cover it; quote the scope wording. No framework covers it means buying-channel-guidance.
   - 'Quote the framework''s call-off procedure: when a direct award is allowed, when a mini-competition is required, the ranking or rotation rule if any,
@@ -495,7 +495,6 @@
     - lot
     - agreement
     - supplier*
-    - award
     - competition
   scenarios:
   - kind: typical
@@ -807,9 +806,9 @@
     against the prior period'
   - 'get_policy: for a governed budget or limit for the scope'
   - 'get_corpus_facts: for the period and totals the corpus holds, so scope and period are stated once'
+  - 'render_chart: when the user asks for a chart, with the values the tools returned'
   unavailable:
   - 'post_accrual: accruals are finance''s posting; the skill reports the uninvoiced open order value finance may accrue'
-  - 'build_chart: figures are given as tables'
   workflow:
   - 'Frame: scope mapped to a records dimension (suppliers, buyer, country, region) by the user, never inferred from supplier names; period; budget figure
     and its source. Where no budget is given or governed, the report is a commitment position only, and says so.'

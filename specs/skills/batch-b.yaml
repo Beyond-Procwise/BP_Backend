@@ -24,9 +24,9 @@
   - 'obligation_tracker: for the dates and obligations the message cites'
   - 'get_policy: for any communication rule (who may write to suppliers, confidentiality, what may not be promised)'
   - 'invoice_status: for an invoice''s status, due and paid dates as stored (''not recorded'' is said as such) when the message concerns an invoice'
+  - 'build_docx: when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated'
   unavailable:
   - 'send_message: the draft is given as text; a person sends it from their own mailbox'
-  - 'build_docx: a letter is given as text'
   workflow:
   - 'Frame: supplier, purpose, ask, deadline, audience (which role at the supplier).'
   - 'Collect the facts the message needs from the records: order and invoice references, amounts, dates, clause wording. Anything the user asserts that
@@ -460,9 +460,9 @@
     and `deal.pct_change` for a movement; a formula the registry lacks is shown with its inputs and labelled unverified, never computed in the answer'
   - 'get_policy: for who may raise a claim and the approval a settlement needs'
   - 'check_policy: where a settlement, write-off or credit moves spend'
+  - 'build_docx: when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated'
   unavailable:
   - 'send_message: any letter is drafted as text; legal or the owner sends it'
-  - 'build_docx: the case file is given as text'
   workflow:
   - 'Frame: parties, contract, events with dates, what the user wants (money, performance, defence).'
   - 'Facts from the records: orders, receipts, invoices, findings, scorecard history for the period; the user''s evidence listed separately with its basis.'
@@ -669,9 +669,9 @@
   - 'run_calculation: with `deal.pct_change` for period-on-period movements'
   - 'get_policy: for targets and KPI definitions the organisation has set'
   - 'get_corpus_facts: for the corpus-wide counts: invoices, orders, open findings by type, suppliers'
-  unavailable:
-  - 'build_docx: the report is given as structured text; the document is built elsewhere'
-  - 'build_chart: figures are given as tables'
+  - 'build_docx: when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated'
+  - 'render_chart: when the user asks for a chart, with the values the tools returned'
+  unavailable: []
   workflow:
   - 'Frame: period, prior period, reader, sections, targets by source.'
   - 'Spend: total, top suppliers and concentration, by month or buyer; movement against the prior period via `deal.pct_change`; the cube has no category,
@@ -865,9 +865,9 @@
   - 'obligation_tracker: for review dates already set'
   - 'run_calculation: with `deal.pct_change` for the gap between the current measure and the target'
   - 'get_policy: for any supplier-performance rule or escalation ladder the organisation has set'
+  - 'build_docx: when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated'
   unavailable:
   - 'send_message: the plan is drafted; the owner takes it to the supplier'
-  - 'build_docx: the plan is given as text'
   workflow:
   - 'Frame: supplier, period, what the user needs to improve, what has been done.'
   - 'Evidence: the scorecard''s measures as it computes them (on-time needs expected delivery dates and receipts; where absent it says not assessed, and
@@ -1064,9 +1064,9 @@
   - 'get_policy: for any continuity or minimum-stock rule the organisation has set'
   - 'check_policy: where a backup agreement or a stock build commits spend'
   - 'supplier_items: for the items we buy from the supplier with quantities and last dates: the exposure is these items'
+  - 'build_docx: when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated'
   unavailable:
   - 'create_purchase_order: nothing is ordered; the plan names what would be ordered and the route'
-  - 'build_docx: the plan is given as text'
   workflow:
   - 'Frame: supplier or item, concern, tolerance, what the user knows about stock and lead times.'
   - 'Exposure: spend and share of total from the cube; the items from supplier_items; items with no other supplier on record per supplier_discovery.'

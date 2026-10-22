@@ -3,8 +3,6 @@ thresholds:
   tail_cell_share_pct: 0.5    # a supplier whose share of spend from the cube is below this is in the tail
   min_invoices: 4    # suppliers with fewer invoices than this in the period are in the tail whatever their spend
   suppliers_per_pass: 10    # tail suppliers examined item by item in one answer before asking whether to continue
-unavailable_tools:
-  - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "manage the tail"

@@ -66,6 +66,7 @@ from api.routers import playbooks as playbooks_router
 from api.routers import agent_groups as agent_groups_router
 from api.routers import screening as screening_router
 from api.routers import commodity_index as commodity_index_router
+from api.routers import exports as exports_router
 from api.routers import models as models_router
 from api.routers import decisions as decisions_router
 from api.routers import support as support_router
@@ -628,6 +629,7 @@ _AUTHENTICATED_ROUTERS = [
     agent_groups_router.router,
     screening_router.router,
     commodity_index_router.router,
+    exports_router.router,
     models_router.router,
     support_router.router,
     supplier_review_router.router,

@@ -27,8 +27,8 @@ Not for what was bought and from whom (spend-analysis), for value claims (saving
 - Use `tool:run_calculation` with `finance.average_per_period` for the monthly run rate from the invoiced total and the months elapsed, `deal.scaled_total` for the year-end projection from that rate and the months remaining, `deal.share_pct` for the share of budget used and `deal.pct_change` for the movement against the prior period
 - Use `tool:get_policy` for a governed budget or limit for the scope
 - Use `tool:get_corpus_facts` for the period and totals the corpus holds, so scope and period are stated once
+- Use `tool:render_chart` when the user asks for a chart, with the values the tools returned
 NOT AVAILABLE: post_accrual. accruals are finance's posting; the skill reports the uninvoiced open order value finance may accrue
-NOT AVAILABLE: build_chart. figures are given as tables
 
 Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.overspend_alert_pct`.
 

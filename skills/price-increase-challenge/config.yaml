@@ -3,7 +3,6 @@ thresholds:
   index_tolerance_pct: 2    # an increase within this many points of the weighted index movement is treated as in line
 unavailable_tools:
   - send_message
-  - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "surcharge*"
@@ -59,12 +58,6 @@ routing:                         # how the orchestrator decides this skill cover
     - "material costs have gone up"
     - "material costs have risen"
     - "their costs have"
-    - "is it justified"
-    - "is that justified"
-    - "justified or not"
-    - "increase justified?"
-    - "increase of"
-    - "justified"
   support:                       # 1 point each
     - "cost"
     - "index"

@@ -2,7 +2,6 @@
 thresholds:
   material_change_pct: 10    # a change to contract value above this share is material and takes the full approval route
 unavailable_tools:
-  - build_docx
   - e_signature
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending

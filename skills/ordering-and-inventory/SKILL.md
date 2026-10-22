@@ -29,8 +29,8 @@ Not for the emergency when stock has run out (urgent-sourcing), for pooling dema
 - Use `tool:supplier_lookup` for the lead time on the supplier's master record, as stored
 - Use `tool:run_calculation` with `finance.average_per_period` for the consumption rate from a period's quantity and its months or weeks, `deal.pct_change` for the movement between two periods and `deal.scaled_total` for lead-time demand (the rate over the lead time) or a price break's total; an order-quantity formula is not in the registry, so its result is labelled unverified with its inputs
 - Use `tool:get_policy` for the ordering cost, holding cost rate, service-level target and any stock policy
+- Use `tool:render_chart` when the user asks for a chart, with the values the tools returned
 NOT AVAILABLE: create_purchase_order. nothing is ordered; the pattern is advice for the buyer
-NOT AVAILABLE: build_chart. figures are given as tables
 
 Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.history_months`.
 

@@ -29,7 +29,8 @@ Ask for anything missing that changes the answer; do not guess.
 NOT AVAILABLE: duty_calc. Ask the user for the duty rate and label it user-supplied in the landed-cost inputs.
 NOT AVAILABLE: get_freight_quote. Ask for the freight and insurance amounts; label them user-supplied.
 NOT AVAILABLE: hs_code_lookup. Ask for the HS code or duty rate; do not infer one.
-NOT AVAILABLE: build_docx. Give the recommendation card as text.
+
+Use `tool:build_docx` when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated.
 
 ## Workflow
 

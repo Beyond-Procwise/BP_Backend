@@ -240,9 +240,9 @@
   - 'build_spend_cube: for the current spend the case would change'
   - 'calc_supplier_scorecard: for the incumbent''s record where the case is a supplier change'
   - 'check_policy: for the approval route the value needs'
-  unavailable:
-  - 'build_docx: the case is given as structured text for the finance template'
-  - 'build_chart: figures are given as tables'
+  - 'build_docx: when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated'
+  - 'render_chart: when the user asks for a chart, with the values the tools returned'
+  unavailable: []
   workflow:
   - 'Frame: need, options including doing nothing, horizon, sponsor, constraints.'
   - 'Policy: the cost of capital and horizon convention quoted (none means ask finance; never assume a rate); the approval band for the value.'
@@ -433,9 +433,9 @@
     to project the period from the monthly figure and the months left; a clause formula the registry lacks is shown with its inputs and labelled unverified,
     never computed in the answer'
   - 'get_policy: for how rebates must be recorded and who claims them'
+  - 'build_docx: when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated'
   unavailable:
   - 'send_message: the claim is drafted; finance or the owner sends it'
-  - 'build_docx: the claim and the analysis are given as text'
   workflow:
   - 'Quote the clause: what spend qualifies (items, entities, net of what), the measurement period, thresholds and rates per tier, whether the rate applies
     to all spend or the increment, the base period for growth, the claim procedure, deadline and payment form (credit, cash).'
@@ -628,9 +628,9 @@
     the movement between two periods and `deal.scaled_total` for lead-time demand (the rate over the lead time) or a price break''s total; an order-quantity
     formula is not in the registry, so its result is labelled unverified with its inputs'
   - 'get_policy: for the ordering cost, holding cost rate, service-level target and any stock policy'
+  - 'render_chart: when the user asks for a chart, with the values the tools returned'
   unavailable:
   - 'create_purchase_order: nothing is ordered; the pattern is advice for the buyer'
-  - 'build_chart: figures are given as tables'
   workflow:
   - Frame the item, supplier and the user's stock and consumption facts.
   - 'Demand from the records: the item''s quantities from supplier_items over the last `config.thresholds.history_months` months, read as two halves and
@@ -838,8 +838,8 @@
     current record; quality, responsiveness and credits are not recorded there'
   - 'get_policy: for any service-level standards or credit limits the organisation has set'
   - 'run_calculation: with `deal.pct_change` for a target''s gap to current performance'
-  unavailable:
-  - 'build_docx: the schedule is given as structured text for legal'
+  - 'build_docx: when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated'
+  unavailable: []
   workflow:
   - 'Frame: the service, what matters to the owner, what data we will hold.'
   - 'Measures: at most `config.thresholds.max_measures` service levels, each tied to an outcome the owner named, each measurable from data we will hold

@@ -3,7 +3,6 @@ thresholds:
   min_cover_days: 30    # stock cover below this many days with no screened alternative is a red gap
 unavailable_tools:
   - create_purchase_order
-  - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "contingency"

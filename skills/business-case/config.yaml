@@ -1,9 +1,6 @@
 # Configurable defaults for this skill. They are starting points for review, not governed policy.
 thresholds:
   sensitivity_pct: 20    # shock applied to the largest benefit and the largest cost in the sensitivity test
-unavailable_tools:
-  - build_docx
-  - build_chart
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "business case"

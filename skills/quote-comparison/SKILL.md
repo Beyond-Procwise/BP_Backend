@@ -24,7 +24,7 @@ Not for a formal tender with published criteria and an award memo (award-recomme
 
 Use `tool:run_calculation` with `bids.normalise` to put the quotes on the same lines, currency, Incoterm and payment days (with the user's rates and their date; without a rate a currency is not converted), with `quote.weighting_score` to score each normalised quote on total cost, lead time and volume with the owner's weights, with `supplier.deal_price_score` for each supplier's price position on the deal, and with `deal.pct_change` for the gap between quotes. Use `tool:supplier_lookup` for each supplier's recorded profile and `tool:screening_summary` for its screening status (not performed is not clear), `tool:search_contracts` for an existing agreement with a quoting supplier, and `tool:check_policy` with the leading quote's value for the approval route.
 
-NOT AVAILABLE: build_xlsx. Give the comparison as a text table.
+Use `tool:build_xlsx` when the user asks for a spreadsheet of the figures, with the tables as the tools returned them.
 
 ## Workflow
 

@@ -26,7 +26,8 @@ Not for a ruling on a specific purchase (procurement-policy-compliance), for the
 - Use `tool:open_orders` for where a specific order sits: its invoices booked, balance, receipts, and the stored status and expected date ('not recorded' is said as such)
 - Use `tool:invoice_status` for where a specific invoice sits: status, due and paid dates as stored and its open-finding count
 - Use `tool:invoice_reconciliation` for the open findings on a supplier's documents in full, when a finding is what stops an item
-NOT AVAILABLE: build_docx. the walk-through is given as text
+- Use `tool:build_docx` when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated
+
 
 Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.max_stages`.
 

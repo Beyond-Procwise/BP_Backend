@@ -6,8 +6,6 @@ thresholds:
   esg_max_age_days: 365            # an ESG rating older than this is stale
   risk_event_lookback_days: 90     # window for recorded risk events and platform risk signals
   min_checks_for_clearance: 4      # performed, in-date, unflagged checks needed before the status can be clear
-unavailable_tools:
-  - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "sanction*"

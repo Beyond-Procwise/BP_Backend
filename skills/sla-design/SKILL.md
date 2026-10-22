@@ -26,7 +26,8 @@ Not for claiming service credits (dispute-and-claims), for the quarterly review 
 - Use `tool:calc_supplier_scorecard` for what the platform already measures (on-time delivery where expected dates and receipts exist, findings) and the supplier's current record; quality, responsiveness and credits are not recorded there
 - Use `tool:get_policy` for any service-level standards or credit limits the organisation has set
 - Use `tool:run_calculation` with `deal.pct_change` for a target's gap to current performance
-NOT AVAILABLE: build_docx. the schedule is given as structured text for legal
+- Use `tool:build_docx` when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated
+
 
 Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.max_measures`, `config.thresholds.max_credit_pct`.
 

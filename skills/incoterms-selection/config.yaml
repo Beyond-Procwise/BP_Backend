@@ -9,7 +9,6 @@ unavailable_tools:
   - duty_calc
   - get_freight_quote
   - hs_code_lookup
-  - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "incoterm*"

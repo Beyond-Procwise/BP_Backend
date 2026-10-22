@@ -5,7 +5,6 @@ thresholds:
   min_transition_days: 30        # days of overlap with the replacement unless the clause states another period
 unavailable_tools:
   - send_message
-  - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "offboard*"

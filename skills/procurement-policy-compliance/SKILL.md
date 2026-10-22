@@ -29,7 +29,8 @@ Use `tool:open_orders` for a supplier's order history (date, total, buyer id) an
 Use `tool:supplier_lookup` for the supplier's recorded status, preferred flag, country and insurance. It is the master record, not an outside check; if it finds nothing, ask the user for the legal name and status.
 NOT AVAILABLE: query_erp. Use `tool:open_orders` for order history; if it returns nothing, say the history check found no orders recorded.
 Use `tool:search_contracts` to look for a framework agreement with the supplier. A match is evidence, not a ruling; if it finds none or cannot be read, ask whether a framework covers the request and record the answer as the user's statement.
-NOT AVAILABLE: build_docx. Give the verdict as text using the template in templates/verdict.json.
+
+Use `tool:build_docx` when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated.
 
 ## Workflow
 

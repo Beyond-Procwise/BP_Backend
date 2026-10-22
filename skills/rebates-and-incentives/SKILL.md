@@ -27,8 +27,8 @@ Not for designing price mechanisms in a new contract (pricing-mechanisms), for c
 - Use `tool:invoice_reconciliation` for the invoiced lines by item where the clause counts only some items; credit notes are not held as such, so netting needs the user's credit-note list, labelled
 - Use `tool:run_calculation` with `deal.share_pct` for a position against a threshold, `deal.pct_change` for growth against the base period and `deal.scaled_total` to project the period from the monthly figure and the months left; a clause formula the registry lacks is shown with its inputs and labelled unverified, never computed in the answer
 - Use `tool:get_policy` for how rebates must be recorded and who claims them
+- Use `tool:build_docx` when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated
 NOT AVAILABLE: send_message. the claim is drafted; finance or the owner sends it
-NOT AVAILABLE: build_docx. the claim and the analysis are given as text
 
 Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.tier_proximity_pct`.
 

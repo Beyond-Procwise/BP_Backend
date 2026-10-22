@@ -29,7 +29,8 @@ Not for one supplier's scorecard (supplier-performance-review), for the category
 - Use `tool:run_calculation` with `deal.share_pct` for a share the cube does not give directly
 - Use `tool:supplier_items` for what a candidate supplier provides: its items with line counts, quantities and last dates
 - Use `tool:supplier_discovery` with one of those item descriptions, for the other suppliers on our records that provide it, with evidence counts; an item with no other supplier on record is the bottleneck evidence
-NOT AVAILABLE: build_docx. the segmentation is given as text and tables
+- Use `tool:build_docx` when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated
+
 
 Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.strategic_share_pct`.
 

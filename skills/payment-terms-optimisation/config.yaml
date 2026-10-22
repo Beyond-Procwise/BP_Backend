@@ -5,8 +5,6 @@ thresholds:
   min_annual_spend_for_review: 50000 # suppliers below this spend in the period are listed, not analysed
   short_terms_days: 30               # recorded terms at or below this are short
   max_terms_days: 90                 # recorded terms above this are long; extension needs the supplier's financial health read
-unavailable_tools:
-  - build_xlsx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "payment terms"

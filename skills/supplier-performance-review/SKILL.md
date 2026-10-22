@@ -24,8 +24,7 @@ Not for deciding renewal or exit (renewal-and-exit-strategy, which takes this pa
 
 Use `tool:calc_supplier_scorecard` for spend, price variance (`ppv.purchase_price_variance`), on-time delivery (`otif.delivery_performance`, tolerances from the governed policy) and open findings, each with its record count or its not-assessed reason. Use `tool:search_contracts` for the live contracts and `tool:obligation_tracker` for their dates and the clauses that carry service, delivery or review obligations, quoted word for word. Use `tool:monitor_risk_events` for recorded risk-event reviews and the platform's risk signals, `tool:supplier_lookup` for the master record, `tool:build_spend_cube` for the supplier's share of total spend, and `tool:savings_tracker` for savings recorded against the relationship. For a composite, use `tool:run_calculation` with `supplier.composite_score` and the category owner's weights only.
 
-NOT AVAILABLE: build_docx. Give the review pack as text sections.
-NOT AVAILABLE: render_chart. Describe trends as period-by-period tables.
+Use `tool:build_docx` when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated. Use `tool:render_chart` when the user asks for a chart, with the values the tools returned.
 
 ## Workflow
 

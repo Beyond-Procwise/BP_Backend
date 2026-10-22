@@ -35,8 +35,8 @@ Use `tool:financial_health_score` for the recorded assessment: quote the provide
 Use `tool:esg_rating_lookup` for the recorded rating, provider and date; if none is recorded, record "not available" and request it by questionnaire.
 Use `tool:monitor_risk_events` for the recorded risk-event review and the platform's own risk signals, each with its date; if nothing is recorded, record "not performed".
 For incumbents, use `tool:calc_supplier_scorecard` with the supplier and period for spend, purchase price variance, on-time delivery and open findings measured from this organisation's own records, and report each with its record count or its not-assessed reason. Quality is not recorded: record quality track record as "not available" unless the user supplies it with its period.
-NOT AVAILABLE: build_xlsx. Give the funnel and the registers as text tables.
-NOT AVAILABLE: build_docx. Give the memo as text using templates/memo.md.
+
+Use `tool:build_docx` when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated. Use `tool:build_xlsx` when the user asks for a spreadsheet of the figures, with the tables as the tools returned them.
 
 ## Workflow
 

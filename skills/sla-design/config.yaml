@@ -2,8 +2,6 @@
 thresholds:
   max_measures: 6    # service levels proposed for one contract before the schedule is too long to measure
   max_credit_pct: 10    # default cap on service credits as a share of the period's invoice value, used when policy sets none
-unavailable_tools:
-  - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "service level*"

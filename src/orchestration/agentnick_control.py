@@ -1100,6 +1100,106 @@ def _supplier_record_tools() -> List[Tool]:
     ]
 
 
+def _export_tools(user_id: Optional[str]) -> List[Tool]:
+    """Files built for the person asking: a Word note, a spreadsheet, a short deck, a chart. Each tool takes
+    the content as data, saves the file to the exports store under the caller's name and returns the export
+    id and filename; the person collects it from their Exports list. Nothing else is written."""
+    from src.services import export_builders as EB
+    from src.services import export_store as ES
+    from src.services.contract_tools import store as _store
+
+    owner = str(user_id or "agent")
+
+    def _save(kind: str, title: str, make):
+        try:
+            content = make()
+        except EB.ExportRefused as exc:
+            return {"found": False, "note": f"Nothing was built: {exc}"}
+        except Exception as exc:  # noqa: BLE001
+            log.warning("export build failed: %s", exc)
+            return {"found": False, "note": "The file could not be built from that content; say so and give the answer in text."}
+        try:
+            rec = ES.save(kind, title=str(title or "Untitled"), content=content, created_by=owner, source="agent")
+        except ES.ExportTooLarge as exc:
+            return {"found": False, "note": f"Nothing was saved: {exc}. Split the content."}
+        except _store.StoreUnavailable:
+            return dict(ES.UNAVAILABLE)
+        return {"found": True, "written": True, "export_id": rec["export_id"], "filename": rec["filename"], "kind": kind,
+                "size_bytes": rec["size_bytes"],
+                "summary": f"Built {rec['filename']} ({rec['size_bytes']} bytes) for {owner}; it is in their Exports list under "
+                           f"export id {rec['export_id']}. Tell the user the filename and the export id; nothing else was changed."}
+
+    table_schema = {"type": "object", "properties": {"columns": {"type": "array", "items": {"type": "string"}},
+                                                   "rows": {"type": "array", "items": {"type": "array"}}}}
+    return [
+        Tool(
+            name="build_docx",
+            description=(
+                "Build a Word document from the content you pass: a title and sections, each with a heading, "
+                "paragraphs, optional bullets and an optional table (columns, rows). Use it only when the user asks for "
+                "a Word file or a document, after the facts are established; put in it only what the tools returned "
+                "or the user stated. Returns the export id and filename the user collects from their Exports list; "
+                "nothing is sent."
+            ),
+            parameters={"type": "object", "properties": {
+                "title": {"type": "string"},
+                "sections": {"type": "array", "items": {"type": "object", "properties": {
+                    "heading": {"type": "string"}, "paragraphs": {"type": "array", "items": {"type": "string"}},
+                    "bullets": {"type": "array", "items": {"type": "string"}}, "table": table_schema}}},
+                "notes": {"type": "string", "description": "a closing note in small italics, e.g. sources and caveats"}},
+                "required": ["title", "sections"]},
+            handler=lambda title=None, sections=None, notes=None, **_: _save(
+                "docx", title, lambda: EB.docx_bytes(title, sections, notes=notes, prepared_for=owner if user_id else None)),
+        ),
+        Tool(
+            name="build_xlsx",
+            description=(
+                "Build a spreadsheet from the tables you pass: a title and sheets, each with a name, columns and rows. "
+                "Numbers stay numbers so the sheet can be summed. Use it only when the user asks for a spreadsheet or an "
+                "Excel file, with figures the tools returned or the user stated. Returns the export id and filename."
+            ),
+            parameters={"type": "object", "properties": {
+                "title": {"type": "string"},
+                "sheets": {"type": "array", "items": {"type": "object", "properties": {
+                    "name": {"type": "string"}, "columns": {"type": "array", "items": {"type": "string"}},
+                    "rows": {"type": "array", "items": {"type": "array"}}}}}},
+                "required": ["title", "sheets"]},
+            handler=lambda title=None, sheets=None, **_: _save("xlsx", title, lambda: EB.xlsx_bytes(title, sheets)),
+        ),
+        Tool(
+            name="build_pptx",
+            description=(
+                "Build a short PowerPoint deck from the slides you pass: a title, an optional subtitle, and slides each "
+                "with a title, up to twelve bullets, an optional small table and optional speaker notes. Use it only when "
+                "the user asks for slides or a deck. Returns the export id and filename."
+            ),
+            parameters={"type": "object", "properties": {
+                "title": {"type": "string"}, "subtitle": {"type": "string"},
+                "slides": {"type": "array", "items": {"type": "object", "properties": {
+                    "title": {"type": "string"}, "bullets": {"type": "array", "items": {"type": "string"}},
+                    "table": table_schema, "notes": {"type": "string"}}}}},
+                "required": ["title", "slides"]},
+            handler=lambda title=None, slides=None, subtitle=None, **_: _save(
+                "pptx", title, lambda: EB.pptx_bytes(title, slides, subtitle=subtitle)),
+        ),
+        Tool(
+            name="render_chart",
+            description=(
+                "Draw a bar, line or donut chart (SVG) from the points you pass: a title, chart_type, data as a list of "
+                "{label, value}, and the unit. Up to forty points. Use it only when the user asks for a chart, with "
+                "values the tools returned. Returns the export id and filename."
+            ),
+            parameters={"type": "object", "properties": {
+                "title": {"type": "string"}, "chart_type": {"type": "string", "enum": list(EB.CHART_TYPES)},
+                "data": {"type": "array", "items": {"type": "object", "properties": {"label": {"type": "string"}, "value": {"type": "number"}}}},
+                "unit": {"type": "string"}},
+                "required": ["title", "chart_type", "data"]},
+            handler=lambda title=None, chart_type=None, data=None, unit="", **_: _save(
+                "svg", title, lambda: EB.chart_svg(chart_type, title, data, unit=unit or "")),
+        ),
+    ]
+
+
 def _pipeline_tools() -> List[Tool]:
     """The contracts falling due, each with its stored calendar and notice clauses, in one call. Read-only."""
     from src.services.contract_tools import pipeline as PL
@@ -1164,6 +1264,7 @@ def build_tools(
         + _reconciliation_tools()
         + _supplier_record_tools()
         + _pipeline_tools()
+        + _export_tools(user_id)
     )
     if exclude:
         blocked = set(exclude)

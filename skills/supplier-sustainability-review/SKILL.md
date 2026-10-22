@@ -24,8 +24,8 @@ Not for the risk clearance of one supplier before award or onboarding (supplier-
 Use `tool:build_spend_cube` by supplier for the spend in scope, `tool:supplier_lookup` for certifications on file (environmental, social, EcoVadis-type flags) and country, `tool:screening_summary` for each supplier's recorded ESG rating, forced-labour and conflict-minerals checks and risk events in one call, `tool:esg_rating_lookup`, `tool:forced_labour_screen` and `tool:conflict_minerals_check` when one check is asked about, `tool:classify_spend` with `query` for the taxonomy's recorded ESG impact of a category, and `tool:search_contracts` for sustainability or code-of-conduct clauses via `tool:extract_clauses` (one `containing` word per call, at most two: "sustainab" then "conduct").
 
 NOT AVAILABLE: send_esg_survey. The questionnaire to send is drafted as text; a person sends it.
-NOT AVAILABLE: build_xlsx. Give the coverage table as a text table.
-NOT AVAILABLE: render_chart. Describe coverage and impact as tables.
+
+Use `tool:build_xlsx` when the user asks for a spreadsheet of the figures, with the tables as the tools returned them. Use `tool:render_chart` when the user asks for a chart, with the values the tools returned.
 
 ## Workflow
 

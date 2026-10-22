@@ -3,7 +3,6 @@ thresholds:
   reply_days: 5    # business days asked for a reply when the user gives no deadline
 unavailable_tools:
   - send_message
-  - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "draft an email"

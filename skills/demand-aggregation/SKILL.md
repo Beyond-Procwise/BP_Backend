@@ -27,10 +27,9 @@ Use `tool:build_spend_cube` to cut invoiced spend by supplier, month, currency, 
 Use `tool:classify_spend` with the item descriptions: a 'recorded' item carries the organisation's own product-to-category mapping; an 'unclassified' item has none, and its candidates are name matches only. Treat candidates and any labels the user gives as "draft classification", never as fact, and state the tool's coverage (recorded share) against `config.thresholds.min_classified_coverage_pct`. Use `query` to look up the taxonomy's levels, UNSPSC codes and owners.
 Use `tool:search_contracts` to find contracts by supplier, text or expiry window, and `tool:extract_clauses` for the stored clauses (minimum commitments, exclusivity). It covers only contracts that were uploaded; if it finds none, or cannot be read, ask the user for end dates, lock-ins and minimum commitments and write "contract position not available" for what stays unknown.
 NOT AVAILABLE: landed_cost_calc. Use `tool:run_calculation` with `landed_cost.total_cost` when the user supplies freight, duty and other cost inputs; otherwise say logistics cost is not normalised.
-NOT AVAILABLE: build_xlsx. Give the opportunity register as a table.
-NOT AVAILABLE: build_pptx. Give the wave plan as text.
-NOT AVAILABLE: render_chart. Describe the heatmap as a category by business unit table and the spread as a small table of low, reference and high prices.
 Use `tool:similar_items` with an item description to find the near-identical descriptions on this organisation's PO, invoice and quote lines, with their line, supplier and buyer counts and price ranges as billed. Its name similarity is not identity: treat a match as the same item only at or above `config.thresholds.min_match_confidence` AND after the specification and unit of measure are confirmed (or the item codes are the same); list every match with its evidence for review.
+
+Use `tool:build_xlsx` when the user asks for a spreadsheet of the figures, with the tables as the tools returned them. Use `tool:build_pptx` when the user asks for slides, after the answer is written. Use `tool:render_chart` when the user asks for a chart, with the values the tools returned.
 
 ## Workflow
 

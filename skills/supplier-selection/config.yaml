@@ -17,9 +17,6 @@ qualification_criteria:                # the five parts of the qualification sco
   financial: null
   risk: null
   esg: null
-unavailable_tools:
-  - build_xlsx
-  - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "who should we invite"

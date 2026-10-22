@@ -23,7 +23,7 @@ Not for the renew-or-exit decision (renewal-and-exit-strategy), index-linked pri
 
 Use `tool:search_contracts` to find the contract and `tool:extract_clauses` to read its stored clauses word for word, filtering with `clause_type` or `containing` (for example "liab", "indemn", "terminat", "notice", "payment", "data"). A contract that has not been read returns no clauses: say so and ask the user to paste the clause, labelled unchecked. Use `tool:obligation_tracker` for the stored dates and the clauses that carry a notice, deadline or review, and `tool:redline_compare` for two wordings the user supplies. Use `tool:get_policy` for the organisation's own contracting rules (standard positions, who may accept a deviation) and `tool:check_policy` when accepting the wording commits money or needs an approver.
 
-NOT AVAILABLE: build_docx. Give the review, the comparison table and the obligation register as text sections the user can paste.
+Use `tool:build_docx` when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated.
 
 ## Workflow
 

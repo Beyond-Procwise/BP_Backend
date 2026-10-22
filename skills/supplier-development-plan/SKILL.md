@@ -28,8 +28,8 @@ Not for the quarterly review pack (supplier-performance-review), for deciding to
 - Use `tool:obligation_tracker` for review dates already set
 - Use `tool:run_calculation` with `deal.pct_change` for the gap between the current measure and the target
 - Use `tool:get_policy` for any supplier-performance rule or escalation ladder the organisation has set
+- Use `tool:build_docx` when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated
 NOT AVAILABLE: send_message. the plan is drafted; the owner takes it to the supplier
-NOT AVAILABLE: build_docx. the plan is given as text
 
 Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.improvement_trigger_pct`, `config.thresholds.review_interval_weeks`.
 

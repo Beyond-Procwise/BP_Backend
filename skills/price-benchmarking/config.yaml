@@ -4,9 +4,6 @@ thresholds:
   min_peer_prices: 3           # comparable peer prices below which no verdict is given
   in_line_band_pct: 5          # gap to the reference inside which the price is "in line"
   evidence_max_age_days: 365   # evidence older than this is caveated as old
-unavailable_tools:
-  - build_xlsx
-  - render_chart
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "fair price"

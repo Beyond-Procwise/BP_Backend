@@ -3,7 +3,6 @@ thresholds:
   history_months: 24    # months of order history read as the demand base
 unavailable_tools:
   - create_purchase_order
-  - build_chart
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "moq"

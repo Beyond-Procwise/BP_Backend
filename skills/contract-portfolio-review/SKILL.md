@@ -22,8 +22,7 @@ Not for deciding one contract's renewal, renegotiation or exit (renewal-and-exit
 
 Use `tool:contract_pipeline` ONCE with `expires_within_days` set to the horizon (and `supplier` or `status` to narrow): it returns the contracts falling due soonest first with their end dates, values, auto-renewal flags and renewal terms as stored, and for the soonest `config.thresholds.max_contracts_detailed` the stored calendar and the notice, review and renewal clauses quoted word for word, plus the lists of auto-renewing contracts, contracts never read for clauses and contracts with no notice clause stored. Do not call search_contracts or obligation_tracker separately for the pipeline; for coverage (step 6) call `tool:contract_pipeline` once more with a horizon long enough to hold every live contract, or `tool:search_contracts` by supplier; `tool:build_spend_cube` by supplier for the period's spend, matched to the register's suppliers for coverage; `tool:calc_supplier_scorecard` and `tool:screening_summary` for the suppliers behind the largest or soonest contracts; `tool:savings_tracker` for savings recorded against renewals; and `tool:run_calculation` with `deal.share_pct` for shares and `deal.pct_change` for changes.
 
-NOT AVAILABLE: build_xlsx. Give the pipeline as a text table.
-NOT AVAILABLE: render_chart. Give the expiry profile as a table by month.
+Use `tool:build_xlsx` when the user asks for a spreadsheet of the figures, with the tables as the tools returned them. Use `tool:render_chart` when the user asks for a chart, with the values the tools returned.
 
 ## Workflow
 

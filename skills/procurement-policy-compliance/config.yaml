@@ -14,7 +14,6 @@ ungoverned_rules:                # no bp_policy row yet -> verdict INSUFFICIENT_
 authoritative_reply_tool: check_policy   # the verify step shows this tool's reply_text as the answer, unchanged
 unavailable_tools:
   - query_erp
-  - build_docx
 rule_policy_keywords:            # a rule counts as governed when an active policy slug contains one of these
   competitive_bid_thresholds: [bid, tender, quote_threshold]
   delegation_of_authority_by_category: [delegation, authority_matrix, doa]

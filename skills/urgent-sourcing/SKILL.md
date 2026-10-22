@@ -25,7 +25,8 @@ Use `tool:search_contracts` for a live contract or framework that already covers
 
 NOT AVAILABLE: create_rfx. A quick quote request is drafted as text; a person sends it.
 NOT AVAILABLE: get_freight_quote. Express delivery costs come from the supplier or forwarder; none is estimated.
-NOT AVAILABLE: build_docx. Give the plan as text.
+
+Use `tool:build_docx` when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated.
 
 ## Workflow
 

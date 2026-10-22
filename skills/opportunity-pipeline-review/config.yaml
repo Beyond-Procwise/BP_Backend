@@ -5,9 +5,6 @@ thresholds:
   stalled_days: 60             # a lever with no recorded movement for this many days is stalled
   escalate_value: 25000        # a stalled lever with recorded value above this (reporting currency) is escalated
   top_n: 10                    # asks listed in detail
-unavailable_tools:
-  - build_xlsx
-  - render_chart
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "value pipeline"

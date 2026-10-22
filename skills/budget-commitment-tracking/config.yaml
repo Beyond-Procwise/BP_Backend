@@ -3,7 +3,6 @@ thresholds:
   overspend_alert_pct: 5    # projected year-end above budget by more than this share is flagged to the owner
 unavailable_tools:
   - post_accrual
-  - build_chart
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "committed spend"

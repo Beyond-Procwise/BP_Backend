@@ -4,9 +4,6 @@ thresholds:
   last_price_max_age_months: 18
   finance_review_min_annualised: 100000 # in the reporting currency, per initiative
   escalate_above_annualised: 1000000
-unavailable_tools:
-  - build_xlsx
-  - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "price cut*"

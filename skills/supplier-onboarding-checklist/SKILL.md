@@ -23,7 +23,8 @@ Not for the risk status and clearance (supplier-risk-assessment, which this chec
 Use `tool:supplier_lookup` for the master record (given a partial or similar name it lists the candidate records, which is how a near-duplicate is found; a duplicate record is a finding) and `tool:supplier_discovery` by the item or service to be bought, for records that already supply it (it takes an item, never a supplier name), `tool:screening_summary` for every compliance check recorded or not, `tool:search_contracts` for an agreement with the supplier, `tool:get_corpus_facts` with the supplier's name for quotes, orders or invoices already on file, `tool:check_policy` with the expected value for the approval route of the first order, and `tool:classify_spend` for the category of what will be bought where the taxonomy marks it.
 
 NOT AVAILABLE: onboard_supplier. The supplier is created or activated by a person in the supplier master; the skill lists what they need.
-NOT AVAILABLE: build_xlsx. Give the checklist as a text table.
+
+Use `tool:build_xlsx` when the user asks for a spreadsheet of the figures, with the tables as the tools returned them.
 
 ## Workflow
 

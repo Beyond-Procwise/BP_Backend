@@ -28,8 +28,9 @@ Not for the cost comparison of options alone (total-cost-of-ownership), for clai
 - Use `tool:build_spend_cube` for the current spend the case would change
 - Use `tool:calc_supplier_scorecard` for the incumbent's record where the case is a supplier change
 - Use `tool:check_policy` for the approval route the value needs
-NOT AVAILABLE: build_docx. the case is given as structured text for the finance template
-NOT AVAILABLE: build_chart. figures are given as tables
+- Use `tool:build_docx` when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated
+- Use `tool:render_chart` when the user asks for a chart, with the values the tools returned
+
 
 Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.sensitivity_pct`.
 

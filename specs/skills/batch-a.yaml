@@ -27,8 +27,8 @@
   - 'supplier_items: for what a candidate supplier provides: its items with line counts, quantities and last dates'
   - 'supplier_discovery: with one of those item descriptions, for the other suppliers on our records that provide it, with evidence counts; an item with
     no other supplier on record is the bottleneck evidence'
-  unavailable:
-  - 'build_docx: the segmentation is given as text and tables'
+  - 'build_docx: when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated'
+  unavailable: []
   workflow:
   - Frame the scope and period, and read the policy for any segmentation rule; where none exists, use the axes here and say so.
   - Read the spend cube by supplier for the period and take each supplier's share from the cube's own share figure; a share the cube does not give (a supplier's
@@ -214,8 +214,8 @@
   - 'supplier_items: for what a tail supplier provides: its items with line counts, quantities and last dates'
   - 'supplier_discovery: with one of those item descriptions, for the contracted or larger suppliers on our records that already provide it, with evidence
     counts; that is the consolidation evidence'
-  unavailable:
-  - 'build_docx: the plan is given as text and tables'
+  - 'build_docx: when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated'
+  unavailable: []
   workflow:
   - Frame the scope and read the policy for channels and targets.
   - 'Cut the tail from the cube read by supplier with order set to bottom (and top_n at its maximum, repeated with the period narrowed if the cell count
@@ -404,8 +404,8 @@
   - 'run_calculation: with `deal.pct_change` for the price effect of a rate change and `deal.scaled_total` for the new total value over the term, with the
     contract''s or the user''s figures'
   - 'check_policy: for the approval the changed value or term needs'
+  - 'build_docx: when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated'
   unavailable:
-  - 'build_docx: the review is given as text'
   - 'e_signature: nothing is signed; the amendment goes to the signatory after approval'
   workflow:
   - Find the agreement and read its stored summary, expiry, value and parties.
@@ -586,9 +586,9 @@
   - 'check_policy: for the approval the value needs on the chosen channel'
   - 'run_calculation: with `deal.scaled_total` to size a recurring need over the period the requester states'
   - 'supplier_discovery: with the item or service, for the suppliers we already buy it from with evidence counts, preferred flag and insurance status'
+  - 'build_docx: when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated'
   unavailable:
   - 'create_requisition: the requester raises the requisition themselves; the skill gives the steps and the supplier to name'
-  - 'build_docx: guidance is given as text'
   workflow:
   - 'Frame: what, how much, how often, by when.'
   - Read the policy for channel rules and value bands; quote the band the value falls in. Where no rule exists for the case, say so, give the default route
@@ -785,8 +785,8 @@
   - 'get_policy: for the organisation''s specification rules (standards, sustainability, accessibility, security)'
   - 'run_calculation: with `requirement.completeness_score` to score the draft''s completeness against the required elements'
   - 'supplier_discovery: with the item description, for the suppliers on our records that provide it'
-  unavailable:
-  - 'build_docx: the specification is given as structured text'
+  - 'build_docx: when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated'
+  unavailable: []
   workflow:
   - 'Frame the need: outcome, user, volume, timescale, budget band if given.'
   - Look at the descriptions we bought under before (similar_items), the suppliers on record for them (supplier_discovery) and any agreement schedule for
@@ -982,9 +982,9 @@
   - 'calc_supplier_scorecard: for price variance already seen and open findings'
   - 'check_policy: where accepting the increase commits spend above a band'
   - 'supplier_items: for the supplier''s own items with their unit-price range and last date in the period, read for two periods to see whether prices moved'
+  - 'build_docx: when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated'
   unavailable:
   - 'send_message: the challenge letter is drafted as text; a person sends it'
-  - 'build_docx: the analysis is given as text'
   workflow:
   - 'Frame the increase: amount, items, effective date, reasons, and whether the contract is on record.'
   - 'Contract position: quote the price-review clause (when prices may change, on what basis, with what notice), any index clause (series, weighting, frequency,

@@ -28,8 +28,8 @@ Not for working out the position behind the message (negotiation-planning, price
 - Use `tool:obligation_tracker` for the dates and obligations the message cites
 - Use `tool:get_policy` for any communication rule (who may write to suppliers, confidentiality, what may not be promised)
 - Use `tool:invoice_status` for an invoice's status, due and paid dates as stored ('not recorded' is said as such) when the message concerns an invoice
+- Use `tool:build_docx` when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated
 NOT AVAILABLE: send_message. the draft is given as text; a person sends it from their own mailbox
-NOT AVAILABLE: build_docx. a letter is given as text
 
 Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.reply_days`.
 

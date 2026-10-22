@@ -23,8 +23,7 @@ Not for setting targets or walk-away points (negotiation-planning, which takes t
 
 Use `tool:similar_items` to find the same and near-identical descriptions on our PO, invoice and quote lines with their price ranges as billed, supplier and buyer counts; `tool:get_corpus_facts` for a named supplier's documents; `tool:commodity_index_lookup` for a loaded index and its move between two dates; `tool:run_calculation` with `benchmark.adjusted_price` to adjust the user's historical points to the quote's basis, with `benchmark.evidence_confidence` to state how much evidence stands behind the result against the minimum, with `price_outlier.verdict` to test the price against comparable peer prices, and with `deal.pct_change` for the gap between the price and the reference.
 
-NOT AVAILABLE: build_xlsx. Give the evidence table as a text table.
-NOT AVAILABLE: render_chart. Describe the price history as a table.
+Use `tool:build_xlsx` when the user asks for a spreadsheet of the figures, with the tables as the tools returned them. Use `tool:render_chart` when the user asks for a chart, with the values the tools returned.
 
 ## Workflow
 

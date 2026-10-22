@@ -26,8 +26,8 @@ Not for whether the purchase or approval is permitted (procurement-policy-compli
 - Use `tool:check_policy` for the approval the value needs on the chosen channel
 - Use `tool:run_calculation` with `deal.scaled_total` to size a recurring need over the period the requester states
 - Use `tool:supplier_discovery` with the item or service, for the suppliers we already buy it from with evidence counts, preferred flag and insurance status
+- Use `tool:build_docx` when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated
 NOT AVAILABLE: create_requisition. the requester raises the requisition themselves; the skill gives the steps and the supplier to name
-NOT AVAILABLE: build_docx. guidance is given as text
 
 
 

@@ -25,7 +25,8 @@ Not for building the longlist and shortlist (supplier-selection, which this skil
 Use `tool:supplier_discovery` and `tool:supplier_lookup` for known suppliers of the items and their recorded Incoterms, currency and lead time, `tool:screening_summary` for each candidate's recorded checks before invitation, `tool:search_contracts` for existing agreements that bind the scope, and only when the user asks for history `tool:similar_items` (how the items were described and priced before) or `tool:classify_spend` (the taxonomy category); never get_corpus_facts, whose totals are corpus-wide and say nothing about this requirement. The round budget is small: policy, discovery, screening per invitee and the scoring test are the calls that matter; `tool:run_calculation` with `scoring.weighted_total` to prove the criteria, weights and scale combine, with `bids.normalise` to define the like-for-like terms, and with `landed_cost.total_cost` where delivered cost is a criterion.
 
 NOT AVAILABLE: create_rfx. The event is designed here as text; a person creates and issues it in the sourcing tool.
-NOT AVAILABLE: build_docx. Give the RFx pack as text sections.
+
+Use `tool:build_docx` when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated.
 
 ## Workflow
 

@@ -29,8 +29,9 @@ Not for one supplier (supplier-performance-review), for the spend analysis in de
 - Use `tool:run_calculation` with `deal.pct_change` for period-on-period movements
 - Use `tool:get_policy` for targets and KPI definitions the organisation has set
 - Use `tool:get_corpus_facts` for the corpus-wide counts: invoices, orders, open findings by type, suppliers
-NOT AVAILABLE: build_docx. the report is given as structured text; the document is built elsewhere
-NOT AVAILABLE: build_chart. figures are given as tables
+- Use `tool:build_docx` when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated
+- Use `tool:render_chart` when the user asks for a chart, with the values the tools returned
+
 
 Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.expiry_horizon_days`.
 

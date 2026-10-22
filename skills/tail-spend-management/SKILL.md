@@ -29,7 +29,8 @@ Not for sizing the tail (spend-analysis), for finding off-process purchases (mav
 - Use `tool:run_calculation` with `deal.share_pct` for the tail's share of spend or invoices from the cube's figures
 - Use `tool:supplier_items` for what a tail supplier provides: its items with line counts, quantities and last dates
 - Use `tool:supplier_discovery` with one of those item descriptions, for the contracted or larger suppliers on our records that already provide it, with evidence counts; that is the consolidation evidence
-NOT AVAILABLE: build_docx. the plan is given as text and tables
+- Use `tool:build_docx` when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated
+
 
 Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.tail_cell_share_pct`, `config.thresholds.min_invoices`, `config.thresholds.suppliers_per_pass`.
 

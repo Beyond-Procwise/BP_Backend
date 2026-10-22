@@ -29,8 +29,8 @@ Not for the operational handling of a delivery failure (delivery-issue-handling)
 - Use `tool:run_calculation` with `deal.scaled_total` for a credit at the clause's rate over the recorded days or units, `deal.share_pct` for a shortfall share and `deal.pct_change` for a movement; a formula the registry lacks is shown with its inputs and labelled unverified, never computed in the answer
 - Use `tool:get_policy` for who may raise a claim and the approval a settlement needs
 - Use `tool:check_policy` where a settlement, write-off or credit moves spend
+- Use `tool:build_docx` when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated
 NOT AVAILABLE: send_message. any letter is drafted as text; legal or the owner sends it
-NOT AVAILABLE: build_docx. the case file is given as text
 
 Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.legal_referral_gbp`.
 

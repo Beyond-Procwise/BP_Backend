@@ -3,7 +3,6 @@ thresholds:
   screening_max_age_days: 30       # a sanctions or risk check older than this is stale
 unavailable_tools:
   - route_approval
-  - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "winning bidder*"

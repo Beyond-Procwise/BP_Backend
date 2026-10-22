@@ -8,7 +8,6 @@ unavailable_tools:
   - get_freight_quote
   - duty_calc
   - hs_code_lookup
-  - build_xlsx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "total cost of ownership"

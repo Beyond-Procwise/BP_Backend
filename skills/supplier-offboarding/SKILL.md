@@ -24,7 +24,8 @@ Not for the decision itself (renewal-and-exit-strategy, which hands the chosen e
 Use `tool:search_contracts` by supplier for the live agreements and `tool:obligation_tracker` per contract for the stored calendar and the notice, termination, renewal and review clauses quoted word for word; `tool:extract_clauses` once per contract with `containing` set to one word at a time, at most three calls ("exit", "transition", "data"), for the exit obligations on each side, and `clause_type` must_perform for the rest; `tool:invoice_reconciliation` for open invoice lines, lines with no order and open findings to settle before the last payment; `tool:calc_supplier_scorecard` for the spend at stake and open findings; `tool:supplier_discovery` and `tool:similar_items` for the alternative suppliers already on our records for the same items; `tool:screening_summary` for the replacement candidate's status; and `tool:check_policy` where the exit itself, an early-termination payment or the replacement commits spend.
 
 NOT AVAILABLE: send_message. The notice and the handover requests are drafted as text; a person sends them.
-NOT AVAILABLE: build_docx. Give the plan as text.
+
+Use `tool:build_docx` when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated.
 
 ## Workflow
 

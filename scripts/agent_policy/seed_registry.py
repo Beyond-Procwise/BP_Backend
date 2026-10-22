@@ -50,6 +50,10 @@ FIXED_TOOLS = {
     "supplier_items": ["supplier", "start", "end"],
     "open_orders": ["supplier", "start", "end"],
     "invoice_status": ["supplier", "invoice_id", "start", "end"],
+    "build_docx": ["title", "sections", "notes"],
+    "build_xlsx": ["title", "sheets"],
+    "build_pptx": ["title", "subtitle", "slides"],
+    "render_chart": ["title", "chart_type", "data", "unit"],
     "compare_total_cost": ["options", "horizon_years", "cost_of_capital", "buyer_currency", "fx_rates", "fx_table_date", "default_insurance_rate"],
 }
 

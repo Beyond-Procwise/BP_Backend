@@ -6,8 +6,6 @@ thresholds:
   coverage_floor_pct: 80       # share of spend with an in-date rating below which coverage is a gap, when policy states no floor
 unavailable_tools:
   - send_esg_survey
-  - build_xlsx
-  - render_chart
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "sustainab*"

@@ -31,8 +31,8 @@ Not for the sourcing strategy of the category (category-strategy), for the emerg
 - Use `tool:get_policy` for any continuity or minimum-stock rule the organisation has set
 - Use `tool:check_policy` where a backup agreement or a stock build commits spend
 - Use `tool:supplier_items` for the items we buy from the supplier with quantities and last dates: the exposure is these items
+- Use `tool:build_docx` when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated
 NOT AVAILABLE: create_purchase_order. nothing is ordered; the plan names what would be ordered and the route
-NOT AVAILABLE: build_docx. the plan is given as text
 
 Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.min_cover_days`.
 

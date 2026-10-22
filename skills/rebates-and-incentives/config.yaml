@@ -3,7 +3,6 @@ thresholds:
   tier_proximity_pct: 3    # qualifying spend within this share of a threshold is flagged as sensitive to how the spend is counted
 unavailable_tools:
   - send_message
-  - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "rebate*"

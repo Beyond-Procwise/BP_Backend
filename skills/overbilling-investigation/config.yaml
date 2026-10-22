@@ -3,9 +3,6 @@
 thresholds:
   materiality_min: 50          # amount in question (invoice currency) below which the difference is reported as immaterial by default
   duplicate_score_min: 0.8     # duplicate_invoice.pair_score at or above which two invoices are called duplicate candidates
-unavailable_tools:
-  - build_xlsx
-  - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "overbill*"

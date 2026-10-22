@@ -23,7 +23,7 @@ Not for planning the conversation with the supplier (negotiation-planning), for 
 
 Use `tool:build_spend_cube` with `by` set to payment_terms for invoiced spend by the terms recorded on invoices, and by supplier for the spend per supplier; `tool:supplier_lookup` for the supplier's recorded currency and profile; `tool:search_contracts` for the payment terms stored on contracts and `tool:extract_clauses` (containing "payment") for the clause wording; `tool:financial_health_score` and `tool:screening_summary` before proposing to extend a supplier's terms; `tool:run_calculation` with `supplier.payment_terms_score` to place terms on a scale, with `finance.carrying_cost` to value a terms change or an early-payment discount (the supplier's spend in the period as the amount, the governed cost of capital as the rate, the change in days; a discount's worth is `deal.scaled_total` of the spend and the discount rate, set against the carrying cost of paying early), and with `deal.pct_change` for the difference between options; `tool:invoice_status` for the payment terms recorded on a supplier's invoices.
 
-NOT AVAILABLE: build_xlsx. Give the supplier table as a text table.
+Use `tool:build_xlsx` when the user asks for a spreadsheet of the figures, with the tables as the tools returned them.
 
 ## Workflow
 

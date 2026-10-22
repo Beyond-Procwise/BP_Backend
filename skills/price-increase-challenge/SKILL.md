@@ -29,8 +29,8 @@ Not for the negotiation plan and concessions (negotiation-planning), for designi
 - Use `tool:calc_supplier_scorecard` for price variance already seen and open findings
 - Use `tool:check_policy` where accepting the increase commits spend above a band
 - Use `tool:supplier_items` for the supplier's own items with their unit-price range and last date in the period, read for two periods to see whether prices moved
+- Use `tool:build_docx` when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated
 NOT AVAILABLE: send_message. the challenge letter is drafted as text; a person sends it
-NOT AVAILABLE: build_docx. the analysis is given as text
 
 Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.index_tolerance_pct`.
 

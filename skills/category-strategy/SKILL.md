@@ -24,9 +24,7 @@ Not for designing one tender (rfx-design), planning one negotiation (negotiation
 
 Use `tool:build_spend_cube` for spend by supplier, country, region, buyer and month (invoices carry no category: scope by the suppliers and items the user names), `tool:supplier_discovery` and `tool:supplier_lookup` for who already supplies the items and their recorded profiles, `tool:similar_items` for how the items are described and from how many suppliers and buyers they are bought, `tool:classify_spend` for taxonomy coverage, `tool:search_contracts` and `tool:obligation_tracker` for contract coverage and expiries, `tool:screening_summary` and `tool:calc_supplier_scorecard` for incumbent risk and performance, `tool:commodity_index_lookup` for a loaded input-cost index, `tool:list_opportunity_levers` and `tool:get_opportunity_bucket` for the levers the platform tracks, `tool:savings_tracker` for savings already recorded, and `tool:run_calculation` with `negotiation.kraljic_quadrant` for positioning from stated signals and `deal.share_pct` for shares and `deal.pct_change` for changes.
 
-NOT AVAILABLE: build_docx. Give the strategy as text sections.
-NOT AVAILABLE: build_pptx. Give the summary as a one-page text brief.
-NOT AVAILABLE: render_chart. Give the positioning and spend views as tables.
+Use `tool:build_docx` when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated. Use `tool:build_pptx` when the user asks for slides, after the answer is written. Use `tool:render_chart` when the user asks for a chart, with the values the tools returned.
 
 ## Workflow
 

@@ -27,7 +27,7 @@ Not for reviewing a new contract's clauses (contract-clause-review), for whether
 - Use `tool:obligation_tracker` for the dates and obligations the change would move
 - Use `tool:run_calculation` with `deal.pct_change` for the price effect of a rate change and `deal.scaled_total` for the new total value over the term, with the contract's or the user's figures
 - Use `tool:check_policy` for the approval the changed value or term needs
-NOT AVAILABLE: build_docx. the review is given as text
+- Use `tool:build_docx` when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated
 NOT AVAILABLE: e_signature. nothing is signed; the amendment goes to the signatory after approval
 
 Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.material_change_pct`.

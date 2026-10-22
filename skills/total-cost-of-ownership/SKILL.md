@@ -26,7 +26,8 @@ For a comparison of options use `tool:compare_total_cost` ONCE: it runs landed c
 NOT AVAILABLE: get_freight_quote. Freight and insurance figures come from the user's quotes or forwarder; a missing one is reported as missing, not estimated.
 NOT AVAILABLE: duty_calc. The duty rate comes from the user or customs broker with its source; without it duty is missing.
 NOT AVAILABLE: hs_code_lookup. Ask for the HS code or the duty rate; do not infer either.
-NOT AVAILABLE: build_xlsx. Give the comparison and sensitivity as text tables.
+
+Use `tool:build_xlsx` when the user asks for a spreadsheet of the figures, with the tables as the tools returned them.
 
 ## Workflow
 

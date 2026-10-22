@@ -4,8 +4,6 @@ thresholds:
   min_quotes: 3              # quotes expected when no policy states a minimum; fewer is compared and said
   close_call_pct: 3          # lead over the second quote inside this share is a close call
   validity_min_days: 14      # a quote valid for fewer days than this from today is flagged
-unavailable_tools:
-  - build_xlsx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "compare the quotes"

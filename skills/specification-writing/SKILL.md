@@ -27,7 +27,8 @@ Not for the sourcing event itself (rfx-design), for the evaluation model (rfx-de
 - Use `tool:get_policy` for the organisation's specification rules (standards, sustainability, accessibility, security)
 - Use `tool:run_calculation` with `requirement.completeness_score` to score the draft's completeness against the required elements
 - Use `tool:supplier_discovery` with the item description, for the suppliers on our records that provide it
-NOT AVAILABLE: build_docx. the specification is given as structured text
+- Use `tool:build_docx` when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated
+
 
 Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.min_completeness_pct`.
 

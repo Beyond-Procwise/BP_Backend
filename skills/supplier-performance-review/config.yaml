@@ -7,9 +7,6 @@ thresholds:
   findings_escalate: 5        # open findings at or above this count escalate to the category lead
   score_strong_min: 80        # composite (with the owner's weights) at or above this is strong
   score_weak_max: 60          # composite below this is weak
-unavailable_tools:
-  - build_docx
-  - render_chart
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "scorecard*"

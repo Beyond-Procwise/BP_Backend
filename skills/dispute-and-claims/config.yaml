@@ -3,7 +3,6 @@ thresholds:
   legal_referral_gbp: 10000    # claim value above which legal leads from the start; legal reviews every draft regardless
 unavailable_tools:
   - send_message
-  - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
     - "dispute with"

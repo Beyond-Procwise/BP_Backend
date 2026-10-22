@@ -23,7 +23,7 @@ Not for comparing candidates (supplier-selection), for the award decision (award
 
 Use `tool:supplier_lookup` for the master record (preferred flag, risk score or "not scored", certifications on file, insurance and its expiry, country) and the number of invoices on file; confirm the supplier with the user when the match is on part of the name. Use `tool:screening_summary` once for every check compliance recorded (sanctions, financial health, ESG, forced labour, conflict minerals, risk events) with provider, date and validity per subject, the lists of checks not performed, expired and flagged, and the platform's own risk signals; use a single-check tool (`tool:screen_sanctions`, `tool:financial_health_score`, `tool:esg_rating_lookup`, `tool:forced_labour_screen`, `tool:conflict_minerals_check`, `tool:monitor_risk_events`) only when the user asks about that one check. The round budget is small: summary, scorecard and contracts are three calls; call it after the screening summary, or first only when the summary says several suppliers match. Use `tool:calc_supplier_scorecard` for our own trading record (spend, price variance, on-time delivery, open findings) and `tool:search_contracts` for live contracts. Use `tool:get_policy` for the required checks and their maximum age; `tool:check_policy` when the decision commits spend.
 
-NOT AVAILABLE: build_docx. Give the assessment as text sections.
+Use `tool:build_docx` when the user asks for a Word file of the result, after the answer is written, with only what the tools returned or the user stated.
 
 ## Workflow
 
