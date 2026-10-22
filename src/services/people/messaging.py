@@ -251,8 +251,9 @@ def send(conn, me: str, conversation_id: int, body: Any, mentions: Optional[Sequ
         # a mute silences ordinary messages, never a direct mention
         plain = [s for s, muted in others if not muted and s not in mentioned]
         _log_activity(cur, conv, me, mid, conversation_id, mentioned, [x for x in everyone if x != me])
-        _announce(cur, "message.received", mid, conversation_id, me, f"New message from {sender['name']}", plain)
-        _announce(cur, "comment.mentioned", mid, conversation_id, me, f"{sender['name']} mentioned you", mentioned)
+        body_text = notification_body(conv, text)
+        _announce(cur, "message.received", mid, conversation_id, me, f"New message from {sender['name']}", plain, body_text)
+        _announce(cur, "comment.mentioned", mid, conversation_id, me, f"{sender['name']} mentioned you", mentioned, body_text)
     return {"id": mid, "conversation_id": conversation_id, "sender": me, "body": text, "mentions": mentioned,
             "attachments": atts, "reply_to_id": reply_to_id, "created_at": created.isoformat(),
             "signal": everyone}
@@ -269,8 +270,34 @@ def _log_activity(cur, conv, me, mid, conversation_id, mentioned, others) -> Non
         activity.record(cur, "mention", me, target_user_id=m, conversation_id=conversation_id, message_id=mid, **ent)
 
 
+PREVIEW_CHARS = 140
+
+
+def notification_body(conv: Dict[str, Any], text: str) -> str:
+    """What the recipient's notification says under the title: the start of the message, then
+    what it is about. A direct message needs no context (the title names the sender); a group
+    names its title; a thread on an item names the item, so the bell says what the question
+    relates to before the person opens it."""
+    preview = _MENTION.sub(lambda m: "@" + m.group(1), " ".join(text.split()))
+    if len(preview) > PREVIEW_CHARS:
+        preview = preview[:PREVIEW_CHARS - 1].rstrip() + "\u2026"
+    kind = conv.get("type")
+    if kind == "entity_thread":
+        what = f"{ENTITY_LABELS.get(conv.get('entity_type'), conv.get('entity_type') or 'item')} {conv.get('entity_id')}"
+        about = f"About {what}" + (f": {conv['title']}" if conv.get("title") else "")
+    elif kind == "group" and conv.get("title"):
+        about = f"In {conv['title']}"
+    else:
+        about = ""
+    return f"{preview}\n{about}" if about else preview
+
+
+ENTITY_LABELS = {"po": "purchase order", "contract": "contract", "supplier": "supplier", "rfq": "RFQ",
+                 "deal": "deal", "requisition": "requisition", "invoice": "invoice", "approval": "approval"}
+
+
 def _announce(cur, event_type: str, message_id: int, conversation_id: int, actor: str, summary: str,
-              recipients: Sequence[str]) -> None:
+              recipients: Sequence[str], body: str = "") -> None:
     if not recipients:
         return
     from services.people.wiring import emit_safe
@@ -278,7 +305,8 @@ def _announce(cur, event_type: str, message_id: int, conversation_id: int, actor
     emit_safe(cur, DomainEvent(
         type=event_type, actor_id=actor, entity_type="conversation", entity_id=str(conversation_id),
         summary=summary, event_id=f"{event_type}:{message_id}",
-        data={key: list(recipients), "link": f"/messages/{conversation_id}", "message_id": message_id}))
+        data={key: list(recipients), "link": f"/messages/{conversation_id}", "message_id": message_id,
+              "body": body or summary}))
 
 
 def _message_dict(r) -> Dict[str, Any]:
