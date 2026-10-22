@@ -6,7 +6,7 @@ should_trigger:
 - "Wind down the relationship with our packaging supplier by the end of the quarter"
 - "What is involved in the handover from Acme to the new supplier?"
 - "Decommission the old courier account and close out their open invoices"
-- "We decided to drop the supplier. What do we owe them and what do they owe us on the way out?"
+- "We decided to drop the supplier. What has to happen on the way out?"
 - "Plan the run-off orders and the last order date before we part ways with Falconridge"
 - "Exit from the MSP agreement, including data return and access removal"
 should_not_trigger:

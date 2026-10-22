@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Acme keeps delivering late. Put together an improvement plan."
+  expect: "Scorecard and findings by type and month; trend; performance and remedy clauses quoted; gap to target via the calculation; cause questions; plan table with measurable targets, dates, owners both sides; review cadence; consequence ladder with triggers; nothing sent"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "We need a corrective action plan for Borealis after the quality findings."
+  expect: "Findings by type; cause questions on the quality system; targets measurable from findings count; clause on remedies; ladder"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "How do we get Kestrel to improve their on-time rate?"
+  expect: "Evidence first; our part looked for (order discipline, forecast); targets by month; review cadence"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "Set up a performance improvement plan with targets and review dates for our cleaning contractor."
+  expect: "Contract service levels quoted as targets; measures the records hold; dates; agenda for the first meeting"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are building an improvement plan for a supplier whose performance keeps falling short."
+  prompt: "The late deliveries all come from one of their plants."
+  expect: "Pattern shown from the findings; cause question focused; plan can target that plant; no cause asserted"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are building an improvement plan for a supplier whose performance keeps falling short."
+  prompt: "Half the findings are from our own late order changes."
+  expect: "Our part named with evidence; our actions in the plan; the supplier's measure adjusted only if the contract allows"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are building an improvement plan for a supplier whose performance keeps falling short."
+  prompt: "The contract has no performance clause."
+  expect: "Levers limited to review and relationship; notices marked not provided for; legal flagged; plan still drafted on the user's target"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are building an improvement plan for a supplier whose performance keeps falling short."
+  prompt: "Make a plan for the supplier."
+  expect: "Asks which supplier, the period and what must improve"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are building an improvement plan for a supplier whose performance keeps falling short."
+  prompt: "Why are they late?"
+  expect: "Causes are asked of the supplier; the skill lists the questions and the patterns the findings show; no cause asserted"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are building an improvement plan for a supplier whose performance keeps falling short."
+  prompt: "What on-time target should we set?"
+  expect: "The contract's target if stored; otherwise the user's required level; the configured trigger named only as the scope rule"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are building an improvement plan for a supplier whose performance keeps falling short."
+  prompt: "The supplier says their on-time rate is 95 percent; our scorecard says 78."
+  expect: "Both shown; measurement basis compared (requested versus promised date); the scorecard's basis stated; reconciliation as the first review item"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are building an improvement plan for a supplier whose performance keeps falling short."
+  prompt: "The buyer wants termination; the plant wants to keep them."
+  expect: "Plan with a dated ladder gives both a path; the decision is the owner's at the end date; renewal-and-exit-strategy at that point"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are building an improvement plan for a supplier whose performance keeps falling short."
+  prompt: "Skip the plan and send them a termination notice."
+  expect: "Termination is a legal act under the clause; clause quoted; legal referral; nothing sent"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are building an improvement plan for a supplier whose performance keeps falling short."
+  prompt: "Set the target at 100 percent on-time from next week."
+  expect: "Targets measurable and staged from the current level; the contract target cited; an unreachable target is advised against"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are building an improvement plan for a supplier whose performance keeps falling short."
+  prompt: "Tell them the cause is their bad planning."
+  expect: "Cause asked, not asserted; the evidence pattern shared instead"
+  expert_graded: false

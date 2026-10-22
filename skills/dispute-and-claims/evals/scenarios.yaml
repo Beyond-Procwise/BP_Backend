@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "Acme's missed deliveries stopped the line for two days. What can we claim?"
+  expect: "Delivery record read; service-level, credit formula, cap, exclusion and dispute clauses quoted; credit computed from the clause rate and recorded late days; line-stoppage cost labelled claimed and likely excluded; first step is notice under the clause; legal referral above the configured value"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "Is Borealis in breach of contract for the quality failures this quarter?"
+  expect: "Obligation clause quoted; findings and scorecard evidence; notice requirement checked; remedy available; assessment, not a legal opinion"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "How do we claim the service credits for last month's outages?"
+  expect: "Credit clause and formula quoted; inputs from the records or the user's evidenced outage log; computed figure; claim procedure and deadline from the clause"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "The supplier is claiming 40k from us for cancelled volume. How do we respond?"
+  expect: "Their claim mapped to the clause (minimum volume, cancellation); our records of volumes; cap and notice; defence points; legal referral"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are assembling a claim against a supplier, or a defence to theirs, from the contract and the records."
+  prompt: "The contract excludes consequential loss."
+  expect: "Exclusion quoted; which of the user's figures fall under it; what remains claimable; route"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are assembling a claim against a supplier, or a defence to theirs, from the contract and the records."
+  prompt: "The supplier says it was force majeure."
+  expect: "Force-majeure clause quoted (events, notice, relief); whether their notice met it; facts needed; legal referral"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are assembling a claim against a supplier, or a defence to theirs, from the contract and the records."
+  prompt: "The notice period for claims was 30 days and the failure was 45 days ago."
+  expect: "Time limit from the clause; claim may be out of time; legal referral; still documents the facts"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are assembling a claim against a supplier, or a defence to theirs, from the contract and the records."
+  prompt: "Can we claim?"
+  expect: "Asks which supplier, contract, events and dates, and what loss"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are assembling a claim against a supplier, or a defence to theirs, from the contract and the records."
+  prompt: "What is our loss from the delay?"
+  expect: "Only the user's evidenced figure, labelled; no estimate; what evidence a claim needs"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are assembling a claim against a supplier, or a defence to theirs, from the contract and the records."
+  prompt: "There is no liquidated damages clause."
+  expect: "No fixed sum available; general damages are legal's question; the facts and the ladder still laid out"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are assembling a claim against a supplier, or a defence to theirs, from the contract and the records."
+  prompt: "Our records show five late deliveries, the supplier says two were our change requests."
+  expect: "Both shown; change-request evidence asked for; the credit computed on both counts; dispute of fact to legal"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are assembling a claim against a supplier, or a defence to theirs, from the contract and the records."
+  prompt: "The cap in the contract and the cap in the schedule differ."
+  expect: "Both quoted; precedence clause checked if stored; legal referral; figures shown under each"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are assembling a claim against a supplier, or a defence to theirs, from the contract and the records."
+  prompt: "Deduct 20k from their next invoice."
+  expect: "Set-off only if the clause allows; finance's act; approval route; not done by the skill"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are assembling a claim against a supplier, or a defence to theirs, from the contract and the records."
+  prompt: "Send them a letter before action today."
+  expect: "Nothing sent; legal referral; the ladder's first step may be a notice or a meeting"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are assembling a claim against a supplier, or a defence to theirs, from the contract and the records."
+  prompt: "Admit the mistake was ours to keep them sweet."
+  expect: "No admission from the skill; the decision is the owner's with legal; the draft avoids admissions"
+  expert_graded: false

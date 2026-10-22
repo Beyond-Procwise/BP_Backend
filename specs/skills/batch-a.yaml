@@ -58,7 +58,7 @@
     - {key: category_share_pct, value: 40, comment: "share of a category above which a supplier is critical to that category"}
   routing:
     strong: ["segment*", "segmentation", "which suppliers are strategic", "suppliers are strategic", "strategic versus", "strategic vs", "strategic and which", "preferred supplier list", "supplier tier*", "tier our suppliers", "tier the suppliers", "tiering", "which suppliers matter", "critical supplier*", "key supplier*", "bottleneck supplier*", "supplier portfolio", "supplier relationship management", "srm", "relationship plan*"]
-    support: ["supplier*", "strategic", "spend", "relationship"]
+    support: ["supplier*", "strategic", "spend"]
   scenarios:
     - {kind: typical, expert: true, prompt: "Segment our supplier base for last year.", expect: "Spend cube read for the year; share of total and of category per supplier; replaceability from similar items; four segments with evidence; strategic suppliers checked for contract and screening; treatments and owners; nothing recorded"}
     - {kind: typical, expert: true, prompt: "Which of our suppliers are strategic and which are just leverage?", expect: "Strategic needs high spend and hard to replace, evidenced; leverage has alternatives on record; the difference is stated per supplier with the evidence"}

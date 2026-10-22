@@ -1,0 +1,86 @@
+- id: t1
+  kind: typical
+  prompt: "The pallet order from Acme arrived 200 short and 10 damaged. What do we do?"
+  expect: "Order and invoice position read; delivery, inspection and rejection clauses quoted; issue classed; steps with deadlines (record, notify within the window, hold only the disputed part, replacement route); finding on the record; nothing recorded or held by the skill"
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: "We received the wrong pumps from Borealis. Can we send them back?"
+  expect: "Rejection clause and return-freight term quoted; notice window; what to record; the replacement remedy; invoice position"
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: "Delivery from Kestrel was two weeks late. Are we entitled to anything?"
+  expect: "Delivery clause and any remedy (credit, damages) quoted or marked not provided for; scorecard history; finding; claim handed to dispute-and-claims if a loss arose"
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: "The supplier delivered 1,200 units but we ordered 1,000."
+  expect: "Over-delivery; order quantity from the record; the clause on over-delivery or policy; no payment for the excess unless accepted; collection asked"
+  expert_graded: false
+- id: e1
+  kind: edge
+  context: "We are handling a delivery that arrived late, short, damaged or wrong."
+  prompt: "We only noticed the damage three weeks after delivery."
+  expect: "Inspection window quoted; late notice risk named (possible acceptance); still notify now with the evidence; legal flagged if the supplier refuses"
+  expert_graded: true
+- id: e2
+  kind: edge
+  context: "We are handling a delivery that arrived late, short, damaged or wrong."
+  prompt: "The goods are fine but the delivery note does not match the order."
+  expect: "Record what was received; discrepancy reported to the supplier; invoice matched to receipt, not to the note; no rejection"
+  expert_graded: false
+- id: e3
+  kind: edge
+  context: "We are handling a delivery that arrived late, short, damaged or wrong."
+  prompt: "Risk passed to us at the supplier's dock under the Incoterm."
+  expect: "Risk-transfer clause quoted; damage in transit may be our carrier's or insurer's issue; incoterms-selection for the rule; steps adjusted"
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  context: "We are handling a delivery that arrived late, short, damaged or wrong."
+  prompt: "A delivery went wrong."
+  expect: "Asks which order, what arrived versus what was ordered, when, and what evidence exists"
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  context: "We are handling a delivery that arrived late, short, damaged or wrong."
+  prompt: "How long do we have to reject?"
+  expect: "From the clause if stored; otherwise policy; otherwise the configured default labelled as a default"
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  context: "We are handling a delivery that arrived late, short, damaged or wrong."
+  prompt: "No contract is on record with this supplier."
+  expect: "Order terms and policy govern; gap named; steps still given; legal flagged for the remedy question"
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  context: "We are handling a delivery that arrived late, short, damaged or wrong."
+  prompt: "The delivery note says 1,000 received but the warehouse counted 800."
+  expect: "Both figures with sources; the count is the receipt; discrepancy to the supplier; invoice held only for the gap if the clause allows"
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  context: "We are handling a delivery that arrived late, short, damaged or wrong."
+  prompt: "The supplier says the damage happened in our warehouse."
+  expect: "Evidence and timing listed; risk-transfer clause quoted; the dispute of fact handed to dispute-and-claims; no admission"
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  context: "We are handling a delivery that arrived late, short, damaged or wrong."
+  prompt: "Just hold the whole invoice until they sort it out."
+  expect: "Hold only what the clause supports; undisputed part still due; finance's act"
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  context: "We are handling a delivery that arrived late, short, damaged or wrong."
+  prompt: "Book the receipt as complete so the invoice clears, we will fix it later."
+  expect: "Record what was actually received; explains the three-way match consequence; not advised"
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  context: "We are handling a delivery that arrived late, short, damaged or wrong."
+  prompt: "Reject it all, even the good ones, to make a point."
+  expect: "Rejection follows the clause and the evidence; rejecting conforming goods risks breach; advised against"
+  expert_graded: false

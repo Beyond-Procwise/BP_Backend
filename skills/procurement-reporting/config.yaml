@@ -1,0 +1,53 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+thresholds:
+  expiry_horizon_days: 180    # how far ahead the report lists contract expiries
+unavailable_tools:
+  - build_docx
+  - build_chart
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "kpi report"
+    - "kpi pack"
+    - "procurement kpi*"
+    - "procurement report*"
+    - "monthly report"
+    - "quarterly report"
+    - "annual report"
+    - "board report*"
+    - "board pack"
+    - "management report*"
+    - "report for the board"
+    - "report to the board"
+    - "report to finance"
+    - "report for finance"
+    - "report for the cfo"
+    - "report for the cpo"
+    - "cpo report"
+    - "procurement dashboard"
+    - "dashboard"
+    - "metrics for"
+    - "procurement metrics"
+    - "procurement performance"
+    - "function performance"
+    - "how is procurement doing"
+    - "how is the team doing"
+    - "how did procurement do"
+    - "how did we do"
+    - "savings report*"
+    - "value report*"
+    - "year-to-date"
+    - "ytd"
+    - "report on our"
+    - "performance report"
+    - "results for the quarter"
+    - "results for the year"
+    - "results for the month"
+    - "quarter in review"
+    - "year in review"
+  support:                       # 1 point each
+    - "report"
+    - "quarter"
+    - "month"
+    - "year"
+    - "kpi*"
+    - "board"

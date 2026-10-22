@@ -1,0 +1,49 @@
+# Configurable defaults for this skill. They are starting points for review, not governed policy.
+thresholds:
+  improvement_trigger_pct: 90    # on-time delivery below this share over the period puts a supplier in scope for a plan
+  review_interval_weeks: 2    # default interval between plan reviews
+unavailable_tools:
+  - send_message
+  - build_docx
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "improvement plan*"
+    - "development plan*"
+    - "supplier development"
+    - "develop the supplier"
+    - "corrective action*"
+    - "capa"
+    - "performance improvement"
+    - "improve their performance"
+    - "improve its performance"
+    - "improve their delivery"
+    - "improve their quality"
+    - "get them to improve"
+    - "get the supplier to improve"
+    - "underperform*"
+    - "under-perform*"
+    - "poor performance"
+    - "keeps missing"
+    - "keep missing"
+    - "keeps failing"
+    - "keep failing"
+    - "keeps being late"
+    - "keeps delivering late"
+    - "always late"
+    - "repeatedly late"
+    - "remediation plan"
+    - "recovery plan"
+    - "put them on a plan"
+    - "on notice"
+    - "turnaround"
+    - "turn them around"
+    - "root cause*"
+    - "8d"
+    - "escalation ladder"
+    - "consequence ladder"
+  support:                       # 1 point each
+    - "supplier"
+    - "performance"
+    - "improve*"
+    - "target*"
+    - "plan"

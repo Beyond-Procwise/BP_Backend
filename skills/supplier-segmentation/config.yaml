@@ -30,4 +30,3 @@ routing:                         # how the orchestrator decides this skill cover
     - "supplier*"
     - "strategic"
     - "spend"
-    - "relationship"
