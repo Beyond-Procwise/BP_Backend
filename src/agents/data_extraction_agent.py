@@ -71,6 +71,7 @@ from services.document_extractor import (
     RAW_TABLE_MAPPING as DOC_EXTRACTOR_RAW_TABLES,
 )
 from services.semantic_chunker import SemanticChunker
+from src.services.s3_scope import refuse_withheld, refuse_withheld_all   # caller-named sources (1.3e)
 from services.validation_gate import ValidationGate
 from services.remediation_service import RemediationService
 from agents.extraction_engine import (
@@ -1709,6 +1710,8 @@ class DataExtractionAgent(BaseAgent):
             # real, existing key would be shredded into single letters and
             # always come back as "matched no documents". Treat a string as ONE
             # key, exactly like s3_object_key below.
+            # Caller-named sources never reach a withheld store (1.3e): the same guard as
+            # extract-from-s3, applied before anything is fetched or listed.
             if isinstance(s3_object_keys, str):
                 # A HAND-TYPED answer, and the box the human typed it into says "or type an
                 # S3 key or prefix". We only ever honoured the key half of that promise: the
@@ -1726,14 +1729,19 @@ class DataExtractionAgent(BaseAgent):
                 # uploaded, and deriving a shared prefix from them is what previously swept in
                 # every other document in the folder.
                 typed = s3_object_keys.strip()
+                refuse_withheld(typed)      # before any head/list: a withheld store, or an ancestor of one, is never resolved
                 resolved = self._resolve_typed_reference(typed, workflow_id, agent_name)
                 for key in resolved:
                     key_map.setdefault(key, None)
             else:
+                # The picker's exact list is checked too: a key inside a withheld store is refused before
+                # anything is fetched, however the list was assembled.
+                refuse_withheld_all([key for key in s3_object_keys if key])
                 for key in s3_object_keys:
                     if key:
                         key_map.setdefault(key, None)
         elif s3_object_key:
+            refuse_withheld(s3_object_key)
             # Direct single key provided (e.g., from process_monitor) — process
             # only this file. Fetched exactly (GetObject), never listed as a
             # prefix — a single key must never accidentally match its own
@@ -1742,6 +1750,8 @@ class DataExtractionAgent(BaseAgent):
             key_map.setdefault(s3_object_key, None)
         else:
             # No specific key(s) — scan S3 prefixes for all documents
+            if s3_prefix:
+                refuse_withheld(s3_prefix)          # a caller-named prefix: never a withheld store or its ancestor
             prefixes = [s3_prefix] if s3_prefix else self.settings.s3_prefixes
             for prefix in prefixes:
                 prefix_keys: List[str] = []

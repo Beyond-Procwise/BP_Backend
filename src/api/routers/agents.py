@@ -19,6 +19,7 @@ from repositories import agent_definition_repo
 from services import rbac
 from services.prompt_engine import agent_prompts
 from api.endpoint_gate import require as gate
+from src.services.s3_scope import refuse_withheld_any
 
 logger = logging.getLogger(__name__)
 
@@ -1381,6 +1382,12 @@ def process_document(
     """Convenience endpoint to run the document extraction workflow."""
     gate("workflow.run", principal, agent="AgentsRouter",
          context={"workflow": "document_extraction"})
+    # A withheld store (quarantine, raw MIME) or an ancestor of one is refused HERE as a 400 the caller
+    # sees (1.3e); the agent refuses it again inside, but a run that fails silently looks like nothing.
+    try:
+        refuse_withheld_any(req.s3_prefix, req.s3_object_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     payload = {"s3_prefix": req.s3_prefix, "s3_object_key": req.s3_object_key}
     return orchestrator.execute_workflow(
         "document_extraction", payload,
