@@ -4,7 +4,13 @@ from pathlib import Path
 import pytest
 import yaml
 
-from scripts.skills import scaffold
+import importlib.util
+
+ROOT = Path(__file__).resolve().parents[2]
+# Loaded from its path: a test package elsewhere can shadow the top-level `scripts` name.
+_spec = importlib.util.spec_from_file_location("skill_scaffold", ROOT / "scripts" / "skills" / "scaffold.py")
+scaffold = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(scaffold)
 from src.services.skills import checks
 
 KINDS = ["typical", "edge", "missing_data", "conflicting_data", "pressure_to_skip_policy"]
