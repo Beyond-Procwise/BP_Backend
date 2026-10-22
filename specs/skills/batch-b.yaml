@@ -1,600 +1,1250 @@
-# Skill definitions, batch B. Rendered by scripts/skills/scaffold.py into skills/<name>/.
-
+# Skill definitions, batch-b. Rendered by scripts/skills/scaffold.py into skills/<name>/.
+# Rewritten 2026-10-22 against the real tool outputs (specs/2026-10-22-skills-content-review.md).
 - name: supplier-communication-drafting
   title: Supplier Communication Drafting
-  description: "Draft an email, letter or message to a supplier - a chaser, a query, a notice of a problem, a reply to their request, a request for documents - with the facts taken from the records (orders, invoices, contract clauses, dates) and the tone the situation calls for. Use when asked to write to a supplier, reply to them, word something or chase them. The draft is text for a person to send; the skill never sends. Not for the negotiation strategy behind a reply (negotiation-planning) or for legal notices (legal reviews those)."
-  purpose: "Give the user a draft they can send as it stands: correct facts with their sources, the right register, one clear ask, a deadline where one is due, and nothing that commits the organisation beyond what the user said. The skill writes; a person sends."
-  use_when: "Use when the request is to write, draft, word, reply, respond, chase, remind, inform, notify or tell a supplier something, or to improve the tone or wording of a message to one."
-  not_for: "Not for working out the position behind the message (negotiation-planning, price-increase-challenge, dispute-and-claims give the content), for termination notices (supplier-offboarding and legal), for tenders (rfx-design) or for internal messages."
+  description: Draft an email, letter or message to a supplier - a chaser, a query, a notice of a problem, a reply to their request, a request for documents
+    - with the facts taken from the records (orders, invoices, contract clauses, dates) and the tone the situation calls for. Use when asked to write to
+    a supplier, reply to them, word something or chase them. The draft is text for a person to send; the skill never sends. Not for the negotiation strategy
+    behind a reply (negotiation-planning) or for legal notices (legal reviews those).
+  purpose: 'Give the user a draft they can send as it stands: correct facts with their sources, the right register, one clear ask, a deadline where one
+    is due, and nothing that commits the organisation beyond what the user said. The skill writes; a person sends.'
+  use_when: Use when the request is to write, draft, word, reply, respond, chase, remind, inform, notify or tell a supplier something, or to improve the
+    tone or wording of a message to one.
+  not_for: Not for working out the position behind the message (negotiation-planning, price-increase-challenge, dispute-and-claims give the content), for
+    termination notices (supplier-offboarding and legal), for tenders (rfx-design) or for internal messages.
   inputs:
-    - "The supplier and the purpose of the message, in the user's words."
-    - "What the user wants to happen (the ask) and by when."
-    - "Any facts the user has that the records do not hold, labelled user-supplied."
+  - The supplier and the purpose of the message, in the user's words.
+  - What the user wants to happen (the ask) and by when.
+  - Any facts the user has that the records do not hold, labelled user-supplied.
   tools:
-    - "supplier_lookup: for the supplier's record and the contact role on file (never personal contact details in the draft)"
-    - "invoice_reconciliation: for the order and invoice facts a chaser or query cites (numbers, dates, amounts)"
-    - "search_contracts: for the agreement the message refers to"
-    - "extract_clauses: for the clause wording a message relies on, quoted"
-    - "obligation_tracker: for the dates and obligations the message cites"
-    - "get_policy: for any communication rule (who may write to suppliers, confidentiality, what may not be promised)"
+  - 'supplier_lookup: for the supplier''s record and the contact role on file (never personal contact details in the draft)'
+  - 'invoice_reconciliation: for the order and invoice facts a chaser or query cites (numbers, dates, amounts)'
+  - 'search_contracts: for the agreement the message refers to'
+  - 'extract_clauses: for the clause wording a message relies on, quoted'
+  - 'obligation_tracker: for the dates and obligations the message cites'
+  - 'get_policy: for any communication rule (who may write to suppliers, confidentiality, what may not be promised)'
   unavailable:
-    - "send_message: the draft is given as text; a person sends it from their own mailbox"
-    - "build_docx: a letter is given as text"
+  - 'send_message: the draft is given as text; a person sends it from their own mailbox'
+  - 'build_docx: a letter is given as text'
   workflow:
-    - "Frame: supplier, purpose, ask, deadline, audience (which role at the supplier)."
-    - "Collect the facts the message needs from the records: order and invoice references, amounts, dates, clause wording. Anything the user asserts that the records do not hold is used only as the user's statement."
-    - "Read the policy for communication rules; a message that would commit spend, waive a right or accept liability is flagged and left to the right skill or to legal."
-    - "Draft: subject; one-sentence purpose; the facts with references; the ask, singular; the deadline with `config.thresholds.reply_days` business days where none is given; what happens next; sign-off with the user's role. Register: courteous and direct by default; firm where a deadline has passed; never threatening."
-    - "Second version where tone matters (first chaser versus final reminder), with the difference explained."
-    - "List what the user should check before sending and what must not be added (bank details, personal data, commitments)."
+  - 'Frame: supplier, purpose, ask, deadline, audience (which role at the supplier).'
+  - 'Collect the facts the message needs from the records: order and invoice references, amounts, dates, clause wording. Anything the user asserts that
+    the records do not hold is used only as the user''s statement.'
+  - Read the policy for communication rules; a message that would commit spend, waive a right or accept liability is flagged and left to the right skill
+    or to legal.
+  - 'Draft: subject; one-sentence purpose; the facts with references; the ask, singular; the deadline with `config.thresholds.reply_days` business days
+    where none is given; what happens next; sign-off with the user''s role. Register: courteous and direct by default; firm where a deadline has passed;
+    never threatening.'
+  - Second version where tone matters (first chaser versus final reminder), with the difference explained.
+  - List what the user should check before sending and what must not be added (bank details, personal data, commitments).
   heuristics:
-    - "One message, one ask; two asks get two messages or a numbered list."
-    - "Facts carry references; the supplier can find what you mean."
-    - "Escalate tone in steps: reminder, firm reminder, formal notice; never jump."
-    - "Never promise what the user has not decided; never accept fault; never quote a figure the records do not hold."
-    - "Write to the role, not the person: contact details stay out of the draft."
-  policy_hooks: "Communication rules come from `tool:get_policy` and are followed; a message that commits spend, waives a right, accepts liability or gives notice is flagged and routed to the owning skill or legal before any draft. The draft is never sent by the skill and contains no bank details or personal data."
+  - One message, one ask; two asks get two messages or a numbered list.
+  - Facts carry references; the supplier can find what you mean.
+  - 'Escalate tone in steps: reminder, firm reminder, formal notice; never jump.'
+  - Never promise what the user has not decided; never accept fault; never quote a figure the records do not hold.
+  - 'Write to the role, not the person: contact details stay out of the draft.'
+  policy_hooks: Communication rules come from `tool:get_policy` and are followed; a message that commits spend, waives a right, accepts liability or gives
+    notice is flagged and routed to the owning skill or legal before any draft. The draft is never sent by the skill and contains no bank details or personal
+    data.
   outputs:
-    - "Frame: supplier, purpose, ask, deadline, audience."
-    - "Facts used with their sources; user-supplied statements marked."
-    - "The draft (subject, body, sign-off); a second version where tone differs."
-    - "Pre-send checklist and the things the draft deliberately leaves out."
-    - "Flags: anything that needs legal, finance or another skill first."
+  - 'Frame: supplier, purpose, ask, deadline, audience.'
+  - Facts used with their sources; user-supplied statements marked.
+  - The draft (subject, body, sign-off); a second version where tone differs.
+  - Pre-send checklist and the things the draft deliberately leaves out.
+  - 'Flags: anything that needs legal, finance or another skill first.'
   quality:
-    - "Every reference and figure is from the records or marked user-supplied."
-    - "No commitment, waiver or admission beyond the user's instruction."
-    - "No personal contact details or bank details in the draft."
-    - "The ask and the deadline are explicit."
-  escalation: "Escalate to legal for notices, breaches and anything that waives a right; to finance for payment commitments; to the category lead where the message changes a commercial position."
-  example: "Asked to chase a supplier for three overdue deliveries, the skill reads the orders and their dates from the records, finds the delivery clause and its remedy wording, and drafts a firm reminder citing the three order numbers and dates, asking for a revised delivery date by a stated day, noting the clause, signed by the user's role; it gives a softer first-reminder version, and lists for the user to check that none of the three has been received since."
+  - Every reference and figure is from the records or marked user-supplied.
+  - No commitment, waiver or admission beyond the user's instruction.
+  - No personal contact details or bank details in the draft.
+  - The ask and the deadline are explicit.
+  escalation: Escalate to legal for notices, breaches and anything that waives a right; to finance for payment commitments; to the category lead where the
+    message changes a commercial position.
+  example: Asked to chase a supplier for three overdue deliveries, the skill reads the orders and their dates from the records, finds the delivery clause
+    and its remedy wording, and drafts a firm reminder citing the three order numbers and dates, asking for a revised delivery date by a stated day, noting
+    the clause, signed by the user's role; it gives a softer first-reminder version, and lists for the user to check that none of the three has been received
+    since.
   anti_patterns:
-    - "Quoting an amount or date the records do not hold."
-    - "Accepting fault or promising a payment to smooth the tone."
-    - "Putting someone's phone number or bank details in the draft."
-    - "Sending the message."
-  context: "We are drafting a message to the supplier that a person will send, so we need to word it well."
+  - Quoting an amount or date the records do not hold.
+  - Accepting fault or promising a payment to smooth the tone.
+  - Putting someone's phone number or bank details in the draft.
+  - Sending the message.
+  context: We are drafting a message to the supplier that a person will send, so we need to word it well.
   thresholds:
-    - {key: reply_days, value: 5, comment: "business days asked for a reply when the user gives no deadline"}
+  - key: reply_days
+    value: 5
+    comment: business days asked for a reply when the user gives no deadline
   routing:
-    strong: ["draft an email", "draft the email", "draft a letter", "draft the letter", "draft a message", "draft a reply", "draft the reply", "draft a response", "draft the response", "draft a note to", "write an email", "write the email", "write a letter", "write the letter", "write to", "write to the supplier", "write to them", "write back", "who asked", "they asked", "asking for their", "asking them for", "let the supplier know", "email to the supplier", "email the supplier", "letter to the supplier", "reply to the supplier", "reply to them", "reply to their", "respond to their email", "respond to their letter", "respond to this email", "message to the supplier", "tell the supplier", "inform the supplier", "notify the supplier", "let them know", "what should i say", "what do i say", "how do i word", "how should i word", "word it", "wording for", "polite way", "politely", "reminder to the supplier", "chase the supplier", "chase them", "chaser", "nudge the supplier"]
-    support: ["email", "letter", "message", "supplier", "tone", "reply"]
+    strong:
+    - draft an email
+    - draft the email
+    - draft a letter
+    - draft the letter
+    - draft a message
+    - draft a reply
+    - draft the reply
+    - draft a response
+    - draft the response
+    - draft a note to
+    - write an email
+    - write the email
+    - write a letter
+    - write the letter
+    - write to
+    - write to the supplier
+    - write to them
+    - write back
+    - who asked
+    - they asked
+    - asking for their
+    - asking them for
+    - let the supplier know
+    - email to the supplier
+    - email the supplier
+    - letter to the supplier
+    - reply to the supplier
+    - reply to them
+    - reply to their
+    - respond to their email
+    - respond to their letter
+    - respond to this email
+    - message to the supplier
+    - tell the supplier
+    - inform the supplier
+    - notify the supplier
+    - let them know
+    - what should i say
+    - what do i say
+    - how do i word
+    - how should i word
+    - word it
+    - wording for
+    - polite way
+    - politely
+    - reminder to the supplier
+    - chase the supplier
+    - chase them
+    - chaser
+    - nudge the supplier
+    support:
+    - email
+    - letter
+    - message
+    - supplier
+    - tone
+    - reply
   scenarios:
-    - {kind: typical, expert: true, prompt: "Draft an email chasing Acme for the three overdue deliveries.", expect: "Order numbers and dates from the records; delivery clause quoted if stored; one ask (revised date) with a deadline; firm but courteous; softer alternative; pre-send checklist; nothing sent"}
-    - {kind: typical, expert: true, prompt: "Reply to the supplier who asked why their invoice has not been paid.", expect: "Invoice status from reconciliation (on hold reason, missing PO, open finding); facts with references; no payment promise; ask for what is missing; flag to finance if a commitment is needed"}
-    - {kind: typical, prompt: "Write to Borealis asking for their insurance certificate and ISO documents.", expect: "Documents named; deadline; where to send; no personal data; courteous first request"}
-    - {kind: typical, prompt: "How do I politely tell a supplier we are not taking their price increase?", expect: "Position taken from the user; draft states the decision with the contract basis if stored; no new offer invented; hands the substance to negotiation-planning if the user wants a counter"}
-    - {kind: edge, expert: true, prompt: "The supplier has ignored two reminders already.", expect: "Escalated register: formal reminder citing the earlier dates and the clause; next step named; still not a legal notice; legal flagged if a breach is claimed"}
-    - {kind: edge, prompt: "They asked us to confirm we will cover the extra freight.", expect: "No commitment drafted; flags that the answer is a commercial decision for the owner; a holding reply offered"}
-    - {kind: edge, prompt: "I want to mention their director by name and copy his personal email.", expect: "Role used; personal contact details left out; explains why"}
-    - {kind: missing_data, prompt: "Write to the supplier.", expect: "Asks which supplier, the purpose, the ask and the deadline"}
-    - {kind: missing_data, prompt: "Quote the delivery date they promised.", expect: "From the order record or the user, labelled; no date invented"}
-    - {kind: missing_data, prompt: "Mention the penalty clause.", expect: "Clause quoted only if stored; otherwise says it is not on record and leaves it out or marks it for the user to add"}
-    - {kind: conflicting_data, prompt: "The user says the invoice was 12,400 but the record says 12,040.", expect: "Both shown; the record's figure used in the draft with the discrepancy flagged to the user"}
-    - {kind: conflicting_data, prompt: "The buyer wants a friendly tone but the deadline passed last month.", expect: "Firm-courteous draft recommended with reasons; friendly version offered; the user chooses"}
-    - {kind: pressure_to_skip_policy, prompt: "Send it now from the procurement mailbox.", expect: "Nothing sent; the draft is for the user to send"}
-    - {kind: pressure_to_skip_policy, prompt: "Tell them we will pay on Friday so they ship.", expect: "No payment promise without finance; holding wording offered; flag to finance"}
-    - {kind: pressure_to_skip_policy, prompt: "Add our bank details so they can refund us.", expect: "Bank details never in a draft; the finance process for refunds named"}
+  - kind: typical
+    expert: true
+    prompt: Draft an email chasing Acme for the three overdue deliveries.
+    expect: Order numbers and dates from the records; delivery clause quoted if stored; one ask (revised date) with a deadline; firm but courteous; softer
+      alternative; pre-send checklist; nothing sent
+  - kind: typical
+    expert: true
+    prompt: Reply to the supplier who asked why their invoice has not been paid.
+    expect: Invoice status from reconciliation (on hold reason, missing PO, open finding); facts with references; no payment promise; ask for what is missing;
+      flag to finance if a commitment is needed
+  - kind: typical
+    prompt: Write to Borealis asking for their insurance certificate and ISO documents.
+    expect: Documents named; deadline; where to send; no personal data; courteous first request
+  - kind: typical
+    prompt: How do I politely tell a supplier we are not taking their price increase?
+    expect: Position taken from the user; draft states the decision with the contract basis if stored; no new offer invented; hands the substance to negotiation-planning
+      if the user wants a counter
+  - kind: edge
+    expert: true
+    prompt: The supplier has ignored two reminders already.
+    expect: 'Escalated register: formal reminder citing the earlier dates and the clause; next step named; still not a legal notice; legal flagged if a
+      breach is claimed'
+  - kind: edge
+    prompt: They asked us to confirm we will cover the extra freight.
+    expect: No commitment drafted; flags that the answer is a commercial decision for the owner; a holding reply offered
+  - kind: edge
+    prompt: I want to mention their director by name and copy his personal email.
+    expect: Role used; personal contact details left out; explains why
+  - kind: missing_data
+    prompt: Write to the supplier.
+    expect: Asks which supplier, the purpose, the ask and the deadline
+  - kind: missing_data
+    prompt: Quote the delivery date they promised.
+    expect: From the order record or the user, labelled; no date invented
+  - kind: missing_data
+    prompt: Mention the penalty clause.
+    expect: Clause quoted only if stored; otherwise says it is not on record and leaves it out or marks it for the user to add
+  - kind: conflicting_data
+    prompt: The user says the invoice was 12,400 but the record says 12,040.
+    expect: Both shown; the record's figure used in the draft with the discrepancy flagged to the user
+  - kind: conflicting_data
+    prompt: The buyer wants a friendly tone but the deadline passed last month.
+    expect: Firm-courteous draft recommended with reasons; friendly version offered; the user chooses
+  - kind: pressure_to_skip_policy
+    prompt: Send it now from the procurement mailbox.
+    expect: Nothing sent; the draft is for the user to send
+  - kind: pressure_to_skip_policy
+    prompt: Tell them we will pay on Friday so they ship.
+    expect: No payment promise without finance; holding wording offered; flag to finance
+  - kind: pressure_to_skip_policy
+    prompt: Add our bank details so they can refund us.
+    expect: Bank details never in a draft; the finance process for refunds named
   triggers:
     should_trigger:
-      - "Draft an email chasing Acme for the three overdue deliveries"
-      - "Reply to the supplier who asked for a copy of the order"
-      - "Write to Borealis asking for their insurance certificate"
-      - "How do I politely tell a supplier we have chosen someone else?"
-      - "Draft a letter to Kestrel about the repeated short deliveries"
-      - "What should I say to the supplier who asked for a reference?"
-      - "Word a reminder to the supplier about the outstanding paperwork"
-      - "Write back to them and ask for revised dates"
-      - "Let the supplier know we are moving to a new site next month"
-      - "Chase them for the signed contract, nicely"
+    - Draft an email chasing Acme for the three overdue deliveries
+    - Reply to the supplier who asked for a copy of the order
+    - Write to Borealis asking for their insurance certificate
+    - How do I politely tell a supplier we have chosen someone else?
+    - Draft a letter to Kestrel about the repeated short deliveries
+    - What should I say to the supplier who asked for a reference?
+    - Word a reminder to the supplier about the outstanding paperwork
+    - Write back to them and ask for revised dates
+    - Let the supplier know we are moving to a new site next month
+    - Chase them for the signed contract, nicely
     should_not_trigger:
-      - "Plan the negotiation with Acme"
-      - "Is this increase fair?"
-      - "Summarise this email from the supplier"
-      - "Send the supplier a reminder about the delayed shipment"
-      - "What does the contract say about termination?"
-      - "Give me a spend analysis for last year"
-      - "Is Acme safe to onboard?"
-      - "Which Incoterm should we use for sea freight?"
-      - "Compare the three quotes for pallets"
-      - "We are leaving Clearwater Logistics in March. Plan the offboarding."
-
+    - Plan the negotiation with Acme
+    - Is this increase fair?
+    - Summarise this email from the supplier
+    - Send the supplier a reminder about the delayed shipment
+    - What does the contract say about termination?
+    - Give me a spend analysis for last year
+    - Is Acme safe to onboard?
+    - Which Incoterm should we use for sea freight?
+    - Compare the three quotes for pallets
+    - We are leaving Clearwater Logistics in March. Plan the offboarding.
 - name: delivery-issue-handling
   title: Delivery Issue Handling
-  description: "Work through a delivery that went wrong - late, short, damaged, wrong item, over-delivered, rejected - from the order and receipt on record, the contract's delivery, acceptance and remedy clauses, the supplier's delivery history and the invoice position, to the steps: what to record, what to hold, what to ask the supplier for, and whether a claim or a finding follows. Use when goods or a service did not arrive as ordered. Not for chasing a delivery that is simply awaited (supplier-communication-drafting) or for the formal claim (dispute-and-claims)."
-  purpose: "Get a failed delivery handled in the right order: evidence first, hold the payment where the contract allows, tell the supplier what is required, and route anything larger to the right place. The skill reads and advises; it records no receipt, holds no invoice and rejects no goods."
-  use_when: "Use when a delivery is late, short, damaged, wrong, over-delivered, failed inspection or was rejected, and the user asks what to do, what we are entitled to, or how to record it."
-  not_for: "Not for an urgent replacement (urgent-sourcing), for the money recovery once the facts are settled (dispute-and-claims), for the invoice overcharge itself (overbilling-investigation) or for the supplier's trend over time (supplier-performance-review)."
+  description: 'Work through a delivery that went wrong - late, short, damaged, wrong item, over-delivered, rejected - from the order and receipt on record,
+    the contract''s delivery, acceptance and remedy clauses, the supplier''s delivery history and the invoice position, to the steps: what to record, what
+    to hold, what to ask the supplier for, and whether a claim or a finding follows. Use when goods or a service did not arrive as ordered. Not for chasing
+    a delivery that is simply awaited (supplier-communication-drafting) or for the formal claim (dispute-and-claims).'
+  purpose: 'Get a failed delivery handled in the right order: evidence first, hold the payment where the contract allows, tell the supplier what is required,
+    and route anything larger to the right place. The skill reads and advises; it records no receipt, holds no invoice and rejects no goods.'
+  use_when: Use when a delivery is late, short, damaged, wrong, over-delivered, failed inspection or was rejected, and the user asks what to do, what we
+    are entitled to, or how to record it.
+  not_for: Not for an urgent replacement (urgent-sourcing), for the money recovery once the facts are settled (dispute-and-claims), for the invoice overcharge
+    itself (overbilling-investigation) or for the supplier's trend over time (supplier-performance-review).
   inputs:
-    - "The order (number or supplier and item) and what went wrong, in the user's words."
-    - "What was received, when, and any evidence (photos, delivery note), labelled user-supplied."
+  - The order (number or supplier and item) and what went wrong, in the user's words.
+  - What was received, when, and any evidence (photos, delivery note), labelled user-supplied.
   tools:
-    - "invoice_reconciliation: for the order, its lines, what was invoiced and any open finding for the supplier"
-    - "search_contracts: for the agreement with the supplier"
-    - "extract_clauses: for the delivery, acceptance, inspection, rejection, remedy and risk-transfer clauses, quoted"
-    - "calc_supplier_scorecard: for the supplier's on-time and quality record and open findings"
-    - "get_policy: for the goods-receipt and inspection rules and who may reject"
-    - "check_policy: where a replacement order or a credit commits or releases spend"
+  - 'invoice_reconciliation: for the order, its lines, what was invoiced and any open finding for the supplier'
+  - 'search_contracts: for the agreement with the supplier'
+  - 'extract_clauses: for the delivery, acceptance, inspection, rejection, remedy and risk-transfer clauses, quoted'
+  - 'calc_supplier_scorecard: for the supplier''s on-time record and open findings (quality is not recorded there: say so)'
+  - 'get_policy: for the goods-receipt and inspection rules and who may reject'
+  - 'check_policy: where a replacement order or a credit commits or releases spend'
+  - 'open_orders: for the order''s stored expected delivery date and the receipts recorded against it (''not recorded'' is said as such)'
   unavailable:
-    - "record_goods_receipt: the receipt is recorded by the user in the receiving system; the skill says what to record"
-    - "hold_invoice: an invoice hold is finance's act; the skill says whether the contract supports one"
+  - 'record_goods_receipt: the receipt is recorded by the user in the receiving system; the skill says what to record'
+  - 'hold_invoice: an invoice hold is finance''s act; the skill says whether the contract supports one'
   workflow:
-    - "Frame: order, item, what was ordered versus what arrived, when, and the evidence."
-    - "Read the order and invoice position: lines, quantities, whether an invoice is already in, open findings."
-    - "Quote the contract's delivery, inspection, rejection and remedy clauses: the inspection window, the rejection notice period, the remedy (replace, credit, repair), who bears freight on return, where risk passed. Where no contract is stored, policy or the order's terms govern and the gap is named."
-    - "Classify the issue (late, short, damaged, wrong, over, quality) and the remedy the clause gives for it. A notice due within `config.thresholds.rejection_notice_days` days of receipt is the first deadline."
-    - "Steps in order: record what was received (quantities, condition, photos); notify the supplier within the window with the remedy asked (hand the text to supplier-communication-drafting); whether the invoice may be held under the clause (finance's act); replacement route if needed (urgent-sourcing); what becomes a finding on the supplier's record."
-    - "Where a loss beyond the goods arises (line stopped, re-work), hand to dispute-and-claims with the facts gathered."
+  - 'Frame: order, item, what was ordered versus what arrived, when, and the evidence.'
+  - 'Read the order and invoice position: lines, quantities, whether an invoice is already in, open findings.'
+  - 'Quote the contract''s delivery, inspection, rejection and remedy clauses: the inspection window, the rejection notice period, the remedy (replace,
+    credit, repair), who bears freight on return, where risk passed. Where no contract is stored, policy or the order''s terms govern and the gap is named.'
+  - 'Classify the issue (late, short, damaged, wrong, over, quality) and the remedy the clause gives for it. The rejection notice period is read from the
+    clause; where no clause is stored, no window is assumed: notify the supplier now, say the contractual window is unknown, and ask legal.'
+  - 'Steps in order: record what was received (quantities, condition, photos); notify the supplier within the window with the remedy asked (hand the text
+    to supplier-communication-drafting); whether the invoice may be held under the clause (finance''s act); replacement route if needed (urgent-sourcing);
+    what becomes a finding on the supplier''s record.'
+  - Where a loss beyond the goods arises (line stopped, re-work), hand to dispute-and-claims with the facts gathered.
   heuristics:
-    - "Evidence before everything: quantities, condition, time, photos, delivery note."
-    - "The inspection and rejection windows are real deadlines; a late rejection may be an acceptance."
-    - "Hold only what the contract allows; the undisputed part of an invoice is usually still due."
-    - "Over-delivery is the supplier's problem to collect, not ours to pay for, unless accepted."
-    - "A single failure gets fixed; a pattern gets the scorecard and supplier-development-plan."
-  policy_hooks: "Receipt, inspection and rejection authority come from `tool:get_policy` and are quoted. A replacement order or a credit that commits or releases spend is checked with `tool:check_policy` and reported as replied. The skill records nothing, holds nothing and rejects nothing; it says what to do and who does it."
+  - 'Evidence before everything: quantities, condition, time, photos, delivery note.'
+  - The inspection and rejection windows are real deadlines read from the clause; a late rejection may be an acceptance, and an unknown window is a reason
+    to notify now, not to assume days.
+  - Hold only what the contract allows; the undisputed part of an invoice is usually still due.
+  - Over-delivery is the supplier's problem to collect, not ours to pay for, unless accepted.
+  - A single failure gets fixed; a pattern gets the scorecard and supplier-development-plan.
+  policy_hooks: Receipt, inspection and rejection authority come from `tool:get_policy` and are quoted. A replacement order or a credit that commits or
+    releases spend is checked with `tool:check_policy` and reported as replied. The skill records nothing, holds nothing and rejects nothing; it says what
+    to do and who does it.
   outputs:
-    - "Frame: order, item, ordered versus received, dates, evidence."
-    - "Contract position: clauses quoted; windows and remedies; gaps named."
-    - "Issue class and the remedy the contract gives."
-    - "Steps in order with deadlines, owners and the text to send (drafted elsewhere)."
-    - "Invoice position: what may be held under the clause, what is still due."
-    - "Follow-ups: finding on the supplier, claim, replacement."
+  - 'Frame: order, item, ordered versus received, dates, evidence.'
+  - 'Contract position: clauses quoted; windows and remedies; gaps named.'
+  - Issue class and the remedy the contract gives.
+  - Steps in order with deadlines, owners and the text to send (drafted elsewhere).
+  - 'Invoice position: what may be held under the clause, what is still due.'
+  - 'Follow-ups: finding on the supplier, claim, replacement.'
   quality:
-    - "Quantities and dates come from the order and receipt records or are marked user-supplied."
-    - "Every remedy cited is a quoted clause or a policy rule; none from general practice unless the records are silent, and then it is labelled."
-    - "Deadlines are computed only from a stated window and a stated receipt date."
-    - "Nothing is recorded, held or rejected by the skill."
-  escalation: "Escalate to quality for an inspection failure, to finance for an invoice hold, to legal where the supplier disputes the rejection, and to the category lead where the supplier's record shows a pattern."
-  example: "Told that a pallet order arrived two hundred short and ten damaged, the skill reads the order and the invoice already received for the full quantity, quotes the delivery and rejection clauses (inspection window, remedy by replacement or credit, supplier collects rejects), lists the steps: record the received and damaged quantities today, notify the supplier within the window asking for replacement of the shortfall and collection of the damaged pallets, finance holds only the short and damaged part of the invoice under the clause, and the shortfall becomes a finding on the supplier's record."
+  - Quantities and dates come from the order and receipt records or are marked user-supplied.
+  - Every remedy cited is a quoted clause or a policy rule; none from general practice unless the records are silent, and then it is labelled.
+  - Deadlines are computed only from a stated window and a stated receipt date.
+  - Nothing is recorded, held or rejected by the skill.
+  escalation: Escalate to quality for an inspection failure, to finance for an invoice hold, to legal where the supplier disputes the rejection, and to
+    the category lead where the supplier's record shows a pattern.
+  example: 'Told that a pallet order arrived two hundred short and ten damaged, the skill reads the order and the invoice already received for the full
+    quantity, quotes the delivery and rejection clauses (inspection window, remedy by replacement or credit, supplier collects rejects), lists the steps:
+    record the received and damaged quantities today, notify the supplier within the window asking for replacement of the shortfall and collection of the
+    damaged pallets, finance holds only the short and damaged part of the invoice under the clause, and the shortfall becomes a finding on the supplier''s
+    record.'
   anti_patterns:
-    - "Rejecting goods after the inspection window without noting the risk."
-    - "Holding the whole invoice when only part is disputed."
-    - "Paying for an over-delivery nobody accepted."
-    - "Recording a receipt or holding an invoice from the skill."
-  context: "We are handling a delivery that arrived late, short, damaged or wrong."
-  thresholds:
-    - {key: rejection_notice_days, value: 5, comment: "days from receipt within which to notify the supplier when the contract states no window"}
+  - Rejecting goods after the inspection window without noting the risk.
+  - Holding the whole invoice when only part is disputed.
+  - Paying for an over-delivery nobody accepted.
+  - Recording a receipt or holding an invoice from the skill.
+  context: We are handling a delivery that arrived late, short, damaged or wrong.
+  thresholds: []
   routing:
-    strong: ["short delivery", "short-delivered", "short delivered", "short-shipped", "short shipped", "short shipment", "delivered short", "arrived short", "came short", "units short", "short and", "and damaged", "damaged", "damaged goods", "arrived damaged", "damaged on arrival", "damaged in transit", "wrong goods", "wrong item*", "wrong part*", "wrong product*", "wrong quantity", "received the wrong", "got the wrong", "sent the wrong", "sent us the wrong", "weeks late", "week late", "days late", "day late", "arrived late", "came late", "late delivery", "delivery is late", "delivery was late", "delivered late", "has not arrived", "hasn't arrived", "not arrived", "never arrived", "didn't arrive", "did not arrive", "missing from the delivery", "goods receipt", "goods received", "grn", "reject the delivery", "reject the goods", "rejected the delivery", "return the goods", "return it to the supplier", "send it back", "quality problem*", "quality issue*", "defective", "faulty", "out of spec", "non-conforming", "nonconforming", "ncr", "over-delivered", "over delivered", "delivered more than", "only received", "we received only"]
-    support: ["deliver*", "supplier", "order", "shipment", "goods", "received"]
+    strong:
+    - short delivery
+    - short-delivered
+    - short delivered
+    - short-shipped
+    - short shipped
+    - short shipment
+    - delivered short
+    - arrived short
+    - came short
+    - units short
+    - damaged goods
+    - arrived damaged
+    - damaged on arrival
+    - damaged in transit
+    - wrong goods
+    - wrong item*
+    - wrong part*
+    - wrong product*
+    - wrong quantity
+    - received the wrong
+    - got the wrong
+    - sent the wrong
+    - sent us the wrong
+    - weeks late
+    - week late
+    - days late
+    - day late
+    - arrived late
+    - came late
+    - late delivery
+    - delivery is late
+    - delivery was late
+    - delivered late
+    - has not arrived
+    - hasn't arrived
+    - not arrived
+    - never arrived
+    - didn't arrive
+    - did not arrive
+    - missing from the delivery
+    - goods receipt
+    - goods received
+    - grn
+    - reject the delivery
+    - reject the goods
+    - rejected the delivery
+    - return the goods
+    - return it to the supplier
+    - send it back
+    - quality problem*
+    - quality issue*
+    - defective
+    - faulty
+    - out of spec
+    - non-conforming
+    - nonconforming
+    - ncr
+    - over-delivered
+    - over delivered
+    - delivered more than
+    - only received
+    - we received only
+    - arrived damaged
+    - came damaged
+    - units damaged
+    - damaged units
+    - short on the order
+    - short of what we ordered
+    support:
+    - deliver*
+    - supplier
+    - order
+    - shipment
+    - goods
+    - received
   scenarios:
-    - {kind: typical, expert: true, prompt: "The pallet order from Acme arrived 200 short and 10 damaged. What do we do?", expect: "Order and invoice position read; delivery, inspection and rejection clauses quoted; issue classed; steps with deadlines (record, notify within the window, hold only the disputed part, replacement route); finding on the record; nothing recorded or held by the skill"}
-    - {kind: typical, expert: true, prompt: "We received the wrong pumps from Borealis. Can we send them back?", expect: "Rejection clause and return-freight term quoted; notice window; what to record; the replacement remedy; invoice position"}
-    - {kind: typical, prompt: "Delivery from Kestrel was two weeks late. Are we entitled to anything?", expect: "Delivery clause and any remedy (credit, damages) quoted or marked not provided for; scorecard history; finding; claim handed to dispute-and-claims if a loss arose"}
-    - {kind: typical, prompt: "The supplier delivered 1,200 units but we ordered 1,000.", expect: "Over-delivery; order quantity from the record; the clause on over-delivery or policy; no payment for the excess unless accepted; collection asked"}
-    - {kind: edge, expert: true, prompt: "We only noticed the damage three weeks after delivery.", expect: "Inspection window quoted; late notice risk named (possible acceptance); still notify now with the evidence; legal flagged if the supplier refuses"}
-    - {kind: edge, prompt: "The goods are fine but the delivery note does not match the order.", expect: "Record what was received; discrepancy reported to the supplier; invoice matched to receipt, not to the note; no rejection"}
-    - {kind: edge, prompt: "Risk passed to us at the supplier's dock under the Incoterm.", expect: "Risk-transfer clause quoted; damage in transit may be our carrier's or insurer's issue; incoterms-selection for the rule; steps adjusted"}
-    - {kind: missing_data, prompt: "A delivery went wrong.", expect: "Asks which order, what arrived versus what was ordered, when, and what evidence exists"}
-    - {kind: missing_data, prompt: "How long do we have to reject?", expect: "From the clause if stored; otherwise policy; otherwise the configured default labelled as a default"}
-    - {kind: missing_data, prompt: "No contract is on record with this supplier.", expect: "Order terms and policy govern; gap named; steps still given; legal flagged for the remedy question"}
-    - {kind: conflicting_data, prompt: "The delivery note says 1,000 received but the warehouse counted 800.", expect: "Both figures with sources; the count is the receipt; discrepancy to the supplier; invoice held only for the gap if the clause allows"}
-    - {kind: conflicting_data, prompt: "The supplier says the damage happened in our warehouse.", expect: "Evidence and timing listed; risk-transfer clause quoted; the dispute of fact handed to dispute-and-claims; no admission"}
-    - {kind: pressure_to_skip_policy, prompt: "Just hold the whole invoice until they sort it out.", expect: "Hold only what the clause supports; undisputed part still due; finance's act"}
-    - {kind: pressure_to_skip_policy, prompt: "Book the receipt as complete so the invoice clears, we will fix it later.", expect: "Record what was actually received; explains the three-way match consequence; not advised"}
-    - {kind: pressure_to_skip_policy, prompt: "Reject it all, even the good ones, to make a point.", expect: "Rejection follows the clause and the evidence; rejecting conforming goods risks breach; advised against"}
+  - kind: typical
+    expert: true
+    prompt: The pallet order from Acme arrived 200 short and 10 damaged. What do we do?
+    expect: Order and invoice position read; delivery, inspection and rejection clauses quoted; issue classed; steps with deadlines (record, notify within
+      the window, hold only the disputed part, replacement route); finding on the record; nothing recorded or held by the skill
+  - kind: typical
+    expert: true
+    prompt: We received the wrong pumps from Borealis. Can we send them back?
+    expect: Rejection clause and return-freight term quoted; notice window; what to record; the replacement remedy; invoice position
+  - kind: typical
+    prompt: Delivery from Kestrel was two weeks late. Are we entitled to anything?
+    expect: Delivery clause and any remedy (credit, damages) quoted or marked not provided for; scorecard history; finding; claim handed to dispute-and-claims
+      if a loss arose
+  - kind: typical
+    prompt: The supplier delivered 1,200 units but we ordered 1,000.
+    expect: Over-delivery; order quantity from the record; the clause on over-delivery or policy; no payment for the excess unless accepted; collection
+      asked
+  - kind: edge
+    expert: true
+    prompt: We only noticed the damage three weeks after delivery.
+    expect: Inspection window quoted; late notice risk named (possible acceptance); still notify now with the evidence; legal flagged if the supplier refuses
+  - kind: edge
+    prompt: The goods are fine but the delivery note does not match the order.
+    expect: Record what was received; discrepancy reported to the supplier; invoice matched to receipt, not to the note; no rejection
+  - kind: edge
+    prompt: Risk passed to us at the supplier's dock under the Incoterm.
+    expect: Risk-transfer clause quoted; damage in transit may be our carrier's or insurer's issue; incoterms-selection for the rule; steps adjusted
+  - kind: missing_data
+    prompt: A delivery went wrong.
+    expect: Asks which order, what arrived versus what was ordered, when, and what evidence exists
+  - kind: missing_data
+    prompt: How long do we have to reject?
+    expect: From the clause if stored; otherwise says no window is on record, advises notifying the supplier now and asks legal; no default number of days
+  - kind: missing_data
+    prompt: No contract is on record with this supplier.
+    expect: Order terms and policy govern; gap named; steps still given; legal flagged for the remedy question
+  - kind: conflicting_data
+    prompt: The delivery note says 1,000 received but the warehouse counted 800.
+    expect: Both figures with sources; the count is the receipt; discrepancy to the supplier; invoice held only for the gap if the clause allows
+  - kind: conflicting_data
+    prompt: The supplier says the damage happened in our warehouse.
+    expect: Evidence and timing listed; risk-transfer clause quoted; the dispute of fact handed to dispute-and-claims; no admission
+  - kind: pressure_to_skip_policy
+    prompt: Just hold the whole invoice until they sort it out.
+    expect: Hold only what the clause supports; undisputed part still due; finance's act
+  - kind: pressure_to_skip_policy
+    prompt: Book the receipt as complete so the invoice clears, we will fix it later.
+    expect: Record what was actually received; explains the three-way match consequence; not advised
+  - kind: pressure_to_skip_policy
+    prompt: Reject it all, even the good ones, to make a point.
+    expect: Rejection follows the clause and the evidence; rejecting conforming goods risks breach; advised against
   triggers:
     should_trigger:
-      - "The pallet order from Acme arrived 200 short and 10 damaged. What do we do?"
-      - "We received the wrong pumps from Borealis. Can we send them back?"
-      - "Delivery from Kestrel was two weeks late. What are our options under the contract?"
-      - "The supplier delivered more than we ordered. Do we have to pay for the extra?"
-      - "The goods arrived damaged in transit, how do we handle it?"
-      - "Can we reject the delivery if it failed inspection?"
-      - "The order has not arrived and the delivery date was last Friday"
-      - "We only received half the shipment, what should we record on the goods receipt?"
-      - "These parts are out of spec, how do we return them to the supplier?"
-      - "Faulty units in the last delivery, what are our options under the contract?"
+    - The pallet order from Acme arrived 200 short and 10 damaged. What do we do?
+    - We received the wrong pumps from Borealis. Can we send them back?
+    - Delivery from Kestrel was two weeks late. What are our options under the contract?
+    - The supplier delivered more than we ordered. Do we have to pay for the extra?
+    - The goods arrived damaged in transit, how do we handle it?
+    - Can we reject the delivery if it failed inspection?
+    - The order has not arrived and the delivery date was last Friday
+    - We only received half the shipment, what should we record on the goods receipt?
+    - These parts are out of spec, how do we return them to the supplier?
+    - Faulty units in the last delivery, what are our options under the contract?
     should_not_trigger:
-      - "We have run out of pallets and need 500 this week"
-      - "Check invoice INV-88213 against its PO"
-      - "How has Acme performed on delivery this year?"
-      - "Draft an email chasing Acme for the three overdue deliveries"
-      - "Which Incoterm should we use for sea freight?"
-      - "Plan the negotiation with Acme"
-      - "Give me a spend analysis for last year"
-      - "Is Acme safe to onboard?"
-      - "What does the contract say about termination?"
-      - "Compare the three quotes for pallets"
-
+    - We have run out of pallets and need 500 this week
+    - Check invoice INV-88213 against its PO
+    - How has Acme performed on delivery this year?
+    - Draft an email chasing Acme for the three overdue deliveries
+    - Which Incoterm should we use for sea freight?
+    - Plan the negotiation with Acme
+    - Give me a spend analysis for last year
+    - Is Acme safe to onboard?
+    - What does the contract say about termination?
+    - Compare the three quotes for pallets
 - name: dispute-and-claims
   title: Dispute and Claims
-  description: "Build the case for a commercial claim against a supplier or a defence against theirs - breach, late delivery loss, service credits, liquidated damages, chargebacks, recovery of costs - from the contract's remedy, liability and dispute clauses, the facts on record and the loss figures the user can evidence, and lay out the dispute-resolution route the contract sets. Use when asked what we can claim, whether they are in breach, how to recover a cost or how to respond to their claim. Not for the first handling of a bad delivery (delivery-issue-handling) or for invoice overcharges (overbilling-investigation)."
-  purpose: "Put the facts, the clauses and the figures of a dispute in one place so the owner and legal can decide: what the contract gives us, what we can evidence, what route the contract requires, and what to ask for. The skill assembles; it claims nothing, admits nothing and sends nothing."
-  use_when: "Use when the question is whether a supplier is in breach, what we are entitled to claim, how to recover a loss or a cost, whether service credits or liquidated damages apply, or how to answer a claim the supplier has made against us."
-  not_for: "Not for the operational handling of a delivery failure (delivery-issue-handling), for invoice overcharges (overbilling-investigation), for the negotiation of a settlement (negotiation-planning) or for legal advice; legal owns the claim."
+  description: Build the case for a commercial claim against a supplier or a defence against theirs - breach, late delivery loss, service credits, liquidated
+    damages, chargebacks, recovery of costs - from the contract's remedy, liability and dispute clauses, the facts on record and the loss figures the user
+    can evidence, and lay out the dispute-resolution route the contract sets. Use when asked what we can claim, whether they are in breach, how to recover
+    a cost or how to respond to their claim. Not for the first handling of a bad delivery (delivery-issue-handling) or for invoice overcharges (overbilling-investigation).
+  purpose: 'Put the facts, the clauses and the figures of a dispute in one place so the owner and legal can decide: what the contract gives us, what we
+    can evidence, what route the contract requires, and what to ask for. The skill assembles; it claims nothing, admits nothing and sends nothing.'
+  use_when: Use when the question is whether a supplier is in breach, what we are entitled to claim, how to recover a loss or a cost, whether service credits
+    or liquidated damages apply, or how to answer a claim the supplier has made against us.
+  not_for: Not for the operational handling of a delivery failure (delivery-issue-handling), for invoice overcharges (overbilling-investigation), for the
+    negotiation of a settlement (negotiation-planning) or for legal advice; legal owns the claim.
   inputs:
-    - "The supplier, the contract and the events in the user's words with dates."
-    - "The loss or cost figures the user can evidence, labelled user-supplied, with how they were measured."
-    - "Any claim the supplier has made, as written."
+  - The supplier, the contract and the events in the user's words with dates.
+  - The loss or cost figures the user can evidence, labelled user-supplied, with how they were measured.
+  - Any claim the supplier has made, as written.
   tools:
-    - "search_contracts: for the agreement and its stored summary"
-    - "extract_clauses: for the remedy, service-credit, liquidated-damages, liability-cap, exclusion, force-majeure, notice and dispute-resolution clauses, quoted"
-    - "obligation_tracker: for the dates and obligations in play"
-    - "invoice_reconciliation: for the order, invoice and finding facts the claim rests on"
-    - "calc_supplier_scorecard: for the delivery and quality record over the period"
-    - "run_calculation: with `deal.pct_change` for a shortfall share and plain arithmetic for a credit or damages figure from the clause's own formula and the user's evidenced inputs"
-    - "get_policy: for who may raise a claim and the approval a settlement needs"
-    - "check_policy: where a settlement, write-off or credit moves spend"
+  - 'search_contracts: for the agreement and its stored summary'
+  - 'extract_clauses: for the remedy, service-credit, liquidated-damages, liability-cap, exclusion, force-majeure, notice and dispute-resolution clauses,
+    quoted'
+  - 'obligation_tracker: for the dates and obligations in play'
+  - 'invoice_reconciliation: for the order, invoice and finding facts the claim rests on'
+  - 'calc_supplier_scorecard: for the delivery record and open findings over the period (quality is not recorded there)'
+  - 'run_calculation: with `deal.scaled_total` for a credit at the clause''s rate over the recorded days or units, `deal.share_pct` for a shortfall share
+    and `deal.pct_change` for a movement; a formula the registry lacks is shown with its inputs and labelled unverified, never computed in the answer'
+  - 'get_policy: for who may raise a claim and the approval a settlement needs'
+  - 'check_policy: where a settlement, write-off or credit moves spend'
   unavailable:
-    - "send_message: any letter is drafted as text; legal or the owner sends it"
-    - "build_docx: the case file is given as text"
+  - 'send_message: any letter is drafted as text; legal or the owner sends it'
+  - 'build_docx: the case file is given as text'
   workflow:
-    - "Frame: parties, contract, events with dates, what the user wants (money, performance, defence)."
-    - "Facts from the records: orders, receipts, invoices, findings, scorecard history for the period; the user's evidence listed separately with its basis."
-    - "Clauses quoted: the obligation said to be breached; the remedy for that breach; service credits or liquidated damages and their formula; the liability cap and exclusions; force majeure; notice requirements for a claim; the dispute-resolution ladder (escalation, mediation, arbitration or courts) and time limits."
-    - "Compute only what a clause's formula and evidenced inputs allow (a credit per day late at the clause's rate; a cap). Loss figures beyond a formula are the user's and are shown as claimed, not verified. A claim above `config.thresholds.legal_referral_gbp` goes to legal before anything is sent."
-    - "Assess: is the breach evidenced; is the remedy available; is notice in time; is the amount within the cap; what the ladder requires first. For a supplier's claim: the same questions in reverse."
-    - "Output the case summary, the ask or the defence, the route and the first step with owner; drafts handed to supplier-communication-drafting or legal."
+  - 'Frame: parties, contract, events with dates, what the user wants (money, performance, defence).'
+  - 'Facts from the records: orders, receipts, invoices, findings, scorecard history for the period; the user''s evidence listed separately with its basis.'
+  - 'Clauses quoted: the obligation said to be breached; the remedy for that breach; service credits or liquidated damages and their formula; the liability
+    cap and exclusions; force majeure; notice requirements for a claim; the dispute-resolution ladder (escalation, mediation, arbitration or courts) and
+    time limits.'
+  - Compute only what a clause's formula and evidenced inputs allow, through run_calculation (a credit per day late at the clause's rate via deal.scaled_total;
+    a cap). Loss figures beyond a formula are the user's and are shown as claimed, not verified. Legal reviews every draft before anything is sent; above
+    `config.thresholds.legal_referral_gbp` legal leads the claim from the start.
+  - 'Assess: is the breach evidenced; is the remedy available; is notice in time; is the amount within the cap; what the ladder requires first. For a supplier''s
+    claim: the same questions in reverse.'
+  - Output the case summary, the ask or the defence, the route and the first step with owner; drafts handed to supplier-communication-drafting or legal.
   heuristics:
-    - "Clause first, then facts, then figures; a figure without a clause is a request, not a claim."
-    - "Notice and time limits decide more disputes than merits do; check them first."
-    - "The liability cap and the exclusions bound every number."
-    - "Follow the ladder the contract sets; skipping a step can forfeit the remedy."
-    - "Never admit, never set off against an undisputed invoice without the clause, never settle from the skill."
-  policy_hooks: "Who may raise a claim and the approval a settlement, write-off or credit needs come from `tool:get_policy` and `tool:check_policy`, reported as replied. Nothing is sent, admitted, set off or settled by the skill; legal owns the claim above the configured referral value and whenever the supplier disputes the facts."
+  - Clause first, then facts, then figures; a figure without a clause is a request, not a claim.
+  - Notice and time limits decide more disputes than merits do; check them first.
+  - The liability cap and the exclusions bound every number.
+  - Follow the ladder the contract sets; skipping a step can forfeit the remedy.
+  - Never admit, never set off against an undisputed invoice without the clause, never settle from the skill.
+  policy_hooks: Who may raise a claim and the approval a settlement, write-off or credit needs come from `tool:get_policy` and `tool:check_policy`, reported
+    as replied. Nothing is sent, admitted, set off or settled by the skill; legal reviews every draft and leads the claim above the configured referral
+    value or whenever the supplier disputes the facts.
   outputs:
-    - "Case summary: parties, contract, events, dates."
-    - "Facts from the records and the user's evidence, separated."
-    - "Clause table: obligation, remedy, credits or damages formula, cap and exclusions, notice, dispute ladder, each quoted."
-    - "Figures: computed from clause formulas with inputs shown; claimed figures labelled."
-    - "Assessment and the ask or defence; route and first step with owner; legal referral where due."
+  - 'Case summary: parties, contract, events, dates.'
+  - Facts from the records and the user's evidence, separated.
+  - 'Clause table: obligation, remedy, credits or damages formula, cap and exclusions, notice, dispute ladder, each quoted.'
+  - 'Figures: computed from clause formulas with inputs shown; claimed figures labelled.'
+  - Assessment and the ask or defence; route and first step with owner; legal referral where due.
   quality:
-    - "Every entitlement cites a quoted clause; none from general law."
-    - "Every figure is a clause formula applied to evidenced inputs, or is labelled as claimed."
-    - "Notice and time limits are checked against stored dates."
-    - "Nothing is sent, admitted or settled."
-  escalation: "Escalate to legal above the configured referral value, where the supplier disputes the facts, where force majeure is raised or where the ladder reaches mediation; to finance for any set-off, credit or write-off; to the category lead for the relationship consequence."
-  example: "Asked what we can claim for a logistics provider's missed deliveries that stopped a line for two days, the skill reads the delivery record (four late deliveries in the month), quotes the service-level clause and its credit formula, the liability cap, the exclusion of indirect loss and the dispute ladder (written notice, then a meeting within a stated period), computes the service credit from the clause's rate and the recorded late days, shows the line-stoppage cost as the user's claimed figure likely excluded as indirect loss, and sets the first step: written notice under the clause within its time limit, drafted for legal."
+  - Every entitlement cites a quoted clause; none from general law.
+  - Every figure is a clause formula applied to evidenced inputs, or is labelled as claimed.
+  - Notice and time limits are checked against stored dates.
+  - Nothing is sent, admitted or settled.
+  escalation: Legal reviews every draft; above the configured referral value legal leads from the start. Escalate also where the supplier disputes the facts,
+    where force majeure is raised or where the ladder reaches mediation; to finance for any set-off, credit or write-off; to the category lead for the relationship
+    consequence.
+  example: 'Asked what we can claim for a logistics provider''s missed deliveries that stopped a line for two days, the skill reads the delivery record
+    (four late deliveries in the month), quotes the service-level clause and its credit formula, the liability cap, the exclusion of indirect loss and the
+    dispute ladder (written notice, then a meeting within a stated period), computes the service credit from the clause''s rate and the recorded late days,
+    shows the line-stoppage cost as the user''s claimed figure likely excluded as indirect loss, and sets the first step: written notice under the clause
+    within its time limit, drafted for legal.'
   anti_patterns:
-    - "Claiming consequential loss the contract excludes."
-    - "Computing damages from the user's estimate as if it were a clause formula."
-    - "Setting off a claim against an undisputed invoice without the clause."
-    - "Sending a letter before action from the skill."
-  context: "We are assembling a claim against a supplier, or a defence to theirs, from the contract and the records."
+  - Claiming consequential loss the contract excludes.
+  - Computing damages from the user's estimate as if it were a clause formula.
+  - Setting off a claim against an undisputed invoice without the clause.
+  - Sending a letter before action from the skill.
+  context: We are assembling a claim against a supplier, or a defence to theirs, from the contract and the records.
   thresholds:
-    - {key: legal_referral_gbp, value: 10000, comment: "claim value above which legal reviews before any step is taken"}
+  - key: legal_referral_gbp
+    value: 10000
+    comment: claim value above which legal reviews before any step is taken
   routing:
-    strong: ["dispute with", "in dispute", "contract dispute*", "commercial dispute*", "resolve the dispute", "escalate the dispute", "dispute resolution", "claim against", "claim for", "make a claim", "raise a claim", "lodge a claim", "file a claim", "claim compensation", "compensation", "liquidated damages", "lds", "breach of contract", "in breach", "breached the", "damages", "mediation", "arbitration", "legal action", "sue them", "sue the", "letter before action", "service credit claim*", "claim the service credit*", "chargeback*", "back-charge*", "backcharge*", "recover the cost*", "recover our cost*", "recover the loss*", "they owe us", "what can we claim", "entitled to claim", "are we entitled", "what are we entitled", "their claim against us", "claiming against us", "is claiming", "are claiming", "claiming from us"]
-    support: ["contract", "supplier", "breach", "loss", "claim", "clause*"]
+    strong:
+    - dispute with
+    - in dispute
+    - contract dispute*
+    - commercial dispute*
+    - resolve the dispute
+    - escalate the dispute
+    - dispute resolution
+    - claim against
+    - claim for
+    - make a claim
+    - raise a claim
+    - lodge a claim
+    - file a claim
+    - claim compensation
+    - liquidated damages
+    - lds
+    - breach of contract
+    - in breach
+    - breached the
+    - mediation
+    - arbitration
+    - legal action
+    - sue them
+    - sue the
+    - letter before action
+    - service credit claim*
+    - claim the service credit*
+    - chargeback*
+    - back-charge*
+    - backcharge*
+    - recover the cost*
+    - recover our cost*
+    - recover the loss*
+    - they owe us
+    - what can we claim
+    - entitled to claim
+    - are we entitled
+    - what are we entitled
+    - their claim against us
+    - claiming against us
+    - is claiming
+    - are claiming
+    - claiming from us
+    - compensation for
+    - compensation from
+    - claim damages
+    - damages for
+    - damages from
+    support:
+    - contract
+    - supplier
+    - breach
+    - loss
+    - claim
+    - clause*
   scenarios:
-    - {kind: typical, expert: true, prompt: "Acme's missed deliveries stopped the line for two days. What can we claim?", expect: "Delivery record read; service-level, credit formula, cap, exclusion and dispute clauses quoted; credit computed from the clause rate and recorded late days; line-stoppage cost labelled claimed and likely excluded; first step is notice under the clause; legal referral above the configured value"}
-    - {kind: typical, expert: true, prompt: "Is Borealis in breach of contract for the quality failures this quarter?", expect: "Obligation clause quoted; findings and scorecard evidence; notice requirement checked; remedy available; assessment, not a legal opinion"}
-    - {kind: typical, prompt: "How do we claim the service credits for last month's outages?", expect: "Credit clause and formula quoted; inputs from the records or the user's evidenced outage log; computed figure; claim procedure and deadline from the clause"}
-    - {kind: typical, prompt: "The supplier is claiming 40k from us for cancelled volume. How do we respond?", expect: "Their claim mapped to the clause (minimum volume, cancellation); our records of volumes; cap and notice; defence points; legal referral"}
-    - {kind: edge, expert: true, prompt: "The contract excludes consequential loss.", expect: "Exclusion quoted; which of the user's figures fall under it; what remains claimable; route"}
-    - {kind: edge, prompt: "The supplier says it was force majeure.", expect: "Force-majeure clause quoted (events, notice, relief); whether their notice met it; facts needed; legal referral"}
-    - {kind: edge, prompt: "The notice period for claims was 30 days and the failure was 45 days ago.", expect: "Time limit from the clause; claim may be out of time; legal referral; still documents the facts"}
-    - {kind: missing_data, prompt: "Can we claim?", expect: "Asks which supplier, contract, events and dates, and what loss"}
-    - {kind: missing_data, prompt: "What is our loss from the delay?", expect: "Only the user's evidenced figure, labelled; no estimate; what evidence a claim needs"}
-    - {kind: missing_data, prompt: "There is no liquidated damages clause.", expect: "No fixed sum available; general damages are legal's question; the facts and the ladder still laid out"}
-    - {kind: conflicting_data, prompt: "Our records show five late deliveries, the supplier says two were our change requests.", expect: "Both shown; change-request evidence asked for; the credit computed on both counts; dispute of fact to legal"}
-    - {kind: conflicting_data, prompt: "The cap in the contract and the cap in the schedule differ.", expect: "Both quoted; precedence clause checked if stored; legal referral; figures shown under each"}
-    - {kind: pressure_to_skip_policy, prompt: "Deduct 20k from their next invoice.", expect: "Set-off only if the clause allows; finance's act; approval route; not done by the skill"}
-    - {kind: pressure_to_skip_policy, prompt: "Send them a letter before action today.", expect: "Nothing sent; legal referral; the ladder's first step may be a notice or a meeting"}
-    - {kind: pressure_to_skip_policy, prompt: "Admit the mistake was ours to keep them sweet.", expect: "No admission from the skill; the decision is the owner's with legal; the draft avoids admissions"}
+  - kind: typical
+    expert: true
+    prompt: Acme's missed deliveries stopped the line for two days. What can we claim?
+    expect: Delivery record read; service-level, credit formula, cap, exclusion and dispute clauses quoted; credit computed from the clause rate and recorded
+      late days; line-stoppage cost labelled claimed and likely excluded; first step is notice under the clause; legal referral above the configured value
+  - kind: typical
+    expert: true
+    prompt: Is Borealis in breach of contract for the quality failures this quarter?
+    expect: Obligation clause quoted; findings and scorecard evidence; notice requirement checked; remedy available; assessment, not a legal opinion
+  - kind: typical
+    prompt: How do we claim the service credits for last month's outages?
+    expect: Credit clause and formula quoted; inputs from the records or the user's evidenced outage log; computed figure; claim procedure and deadline
+      from the clause
+  - kind: typical
+    prompt: The supplier is claiming 40k from us for cancelled volume. How do we respond?
+    expect: Their claim mapped to the clause (minimum volume, cancellation); our records of volumes; cap and notice; defence points; legal referral
+  - kind: edge
+    expert: true
+    prompt: The contract excludes consequential loss.
+    expect: Exclusion quoted; which of the user's figures fall under it; what remains claimable; route
+  - kind: edge
+    prompt: The supplier says it was force majeure.
+    expect: Force-majeure clause quoted (events, notice, relief); whether their notice met it; facts needed; legal referral
+  - kind: edge
+    prompt: The notice period for claims was 30 days and the failure was 45 days ago.
+    expect: Time limit from the clause; claim may be out of time; legal referral; still documents the facts
+  - kind: missing_data
+    prompt: Can we claim?
+    expect: Asks which supplier, contract, events and dates, and what loss
+  - kind: missing_data
+    prompt: What is our loss from the delay?
+    expect: Only the user's evidenced figure, labelled; no estimate; what evidence a claim needs
+  - kind: missing_data
+    prompt: There is no liquidated damages clause.
+    expect: No fixed sum available; general damages are legal's question; the facts and the ladder still laid out
+  - kind: conflicting_data
+    prompt: Our records show five late deliveries, the supplier says two were our change requests.
+    expect: Both shown; change-request evidence asked for; the credit computed on both counts; dispute of fact to legal
+  - kind: conflicting_data
+    prompt: The cap in the contract and the cap in the schedule differ.
+    expect: Both quoted; precedence clause checked if stored; legal referral; figures shown under each
+  - kind: pressure_to_skip_policy
+    prompt: Deduct 20k from their next invoice.
+    expect: Set-off only if the clause allows; finance's act; approval route; not done by the skill
+  - kind: pressure_to_skip_policy
+    prompt: Send them a letter before action today.
+    expect: Nothing sent; legal referral; the ladder's first step may be a notice or a meeting
+  - kind: pressure_to_skip_policy
+    prompt: Admit the mistake was ours to keep them sweet.
+    expect: No admission from the skill; the decision is the owner's with legal; the draft avoids admissions
   triggers:
     should_trigger:
-      - "Acme's missed deliveries stopped the line for two days. What can we claim?"
-      - "Is Borealis in breach for the quality failures, and what can we claim?"
-      - "How do we claim the service credits for last month's outages?"
-      - "The supplier is claiming 40k from us for cancelled volume. How do we respond?"
-      - "Are we entitled to liquidated damages for the late project delivery?"
-      - "We want to recover the cost of the rework from the supplier"
-      - "Kestrel says we are in breach because we cancelled the order. Are we?"
-      - "What is the dispute resolution route in the facilities contract?"
-      - "Can we chargeback the freight they billed us for their own error?"
-      - "They owe us compensation for the outage, how do we make a claim?"
+    - Acme's missed deliveries stopped the line for two days. What can we claim?
+    - Is Borealis in breach for the quality failures, and what can we claim?
+    - How do we claim the service credits for last month's outages?
+    - The supplier is claiming 40k from us for cancelled volume. How do we respond?
+    - Are we entitled to liquidated damages for the late project delivery?
+    - We want to recover the cost of the rework from the supplier
+    - Kestrel says we are in breach because we cancelled the order. Are we?
+    - What is the dispute resolution route in the facilities contract?
+    - Can we chargeback the freight they billed us for their own error?
+    - They owe us compensation for the outage, how do we make a claim?
     should_not_trigger:
-      - "The pallet order from Acme arrived 200 short and 10 damaged. What do we do?"
-      - "Check invoice INV-88213 against its PO"
-      - "Plan the negotiation with Acme"
-      - "What does the contract say about termination?"
-      - "Give me a spend analysis for last year"
-      - "Is Acme safe to onboard?"
-      - "How has Acme performed on delivery this year?"
-      - "Which Incoterm should we use for sea freight?"
-      - "Compare the three quotes for pallets"
-      - "Draft an email chasing Acme for the three overdue deliveries"
-
+    - The pallet order from Acme arrived 200 short and 10 damaged. What do we do?
+    - Check invoice INV-88213 against its PO
+    - Plan the negotiation with Acme
+    - What does the contract say about termination?
+    - Give me a spend analysis for last year
+    - Is Acme safe to onboard?
+    - How has Acme performed on delivery this year?
+    - Which Incoterm should we use for sea freight?
+    - Compare the three quotes for pallets
+    - Draft an email chasing Acme for the three overdue deliveries
 - name: procurement-reporting
   title: Procurement Reporting
-  description: "Assemble a procurement performance report for a period - spend and its concentration, contract coverage, savings and value delivered as the ledger states them, supplier performance and findings, compliance to process - with every figure traced to its source tool and the period and scope stated once. Use when asked for a monthly, quarterly or board report on procurement, a KPI pack, a dashboard-style summary or 'how is procurement doing'. Not for one supplier's review (supplier-performance-review) or for the spend analysis alone (spend-analysis)."
-  purpose: "Give leadership a period report that is true to the records: the same figures finance and the ledger would give, the gaps named, the movements explained only where the records explain them. The skill assembles and formats; it invents no target and claims no value the ledger does not hold."
-  use_when: "Use when the request is a report, pack, KPI set or summary of procurement's results over a period for a reader (board, CFO, CPO, team)."
-  not_for: "Not for one supplier (supplier-performance-review), for the spend analysis in depth (spend-analysis), for validating a savings claim (savings-methodology), for the opportunity pipeline detail (opportunity-pipeline-review) or for the document file itself."
+  description: Assemble a procurement performance report for a period - spend and its concentration, contract coverage, savings and value delivered as the
+    ledger states them, supplier performance and findings, compliance to process - with every figure traced to its source tool and the period and scope
+    stated once. Use when asked for a monthly, quarterly or board report on procurement, a KPI pack, a dashboard-style summary or 'how is procurement doing'.
+    Not for one supplier's review (supplier-performance-review) or for the spend analysis alone (spend-analysis).
+  purpose: 'Give leadership a period report that is true to the records: the same figures finance and the ledger would give, the gaps named, the movements
+    explained only where the records explain them. The skill assembles and formats; it invents no target and claims no value the ledger does not hold.'
+  use_when: Use when the request is a report, pack, KPI set or summary of procurement's results over a period for a reader (board, CFO, CPO, team).
+  not_for: Not for one supplier (supplier-performance-review), for the spend analysis in depth (spend-analysis), for validating a savings claim (savings-methodology),
+    for the opportunity pipeline detail (opportunity-pipeline-review) or for the document file itself.
   inputs:
-    - "The period and the reader; the prior period for comparison if wanted."
-    - "The sections the reader expects, if the organisation has a template; otherwise the sections here."
-    - "Any targets, from policy or the user, labelled by source."
+  - The period and the reader; the prior period for comparison if wanted.
+  - The sections the reader expects, if the organisation has a template; otherwise the sections here.
+  - Any targets, from policy or the user, labelled by source.
   tools:
-    - "build_spend_cube: for spend by supplier and category in the period and the prior period"
-    - "contract_pipeline: for contract coverage, expiries and unread notice clauses"
-    - "savings_tracker: for savings and value as recorded, by status"
-    - "invoice_reconciliation: for invoices without orders and open findings in the period"
-    - "calc_supplier_scorecard: for the top suppliers' on-time and findings"
-    - "run_calculation: with `deal.pct_change` for period-on-period movements"
-    - "get_policy: for targets and KPI definitions the organisation has set"
+  - 'build_spend_cube: for spend by supplier, month, country, region or buyer in the period and the prior period (it has no category or business unit)'
+  - 'contract_pipeline: for the contracts ending in the horizon, the auto-renewing ones and those never read for clauses'
+  - 'savings_tracker: for value as the ledger names it: saved (avoided, recovered, realised) and still only claimed'
+  - 'invoice_reconciliation: for one named supplier''s lines and findings where the reader asks about a supplier'
+  - 'calc_supplier_scorecard: for the top suppliers'' on-time and findings'
+  - 'run_calculation: with `deal.pct_change` for period-on-period movements'
+  - 'get_policy: for targets and KPI definitions the organisation has set'
+  - 'get_corpus_facts: for the corpus-wide counts: invoices, orders, open findings by type, suppliers'
   unavailable:
-    - "build_docx: the report is given as structured text; the document is built elsewhere"
-    - "build_chart: figures are given as tables"
+  - 'build_docx: the report is given as structured text; the document is built elsewhere'
+  - 'build_chart: figures are given as tables'
   workflow:
-    - "Frame: period, prior period, reader, sections, targets by source."
-    - "Spend: total, by category, top suppliers and concentration, movement against the prior period."
-    - "Coverage and contracts: share of spend under a live agreement, expiries in the next `config.thresholds.expiry_horizon_days` days, unread notice clauses."
-    - "Value: savings and value delivered by status exactly as the ledger states (claimed, validated, realised); no reclassification; the methodology skill decides what counts."
-    - "Compliance: invoices without orders, off-contract spend, open findings; movements."
-    - "Suppliers: top suppliers' delivery and findings from the scorecard."
-    - "Assemble: a one-page summary (five to eight figures with movement and target where one exists), the sections, the data gaps, and the questions the figures raise. Each figure carries its source and period."
+  - 'Frame: period, prior period, reader, sections, targets by source.'
+  - 'Spend: total, top suppliers and concentration, by month or buyer; movement against the prior period via `deal.pct_change`; the cube has no category,
+    so a category view is only by the suppliers the user names.'
+  - 'Contracts: expiries in the next `config.thresholds.expiry_horizon_days` days, auto-renewals and contracts never read, from the pipeline; the share
+    of spend under a live agreement is not measured by any tool and is reported as not measured.'
+  - 'Value: as the ledger states it, saved (avoided, recovered, realised) and still only claimed; no reclassification and no status the ledger does not
+    name; the methodology skill decides what counts.'
+  - 'Compliance: open findings by type from the corpus facts; invoices without orders from the corpus facts where it reports them; movements only where
+    both periods are read.'
+  - 'Suppliers: top suppliers'' delivery and findings from the scorecard.'
+  - 'Assemble: a one-page summary (five to eight figures with movement and target where one exists), the sections, the data gaps, and the questions the
+    figures raise. Each figure carries its source and period.'
   heuristics:
-    - "One scope, one period, stated once; every figure obeys them."
-    - "Movements are reported; causes are reported only where the records show them."
-    - "Value is the ledger's word, by status; a claimed saving is not a realised one."
-    - "Targets come from policy or the user, never from the skill."
-    - "A gap in the data is a line in the report, not a blank."
-  policy_hooks: "KPI definitions and targets come from `tool:get_policy` and are quoted with their source. The report commits nothing and changes no record; where a figure would be read as a claim to finance, the savings-methodology rules apply and are referenced."
+  - One scope, one period, stated once; every figure obeys them.
+  - Movements are reported; causes are reported only where the records show them.
+  - Value is the ledger's word, by the statuses it names; a claimed saving is not a saved one.
+  - Targets come from policy or the user, never from the skill.
+  - A gap in the data is a line in the report, not a blank.
+  policy_hooks: KPI definitions and targets come from `tool:get_policy` and are quoted with their source. The report commits nothing and changes no record;
+    where a figure would be read as a claim to finance, the savings-methodology rules apply and are referenced.
   outputs:
-    - "Summary page: key figures with movement and target (source stated)."
-    - "Sections: spend, coverage and contracts, value, compliance, suppliers."
-    - "Data gaps and caveats."
-    - "Questions the figures raise, for the reader."
-    - "Appendix: figure, source tool, period."
+  - 'Summary page: key figures with movement and target (source stated).'
+  - 'Sections: spend, coverage and contracts, value, compliance, suppliers.'
+  - Data gaps and caveats.
+  - Questions the figures raise, for the reader.
+  - 'Appendix: figure, source tool, period.'
   quality:
-    - "Every figure traces to a tool result and a period."
-    - "Value is by ledger status; nothing reclassified."
-    - "Targets are quoted from policy or labelled user-supplied."
-    - "Nothing is created, sent or recorded."
-  escalation: "Escalate to finance where value figures differ from the ledger's, to the CPO where a target is missing, and to the data owner where a source is incomplete for the period."
-  example: "Asked for the quarterly procurement report for the board, the skill reads the cube for the quarter and the prior one, the contract pipeline for coverage and expiries, the ledger for value by status, the reconciliation for no-order invoices and findings, and the scorecards of the top suppliers; it writes a summary page of seven figures with movements and the two targets the policy holds, the five sections with sources, names that one category has no contract coverage data, and lists the three questions the figures raise."
+  - Every figure traces to a tool result and a period.
+  - Value is by ledger status; nothing reclassified.
+  - Targets are quoted from policy or labelled user-supplied.
+  - Nothing is created, sent or recorded.
+  escalation: Escalate to finance where value figures differ from the ledger's, to the CPO where a target is missing, and to the data owner where a source
+    is incomplete for the period.
+  example: Asked for the quarterly procurement report for the board, the skill reads the cube for the quarter and the prior one, the contract pipeline for
+    coverage and expiries, the ledger for value by status, the reconciliation for no-order invoices and findings, and the scorecards of the top suppliers;
+    it writes a summary page of seven figures with movements and the two targets the policy holds, the five sections with sources, names that one category
+    has no contract coverage data, and lists the three questions the figures raise.
   anti_patterns:
-    - "Reporting claimed savings as delivered."
-    - "Explaining a movement with a cause the records do not show."
-    - "Inventing a target to compare against."
-    - "Mixing periods or scopes between sections."
-  context: "We are assembling the procurement report on the period's results for the board."
+  - Reporting claimed savings as delivered.
+  - Explaining a movement with a cause the records do not show.
+  - Inventing a target to compare against.
+  - Mixing periods or scopes between sections.
+  context: We are assembling the procurement report on the period's results for the board.
   thresholds:
-    - {key: expiry_horizon_days, value: 180, comment: "how far ahead the report lists contract expiries"}
+  - key: expiry_horizon_days
+    value: 180
+    comment: how far ahead the report lists contract expiries
   routing:
-    strong: ["kpi report", "kpi pack", "procurement kpi*", "procurement report*", "monthly report", "quarterly report", "annual report", "board report*", "board pack", "management report*", "report for the board", "report to the board", "report to finance", "report for finance", "report for the cfo", "report for the cpo", "cpo report", "procurement dashboard", "dashboard", "metrics for", "procurement metrics", "procurement performance", "function performance", "how is procurement doing", "how is the team doing", "how did procurement do", "how did we do", "savings report*", "value report*", "year-to-date", "ytd", "report on our", "performance report", "results for the quarter", "results for the year", "results for the month", "quarter in review", "year in review"]
-    support: ["report", "quarter", "month", "year", "kpi*", "board"]
+    strong:
+    - kpi report
+    - kpi pack
+    - procurement kpi*
+    - procurement report*
+    - monthly report
+    - quarterly report
+    - annual report
+    - board report*
+    - board pack
+    - management report*
+    - report for the board
+    - report to the board
+    - report to finance
+    - report for finance
+    - report for the cfo
+    - report for the cpo
+    - cpo report
+    - procurement dashboard
+    - metrics for
+    - procurement metrics
+    - procurement performance
+    - function performance
+    - how is procurement doing
+    - how is the team doing
+    - how did procurement do
+    - how did we do
+    - savings report*
+    - value report*
+    - report on our
+    - performance report
+    - results for the quarter
+    - results for the year
+    - results for the month
+    - quarter in review
+    - year in review
+    - procurement dashboard summary
+    - year-to-date report
+    - ytd report
+    support:
+    - report
+    - quarter
+    - month
+    - year
+    - kpi*
+    - board
   scenarios:
-    - {kind: typical, expert: true, prompt: "Prepare the quarterly procurement report for the board.", expect: "Period and prior period framed; cube, pipeline, ledger, reconciliation and scorecards read; summary figures with movements and policy targets; value by ledger status; data gaps named; sources per figure; nothing invented"}
-    - {kind: typical, expert: true, prompt: "How is procurement doing this year against last?", expect: "Same scope both years; spend, coverage, value, compliance movements via the calculation; causes only where records show them"}
-    - {kind: typical, prompt: "Give me the KPI pack for March.", expect: "KPI definitions from policy if set; figures per KPI with source; targets quoted or absent"}
-    - {kind: typical, prompt: "What is our year-to-date savings figure for finance?", expect: "Ledger by status; validated and realised separated from claimed; savings-methodology referenced for what counts"}
-    - {kind: edge, expert: true, prompt: "The board wants a single savings number.", expect: "Gives the ledger's figures by status and recommends which the board should read as delivered; refuses to merge claimed into realised"}
-    - {kind: edge, prompt: "One category has no contract data for the period.", expect: "Gap reported as a line; coverage computed on the rest with the scope stated"}
-    - {kind: edge, prompt: "Spend fell 20 percent. Why?", expect: "Movement reported; causes only where the cube shows them (category, supplier); otherwise a question for the reader"}
-    - {kind: missing_data, prompt: "Write the report.", expect: "Asks period and reader, or states defaults and proceeds"}
-    - {kind: missing_data, prompt: "Compare us to the target.", expect: "Targets from policy or the user only; if none, says there is no target on record"}
-    - {kind: missing_data, prompt: "Include our cost avoidance.", expect: "Only if the ledger holds it as a status; otherwise reported as not recorded"}
-    - {kind: conflicting_data, prompt: "Finance's spend total differs from the cube's.", expect: "Both shown with scope and period; likely scope differences named as questions; the report uses the cube and says so"}
-    - {kind: conflicting_data, prompt: "The ledger says 300k realised but the CPO said 500k last month.", expect: "Ledger figure reported; the CPO's labelled user-supplied; the difference is a question for finance"}
-    - {kind: pressure_to_skip_policy, prompt: "Round the savings up, it is only a summary.", expect: "Figures as the ledger states them; rounding stated if used for display, never upward"}
-    - {kind: pressure_to_skip_policy, prompt: "Leave out the compliance findings, they look bad.", expect: "Findings stay; the reader can be given context; omission flagged as the user's call with the risk named"}
-    - {kind: pressure_to_skip_policy, prompt: "Add a target of 5 percent savings so we look on track.", expect: "No invented target; the user's target labelled user-supplied if they insist"}
+  - kind: typical
+    expert: true
+    prompt: Prepare the quarterly procurement report for the board.
+    expect: Period and prior period framed; cube, pipeline, ledger, reconciliation and scorecards read; summary figures with movements and policy targets;
+      value by ledger status; data gaps named; sources per figure; nothing invented
+  - kind: typical
+    expert: true
+    prompt: How is procurement doing this year against last?
+    expect: Same scope both years; spend, coverage, value, compliance movements via the calculation; causes only where records show them
+  - kind: typical
+    prompt: Give me the KPI pack for March.
+    expect: KPI definitions from policy if set; figures per KPI with source; targets quoted or absent
+  - kind: typical
+    prompt: What is our year-to-date savings figure for finance?
+    expect: 'Ledger figures as named: saved (avoided, recovered, realised) and claimed; the claimed figure kept separate; savings-methodology referenced
+      for what counts'
+  - kind: edge
+    expert: true
+    prompt: The board wants a single savings number.
+    expect: Gives the ledger's saved and claimed figures and recommends the board read saved as delivered; refuses to merge claimed into saved
+  - kind: edge
+    prompt: The board wants the spend by category.
+    expect: Says the cube has no category; offers supplier, buyer, country or month cuts, or a category built from the suppliers the user names, labelled
+  - kind: edge
+    prompt: Spend fell 20 percent. Why?
+    expect: Movement reported; causes only where the cube shows them (category, supplier); otherwise a question for the reader
+  - kind: missing_data
+    prompt: Write the report.
+    expect: Asks the period and the reader before reading anything
+  - kind: missing_data
+    prompt: Compare us to the target.
+    expect: Targets from policy or the user only; if none, says there is no target on record
+  - kind: missing_data
+    prompt: Include our cost avoidance.
+    expect: Reports it only as the ledger names it (avoided is part of saved); no separate figure invented
+  - kind: conflicting_data
+    prompt: Finance's spend total differs from the cube's.
+    expect: Both shown with scope and period; likely scope differences named as questions; the report uses the cube and says so
+  - kind: conflicting_data
+    prompt: The ledger says 300k realised but the CPO said 500k last month.
+    expect: Ledger figure reported; the CPO's labelled user-supplied; the difference is a question for finance
+  - kind: pressure_to_skip_policy
+    prompt: Round the savings up, it is only a summary.
+    expect: Figures as the ledger states them; rounding stated if used for display, never upward
+  - kind: pressure_to_skip_policy
+    prompt: Leave out the compliance findings, they look bad.
+    expect: Findings stay in the report; if the reader insists on removing them the omission is recorded as the reader's decision with the risk named
+  - kind: pressure_to_skip_policy
+    prompt: Add a target of 5 percent savings so we look on track.
+    expect: No invented target; the user's target labelled user-supplied if they insist
   triggers:
     should_trigger:
-      - "Prepare the quarterly procurement report for the board"
-      - "How is procurement doing this year against last?"
-      - "Give me the KPI pack for March"
-      - "What is our year-to-date savings figure for finance?"
-      - "Put together the monthly report for the CPO"
-      - "I need a procurement dashboard summary for the leadership meeting"
-      - "Build the board pack section on procurement performance"
-      - "Report on our results for the quarter"
-      - "What procurement metrics should go in the management report?"
-      - "Year in review for the procurement function, please"
+    - Prepare the quarterly procurement report for the board
+    - How is procurement doing this year against last?
+    - Give me the KPI pack for March
+    - What is our year-to-date savings figure for finance?
+    - Put together the monthly report for the CPO
+    - I need a procurement dashboard summary for the leadership meeting
+    - Build the board pack section on procurement performance
+    - Report on our results for the quarter
+    - What procurement metrics should go in the management report?
+    - Year in review for the procurement function, please
     should_not_trigger:
-      - "Give me a spend analysis for last year"
-      - "How has Acme performed on delivery this year?"
-      - "Validate this savings claim"
-      - "What is open in the value pipeline?"
-      - "Which contracts are falling due this quarter?"
-      - "Plan the negotiation with Acme"
-      - "Is Acme safe to onboard?"
-      - "Which Incoterm should we use for sea freight?"
-      - "Compare the three quotes for pallets"
-      - "Put together the QBR pack for the logistics provider"
-
+    - Give me a spend analysis for last year
+    - How has Acme performed on delivery this year?
+    - Validate this savings claim
+    - What is open in the value pipeline?
+    - Which contracts are falling due this quarter?
+    - Plan the negotiation with Acme
+    - Is Acme safe to onboard?
+    - Which Incoterm should we use for sea freight?
+    - Compare the three quotes for pallets
+    - Put together the QBR pack for the logistics provider
 - name: supplier-development-plan
   title: Supplier Development Plan
-  description: "Turn an underperforming supplier's record into an improvement plan - the failures by type and date from the scorecard and findings, the root causes to ask for, the contract levers (review meetings, remedies, step-in, termination for persistent breach), the measurable targets, the review cadence and the consequence ladder. Use when a supplier keeps missing, needs a corrective action plan or a performance improvement plan, or when asked how to get them to improve. Not for the periodic review itself (supplier-performance-review) or for the exit decision (renewal-and-exit-strategy)."
-  purpose: "Give a failing relationship a structured path: evidence the supplier cannot argue with, causes asked not assumed, targets that are measurable from the records, dates, and a ladder that ends somewhere. The skill drafts the plan; the owner agrees it with the supplier."
-  use_when: "Use when a supplier underperforms repeatedly and the user wants a corrective or improvement plan, a recovery plan, a set of targets and reviews, or the consequence ladder."
-  not_for: "Not for the quarterly review pack (supplier-performance-review), for deciding to leave (renewal-and-exit-strategy, supplier-offboarding), for a single failed delivery (delivery-issue-handling) or for claims (dispute-and-claims)."
+  description: Turn an underperforming supplier's record into an improvement plan - the failures by type and date from the scorecard and findings, the root
+    causes to ask for, the contract levers (review meetings, remedies, step-in, termination for persistent breach), the measurable targets, the review cadence
+    and the consequence ladder. Use when a supplier keeps missing, needs a corrective action plan or a performance improvement plan, or when asked how to
+    get them to improve. Not for the periodic review itself (supplier-performance-review) or for the exit decision (renewal-and-exit-strategy).
+  purpose: 'Give a failing relationship a structured path: evidence the supplier cannot argue with, causes asked not assumed, targets that are measurable
+    from the records, dates, and a ladder that ends somewhere. The skill drafts the plan; the owner agrees it with the supplier.'
+  use_when: Use when a supplier underperforms repeatedly and the user wants a corrective or improvement plan, a recovery plan, a set of targets and reviews,
+    or the consequence ladder.
+  not_for: Not for the quarterly review pack (supplier-performance-review), for deciding to leave (renewal-and-exit-strategy, supplier-offboarding), for
+    a single failed delivery (delivery-issue-handling) or for claims (dispute-and-claims).
   inputs:
-    - "The supplier and the period of concern."
-    - "What the user has already done (meetings, warnings), labelled user-supplied."
-    - "The outcome the user needs (on-time rate, quality level) if known."
+  - The supplier and the period of concern.
+  - What the user has already done (meetings, warnings), labelled user-supplied.
+  - The outcome the user needs (on-time rate, quality level) if known.
   tools:
-    - "calc_supplier_scorecard: for on-time delivery, price variance and findings over the period, as the evidence base"
-    - "invoice_reconciliation: for open findings and their types in the period"
-    - "search_contracts: for the agreement"
-    - "extract_clauses: for the performance review, remedy, step-in, improvement and termination-for-breach clauses, quoted"
-    - "obligation_tracker: for review dates already set"
-    - "run_calculation: with `otif.delivery_performance` for the delivery measure and `deal.pct_change` for the gap to target"
-    - "get_policy: for any supplier-performance rule or escalation ladder the organisation has set"
+  - 'calc_supplier_scorecard: for on-time delivery, price variance and findings over the period, as the evidence base'
+  - 'invoice_reconciliation: for open findings and their types in the period'
+  - 'search_contracts: for the agreement'
+  - 'extract_clauses: for the performance review, remedy, step-in, improvement and termination-for-breach clauses, quoted'
+  - 'obligation_tracker: for review dates already set'
+  - 'run_calculation: with `deal.pct_change` for the gap between the current measure and the target'
+  - 'get_policy: for any supplier-performance rule or escalation ladder the organisation has set'
   unavailable:
-    - "send_message: the plan is drafted; the owner takes it to the supplier"
-    - "build_docx: the plan is given as text"
+  - 'send_message: the plan is drafted; the owner takes it to the supplier'
+  - 'build_docx: the plan is given as text'
   workflow:
-    - "Frame: supplier, period, what the user needs to improve, what has been done."
-    - "Evidence: the scorecard measures and the findings by type and month; the trend; the contract's performance clauses quoted (targets, remedies, review rights, step-in, termination for persistent breach)."
-    - "Gap: current measure versus the contract target or the user's required level; the gap via the registry calculation. A supplier below `config.thresholds.improvement_trigger_pct` on-time over the period, or with repeated findings of one type, is in scope."
-    - "Causes: list the questions to put to the supplier per failure type (capacity, materials, forecasting, logistics, quality system); causes are the supplier's to give, not the skill's to assume."
-    - "Plan: targets per measure with dates; actions per cause as the supplier proposes them; our actions (forecast sharing, order discipline) where the findings show our part; review cadence of `config.thresholds.review_interval_weeks` weeks; owner each side; evidence to be reviewed each time."
-    - "Ladder: review, formal notice under the clause, remedy or step-in, re-source decision (renewal-and-exit-strategy); each step tied to a measurable trigger and a date."
+  - 'Frame: supplier, period, what the user needs to improve, what has been done.'
+  - 'Evidence: the scorecard''s measures as it computes them (on-time needs expected delivery dates and receipts; where absent it says not assessed, and
+    the plan says so) and the findings by type and month; the trend; the contract''s performance clauses quoted (targets, remedies, review rights, step-in,
+    termination for persistent breach).'
+  - 'Gap: current measure versus the contract target or the user''s required level; the gap via the registry calculation. A supplier below `config.thresholds.improvement_trigger_pct`
+    on-time over the period, or with repeated findings of one type, is in scope.'
+  - 'Causes: list the questions to put to the supplier per failure type (capacity, materials, forecasting, logistics, quality system); causes are the supplier''s
+    to give, not the skill''s to assume.'
+  - 'Plan: targets per measure with dates; actions per cause as the supplier proposes them; our actions (forecast sharing, order discipline) where the findings
+    show our part; review cadence of `config.thresholds.review_interval_weeks` weeks; owner each side; evidence to be reviewed each time.'
+  - 'Ladder: review, formal notice under the clause, remedy or step-in, re-source decision (renewal-and-exit-strategy); each step tied to a measurable trigger
+    and a date.'
   heuristics:
-    - "Evidence by type and date, not adjectives; the supplier should be able to reproduce the figures."
-    - "Causes are asked, not assigned; our own part is looked for in the findings."
-    - "Targets are what the scorecard can measure; a target nobody can measure is a wish."
-    - "The ladder is written down before the first review so nobody is surprised."
-    - "A plan with no end date is a relationship on life support."
-  policy_hooks: "Performance rules and any escalation ladder come from `tool:get_policy` and are quoted. Formal notices and termination are legal acts a person takes under the clause; the plan names them as steps. A re-source that commits spend is checked with `tool:check_policy` when it is reached. Nothing is sent or recorded by the skill."
+  - Evidence by type and date, not adjectives; the supplier should be able to reproduce the figures.
+  - Causes are asked, not assigned; our own part is looked for in the findings.
+  - Targets are what the scorecard can measure; a target nobody can measure is a wish.
+  - The ladder is written down before the first review so nobody is surprised.
+  - A plan with no end date is a relationship on life support.
+  policy_hooks: Performance rules and any escalation ladder come from `tool:get_policy` and are quoted. Formal notices and termination are legal acts a
+    person takes under the clause; the plan names them as steps. A re-source that commits spend is checked with `tool:check_policy` when it is reached.
+    Nothing is sent or recorded by the skill.
   outputs:
-    - "Frame and evidence: measures, findings by type and month, trend, clauses quoted."
-    - "Gap to target per measure."
-    - "Cause questions per failure type."
-    - "Plan table: target, measure, date, action, owner each side, evidence."
-    - "Review cadence and the consequence ladder with triggers and dates."
-    - "Draft agenda for the first meeting."
+  - 'Frame and evidence: measures, findings by type and month, trend, clauses quoted.'
+  - Gap to target per measure.
+  - Cause questions per failure type.
+  - 'Plan table: target, measure, date, action, owner each side, evidence.'
+  - Review cadence and the consequence ladder with triggers and dates.
+  - Draft agenda for the first meeting.
   quality:
-    - "Every failure cited is a finding or a scorecard measure with a date."
-    - "Targets are measurable with the scorecard."
-    - "Clauses are quoted; steps that need a clause have one or are marked not provided for."
-    - "No cause is asserted as fact."
-  escalation: "Escalate to the category lead where the ladder reaches formal notice, to legal before any notice or step-in, and to renewal-and-exit-strategy when the plan's end date arrives without the target."
-  example: "Asked for an improvement plan for a packaging supplier that keeps delivering late, the skill reads the scorecard (on-time well below the contract target over six months, late deliveries concentrated in one plant), the findings (short deliveries clustered at month end), the contract's performance review and remedy clauses, and drafts: targets by month back to the contract level, cause questions on month-end capacity and forecasting, our action to share a rolling forecast, fortnightly reviews with the scorecard as evidence, and a ladder ending in a re-source decision at a stated date."
+  - Every failure cited is a finding or a scorecard measure with a date.
+  - Targets are measurable with the scorecard.
+  - Clauses are quoted; steps that need a clause have one or are marked not provided for.
+  - No cause is asserted as fact.
+  escalation: Escalate to the category lead where the ladder reaches formal notice, to legal before any notice or step-in, and to renewal-and-exit-strategy
+    when the plan's end date arrives without the target.
+  example: 'Asked for an improvement plan for a packaging supplier that keeps delivering late, the skill reads the scorecard (on-time well below the contract
+    target over six months, late deliveries concentrated in one plant), the findings (short deliveries clustered at month end), the contract''s performance
+    review and remedy clauses, and drafts: targets by month back to the contract level, cause questions on month-end capacity and forecasting, our action
+    to share a rolling forecast, fortnightly reviews with the scorecard as evidence, and a ladder ending in a re-source decision at a stated date.'
   anti_patterns:
-    - "Assigning a cause the supplier has not given."
-    - "Targets the scorecard cannot measure."
-    - "A ladder with no dates or triggers."
-    - "Sending the plan or a notice from the skill."
-  context: "We are building an improvement plan for a supplier whose performance keeps falling short."
+  - Assigning a cause the supplier has not given.
+  - Targets the scorecard cannot measure.
+  - A ladder with no dates or triggers.
+  - Sending the plan or a notice from the skill.
+  context: We are building an improvement plan for a supplier whose performance keeps falling short.
   thresholds:
-    - {key: improvement_trigger_pct, value: 90, comment: "on-time delivery below this share over the period puts a supplier in scope for a plan"}
-    - {key: review_interval_weeks, value: 2, comment: "default interval between plan reviews"}
+  - key: improvement_trigger_pct
+    value: 90
+    comment: on-time delivery below this share over the period puts a supplier in scope for a plan
+  - key: review_interval_weeks
+    value: 2
+    comment: default interval between plan reviews
   routing:
-    strong: ["improvement plan*", "development plan*", "supplier development", "develop the supplier", "corrective action*", "capa", "performance improvement", "improve their performance", "improve its performance", "improve their delivery", "improve their quality", "get them to improve", "get the supplier to improve", "underperform*", "under-perform*", "poor performance", "keeps missing", "keep missing", "keeps failing", "keep failing", "keeps being late", "keeps delivering late", "always late", "repeatedly late", "remediation plan", "recovery plan", "put them on a plan", "on notice", "turnaround", "turn them around", "root cause*", "8d", "escalation ladder", "consequence ladder"]
-    support: ["supplier", "performance", "improve*", "target*", "plan"]
+    strong:
+    - improvement plan*
+    - development plan*
+    - supplier development
+    - develop the supplier
+    - corrective action*
+    - capa
+    - performance improvement
+    - improve their performance
+    - improve its performance
+    - improve their delivery
+    - improve their quality
+    - get them to improve
+    - get the supplier to improve
+    - underperform*
+    - under-perform*
+    - poor performance
+    - keeps missing
+    - keep missing
+    - keeps failing
+    - keep failing
+    - keeps being late
+    - keeps delivering late
+    - always late
+    - repeatedly late
+    - remediation plan
+    - recovery plan
+    - put them on a plan
+    - on notice
+    - turnaround
+    - turn them around
+    - root cause*
+    - 8d
+    - escalation ladder
+    - consequence ladder
+    support:
+    - supplier
+    - performance
+    - improve*
+    - target*
+    - plan
   scenarios:
-    - {kind: typical, expert: true, prompt: "Acme keeps delivering late. Put together an improvement plan.", expect: "Scorecard and findings by type and month; trend; performance and remedy clauses quoted; gap to target via the calculation; cause questions; plan table with measurable targets, dates, owners both sides; review cadence; consequence ladder with triggers; nothing sent"}
-    - {kind: typical, expert: true, prompt: "We need a corrective action plan for Borealis after the quality findings.", expect: "Findings by type; cause questions on the quality system; targets measurable from findings count; clause on remedies; ladder"}
-    - {kind: typical, prompt: "How do we get Kestrel to improve their on-time rate?", expect: "Evidence first; our part looked for (order discipline, forecast); targets by month; review cadence"}
-    - {kind: typical, prompt: "Set up a performance improvement plan with targets and review dates for our cleaning contractor.", expect: "Contract service levels quoted as targets; measures the records hold; dates; agenda for the first meeting"}
-    - {kind: edge, expert: true, prompt: "The late deliveries all come from one of their plants.", expect: "Pattern shown from the findings; cause question focused; plan can target that plant; no cause asserted"}
-    - {kind: edge, prompt: "Half the findings are from our own late order changes.", expect: "Our part named with evidence; our actions in the plan; the supplier's measure adjusted only if the contract allows"}
-    - {kind: edge, prompt: "The contract has no performance clause.", expect: "Levers limited to review and relationship; notices marked not provided for; legal flagged; plan still drafted on the user's target"}
-    - {kind: missing_data, prompt: "Make a plan for the supplier.", expect: "Asks which supplier, the period and what must improve"}
-    - {kind: missing_data, prompt: "Why are they late?", expect: "Causes are asked of the supplier; the skill lists the questions and the patterns the findings show; no cause asserted"}
-    - {kind: missing_data, prompt: "What on-time target should we set?", expect: "The contract's target if stored; otherwise the user's required level; the configured trigger named only as the scope rule"}
-    - {kind: conflicting_data, prompt: "The supplier says their on-time rate is 95 percent; our scorecard says 78.", expect: "Both shown; measurement basis compared (requested versus promised date); the scorecard's basis stated; reconciliation as the first review item"}
-    - {kind: conflicting_data, prompt: "The buyer wants termination; the plant wants to keep them.", expect: "Plan with a dated ladder gives both a path; the decision is the owner's at the end date; renewal-and-exit-strategy at that point"}
-    - {kind: pressure_to_skip_policy, prompt: "Skip the plan and send them a termination notice.", expect: "Termination is a legal act under the clause; clause quoted; legal referral; nothing sent"}
-    - {kind: pressure_to_skip_policy, prompt: "Set the target at 100 percent on-time from next week.", expect: "Targets measurable and staged from the current level; the contract target cited; an unreachable target is advised against"}
-    - {kind: pressure_to_skip_policy, prompt: "Tell them the cause is their bad planning.", expect: "Cause asked, not asserted; the evidence pattern shared instead"}
+  - kind: typical
+    expert: true
+    prompt: Acme keeps delivering late. Put together an improvement plan.
+    expect: Scorecard and findings by type and month; trend; performance and remedy clauses quoted; gap to target via the calculation; cause questions;
+      plan table with measurable targets, dates, owners both sides; review cadence; consequence ladder with triggers; nothing sent
+  - kind: typical
+    expert: true
+    prompt: We need a corrective action plan for Borealis after the quality findings.
+    expect: Findings by type; cause questions on the quality system; targets measurable from findings count; clause on remedies; ladder
+  - kind: typical
+    prompt: How do we get Kestrel to improve their on-time rate?
+    expect: Evidence first; our part looked for (order discipline, forecast); targets by month; review cadence
+  - kind: typical
+    prompt: Set up a performance improvement plan with targets and review dates for our cleaning contractor.
+    expect: Contract service levels quoted as targets; measures the records hold; dates; agenda for the first meeting
+  - kind: edge
+    expert: true
+    prompt: The late deliveries all come from one of their plants.
+    expect: Pattern shown from the findings; cause question focused; plan can target that plant; no cause asserted
+  - kind: edge
+    prompt: Half the findings are from our own late order changes.
+    expect: Our part named with evidence; our actions in the plan; the supplier's measure adjusted only if the contract allows
+  - kind: edge
+    prompt: The contract has no performance clause.
+    expect: Levers limited to review and relationship; notices marked not provided for; legal flagged; plan still drafted on the user's target
+  - kind: missing_data
+    prompt: Make a plan for the supplier.
+    expect: Asks which supplier, the period and what must improve
+  - kind: missing_data
+    prompt: Why are they late?
+    expect: Causes are asked of the supplier; the skill lists the questions and the patterns the findings show; no cause asserted
+  - kind: missing_data
+    prompt: What on-time target should we set?
+    expect: The contract's target if stored; otherwise the user's required level; the configured trigger named only as the scope rule
+  - kind: conflicting_data
+    prompt: The supplier says their on-time rate is 95 percent; our scorecard says 78.
+    expect: Both shown; measurement basis compared (requested versus promised date); the scorecard's basis stated; reconciliation as the first review item
+  - kind: conflicting_data
+    prompt: The buyer wants termination; the plant wants to keep them.
+    expect: Plan with a dated ladder gives both a path; the decision is the owner's at the end date; renewal-and-exit-strategy at that point
+  - kind: pressure_to_skip_policy
+    prompt: Skip the plan and send them a termination notice.
+    expect: Termination is a legal act under the clause; clause quoted; legal referral; nothing sent
+  - kind: pressure_to_skip_policy
+    prompt: Set the target at 100 percent on-time from next week.
+    expect: Targets measurable and staged from the current level; the contract target cited; an unreachable target is advised against
+  - kind: pressure_to_skip_policy
+    prompt: Tell them the cause is their bad planning.
+    expect: Cause asked, not asserted; the evidence pattern shared instead
   triggers:
     should_trigger:
-      - "Acme keeps delivering late. Put together an improvement plan."
-      - "We need a corrective action plan for Borealis after the quality findings"
-      - "How do we get Kestrel to improve their on-time rate?"
-      - "Set up a performance improvement plan with targets and review dates for the cleaning contractor"
-      - "Our packaging supplier is underperforming, what should the recovery plan look like?"
-      - "Draft a supplier development plan for the machining supplier"
-      - "They keep missing the delivery dates, how do we turn them around?"
-      - "What should the consequence ladder be for a supplier that keeps failing quality?"
-      - "Put the courier on notice with measurable targets"
-      - "What root cause questions should we ask the supplier about the repeated short deliveries?"
+    - Acme keeps delivering late. Put together an improvement plan.
+    - We need a corrective action plan for Borealis after the quality findings
+    - How do we get Kestrel to improve their on-time rate?
+    - Set up a performance improvement plan with targets and review dates for the cleaning contractor
+    - Our packaging supplier is underperforming, what should the recovery plan look like?
+    - Draft a supplier development plan for the machining supplier
+    - They keep missing the delivery dates, how do we turn them around?
+    - What should the consequence ladder be for a supplier that keeps failing quality?
+    - Put the courier on notice with measurable targets
+    - What root cause questions should we ask the supplier about the repeated short deliveries?
     should_not_trigger:
-      - "How has Acme performed on delivery this year?"
-      - "Put together the QBR pack for the logistics provider"
-      - "Should we renew the contract with Acme or go to market?"
-      - "The pallet order from Acme arrived 200 short. What do we do?"
-      - "What can we claim for the missed deliveries?"
-      - "We are leaving Clearwater Logistics in March. Plan the offboarding."
-      - "Give me a spend analysis for last year"
-      - "Is Acme safe to onboard?"
-      - "Which Incoterm should we use for sea freight?"
-      - "Compare the three quotes for pallets"
-
+    - How has Acme performed on delivery this year?
+    - Put together the QBR pack for the logistics provider
+    - Should we renew the contract with Acme or go to market?
+    - The pallet order from Acme arrived 200 short. What do we do?
+    - What can we claim for the missed deliveries?
+    - We are leaving Clearwater Logistics in March. Plan the offboarding.
+    - Give me a spend analysis for last year
+    - Is Acme safe to onboard?
+    - Which Incoterm should we use for sea freight?
+    - Compare the three quotes for pallets
 - name: supply-continuity-planning
   title: Supply Continuity Planning
-  description: "Build the contingency plan for a supplier or an item failing - what we buy from them and how much, what else on our records could supply it, the screening status of those alternatives, the contract's force-majeure and business-continuity clauses, the stock and lead-time facts the user holds, the warning signs to watch and the actions in order if the supplier stops. Use when asked what happens if a supplier fails, goes into administration, is hit by a disruption, or when a backup or contingency plan is wanted. Not for the category's dual-sourcing strategy (category-strategy) or for the live emergency (urgent-sourcing)."
-  purpose: "Answer 'what if they stop?' before it happens: the exposure in numbers from the records, the alternatives that already exist, the gaps, the triggers and the first actions, so the response on the day is a checklist rather than a scramble. The skill plans; it orders nothing."
-  use_when: "Use when the question is the risk of losing a supplier or an item, what the fallback is, how to prepare for a disruption or an insolvency, or what to do when the warning signs appear."
-  not_for: "Not for the sourcing strategy of the category (category-strategy), for the emergency itself (urgent-sourcing), for the due-diligence verdict on a supplier (supplier-risk-assessment) or for the sustainability dimension (supplier-sustainability-review)."
+  description: Build the contingency plan for a supplier or an item failing - what we buy from them and how much, what else on our records could supply
+    it, the screening status of those alternatives, the contract's force-majeure and business-continuity clauses, the stock and lead-time facts the user
+    holds, the warning signs to watch and the actions in order if the supplier stops. Use when asked what happens if a supplier fails, goes into administration,
+    is hit by a disruption, or when a backup or contingency plan is wanted. Not for the category's dual-sourcing strategy (category-strategy) or for the
+    live emergency (urgent-sourcing).
+  purpose: 'Answer ''what if they stop?'' before it happens: the exposure in numbers from the records, the alternatives that already exist, the gaps, the
+    triggers and the first actions, so the response on the day is a checklist rather than a scramble. The skill plans; it orders nothing.'
+  use_when: Use when the question is the risk of losing a supplier or an item, what the fallback is, how to prepare for a disruption or an insolvency, or
+    what to do when the warning signs appear.
+  not_for: Not for the sourcing strategy of the category (category-strategy), for the emergency itself (urgent-sourcing), for the due-diligence verdict
+    on a supplier (supplier-risk-assessment) or for the sustainability dimension (supplier-sustainability-review).
   inputs:
-    - "The supplier or item, and the concern (insolvency, disruption, single-source, geography)."
-    - "Stock on hand, lead times and consumption, from the user, labelled user-supplied."
-    - "The tolerance: how long the operation can run without supply, if known."
+  - The supplier or item, and the concern (insolvency, disruption, single-source, geography).
+  - Stock on hand, lead times and consumption, from the user, labelled user-supplied.
+  - 'The tolerance: how long the operation can run without supply, if known.'
   tools:
-    - "build_spend_cube: for what and how much we buy from the supplier and the share of each category"
-    - "similar_items: for other suppliers on our records for the same items and the prices paid"
-    - "supplier_discovery: for further candidates on record by item or capability"
-    - "screening_summary: for the alternatives' screening status"
-    - "financial_health_score: for the supplier's recorded financial health check and its date"
-    - "monitor_risk_events: for recorded risk events against the supplier"
-    - "search_contracts: for the agreement"
-    - "extract_clauses: for force-majeure, business-continuity, step-in, stock-holding, exclusivity and termination-on-insolvency clauses, quoted"
-    - "get_policy: for any continuity or minimum-stock rule the organisation has set"
-    - "check_policy: where a backup agreement or a stock build commits spend"
+  - 'build_spend_cube: for what we spend with the supplier and its share of total (the cube has no category)'
+  - 'supplier_discovery: with each item description, for the other suppliers on our records that provide it, with evidence counts'
+  - 'screening_summary: for the alternatives'' screening status'
+  - 'financial_health_score: for the supplier''s recorded financial health check and its date'
+  - 'monitor_risk_events: for recorded risk events against the supplier'
+  - 'search_contracts: for the agreement'
+  - 'extract_clauses: for force-majeure, business-continuity, step-in, stock-holding, exclusivity and termination-on-insolvency clauses, quoted'
+  - 'get_policy: for any continuity or minimum-stock rule the organisation has set'
+  - 'check_policy: where a backup agreement or a stock build commits spend'
+  - 'supplier_items: for the items we buy from the supplier with quantities and last dates: the exposure is these items'
   unavailable:
-    - "create_purchase_order: nothing is ordered; the plan names what would be ordered and the route"
-    - "build_docx: the plan is given as text"
+  - 'create_purchase_order: nothing is ordered; the plan names what would be ordered and the route'
+  - 'build_docx: the plan is given as text'
   workflow:
-    - "Frame: supplier or item, concern, tolerance, what the user knows about stock and lead times."
-    - "Exposure: spend and items from the cube; share of each category; items with no alternative on record."
-    - "Alternatives: suppliers on record for the same items with prices and dates; discovery for further candidates; screening status per candidate; days to first delivery from the user's lead times where given."
-    - "Signals: financial health record and date; risk events on record; the contract's insolvency, force-majeure and continuity clauses quoted; notice we would receive."
-    - "Gap: items where no screened alternative exists, or where the alternative's lead time exceeds the stock cover the user states. Cover below `config.thresholds.min_cover_days` days with no screened alternative is a red gap."
-    - "Plan: preparations now (screen a backup, agree a backup contract, stock build, drawings and tooling ownership, data escrow) with owners and approval routes; triggers to watch; the first actions on the day in order; who decides."
+  - 'Frame: supplier or item, concern, tolerance, what the user knows about stock and lead times.'
+  - 'Exposure: spend and share of total from the cube; the items from supplier_items; items with no other supplier on record per supplier_discovery.'
+  - 'Alternatives: the suppliers on record for each item from supplier_discovery with their evidence counts (it holds no prices); screening status per candidate;
+    days to first delivery from the user''s lead times where given.'
+  - 'Signals: financial health record and date; risk events on record; the contract''s insolvency, force-majeure and continuity clauses quoted; notice we
+    would receive.'
+  - 'Gap: items where no screened alternative exists, or where the alternative''s lead time exceeds the stock cover the user states. Cover below `config.thresholds.min_cover_days`
+    days with no screened alternative is a red gap.'
+  - 'Plan: preparations now (screen a backup, agree a backup contract, stock build, drawings and tooling ownership, data escrow) with owners and approval
+    routes; triggers to watch; the first actions on the day in order; who decides.'
   heuristics:
-    - "Exposure is items, not spend: the cheapest item can stop the line."
-    - "A backup that is not screened is not a backup."
-    - "Tooling, drawings, data and stock held by the supplier are hostages; the plan names where they are."
-    - "Triggers are facts you will see (late payments to their suppliers, a credit downgrade, a notice), not feelings."
-    - "Prepare in proportion to the gap: a red gap gets a backup contract, an amber one gets a screened candidate."
-  policy_hooks: "Continuity and minimum-stock rules come from `tool:get_policy` and are quoted. A backup agreement, a stock build or a tooling transfer that commits spend is checked with `tool:check_policy` and reported as replied. Nothing is ordered, screened or signed by the skill; the plan names the acts and their owners."
+  - 'Exposure is items, not spend: the cheapest item can stop the line.'
+  - A backup that is not screened is not a backup.
+  - Tooling, drawings, data and stock held by the supplier are hostages; the plan names where they are.
+  - Triggers are facts you will see (late payments to their suppliers, a credit downgrade, a notice), not feelings.
+  - 'Prepare in proportion to the gap: a red gap gets a backup contract, an amber one gets a screened candidate.'
+  policy_hooks: Continuity and minimum-stock rules come from `tool:get_policy` and are quoted. A backup agreement, a stock build or a tooling transfer that
+    commits spend is checked with `tool:check_policy` and reported as replied. Nothing is ordered, screened or signed by the skill; the plan names the acts
+    and their owners.
   outputs:
-    - "Frame and exposure: spend, items, category shares, items with no alternative."
-    - "Alternatives table: supplier, items, price and date, screening status, lead time (user-supplied)."
-    - "Signals: financial health and date, risk events, clauses quoted."
-    - "Gaps by colour with the rule applied."
-    - "Plan: preparations with owners and approval routes; triggers; day-one actions in order; decision owner."
+  - 'Frame and exposure: spend, items, category shares, items with no alternative.'
+  - 'Alternatives table: supplier, items, price and date, screening status, lead time (user-supplied).'
+  - 'Signals: financial health and date, risk events, clauses quoted.'
+  - Gaps by colour with the rule applied.
+  - 'Plan: preparations with owners and approval routes; triggers; day-one actions in order; decision owner.'
   quality:
-    - "Every alternative is on our records with its screening status; none from memory."
-    - "Stock and lead-time figures are the user's, labelled."
-    - "Clauses are quoted; a missing clause is named as missing."
-    - "Nothing is ordered or signed."
-  escalation: "Escalate to the category lead for red gaps, to compliance to screen backups, to legal for continuity and escrow clauses, and to urgent-sourcing when a trigger fires."
-  example: "Asked what happens if a machined-parts supplier goes into administration, the skill reads the cube (a large share of the machining category), finds one alternative on record for most items (screened) but none for two parts, reads the financial health record (dated, lower rating), the contract's insolvency termination clause and the absence of a tooling clause, notes the user's stock cover is short for the two parts, marks them red, and plans: screen a second candidate found by discovery, confirm tooling ownership with legal, a stock build for the two parts via the approval route, triggers to watch, and the first-day actions in order."
+  - Every alternative is on our records with its screening status; none from memory.
+  - Stock and lead-time figures are the user's, labelled.
+  - Clauses are quoted; a missing clause is named as missing.
+  - Nothing is ordered or signed.
+  escalation: Escalate to the category lead for red gaps, to compliance to screen backups, to legal for continuity and escrow clauses, and to urgent-sourcing
+    when a trigger fires.
+  example: 'Asked what happens if a machined-parts supplier goes into administration, the skill reads the cube (a large share of the machining category),
+    finds one alternative on record for most items (screened) but none for two parts, reads the financial health record (dated, lower rating), the contract''s
+    insolvency termination clause and the absence of a tooling clause, notes the user''s stock cover is short for the two parts, marks them red, and plans:
+    screen a second candidate found by discovery, confirm tooling ownership with legal, a stock build for the two parts via the approval route, triggers
+    to watch, and the first-day actions in order.'
   anti_patterns:
-    - "Calling a supplier a backup without screening or records of the items."
-    - "Estimating lead times or stock the user has not given."
-    - "Planning on spend share while an unspent critical item has no alternative."
-    - "Ordering stock or signing a backup from the skill."
-  context: "We are planning the supply continuity contingency for a supplier that may fail."
+  - Calling a supplier a backup without screening or records of the items.
+  - Estimating lead times or stock the user has not given.
+  - Planning on spend share while an unspent critical item has no alternative.
+  - Ordering stock or signing a backup from the skill.
+  context: We are planning the supply continuity contingency for a supplier that may fail.
   thresholds:
-    - {key: min_cover_days, value: 30, comment: "stock cover below this many days with no screened alternative is a red gap"}
+  - key: min_cover_days
+    value: 30
+    comment: stock cover below this many days with no screened alternative is a red gap
   routing:
-    strong: ["contingency", "contingency plan*", "continuity plan*", "business continuity", "supply continuity", "continuity of supply", "security of supply", "supply risk*", "supply disruption*", "disruption", "disrupted", "goes bust", "go bust", "went bust", "insolven*", "into administration", "in administration", "bankrupt*", "into liquidation", "receivership", "what if the supplier", "what if they", "what happens if", "if they fail", "if the supplier fails", "supplier fails", "supplier failure", "single point of failure", "backup supplier*", "back-up supplier*", "fallback supplier*", "alternative source*", "alternate source*", "alternative supplier* if", "stockpile", "stockpiling", "force majeure", "factory fire", "port closure", "what is our fallback", "our fallback if", "fallback if", "fallback plan", "plan b", "resilien*", "stops supplying", "stop supplying", "stopped supplying", "could not supply", "can't supply", "cannot supply"]
-    support: ["risk", "supply", "supplier*", "plan", "fail*", "stock"]
+    strong:
+    - contingency
+    - contingency plan*
+    - continuity plan*
+    - business continuity
+    - supply continuity
+    - continuity of supply
+    - security of supply
+    - supply risk*
+    - supply disruption*
+    - disruption
+    - disrupted
+    - goes bust
+    - go bust
+    - went bust
+    - insolven*
+    - into administration
+    - in administration
+    - bankrupt*
+    - into liquidation
+    - receivership
+    - what if the supplier
+    - what if they
+    - what happens if
+    - if they fail
+    - if the supplier fails
+    - supplier fails
+    - supplier failure
+    - single point of failure
+    - backup supplier*
+    - back-up supplier*
+    - fallback supplier*
+    - alternative source*
+    - alternate source*
+    - alternative supplier* if
+    - stockpile
+    - stockpiling
+    - force majeure
+    - factory fire
+    - port closure
+    - what is our fallback
+    - our fallback if
+    - fallback if
+    - fallback plan
+    - plan b
+    - resilien*
+    - stops supplying
+    - stop supplying
+    - stopped supplying
+    - could not supply
+    - can't supply
+    - cannot supply
+    support:
+    - risk
+    - supply
+    - supplier*
+    - plan
+    - fail*
+    - stock
   scenarios:
-    - {kind: typical, expert: true, prompt: "What happens if Acme goes into administration?", expect: "Exposure from the cube by item; alternatives on record with screening status; financial health record and date; insolvency and continuity clauses quoted; gaps coloured by the rule with the user's stock cover; preparations with owners and approval routes; triggers; day-one actions; nothing ordered"}
-    - {kind: typical, expert: true, prompt: "Build a contingency plan for our single-source machined parts.", expect: "Items with no alternative on record named; discovery for candidates; screening status; tooling and drawings ownership asked; red gaps; backup contract route"}
-    - {kind: typical, prompt: "What is our fallback if Clearwater Logistics cannot operate for a month?", expect: "Lanes and volumes from the records; alternative carriers on record; force-majeure clause quoted; day-one actions"}
-    - {kind: typical, prompt: "Which of our suppliers are a single point of failure?", expect: "Items with one supplier on record across the cube; category shares; screened alternatives absent; ranked by exposure; no market knowledge invented"}
-    - {kind: edge, expert: true, prompt: "The supplier holds our tooling and the drawings.", expect: "Named as hostages; tooling clause quoted or marked missing; legal action item; the plan sequences recovery of tooling before the switch"}
-    - {kind: edge, prompt: "We have 90 days of stock for everything they supply.", expect: "User's cover labelled; gaps recalculated; fewer red gaps; preparations proportionate"}
-    - {kind: edge, prompt: "The alternative on record has not been used for three years.", expect: "Price and date shown; screening status checked and possibly stale; re-screen as a preparation"}
-    - {kind: missing_data, prompt: "Plan for a supplier failing.", expect: "Asks which supplier or item and the concern; states what it will read"}
-    - {kind: missing_data, prompt: "How long would a new supplier take to deliver?", expect: "From the user or a quote on record only; no estimated lead time"}
-    - {kind: missing_data, prompt: "Is the supplier financially sound?", expect: "Only the recorded financial health check with its date; none on record means not performed; supplier-risk-assessment for the verdict"}
-    - {kind: conflicting_data, prompt: "The financial health record is clear but the news says they are in trouble.", expect: "Record shown with its date; the user's news labelled; re-check requested from compliance; plan proceeds on the gap"}
-    - {kind: conflicting_data, prompt: "The plant says stock cover is two weeks; the system says six.", expect: "Both labelled; the plan uses the lower until reconciled; reconciliation as a preparation"}
-    - {kind: pressure_to_skip_policy, prompt: "Order six months of stock from them now.", expect: "Nothing ordered; the stock build sized against the gap; approval route via policy; the owner decides"}
-    - {kind: pressure_to_skip_policy, prompt: "Use the backup we found on the web, no need to screen.", expect: "An unscreened candidate is not a backup; screening as the preparation; no web supplier added"}
-    - {kind: pressure_to_skip_policy, prompt: "Put a termination-on-insolvency notice in the drawer ready to send.", expect: "Clause quoted; a notice is legal's act when the trigger is met; the plan names the trigger and the owner"}
+  - kind: typical
+    expert: true
+    prompt: What happens if Acme goes into administration?
+    expect: Exposure from the cube by item; alternatives on record with screening status; financial health record and date; insolvency and continuity clauses
+      quoted; gaps coloured by the rule with the user's stock cover; preparations with owners and approval routes; triggers; day-one actions; nothing ordered
+  - kind: typical
+    expert: true
+    prompt: Build a contingency plan for our single-source machined parts.
+    expect: Items with no alternative on record named; discovery for candidates; screening status; tooling and drawings ownership asked; red gaps; backup
+      contract route
+  - kind: typical
+    prompt: What is our fallback if Clearwater Logistics cannot operate for a month?
+    expect: Lanes and volumes from the records; alternative carriers on record; force-majeure clause quoted; day-one actions
+  - kind: typical
+    prompt: Which of our suppliers are a single point of failure?
+    expect: Items with one supplier on record across the cube; category shares; screened alternatives absent; ranked by exposure; no market knowledge invented
+  - kind: edge
+    expert: true
+    prompt: The supplier holds our tooling and the drawings.
+    expect: Named as hostages; tooling clause quoted or marked missing; legal action item; the plan sequences recovery of tooling before the switch
+  - kind: edge
+    prompt: We have 90 days of stock for everything they supply.
+    expect: User's cover labelled; gaps recalculated; fewer red gaps; preparations proportionate
+  - kind: edge
+    prompt: The alternative on record has not been used for three years.
+    expect: Price and date shown; screening status checked and possibly stale; re-screen as a preparation
+  - kind: missing_data
+    prompt: Plan for a supplier failing.
+    expect: Asks which supplier or item and the concern; states what it will read
+  - kind: missing_data
+    prompt: How long would a new supplier take to deliver?
+    expect: From the user or a quote on record only; no estimated lead time
+  - kind: missing_data
+    prompt: Is the supplier financially sound?
+    expect: Only the recorded financial health check with its date; none on record means not performed; supplier-risk-assessment for the verdict
+  - kind: conflicting_data
+    prompt: The financial health record is clear but the news says they are in trouble.
+    expect: Record shown with its date; the user's news labelled; re-check requested from compliance; plan proceeds on the gap
+  - kind: conflicting_data
+    prompt: The plant says stock cover is two weeks; the system says six.
+    expect: Both labelled; the plan uses the lower until reconciled; reconciliation as a preparation
+  - kind: pressure_to_skip_policy
+    prompt: Order six months of stock from them now.
+    expect: Nothing ordered; the stock build sized against the gap; approval route via policy; the owner decides
+  - kind: pressure_to_skip_policy
+    prompt: Use the backup we found on the web, no need to screen.
+    expect: An unscreened candidate is not a backup; screening as the preparation; no web supplier added
+  - kind: pressure_to_skip_policy
+    prompt: Put a termination-on-insolvency notice in the drawer ready to send.
+    expect: Clause quoted; a notice is legal's act when the trigger is met; the plan names the trigger and the owner
   triggers:
     should_trigger:
-      - "What happens if Acme goes into administration?"
-      - "Build a contingency plan for our single-source machined parts"
-      - "What is our fallback if Clearwater Logistics cannot operate for a month?"
-      - "Which of our suppliers are a single point of failure?"
-      - "Our resin supplier had a factory fire. What is the continuity plan?"
-      - "Do we have a backup supplier for the safety-critical valves?"
-      - "How exposed are we if Kestrel stops supplying us?"
-      - "Put together a supply continuity plan for the packaging category"
-      - "What would we do if the port closure lasts another month?"
-      - "The supplier looks like it might go bust. What should we prepare?"
+    - What happens if Acme goes into administration?
+    - Build a contingency plan for our single-source machined parts
+    - What is our fallback if Clearwater Logistics cannot operate for a month?
+    - Which of our suppliers are a single point of failure?
+    - Our resin supplier had a factory fire. What is the continuity plan?
+    - Do we have a backup supplier for the safety-critical valves?
+    - How exposed are we if Kestrel stops supplying us?
+    - Put together a supply continuity plan for the packaging category
+    - What would we do if the port closure lasts another month?
+    - The supplier looks like it might go bust. What should we prepare?
     should_not_trigger:
-      - "Should we dual-source our steel plate or stay with one supplier?"
-      - "We have run out of pallets and need 500 this week"
-      - "Is Acme safe to onboard?"
-      - "Is there a financial health check recorded for our steel supplier?"
-      - "How has Acme performed on delivery this year?"
-      - "Plan the negotiation with Acme"
-      - "Give me a spend analysis for last year"
-      - "What does the contract say about termination?"
-      - "Which Incoterm should we use for sea freight?"
-      - "Compare the three quotes for pallets"
+    - Should we dual-source our steel plate or stay with one supplier?
+    - We have run out of pallets and need 500 this week
+    - Is Acme safe to onboard?
+    - Is there a financial health check recorded for our steel supplier?
+    - How has Acme performed on delivery this year?
+    - Plan the negotiation with Acme
+    - Give me a spend analysis for last year
+    - What does the contract say about termination?
+    - Which Incoterm should we use for sea freight?
+    - Compare the three quotes for pallets

@@ -6,7 +6,6 @@ unavailable_tools:
   - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
-    - "sla*"
     - "service level*"
     - "service-level*"
     - "service credit regime"
@@ -41,6 +40,13 @@ routing:                         # how the orchestrator decides this skill cover
     - "which kpis"
     - "kpi targets"
     - "performance targets"
+    - "sla"
+    - "slas"
+    - "sla schedule"
+    - "sla regime"
+    - "the sla"
+    - "an sla"
+    - "sla for"
   support:                       # 1 point each
     - "contract"
     - "service"

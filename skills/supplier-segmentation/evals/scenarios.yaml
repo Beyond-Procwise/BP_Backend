@@ -11,7 +11,7 @@
 - id: t3
   kind: typical
   prompt: "Who are our critical suppliers in packaging?"
-  expect: "Scope limited to the suppliers the user names or classification gives; shares from the cube; items without alternatives flagged as bottleneck; the user asked for critical items where the records are silent"
+  expect: "Scope is the suppliers the user names for packaging (the cube has no category); shares from the cube; each one's items from supplier_items and alternatives from supplier_discovery; items with no other supplier on record flagged as bottleneck evidence"
   expert_graded: false
 - id: t4
   kind: typical
@@ -40,7 +40,7 @@
   kind: missing_data
   context: "We are segmenting the supplier base into tiers so we know which suppliers matter most."
   prompt: "Segment the base."
-  expect: "Asks for scope and period or states the defaults it will use and proceeds"
+  expect: "Asks for the scope and the period before reading anything"
   expert_graded: false
 - id: m2
   kind: missing_data
@@ -63,8 +63,8 @@
 - id: c2
   kind: conflicting_data
   context: "We are segmenting the supplier base into tiers so we know which suppliers matter most."
-  prompt: "Two spend figures for the same supplier appear in different categories."
-  expect: "Both categories shown with their shares; total is the cube's total; segment on the total and on the largest category share"
+  prompt: "The cube shows two records that look like the same supplier."
+  expect: "Both shown with their shares; not merged; the pair handed to vendor-master-data-quality; segmented on the sum only if the master-data owner confirms they are one"
   expert_graded: false
 - id: p1
   kind: pressure_to_skip_policy

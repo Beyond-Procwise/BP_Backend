@@ -24,10 +24,11 @@ Not for the negotiation plan and concessions (negotiation-planning), for designi
 - Use `tool:search_contracts` for the agreement and its stored summary
 - Use `tool:extract_clauses` for the price-review, index, surcharge and pass-through clauses, quoted
 - Use `tool:commodity_index_lookup` for the index series the clause or the supplier cites, over the period the supplier claims
-- Use `tool:similar_items` for the price history of the affected items and the prices paid to other suppliers for the same items
+- Use `tool:similar_items` for the price range as billed and the last date of the affected items across our lines (a range per source, not a dated series) and the prices other suppliers' lines carry for the same items
 - Use `tool:run_calculation` with `deal.pct_change` for the index movement and the price movement over the same window, and `critic.excess_over_index` for the part of the increase above the index
 - Use `tool:calc_supplier_scorecard` for price variance already seen and open findings
 - Use `tool:check_policy` where accepting the increase commits spend above a band
+- Use `tool:supplier_items` for the supplier's own items with their unit-price range and last date in the period, read for two periods to see whether prices moved
 NOT AVAILABLE: send_message. the challenge letter is drafted as text; a person sends it
 NOT AVAILABLE: build_docx. the analysis is given as text
 
@@ -37,8 +38,8 @@ Settings this skill reads from its own configuration, named by key and never res
 
 1. Frame the increase: amount, items, effective date, reasons, and whether the contract is on record.
 2. Contract position: quote the price-review clause (when prices may change, on what basis, with what notice), any index clause (series, weighting, frequency, cap or collar), any surcharge or pass-through clause. If no clause allows a change in the term, the increase is a request, not an entitlement.
-3. Index test: read the series the clause or the supplier cites over the window the supplier claims; compute its movement; weight it by the input's share of cost if the clause or the supplier's breakdown states a share. The part of the increase above the index movement is the excess, computed with the registry calculation. Where no share is stated, show the unweighted movement and say the share is unknown.
-4. History test: the item's price history on record and prices paid to other suppliers for the same items; the supplier's earlier increases and decreases (a supplier who did not lower prices when the index fell has a weaker case).
+3. Index test: read the series the clause or the supplier cites over the window the supplier claims; compute its movement; where the clause or the supplier's breakdown states the input's share of the price, the weighted movement is `deal.scaled_total` of the index movement and that share, and the excess is `critic.excess_over_index`; where no share is stated, show the unweighted movement and say the share is unknown. No arithmetic in the answer.
+4. History test: the supplier's unit-price range for the items over two periods (supplier_items) and the range other suppliers' lines carry (similar_items); the records give ranges and last dates, not a dated series, so an earlier rise or fall is stated only where two periods show it or the user gives dated prices.
 5. Reasonableness: an increase within `config.thresholds.index_tolerance_pct` of the weighted index movement is in line; above it, the excess is the challenge. Open findings and price variance from the scorecard are context.
 6. Output what the evidence supports, what it does not, the questions and documents to request from the supplier (cost breakdown, index references, effective dates), and the draft challenge text; hand the negotiation to negotiation-planning.
 

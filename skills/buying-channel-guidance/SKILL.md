@@ -22,21 +22,21 @@ Not for whether the purchase or approval is permitted (procurement-policy-compli
 
 - Use `tool:get_policy` for the channel rules, card and expense limits, catalogue rules and the value bands that require a requisition, quotes or a tender
 - Use `tool:search_contracts` for a live agreement that already covers the item or service
-- Use `tool:similar_items` for suppliers we already buy the item from and the prices paid
 - Use `tool:supplier_lookup` for the contracted supplier's record and status
 - Use `tool:check_policy` for the approval the value needs on the chosen channel
 - Use `tool:run_calculation` with `deal.scaled_total` to size a recurring need over the period the requester states
+- Use `tool:supplier_discovery` with the item or service, for the suppliers we already buy it from with evidence counts, preferred flag and insurance status
 NOT AVAILABLE: create_requisition. the requester raises the requisition themselves; the skill gives the steps and the supplier to name
 NOT AVAILABLE: build_docx. guidance is given as text
 
-Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.quote_band_gbp`, `config.thresholds.tender_band_gbp`.
+
 
 ## Workflow
 
 1. Frame: what, how much, how often, by when.
-2. Read the policy for channel rules and value bands; quote the band the value falls in. Where no rule exists for the case, say so and give the default route (requisition and purchase order).
-3. Check for coverage: a live agreement for the item or category, and suppliers we already buy it from with the prices paid. A covered item goes to the contracted supplier through the catalogue or a requisition against the agreement.
-4. The value for the band is the need over the period: a per-order or per-month amount is scaled with `run_calculation` and `deal.scaled_total` using the number of orders or months the requester states (never a number of months the skill chooses). Uncovered: below the configured quote band, requisition with one quote; within it, the quotes the policy requires; above the configured tender band, a sourcing event (hand to rfx-design).
+2. Read the policy for channel rules and value bands; quote the band the value falls in. Where no rule exists for the case, say so, give the default route (requisition and purchase order) and name the policy owner; no band or quote count is asserted that the policy does not state.
+3. Check for coverage: a live agreement for the item (search_contracts) and the suppliers we already buy it from (supplier_discovery, evidence counts only: it holds no prices). A covered item goes to the contracted supplier through the catalogue or a requisition against the agreement.
+4. The value for the band is the need over the period: a per-order or per-month amount is scaled with `run_calculation` and `deal.scaled_total` using the number of orders or months the requester states (never a number of months the skill chooses). Uncovered: the quotes and the route the policy's band requires; above the policy's tender band, a sourcing event (hand to rfx-design); where the policy states no band, the requisition route with the policy owner asked.
 5. Card or expense only where the policy allows it for the value and category; a purchase that would need to be split to fit a limit is not split (hand to procurement-policy-compliance).
 6. Give the steps: channel, supplier to name, what to attach, who approves (as the policy replied), and the lead time to expect.
 
@@ -72,11 +72,11 @@ Escalate to the category owner where an agreement exists but the requester has r
 
 ## Worked example
 
-Asked how to buy twelve monitors for a new team, the skill reads the policy (IT hardware goes through the catalogue; the value falls in the one-quote band), finds a live agreement with a hardware reseller and the price paid last quarter for the same model, and gives the steps: pick the model from the catalogue under the agreement, raise the requisition with the cost centre, the line manager approves as the policy replied, delivery in the agreement's lead time; a card purchase is outside the policy for this category.
+Asked how to buy twelve monitors for a new team, the skill reads the policy (IT hardware goes through the catalogue; the value falls in the band the policy states), finds a live agreement with a hardware reseller and that reseller among the suppliers on record for monitors, and gives the steps: pick the model from the catalogue under the agreement, raise the requisition with the cost centre, the line manager approves as the policy replied, delivery in the agreement's lead time; a card purchase is outside the policy for this category.
 
 ## Anti-patterns
 
 - Sending the requester to a new supplier when an agreement covers the item.
-- Sizing the band on the first order rather than the need over the period.
 - Suggesting a card purchase outside the policy's list.
 - Raising the requisition for the requester.
+- Quoting a band or a quote count the policy does not state.

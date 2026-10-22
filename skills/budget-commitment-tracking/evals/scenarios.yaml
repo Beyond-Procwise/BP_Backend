@@ -6,7 +6,7 @@
 - id: t2
   kind: typical
   prompt: "What is our committed spend with Acme for the rest of the year?"
-  expect: "Open orders not yet invoiced plus contracted scheduled amounts for the supplier, each with source; invoiced to date separately; no double count"
+  expect: "Open balances per order from open_orders for the supplier; contracts ending with stored totals from the pipeline and amounts due only as the user states them, labelled; invoiced to date separately; no double count"
   expert_graded: true
 - id: t3
   kind: typical
@@ -16,13 +16,13 @@
 - id: t4
   kind: typical
   prompt: "What should finance accrue for open orders at month end?"
-  expect: "Uninvoiced open order value from reconciliation by supplier; finance posts; the skill reports"
+  expect: "Open order balances by supplier from open_orders with the tax-basis caveat; finance posts; the skill reports"
   expert_graded: false
 - id: e1
   kind: edge
   context: "We are reporting where a budget stands against invoiced spend and open commitments."
   prompt: "The budget is per cost centre but orders only carry a buyer."
-  expect: "Scope mapping stated; position by buyer with the caveat; finance asked for the mapping"
+  expect: "Scope mapped to a buyer or supplier list and the mapping stated; position on that mapping; finance asked for the cost-centre mapping"
   expert_graded: true
 - id: e2
   kind: edge
@@ -34,13 +34,13 @@
   kind: edge
   context: "We are reporting where a budget stands against invoiced spend and open commitments."
   prompt: "A contract renews mid-year at a new rate."
-  expect: "Contracted ahead uses the tracker's scheduled amounts; the renewal noted; no rate invented"
+  expect: "The contract's stored total from the pipeline and the renewal noted; the new rate and amounts due are the user's figures, labelled; nothing invented"
   expert_graded: false
 - id: m1
   kind: missing_data
   context: "We are reporting where a budget stands against invoiced spend and open commitments."
   prompt: "Where are we against budget?"
-  expect: "Asks scope, period and the budget figure; offers a commitment-only position"
+  expect: "Asks scope, period and the budget figure before reading anything; offers a commitment-only position if no budget exists"
   expert_graded: false
 - id: m2
   kind: missing_data

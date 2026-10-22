@@ -58,7 +58,7 @@
   kind: conflicting_data
   context: "We are preparing an exception request against a procurement rule that was not or cannot be followed."
   prompt: "The user says there was no alternative but two suppliers for the item are on record."
-  expect: "Alternatives shown with dates; the user asked to address them; the justification cannot claim no alternative"
+  expect: "Alternatives shown with their evidence counts from supplier_discovery; the user asked to address them; the justification cannot claim no alternative"
   expert_graded: false
 - id: c2
   kind: conflicting_data

@@ -25,7 +25,7 @@ Not for onboarding a new supplier (supplier-onboarding-checklist), for screening
 - Use `tool:build_spend_cube` for spend and invoice count by supplier, to find dormant records and spend on unonboarded suppliers
 - Use `tool:invoice_reconciliation` for invoices from suppliers whose records are incomplete
 - Use `tool:screening_summary` for records with no screening
-- Use `tool:get_policy` for the master-data rules (required fields, dormancy period, bank-change verification procedure) quoted
+- Use `tool:get_policy` for the master-data rules (required fields, dormancy period) and to confirm a bank-change verification procedure exists; the procedure's steps are routed to, never reproduced in an answer that could reach a supplier
 NOT AVAILABLE: update_supplier_record. no record is changed; the master-data owner acts on the findings
 NOT AVAILABLE: merge_suppliers. merges are the owner's act after confirmation
 
@@ -37,7 +37,7 @@ Settings this skill reads from its own configuration, named by key and never res
 2. Duplicates: near-duplicate names from the candidates the lookup lists for the name, and records for the same items from discovery by item; each pair listed with the evidence (name similarity, shared items, same address if on record) and a proposed survivor, for the owner to confirm; never merged by the skill.
 3. Completeness: per record the required fields that are empty or stale; records with invoices but no onboarding or screening.
 4. Dormancy: records with no invoices for `config.thresholds.dormant_days` days proposed for deactivation review, with the last invoice date.
-5. Change requests: a request to change bank, address or contact details is never actioned from the skill; the procedure is to verify with the supplier through a contact already on record (never the one in the request) and to have the master-data owner make the change under the policy's control; the request's channel and sender are recorded as facts. The skill shows no bank details, old or new.
+5. Change requests: a request to change bank, address or contact details is never actioned from the skill; the request goes to finance and the master-data owner for the policy's verification procedure (verification through a contact already on record, never the one in the request); the answer names the owners and does not reproduce the procedure's steps; the request's channel and sender are recorded as facts. The skill shows no bank details, old or new.
 6. Findings list by type with owner and the proposed action; counts per type.
 
 ## Frameworks and heuristics

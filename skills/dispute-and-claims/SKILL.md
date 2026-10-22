@@ -25,8 +25,8 @@ Not for the operational handling of a delivery failure (delivery-issue-handling)
 - Use `tool:extract_clauses` for the remedy, service-credit, liquidated-damages, liability-cap, exclusion, force-majeure, notice and dispute-resolution clauses, quoted
 - Use `tool:obligation_tracker` for the dates and obligations in play
 - Use `tool:invoice_reconciliation` for the order, invoice and finding facts the claim rests on
-- Use `tool:calc_supplier_scorecard` for the delivery and quality record over the period
-- Use `tool:run_calculation` with `deal.pct_change` for a shortfall share and plain arithmetic for a credit or damages figure from the clause's own formula and the user's evidenced inputs
+- Use `tool:calc_supplier_scorecard` for the delivery record and open findings over the period (quality is not recorded there)
+- Use `tool:run_calculation` with `deal.scaled_total` for a credit at the clause's rate over the recorded days or units, `deal.share_pct` for a shortfall share and `deal.pct_change` for a movement; a formula the registry lacks is shown with its inputs and labelled unverified, never computed in the answer
 - Use `tool:get_policy` for who may raise a claim and the approval a settlement needs
 - Use `tool:check_policy` where a settlement, write-off or credit moves spend
 NOT AVAILABLE: send_message. any letter is drafted as text; legal or the owner sends it
@@ -39,7 +39,7 @@ Settings this skill reads from its own configuration, named by key and never res
 1. Frame: parties, contract, events with dates, what the user wants (money, performance, defence).
 2. Facts from the records: orders, receipts, invoices, findings, scorecard history for the period; the user's evidence listed separately with its basis.
 3. Clauses quoted: the obligation said to be breached; the remedy for that breach; service credits or liquidated damages and their formula; the liability cap and exclusions; force majeure; notice requirements for a claim; the dispute-resolution ladder (escalation, mediation, arbitration or courts) and time limits.
-4. Compute only what a clause's formula and evidenced inputs allow (a credit per day late at the clause's rate; a cap). Loss figures beyond a formula are the user's and are shown as claimed, not verified. A claim above `config.thresholds.legal_referral_gbp` goes to legal before anything is sent.
+4. Compute only what a clause's formula and evidenced inputs allow, through run_calculation (a credit per day late at the clause's rate via deal.scaled_total; a cap). Loss figures beyond a formula are the user's and are shown as claimed, not verified. Legal reviews every draft before anything is sent; above `config.thresholds.legal_referral_gbp` legal leads the claim from the start.
 5. Assess: is the breach evidenced; is the remedy available; is notice in time; is the amount within the cap; what the ladder requires first. For a supplier's claim: the same questions in reverse.
 6. Output the case summary, the ask or the defence, the route and the first step with owner; drafts handed to supplier-communication-drafting or legal.
 
@@ -53,7 +53,7 @@ Settings this skill reads from its own configuration, named by key and never res
 
 ## Policy hooks (SC-007)
 
-Who may raise a claim and the approval a settlement, write-off or credit needs come from `tool:get_policy` and `tool:check_policy`, reported as replied. Nothing is sent, admitted, set off or settled by the skill; legal owns the claim above the configured referral value and whenever the supplier disputes the facts.
+Who may raise a claim and the approval a settlement, write-off or credit needs come from `tool:get_policy` and `tool:check_policy`, reported as replied. Nothing is sent, admitted, set off or settled by the skill; legal reviews every draft and leads the claim above the configured referral value or whenever the supplier disputes the facts.
 
 ## Output specification
 
@@ -72,7 +72,7 @@ Who may raise a claim and the approval a settlement, write-off or credit needs c
 
 ## Escalation and approval
 
-Escalate to legal above the configured referral value, where the supplier disputes the facts, where force majeure is raised or where the ladder reaches mediation; to finance for any set-off, credit or write-off; to the category lead for the relationship consequence.
+Legal reviews every draft; above the configured referral value legal leads from the start. Escalate also where the supplier disputes the facts, where force majeure is raised or where the ladder reaches mediation; to finance for any set-off, credit or write-off; to the category lead for the relationship consequence.
 
 ## Worked example
 

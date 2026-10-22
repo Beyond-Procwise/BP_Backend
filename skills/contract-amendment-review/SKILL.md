@@ -25,7 +25,7 @@ Not for reviewing a new contract's clauses (contract-clause-review), for whether
 - Use `tool:extract_clauses` for the clauses the change touches and for the contract's own variation or change-control clause, quoted
 - Use `tool:redline_compare` to compare the proposed wording with the stored wording when both are supplied
 - Use `tool:obligation_tracker` for the dates and obligations the change would move
-- Use `tool:run_calculation` with `deal.pct_change` for the price effect of a rate change, with the user's or the contract's figures
+- Use `tool:run_calculation` with `deal.pct_change` for the price effect of a rate change and `deal.scaled_total` for the new total value over the term, with the contract's or the user's figures
 - Use `tool:check_policy` for the approval the changed value or term needs
 NOT AVAILABLE: build_docx. the review is given as text
 NOT AVAILABLE: e_signature. nothing is signed; the amendment goes to the signatory after approval
@@ -35,10 +35,10 @@ Settings this skill reads from its own configuration, named by key and never res
 ## Workflow
 
 1. Find the agreement and read its stored summary, expiry, value and parties.
-2. Quote the contract's variation or change-control clause: who may propose, in what form, who must sign. If none is stored, say the procedure is unknown and the amendment should state its own authority.
+2. Quote the contract's variation or change-control clause: who may propose, in what form, who must sign. If none is stored, say the procedure is unknown and refer the change to legal before anything is treated as agreed.
 3. Map the change to the clauses it touches: price, scope, term, service levels, liability, termination, notice. Quote each touched clause. Flag clauses the change affects by implication (a term extension moves the notice deadline; a scope increase may breach a liability cap or an insurance level).
 4. Compare wording with redline compare when both versions are supplied; otherwise list the differences the user described, labelled.
-5. Quantify: the price effect over the remaining term with the contract's figures; the new total contract value; a change above `config.thresholds.material_change_pct` of the stored value is material and goes to the full approval route.
+5. Quantify: the price effect over the remaining term with `deal.pct_change` on the contract's figures; the new total contract value with `deal.scaled_total` from the new rate and the volume the contract or the user states; a change above `config.thresholds.material_change_pct` of the stored value is material and goes to the full approval route.
 6. Approval: check policy on the new value and term; report as replied. List the signatories the clause requires.
 7. Output the review with the open questions for legal and the proposer.
 

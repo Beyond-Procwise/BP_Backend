@@ -20,10 +20,10 @@ Not for designing a new framework (rfx-design), for the award decision after a m
 - The need: items or services, value, duration, location.
 - The framework the user has in mind, if any.
 
-- Use `tool:search_contracts` for the frameworks, panels and call-off agreements on the register and their lots
-- Use `tool:extract_clauses` for the call-off procedure, direct-award conditions, mini-competition rules, limits and term of the framework, quoted
+- Use `tool:search_contracts` for the frameworks, panels and call-off agreements on the register (title, supplier, dates, value as stored; lots are not a stored field)
+- Use `tool:extract_clauses` for the call-off procedure, direct-award conditions, mini-competition rules, limits and term, and the lot wording (containing 'lot'), quoted; lot membership comes from these clauses or from the user, labelled
 - Use `tool:obligation_tracker` for the framework's expiry and the last date a call-off may be placed
-- Use `tool:supplier_lookup` for the suppliers on the lot and their status
+- Use `tool:supplier_lookup` for each supplier the lot clause or the user names, one at a time, for its status
 - Use `tool:screening_summary` for each lot supplier's screening status
 - Use `tool:get_policy` for the organisation's rule on direct awards and mini-competitions
 - Use `tool:check_policy` for the approval the call-off value needs
@@ -37,7 +37,7 @@ Settings this skill reads from its own configuration, named by key and never res
 1. Frame the need and find the frameworks on the register whose scope and lots cover it; quote the scope wording. No framework covers it means buying-channel-guidance.
 2. Quote the framework's call-off procedure: when a direct award is allowed, when a mini-competition is required, the ranking or rotation rule if any, the limits per call-off and in total, the expiry and last call-off date.
 3. Apply our policy: a direct award is allowed only where both the framework and the policy allow it; a call-off above `config.thresholds.direct_award_limit_gbp` goes to mini-competition unless the framework's own rule is stricter.
-4. Suppliers on the lot with status and screening; a supplier whose screening is incomplete is not called off from.
+4. Suppliers on the lot as the framework's lot clause or the user names them (the register stores no lot list), each looked up for status and screening; a supplier whose screening is incomplete is not called off from.
 5. Route: direct award with its justification under the quoted condition, or mini-competition with the criteria the framework allows, the suppliers to invite (all on the lot unless the framework says otherwise), the timetable and the award basis.
 6. Terms: the call-off contract form the framework prescribes; the approval route for the value as the policy replies.
 
@@ -65,7 +65,7 @@ Direct-award permission and competition rules come from `tool:get_policy` and th
 ## Quality bar
 
 - Every rule is quoted from the framework or the policy, and the stricter one is applied.
-- Every supplier named is on the lot per the records, with screening status.
+- Every supplier named comes from the framework's lot wording or the user, labelled, with its recorded status and screening.
 - Expiry and limits are from the tracker, with dates.
 - Nothing is awarded, issued or ordered.
 

@@ -21,9 +21,8 @@ Not for the sourcing strategy of the category (category-strategy), for the emerg
 - Stock on hand, lead times and consumption, from the user, labelled user-supplied.
 - The tolerance: how long the operation can run without supply, if known.
 
-- Use `tool:build_spend_cube` for what and how much we buy from the supplier and the share of each category
-- Use `tool:similar_items` for other suppliers on our records for the same items and the prices paid
-- Use `tool:supplier_discovery` for further candidates on record by item or capability
+- Use `tool:build_spend_cube` for what we spend with the supplier and its share of total (the cube has no category)
+- Use `tool:supplier_discovery` with each item description, for the other suppliers on our records that provide it, with evidence counts
 - Use `tool:screening_summary` for the alternatives' screening status
 - Use `tool:financial_health_score` for the supplier's recorded financial health check and its date
 - Use `tool:monitor_risk_events` for recorded risk events against the supplier
@@ -31,6 +30,7 @@ Not for the sourcing strategy of the category (category-strategy), for the emerg
 - Use `tool:extract_clauses` for force-majeure, business-continuity, step-in, stock-holding, exclusivity and termination-on-insolvency clauses, quoted
 - Use `tool:get_policy` for any continuity or minimum-stock rule the organisation has set
 - Use `tool:check_policy` where a backup agreement or a stock build commits spend
+- Use `tool:supplier_items` for the items we buy from the supplier with quantities and last dates: the exposure is these items
 NOT AVAILABLE: create_purchase_order. nothing is ordered; the plan names what would be ordered and the route
 NOT AVAILABLE: build_docx. the plan is given as text
 
@@ -39,8 +39,8 @@ Settings this skill reads from its own configuration, named by key and never res
 ## Workflow
 
 1. Frame: supplier or item, concern, tolerance, what the user knows about stock and lead times.
-2. Exposure: spend and items from the cube; share of each category; items with no alternative on record.
-3. Alternatives: suppliers on record for the same items with prices and dates; discovery for further candidates; screening status per candidate; days to first delivery from the user's lead times where given.
+2. Exposure: spend and share of total from the cube; the items from supplier_items; items with no other supplier on record per supplier_discovery.
+3. Alternatives: the suppliers on record for each item from supplier_discovery with their evidence counts (it holds no prices); screening status per candidate; days to first delivery from the user's lead times where given.
 4. Signals: financial health record and date; risk events on record; the contract's insolvency, force-majeure and continuity clauses quoted; notice we would receive.
 5. Gap: items where no screened alternative exists, or where the alternative's lead time exceeds the stock cover the user states. Cover below `config.thresholds.min_cover_days` days with no screened alternative is a red gap.
 6. Plan: preparations now (screen a backup, agree a backup contract, stock build, drawings and tooling ownership, data escrow) with owners and approval routes; triggers to watch; the first actions on the day in order; who decides.

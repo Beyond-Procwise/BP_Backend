@@ -23,27 +23,28 @@ Not for an urgent replacement (urgent-sourcing), for the money recovery once the
 - Use `tool:invoice_reconciliation` for the order, its lines, what was invoiced and any open finding for the supplier
 - Use `tool:search_contracts` for the agreement with the supplier
 - Use `tool:extract_clauses` for the delivery, acceptance, inspection, rejection, remedy and risk-transfer clauses, quoted
-- Use `tool:calc_supplier_scorecard` for the supplier's on-time and quality record and open findings
+- Use `tool:calc_supplier_scorecard` for the supplier's on-time record and open findings (quality is not recorded there: say so)
 - Use `tool:get_policy` for the goods-receipt and inspection rules and who may reject
 - Use `tool:check_policy` where a replacement order or a credit commits or releases spend
+- Use `tool:open_orders` for the order's stored expected delivery date and the receipts recorded against it ('not recorded' is said as such)
 NOT AVAILABLE: record_goods_receipt. the receipt is recorded by the user in the receiving system; the skill says what to record
 NOT AVAILABLE: hold_invoice. an invoice hold is finance's act; the skill says whether the contract supports one
 
-Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.rejection_notice_days`.
+
 
 ## Workflow
 
 1. Frame: order, item, what was ordered versus what arrived, when, and the evidence.
 2. Read the order and invoice position: lines, quantities, whether an invoice is already in, open findings.
 3. Quote the contract's delivery, inspection, rejection and remedy clauses: the inspection window, the rejection notice period, the remedy (replace, credit, repair), who bears freight on return, where risk passed. Where no contract is stored, policy or the order's terms govern and the gap is named.
-4. Classify the issue (late, short, damaged, wrong, over, quality) and the remedy the clause gives for it. A notice due within `config.thresholds.rejection_notice_days` days of receipt is the first deadline.
+4. Classify the issue (late, short, damaged, wrong, over, quality) and the remedy the clause gives for it. The rejection notice period is read from the clause; where no clause is stored, no window is assumed: notify the supplier now, say the contractual window is unknown, and ask legal.
 5. Steps in order: record what was received (quantities, condition, photos); notify the supplier within the window with the remedy asked (hand the text to supplier-communication-drafting); whether the invoice may be held under the clause (finance's act); replacement route if needed (urgent-sourcing); what becomes a finding on the supplier's record.
 6. Where a loss beyond the goods arises (line stopped, re-work), hand to dispute-and-claims with the facts gathered.
 
 ## Frameworks and heuristics
 
 - Evidence before everything: quantities, condition, time, photos, delivery note.
-- The inspection and rejection windows are real deadlines; a late rejection may be an acceptance.
+- The inspection and rejection windows are real deadlines read from the clause; a late rejection may be an acceptance, and an unknown window is a reason to notify now, not to assume days.
 - Hold only what the contract allows; the undisputed part of an invoice is usually still due.
 - Over-delivery is the supplier's problem to collect, not ours to pay for, unless accepted.
 - A single failure gets fixed; a pattern gets the scorecard and supplier-development-plan.

@@ -21,13 +21,14 @@ Not for one supplier (supplier-performance-review), for the spend analysis in de
 - The sections the reader expects, if the organisation has a template; otherwise the sections here.
 - Any targets, from policy or the user, labelled by source.
 
-- Use `tool:build_spend_cube` for spend by supplier and category in the period and the prior period
-- Use `tool:contract_pipeline` for contract coverage, expiries and unread notice clauses
-- Use `tool:savings_tracker` for savings and value as recorded, by status
-- Use `tool:invoice_reconciliation` for invoices without orders and open findings in the period
+- Use `tool:build_spend_cube` for spend by supplier, month, country, region or buyer in the period and the prior period (it has no category or business unit)
+- Use `tool:contract_pipeline` for the contracts ending in the horizon, the auto-renewing ones and those never read for clauses
+- Use `tool:savings_tracker` for value as the ledger names it: saved (avoided, recovered, realised) and still only claimed
+- Use `tool:invoice_reconciliation` for one named supplier's lines and findings where the reader asks about a supplier
 - Use `tool:calc_supplier_scorecard` for the top suppliers' on-time and findings
 - Use `tool:run_calculation` with `deal.pct_change` for period-on-period movements
 - Use `tool:get_policy` for targets and KPI definitions the organisation has set
+- Use `tool:get_corpus_facts` for the corpus-wide counts: invoices, orders, open findings by type, suppliers
 NOT AVAILABLE: build_docx. the report is given as structured text; the document is built elsewhere
 NOT AVAILABLE: build_chart. figures are given as tables
 
@@ -36,10 +37,10 @@ Settings this skill reads from its own configuration, named by key and never res
 ## Workflow
 
 1. Frame: period, prior period, reader, sections, targets by source.
-2. Spend: total, by category, top suppliers and concentration, movement against the prior period.
-3. Coverage and contracts: share of spend under a live agreement, expiries in the next `config.thresholds.expiry_horizon_days` days, unread notice clauses.
-4. Value: savings and value delivered by status exactly as the ledger states (claimed, validated, realised); no reclassification; the methodology skill decides what counts.
-5. Compliance: invoices without orders, off-contract spend, open findings; movements.
+2. Spend: total, top suppliers and concentration, by month or buyer; movement against the prior period via `deal.pct_change`; the cube has no category, so a category view is only by the suppliers the user names.
+3. Contracts: expiries in the next `config.thresholds.expiry_horizon_days` days, auto-renewals and contracts never read, from the pipeline; the share of spend under a live agreement is not measured by any tool and is reported as not measured.
+4. Value: as the ledger states it, saved (avoided, recovered, realised) and still only claimed; no reclassification and no status the ledger does not name; the methodology skill decides what counts.
+5. Compliance: open findings by type from the corpus facts; invoices without orders from the corpus facts where it reports them; movements only where both periods are read.
 6. Suppliers: top suppliers' delivery and findings from the scorecard.
 7. Assemble: a one-page summary (five to eight figures with movement and target where one exists), the sections, the data gaps, and the questions the figures raise. Each figure carries its source and period.
 
@@ -47,7 +48,7 @@ Settings this skill reads from its own configuration, named by key and never res
 
 - One scope, one period, stated once; every figure obeys them.
 - Movements are reported; causes are reported only where the records show them.
-- Value is the ledger's word, by status; a claimed saving is not a realised one.
+- Value is the ledger's word, by the statuses it names; a claimed saving is not a saved one.
 - Targets come from policy or the user, never from the skill.
 - A gap in the data is a line in the report, not a blank.
 

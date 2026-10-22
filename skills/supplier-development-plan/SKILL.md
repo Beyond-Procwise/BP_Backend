@@ -26,7 +26,7 @@ Not for the quarterly review pack (supplier-performance-review), for deciding to
 - Use `tool:search_contracts` for the agreement
 - Use `tool:extract_clauses` for the performance review, remedy, step-in, improvement and termination-for-breach clauses, quoted
 - Use `tool:obligation_tracker` for review dates already set
-- Use `tool:run_calculation` with `otif.delivery_performance` for the delivery measure and `deal.pct_change` for the gap to target
+- Use `tool:run_calculation` with `deal.pct_change` for the gap between the current measure and the target
 - Use `tool:get_policy` for any supplier-performance rule or escalation ladder the organisation has set
 NOT AVAILABLE: send_message. the plan is drafted; the owner takes it to the supplier
 NOT AVAILABLE: build_docx. the plan is given as text
@@ -36,7 +36,7 @@ Settings this skill reads from its own configuration, named by key and never res
 ## Workflow
 
 1. Frame: supplier, period, what the user needs to improve, what has been done.
-2. Evidence: the scorecard measures and the findings by type and month; the trend; the contract's performance clauses quoted (targets, remedies, review rights, step-in, termination for persistent breach).
+2. Evidence: the scorecard's measures as it computes them (on-time needs expected delivery dates and receipts; where absent it says not assessed, and the plan says so) and the findings by type and month; the trend; the contract's performance clauses quoted (targets, remedies, review rights, step-in, termination for persistent breach).
 3. Gap: current measure versus the contract target or the user's required level; the gap via the registry calculation. A supplier below `config.thresholds.improvement_trigger_pct` on-time over the period, or with repeated findings of one type, is in scope.
 4. Causes: list the questions to put to the supplier per failure type (capacity, materials, forecasting, logistics, quality system); causes are the supplier's to give, not the skill's to assume.
 5. Plan: targets per measure with dates; actions per cause as the supplier proposes them; our actions (forecast sharing, order discipline) where the findings show our part; review cadence of `config.thresholds.review_interval_weeks` weeks; owner each side; evidence to be reviewed each time.

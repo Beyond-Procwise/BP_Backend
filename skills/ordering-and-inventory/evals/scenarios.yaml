@@ -1,7 +1,7 @@
 - id: t1
   kind: typical
   prompt: "How much safety gloves should we order and how often?"
-  expect: "Demand from two years of orders with rate and movement via the registry; minimum quantity, lead time and price break quoted; ordering and holding costs from policy; quantity and frequency with arithmetic; price-break trade-off both ways; reorder point with the user's variability; blanket order under the call-off clause; nothing ordered"
+  expect: "Quantities from two periods of supplier_items compared via deal.pct_change; minimum quantity, lead time and price break quoted; ordering and holding costs from policy; quantity and frequency with registry figures or labelled unverified; price-break trade-off both ways; reorder point with the user's variability; blanket order under the call-off clause; nothing ordered"
   expert_graded: true
 - id: t2
   kind: typical

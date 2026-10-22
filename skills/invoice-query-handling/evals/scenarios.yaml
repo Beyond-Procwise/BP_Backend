@@ -1,12 +1,12 @@
 - id: t1
   kind: typical
   prompt: "Acme is chasing three invoices. Why have they not been paid?"
-  expect: "Each invoice's status from the record; blockers with the rule quoted and the owner; terms and overdue position; supplier's and our actions; draft reply with no promised date; pattern noted; nothing released"
+  expect: "Each invoice's status, due and paid dates as stored (usually not recorded, said so); findings read in full as blockers with the rule quoted and the role that clears; an invoice with no finding is 'records do not say'; terms quoted; draft reply with roles, no names, no promised date; pattern noted; nothing released"
   expert_graded: true
 - id: t2
   kind: typical
   prompt: "Why is invoice INV-20451 on hold?"
-  expect: "Hold reason from the reconciliation (finding, missing order, receipt); rule quoted; who clears it; what is needed"
+  expect: "Open findings on the invoice read in full as the hold reason; if none and no status is recorded, says the records hold no hold reason and lists what a person must check; rule quoted; role that clears"
   expert_graded: true
 - id: t3
   kind: typical
@@ -16,7 +16,7 @@
 - id: t4
   kind: typical
   prompt: "The supplier says their invoice was rejected. What do they need to do?"
-  expect: "Rejection reason from the record; the policy rule; the resubmission steps; draft reply"
+  expect: "A rejection is not a stored status: says so; any open finding read as the likely cause; the policy rule; resubmission steps; draft reply"
   expert_graded: false
 - id: e1
   kind: edge
@@ -28,7 +28,7 @@
   kind: edge
   context: "We are answering an invoice query about the payment status of an invoice and what is holding it."
   prompt: "The invoice is for more than the order."
-  expect: "Routed to overbilling-investigation; the status reported; not resolved here"
+  expect: "Finding of quantity or price above the order routed to overbilling-investigation; the status as stored reported; not resolved here"
   expert_graded: false
 - id: e3
   kind: edge
@@ -45,8 +45,8 @@
 - id: m2
   kind: missing_data
   context: "We are answering an invoice query about the payment status of an invoice and what is holding it."
-  prompt: "What date will it be paid?"
-  expect: "Only if a scheduled date is on record; otherwise terms quoted and no promise"
+  prompt: "Has the supplier been told why it is on hold?"
+  expect: "Not known from the records; the draft reply tells them now with the finding and what is needed"
   expert_graded: false
 - id: m3
   kind: missing_data

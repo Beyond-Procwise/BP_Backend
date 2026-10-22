@@ -21,13 +21,14 @@ Not for one supplier's scorecard (supplier-performance-review), for the category
 - The axes the user wants, if any; otherwise spend and criticality as described here.
 - Any criticality the user knows that the records do not hold (sole-source items, safety-critical parts), labelled user-supplied.
 
-- Use `tool:build_spend_cube` for spend by supplier over the period with the share each supplier holds (the cube has no category; a category scope comes from the user's list of suppliers or from `tool:classify_spend` on their items)
+- Use `tool:build_spend_cube` for spend by supplier over the period with each supplier's share as the cube gives it (the cube has no category: a category scope is the suppliers the user names)
 - Use `tool:calc_supplier_scorecard` for open findings, on-time delivery and price variance where a scorecard is wanted for a candidate strategic supplier
 - Use `tool:search_contracts` for whether a supplier is under a live agreement
 - Use `tool:screening_summary` for the screening status of suppliers proposed as strategic
-- Use `tool:similar_items` for whether the items a supplier provides have alternatives on our records, which tells leverage from bottleneck
 - Use `tool:get_policy` for any segmentation rule or treatment the organisation has set
 - Use `tool:run_calculation` with `deal.share_pct` for a share the cube does not give directly
+- Use `tool:supplier_items` for what a candidate supplier provides: its items with line counts, quantities and last dates
+- Use `tool:supplier_discovery` with one of those item descriptions, for the other suppliers on our records that provide it, with evidence counts; an item with no other supplier on record is the bottleneck evidence
 NOT AVAILABLE: build_docx. the segmentation is given as text and tables
 
 Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.strategic_share_pct`.
@@ -35,8 +36,8 @@ Settings this skill reads from its own configuration, named by key and never res
 ## Workflow
 
 1. Frame the scope and period, and read the policy for any segmentation rule; where none exists, use the axes here and say so.
-2. Read the spend cube by supplier for the period and take each supplier's share from the cube's own share figure; a share the cube does not give (a supplier's share of a user-named group) comes from `run_calculation` with `deal.share_pct`, never from arithmetic in the answer. Suppliers at or above `config.thresholds.strategic_share_pct` of total spend are candidates for strategic or leverage; a supplier the user names as holding a whole category is a candidate on that statement, labelled user-supplied.
-3. Judge supply difficulty from the records only: an item with no alternative supplier on record (similar items) is bottleneck territory; the user's list of critical items is added, labelled user-supplied.
+2. Read the spend cube by supplier for the period and take each supplier's share from the cube's own share figure; a share the cube does not give (a supplier's share of a user-named group) comes from `run_calculation` with `deal.share_pct` on the cube's figures, never from arithmetic in the answer. Suppliers at or above `config.thresholds.strategic_share_pct` of total spend are candidates for strategic or leverage; a supplier the user names as holding a whole category is a candidate on that statement, labelled user-supplied.
+3. Judge supply difficulty from the records only: read the candidate's items with `tool:supplier_items`, then `tool:supplier_discovery` for each of the main ones; an item with no other supplier on our records is bottleneck evidence (not proof: suppliers we have never used are not on record); the user's list of critical items is added, labelled user-supplied.
 4. Place each supplier: high spend and hard to replace is strategic; low spend and hard to replace is bottleneck; high spend and easy to replace is leverage; the rest is transactional.
 5. For strategic and bottleneck candidates read the contract cover and the screening status; a strategic supplier with no live agreement or an incomplete screening is a finding.
 6. Name the treatment per segment and the first three actions, each with an owner.

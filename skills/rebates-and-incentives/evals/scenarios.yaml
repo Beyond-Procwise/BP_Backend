@@ -22,7 +22,7 @@
   kind: edge
   context: "We are working out what a rebate or incentive is worth and whether it is being earned and claimed."
   prompt: "The clause nets credit notes but the cube is gross."
-  expect: "Qualifying spend recounted net using reconciliation; difference stated; amount on the net figure"
+  expect: "The records hold no credit notes as such: the user's credit-note list is asked for and applied, labelled; the gross figure shown beside it; the clause decides which counts"
   expert_graded: true
 - id: e2
   kind: edge

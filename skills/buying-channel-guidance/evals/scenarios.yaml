@@ -1,7 +1,7 @@
 - id: t1
   kind: typical
   prompt: "How do I buy twelve monitors for my new team?"
-  expect: "Policy channel rule and value band quoted; live agreement and price paid found on record; steps in order; approver as replied; lead time; card ruled out by the rule"
+  expect: "Policy channel rule and value band quoted; live agreement from search_contracts and the reseller among suppliers on record; steps in order; approver as replied; lead time from the agreement; card ruled out by the rule"
   expert_graded: true
 - id: t2
   kind: typical
@@ -11,7 +11,7 @@
 - id: t3
   kind: typical
   prompt: "Do I need a PO for a 2k consultant engagement?"
-  expect: "Policy band quoted; requisition and PO route; whether quotes are required; approver as replied"
+  expect: "Policy band quoted; requisition and PO route; whether quotes are required per the policy; approver as replied; if the policy states no band, says so and names the owner"
   expert_graded: false
 - id: t4
   kind: typical
@@ -28,7 +28,7 @@
   kind: edge
   context: "We are helping a requester work out which channel is the right way to buy something."
   prompt: "It is 4,900 now but we will need it every month."
-  expect: "Band sized on the need over the period, not the first order; the route changes accordingly; splitting warned against"
+  expect: "Band sized on the need over the period via deal.scaled_total with the months the requester states; the route changes accordingly; splitting warned against"
   expert_graded: false
 - id: e3
   kind: edge
@@ -52,7 +52,7 @@
   kind: missing_data
   context: "We are helping a requester work out which channel is the right way to buy something."
   prompt: "Who is our supplier for lab consumables?"
-  expect: "From contracts and items on record; none from memory; if none, says so and gives the uncovered route"
+  expect: "From search_contracts and supplier_discovery for the item; none from memory; if none, says so and gives the uncovered route"
   expert_graded: false
 - id: c1
   kind: conflicting_data

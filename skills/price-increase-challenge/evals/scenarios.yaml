@@ -15,8 +15,8 @@
   expert_graded: false
 - id: t4
   kind: typical
-  prompt: "They want to pass through a 15 percent rise in steel. What does the index say?"
-  expect: "Steel series read over the period; share of steel in the price from the clause or the supplier, else unknown; excess over index; history"
+  prompt: "Our carrier wants to pass through a toll increase on the Leeds lane. Does the contract allow it?"
+  expect: "Pass-through clause quoted or marked not provided for; the toll figure is the user's or the carrier's, labelled; no index applies unless the clause names one"
   expert_graded: false
 - id: e1
   kind: edge
@@ -34,7 +34,7 @@
   kind: edge
   context: "We are testing whether a supplier's surcharge or cost-based increase is justified by the evidence."
   prompt: "The supplier never reduced prices when the index fell two years ago."
-  expect: "History shown from the records; symmetry argument; the earlier movement quantified"
+  expect: "Only if two periods of supplier_items or the user's dated prices show it; the tools give ranges, not a series, so the symmetry point is put to the supplier as a question, not asserted"
   expert_graded: false
 - id: m1
   kind: missing_data

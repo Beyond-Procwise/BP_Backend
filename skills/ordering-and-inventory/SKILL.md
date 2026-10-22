@@ -21,11 +21,13 @@ Not for the emergency when stock has run out (urgent-sourcing), for pooling dema
 - Stock on hand, consumption and any seasonality the user knows, labelled user-supplied.
 - Ordering and holding cost rates from policy or the user; service level wanted.
 
-- Use `tool:similar_items` for the item's order and price history on record, quantities per order and the suppliers
-- Use `tool:invoice_reconciliation` for the orders and deliveries over the period, as the demand history
+- Use `tool:supplier_items` for the item's order and invoice lines from this supplier over a period, with line counts, quantities, unit-price range and last date; read for two periods to see how demand moved
+- Use `tool:similar_items` for whether the same item is bought elsewhere (counts per source only; it names no supplier)
+- Use `tool:supplier_discovery` with the item description, for the other suppliers on our records that provide it
 - Use `tool:search_contracts` for the agreement with the supplier
 - Use `tool:extract_clauses` for minimum order quantity, lead time, price-break, call-off schedule, consignment and stock-holding clauses, quoted
-- Use `tool:run_calculation` with `deal.pct_change` for demand movement between periods and `critic.annualised_rate` for an annual rate from a shorter period; any order-quantity formula is applied step by step with the inputs shown
+- Use `tool:supplier_lookup` for the lead time on the supplier's master record, as stored
+- Use `tool:run_calculation` with `deal.pct_change` for the movement in quantity between two periods and `deal.scaled_total` for a quantity over a number of periods or a price break's total; an order-quantity formula is not in the registry, so its result is labelled unverified with its inputs
 - Use `tool:get_policy` for the ordering cost, holding cost rate, service-level target and any stock policy
 NOT AVAILABLE: create_purchase_order. nothing is ordered; the pattern is advice for the buyer
 NOT AVAILABLE: build_chart. figures are given as tables
@@ -35,10 +37,10 @@ Settings this skill reads from its own configuration, named by key and never res
 ## Workflow
 
 1. Frame the item, supplier and the user's stock and consumption facts.
-2. Demand from the records: orders and quantities over the last `config.thresholds.history_months` months, the monthly rate, movement between halves of the period via the registry; seasonality only if the user states it.
+2. Demand from the records: the item's quantities from supplier_items over the last `config.thresholds.history_months` months, read as two halves and compared via `deal.pct_change`; totals per period are stated, not a rate (an average is not a registered calculation); seasonality only if the user states it.
 3. Supplier terms quoted: minimum order quantity, lead time, price breaks, delivery schedule, consignment or stock-holding clauses; where no contract exists, the quote on record or the user's statement, labelled.
 4. Costs from policy: ordering cost per order, holding cost rate, service level; none means the pattern is given in units and frequency without a cost optimum, and the policy owner is asked.
-5. Pattern: order quantity and frequency that respect the minimum order quantity and the price breaks, with the arithmetic shown; reorder point from lead-time demand plus safety stock only where the user gives variability or a service level; the price-break trade-off (discount versus holding) shown both ways.
+5. Pattern: order quantity and frequency that respect the minimum order quantity and the price breaks, with every figure from the registry or labelled unverified; reorder point from lead-time demand (the period's quantity scaled by the lead time via `deal.scaled_total`) plus safety stock only where the user gives variability or a service level; the price-break trade-off (discount versus holding) shown both ways with inputs.
 6. Arrangements: a blanket order with scheduled releases where demand is steady and the contract allows; consignment or vendor-managed stock where the clause exists or the supplier offers it, with the risks (ownership, obsolescence, audit) named; policy check for any commitment.
 
 ## Frameworks and heuristics

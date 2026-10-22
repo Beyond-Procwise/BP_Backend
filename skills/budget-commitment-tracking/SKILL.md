@@ -17,14 +17,14 @@ Not for what was bought and from whom (spend-analysis), for value claims (saving
 
 ## Inputs and preconditions
 
-- The scope: budget, category, cost centre, supplier or project; and the period or fiscal year.
+- The scope, mapped to what the records hold: a list of suppliers, a buyer, a country or region; and the period or fiscal year.
 - The budget figure, from the user or policy, labelled by source.
+- Any contracted amounts due in the period, from the user, labelled (the records hold contract totals, not schedules).
 
-- Use `tool:build_spend_cube` for invoiced spend in the period by the dimension that matches the scope
-- Use `tool:invoice_reconciliation` for open orders and their invoiced versus uninvoiced value for the scope
-- Use `tool:contract_pipeline` for the contracted commitments ahead in the period
-- Use `tool:obligation_tracker` for scheduled payments and milestones under a contract
-- Use `tool:run_calculation` with `deal.pct_change` for the movement against the prior period, `deal.scaled_total` for the year-end projection from the monthly rate and the months remaining, and `deal.share_pct` for the share of budget used
+- Use `tool:build_spend_cube` for invoiced spend in the period by supplier, buyer, month, country or region (it has no cost centre, category or project: the scope must be mapped to one of these or to a list of suppliers, and the mapping is stated)
+- Use `tool:open_orders` for each supplier in scope, the orders with the invoices booked against them and the balance still open (the open commitment, with the tool's tax-basis caveat)
+- Use `tool:contract_pipeline` for the contracts ending in the period with their total value as stored (no amounts due by period are recorded: a contract's remaining value is the user's figure or not available)
+- Use `tool:run_calculation` with `deal.pct_change` for the movement against the prior period, `deal.scaled_total` for the year-end projection from a monthly figure and the months remaining, and `deal.share_pct` for the share of budget used
 - Use `tool:get_policy` for a governed budget or limit for the scope
 - Use `tool:get_corpus_facts` for the period and totals the corpus holds, so scope and period are stated once
 NOT AVAILABLE: post_accrual. accruals are finance's posting; the skill reports the uninvoiced open order value finance may accrue
@@ -34,19 +34,19 @@ Settings this skill reads from its own configuration, named by key and never res
 
 ## Workflow
 
-1. Frame: scope, period, budget figure and its source. Where no budget is given or governed, the report is a commitment position only, and says so.
+1. Frame: scope mapped to a records dimension (suppliers, buyer, country, region), period, budget figure and its source. Where no budget is given or governed, the report is a commitment position only, and says so.
 2. Invoiced to date from the cube for the scope and period.
-3. Open commitments: orders not yet fully invoiced (order value less invoiced) from the reconciliation; contracted amounts due in the rest of the period from the pipeline and trackers; each listed with its source.
-4. Position: budget, invoiced, open orders, contracted ahead, remaining; the run rate from the elapsed part of the period via the registry calculation; the year-end projection if it continues; a projection above the budget by more than `config.thresholds.overspend_alert_pct` is flagged.
-5. Movements against the prior period via the registry calculation; the largest open orders and commitments named.
-6. Caveats: scope mismatches between the records' dimensions and the budget's; currencies without rates; orders with no value.
+3. Open commitments: for each supplier in scope, the open balance per order from open_orders (order total minus invoices booked, same currency, as stored); contracts ending in the period from the pipeline with their stored total value, and any amounts due that the user states, labelled.
+4. Position: budget, invoiced, open order balances, contracted amounts the user states, remaining; the year-end projection from the monthly invoiced figure and the months remaining via `deal.scaled_total`; the share of budget used via `deal.share_pct`; a projection above the budget by more than `config.thresholds.overspend_alert_pct` is flagged.
+5. Movements against the prior period via `deal.pct_change`; the largest open balances named.
+6. Caveats: the scope mapping; order and invoice tax basis; currencies without rates; orders with no value.
 
 ## Frameworks and heuristics
 
-- Committed is ordered-not-invoiced plus contracted-ahead; invoiced is spent; the sum against the budget is the position.
-- A run rate is the elapsed period's rate, not last month's; say which.
+- Committed is the open order balance plus what the user states as contracted and due; invoiced is spent; the sum against the budget is the position.
+- The projection scales the invoiced-to-date monthly figure by the months remaining; say that is what it is.
 - The budget is the user's or the policy's figure; the skill never sets one.
-- The records' dimensions (supplier, buyer, cost centre) rarely match a budget line exactly; say what was used.
+- Budgets live by cost centre or category and the records do not; the mapping to suppliers or buyers is stated, never silent.
 
 ## Policy hooks (SC-007)
 
@@ -54,11 +54,11 @@ A governed budget or limit comes from `tool:get_policy` and is quoted; otherwise
 
 ## Output specification
 
-1. Frame: scope, period, budget and source.
-2. Position table: budget, invoiced, open orders, contracted ahead, remaining, with sources.
-3. Run rate and year-end projection via the calculations; overspend flag against the configured share.
-4. Movements and the largest commitments.
-5. Caveats on scope, currency and missing values.
+1. Frame: scope and its mapping, period, budget and source.
+2. Position table: budget, invoiced, open order balances, contracted amounts stated, remaining, with sources.
+3. Projection and share of budget via the calculations; overspend flag against the configured share.
+4. Movements and the largest open balances.
+5. Caveats on mapping, tax basis, currency and missing values.
 
 ## Quality bar
 
@@ -73,7 +73,7 @@ Escalate to the budget owner where the projection exceeds the budget by the conf
 
 ## Worked example
 
-Asked how much of the facilities budget is left this fiscal year, the skill takes the budget from the user, reads invoiced spend for the facilities buyer from the cube, open orders not yet invoiced from the reconciliation, the maintenance contract's remaining scheduled payments from its tracker, computes the run rate over the elapsed months and the year-end projection, finds the projection above the budget by more than the configured share, and reports the position with the three largest commitments and the caveat that the budget line and the buyer dimension do not match exactly.
+Asked how much of the facilities budget is left this fiscal year, the skill takes the budget from the user, maps the scope to the facilities buyer, reads invoiced spend for that buyer from the cube, the open balances on the facilities suppliers' orders from open_orders, the maintenance contract ending this year from the pipeline with its stored total and the user's statement of what is still due, projects year end from the monthly invoiced figure via the registry, finds the projection above the budget by more than the configured share, and reports the position with the three largest open balances and the caveat that the budget line and the buyer dimension do not match exactly.
 
 ## Anti-patterns
 

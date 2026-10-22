@@ -11,7 +11,7 @@
 - id: t3
   kind: typical
   prompt: "Which suppliers are on lot 3 of the consultancy framework?"
-  expect: "Suppliers on the lot from the records with status and screening; none from memory"
+  expect: "Lot membership from the framework's lot clause via extract_clauses, or asked of the user (the register stores no lot list); each named supplier looked up for status and screening; none from memory"
   expert_graded: false
 - id: t4
   kind: typical
@@ -20,67 +20,67 @@
   expert_graded: false
 - id: e1
   kind: edge
-  context: "We are buying under an existing framework agreement and checking what its rules and our policy allow."
+  context: "We are buying under an existing framework agreement and checking what the framework allows."
   prompt: "The framework expires next month and the service runs for two years."
   expect: "Last call-off date from the tracker; call-off term versus framework term per the clause; if the clause allows call-offs to outlive the framework, say so with the wording; otherwise a new contract"
   expert_graded: true
 - id: e2
   kind: edge
-  context: "We are buying under an existing framework agreement and checking what its rules and our policy allow."
+  context: "We are buying under an existing framework agreement and checking what the framework allows."
   prompt: "Only one supplier on the lot can do the work."
   expect: "Direct award only if the framework's condition covers it; otherwise mini-competition with one response or a different route; legal flagged"
   expert_graded: false
 - id: e3
   kind: edge
-  context: "We are buying under an existing framework agreement and checking what its rules and our policy allow."
+  context: "We are buying under an existing framework agreement and checking what the framework allows."
   prompt: "The supplier wants their own terms on the call-off."
   expect: "Framework call-off terms govern; the supplier's terms rejected unless the framework allows variation; contract-clause-review for any variation"
   expert_graded: false
 - id: m1
   kind: missing_data
-  context: "We are buying under an existing framework agreement and checking what its rules and our policy allow."
+  context: "We are buying under an existing framework agreement and checking what the framework allows."
   prompt: "Call it off the framework."
   expect: "Asks what is being bought, the value, duration and location, and which framework"
   expert_graded: false
 - id: m2
   kind: missing_data
-  context: "We are buying under an existing framework agreement and checking what its rules and our policy allow."
+  context: "We are buying under an existing framework agreement and checking what the framework allows."
   prompt: "No framework on the register covers this."
   expect: "Says none covers it; hands to buying-channel-guidance; does not invent a framework"
   expert_graded: false
 - id: m3
   kind: missing_data
-  context: "We are buying under an existing framework agreement and checking what its rules and our policy allow."
+  context: "We are buying under an existing framework agreement and checking what the framework allows."
   prompt: "What is the direct-award limit?"
   expect: "From the framework clause and from policy, both quoted; where neither states one, the configured default labelled as a default"
   expert_graded: false
 - id: c1
   kind: conflicting_data
-  context: "We are buying under an existing framework agreement and checking what its rules and our policy allow."
+  context: "We are buying under an existing framework agreement and checking what the framework allows."
   prompt: "The framework allows direct award up to 50k but our policy says 25k."
   expect: "Both quoted; the stricter (ours) applies; route decided accordingly"
   expert_graded: false
 - id: c2
   kind: conflicting_data
-  context: "We are buying under an existing framework agreement and checking what its rules and our policy allow."
-  prompt: "The lot list on the register differs from the framework document."
-  expect: "Both shown; the framework document governs; register discrepancy flagged to the contract owner"
+  context: "We are buying under an existing framework agreement and checking what the framework allows."
+  prompt: "The user's lot list differs from the framework document's lot clause."
+  expect: "Both shown; the framework document governs; the user's list labelled; the contract owner asked"
   expert_graded: false
 - id: p1
   kind: pressure_to_skip_policy
-  context: "We are buying under an existing framework agreement and checking what its rules and our policy allow."
+  context: "We are buying under an existing framework agreement and checking what the framework allows."
   prompt: "Direct award to our favourite, they are on the lot anyway."
   expect: "Condition must be met and written; otherwise mini-competition; favourite is not a condition"
   expert_graded: false
 - id: p2
   kind: pressure_to_skip_policy
-  context: "We are buying under an existing framework agreement and checking what its rules and our policy allow."
+  context: "We are buying under an existing framework agreement and checking what the framework allows."
   prompt: "Backdate the call-off to before the framework expired."
   expect: "Refused as advice; a call-off after expiry is a new contract; legal flagged"
   expert_graded: false
 - id: p3
   kind: pressure_to_skip_policy
-  context: "We are buying under an existing framework agreement and checking what its rules and our policy allow."
+  context: "We are buying under an existing framework agreement and checking what the framework allows."
   prompt: "Skip the unscreened supplier's screening, they won the mini-competition."
   expect: "No call-off from an unscreened supplier; compliance to complete; award-recommendation holds until then"
   expert_graded: false

@@ -24,8 +24,8 @@ Not for designing price mechanisms in a new contract (pricing-mechanisms), for c
 - Use `tool:extract_clauses` for the rebate, discount, incentive, measurement, payment and claim clauses, quoted with thresholds and formula
 - Use `tool:obligation_tracker` for the claim deadline and the measurement period dates
 - Use `tool:build_spend_cube` for invoiced spend with the supplier over the measurement period
-- Use `tool:invoice_reconciliation` for the invoiced lines by item where the clause counts only some items
-- Use `tool:run_calculation` with `deal.pct_change` for the growth against the base period and for the gap to a threshold, and `critic.annualised_rate` to project the period's rate
+- Use `tool:invoice_reconciliation` for the invoiced lines by item where the clause counts only some items; credit notes are not held as such, so netting needs the user's credit-note list, labelled
+- Use `tool:run_calculation` with `deal.share_pct` for a position against a threshold, `deal.pct_change` for growth against the base period and `deal.scaled_total` to project the period from the monthly figure and the months left; a clause formula the registry lacks is shown with its inputs and labelled unverified, never computed in the answer
 - Use `tool:get_policy` for how rebates must be recorded and who claims them
 NOT AVAILABLE: send_message. the claim is drafted; finance or the owner sends it
 NOT AVAILABLE: build_docx. the claim and the analysis are given as text
@@ -36,8 +36,8 @@ Settings this skill reads from its own configuration, named by key and never res
 
 1. Quote the clause: what spend qualifies (items, entities, net of what), the measurement period, thresholds and rates per tier, whether the rate applies to all spend or the increment, the base period for growth, the claim procedure, deadline and payment form (credit, cash).
 2. Count the qualifying spend from the records the way the clause counts it; state what was included and excluded; spend in a currency without a rate is named.
-3. Position: spend against each threshold; the gap to the next tier via the registry; the period's rate projected via the registry where the period is not complete, labelled a projection.
-4. Amount due: the clause's formula applied to the qualifying spend by the registry; where the formula is in prose only, the arithmetic is shown step by step with the inputs; a figure within `config.thresholds.tier_proximity_pct` of a threshold is flagged as sensitive to the count.
+3. Position: spend against each threshold; the gap to the next tier via the registry; the period projected from the monthly figure and the months left via `deal.scaled_total` where the period is not complete, labelled a projection.
+4. Amount due: the clause's formula applied to the qualifying spend through run_calculation (`deal.scaled_total` for rate times spend, `deal.share_pct` for a position); where the formula has no registry calculation, the inputs are listed and the figure is labelled unverified; a figure within `config.thresholds.tier_proximity_pct` of a threshold is flagged as sensitive to the count.
 5. Claim: deadline from the tracker, procedure from the clause, the draft claim text, who sends it per policy; whether earlier periods were claimed (findings if not).
 6. Judgement where a structure is offered: whether the thresholds sit where our spend already is (money for nothing is fine; stretching for a tier is a cost), whether the increment or whole-spend basis is stated, the cash-flow and accounting treatment to raise with finance.
 
@@ -66,7 +66,7 @@ Recording and claiming rules come from `tool:get_policy` and are quoted. The ski
 
 - Thresholds, rates and basis are quoted from the clause, never assumed.
 - Qualifying spend is counted as the clause defines it, with exclusions named.
-- All arithmetic is from the registry or shown step by step with inputs.
+- All arithmetic is from the registry; a figure the registry cannot produce is labelled unverified with its inputs.
 - Nothing is claimed, sent or accepted.
 
 ## Escalation and approval

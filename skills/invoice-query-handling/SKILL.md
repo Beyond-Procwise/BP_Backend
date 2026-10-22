@@ -20,7 +20,8 @@ Not for a price or quantity overcharge (overbilling-investigation), for terms ne
 - The invoice (number, supplier and amount or date) or the supplier whose invoices are in question.
 - Who is asking (supplier, requester, finance) so the reply fits.
 
-- Use `tool:invoice_reconciliation` for the invoice, its order and receipt match, open findings, hold reasons and the lines affected
+- Use `tool:invoice_status` for the supplier's invoices (or one by id) with amount, PO, payment terms, status, due and paid dates exactly as stored ('not recorded' when absent), overdue only from a stored due date, and the count of open findings on each
+- Use `tool:invoice_reconciliation` for the open findings in full (the hold reasons the triage engine recorded) and the line matches behind them
 - Use `tool:supplier_lookup` for the supplier's record and status (never bank details)
 - Use `tool:search_contracts` for the agreement's payment terms
 - Use `tool:extract_clauses` for the payment, invoicing and dispute clauses, quoted
@@ -32,16 +33,17 @@ Settings this skill reads from its own configuration, named by key and never res
 
 ## Workflow
 
-1. Find the invoice or the supplier's invoices in the period; state each invoice's status as the record holds it.
-2. For each one not paid: the blocker (no order, no receipt, quantity or price finding, missing fields, duplicate suspicion, awaiting approval) from the reconciliation; the rule behind it quoted from policy; the owner who clears it.
-3. Terms: the agreement's payment terms quoted; the due date only if the record and the terms give one; an invoice past its terms by more than `config.thresholds.overdue_grace_days` days is overdue and said so.
-4. What the supplier must do (resubmit with the order number, issue a credit note, provide the delivery note) and what we must do (record the receipt, clear the finding, approve), each with an owner.
-5. Draft the reply for the asker: status, blocker, what is needed from whom; no payment date promised unless the record holds a scheduled one; hand the text to supplier-communication-drafting where tone matters.
-6. Patterns: several invoices stuck for the same reason are reported as one finding for the process owner.
+1. Find the invoice or the supplier's invoices in the period with invoice_status; state each invoice's status, due and paid dates exactly as stored; 'not recorded' is reported as not recorded, never read as unpaid or as paid.
+2. For each invoice with open findings, read them in full with invoice_reconciliation: the finding kind (quantity or price above the order, no order line, duplicate suspicion) is the blocker; the rule behind it quoted from policy; the role that clears it per policy.
+3. Where no finding and no status is recorded, the records do not say why the invoice is unpaid: say so, and list what a person must check (receipt recorded, approval, payment run), without asserting any of them.
+4. Terms: the agreement's payment terms quoted; overdue only as invoice_status judges it from a stored due date; where no due date is stored, say the due date is not on record and do not compute one from the terms.
+5. What the supplier must do (resubmit with the order number, issue a credit note, provide the delivery note) and what we must do (record the receipt, clear the finding, approve), each with the role responsible; the reply names roles, never people.
+6. Draft the reply for the asker: status as stored, blocker, what is needed from whom; no payment date promised unless the record holds a paid date or a scheduled one; hand the text to supplier-communication-drafting where tone matters.
+7. Patterns: several invoices with the same finding kind are reported as one finding for the process owner.
 
 ## Frameworks and heuristics
 
-- A status is the record's word; a blocker is a rule plus a fact, with an owner.
+- A status is the record's word, and that word is usually 'not recorded'; a blocker is a finding plus the rule behind it, with the role that clears it.
 - No promise of a date the record does not hold.
 - The supplier's fix and our fix are listed separately; most holds need one of each.
 - Repeated holds for one reason are a process problem, not a supplier problem.
@@ -52,17 +54,17 @@ Invoice rules and who clears each kind of hold come from `tool:get_policy` and a
 
 ## Output specification
 
-1. Invoice table: number, supplier, amount, date, status, blocker, rule, owner.
-2. Terms and overdue position where the record supports it.
-3. Actions: the supplier's and ours, with owners.
-4. Draft reply for the asker.
+1. Invoice table: number, amount, date, status as stored, due and paid dates as stored, overdue flag, open findings, blocker, rule, role.
+2. Terms as quoted and the overdue position only where a due date is stored.
+3. Actions: the supplier's and ours, with roles.
+4. Draft reply for the asker (roles, no names, no bank details).
 5. Patterns for the process owner.
 
 ## Quality bar
 
-- Every status and blocker is from the reconciliation; every rule is quoted.
+- Every status is from invoice_status as stored and every blocker from a recorded finding; every rule is quoted.
 - No payment date is promised that the record does not hold.
-- No bank details or personal contacts in the reply.
+- No bank details, personal contacts or named individuals in the reply; roles only.
 - Nothing released, approved or sent.
 
 ## Escalation and approval
@@ -71,7 +73,7 @@ Escalate to finance to clear a hold or confirm a payment date, to the buyer to r
 
 ## Worked example
 
-Asked why Acme is chasing three invoices, the skill reads them: one is on hold with a quantity finding against the order (buyer to clear or dispute), one has no order on record (supplier to resubmit quoting the order number under the no-PO-no-pay rule, quoted), and one is approved and inside terms; it drafts a reply stating each status and what is needed from whom, without a payment date for the two on hold, and notes that no-order invoices from this supplier are a recurring pattern.
+Asked why Acme is chasing three invoices, the skill reads them with invoice_status: all three have no status, due or paid date recorded; one carries an open finding (quantity above the order, read in full from the reconciliation; the buyer's role clears or disputes it), one has no order on record (the supplier resubmits quoting the order number under the no-PO-no-pay rule, quoted), and one has no finding, so the records do not say why it is unpaid and finance is asked to check the payment run; the draft reply states each position and what is needed from whom, with roles not names and no payment date.
 
 ## Anti-patterns
 

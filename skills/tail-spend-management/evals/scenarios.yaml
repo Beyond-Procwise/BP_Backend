@@ -11,12 +11,12 @@
 - id: t3
   kind: typical
   prompt: "Set up a catalogue for the small repeat purchases in office supplies."
-  expect: "Repeat low-value items in the category listed from the cube; a target supplier on record; catalogue rule from policy; set-up checked with policy"
+  expect: "Suppliers for office supplies are the ones the user names or the bottom of the cube (the cube has no category); their items from supplier_items; repeat low-value items listed; a target supplier from supplier_discovery; catalogue rule from policy; nothing set up"
   expert_graded: false
 - id: t4
   kind: typical
   prompt: "Rationalise the supplier base in MRO."
-  expect: "Scope limited to the category; tail cut; moves grouped by target; suppliers that stay listed with reasons"
+  expect: "Scope is the suppliers the user names for MRO (the cube has no category); tail cut on the cube's share and invoice figures; moves grouped by target with supplier_discovery evidence; suppliers that stay listed with reasons"
   expert_graded: false
 - id: e1
   kind: edge
@@ -40,19 +40,19 @@
   kind: missing_data
   context: "We are deciding how to manage the long tail of small and infrequent suppliers."
   prompt: "Clean up the tail."
-  expect: "States the default tail definition and period and proceeds, or asks for the scope"
+  expect: "Asks for the scope before reading the cube"
   expert_graded: false
 - id: m2
   kind: missing_data
   context: "We are deciding how to manage the long tail of small and infrequent suppliers."
-  prompt: "What is our card limit for small purchases?"
-  expect: "Reads policy; if none, says no limit is governed and asks the process owner; no figure from memory"
+  prompt: "How many invoices does the tail generate?"
+  expect: "Invoice counts from the cube's bottom cells; the tail's share via deal.share_pct on the cube's figures; no estimate"
   expert_graded: false
 - id: m3
   kind: missing_data
   context: "We are deciding how to manage the long tail of small and infrequent suppliers."
   prompt: "Which tail suppliers could move to Acme?"
-  expect: "Only suppliers whose items appear on Acme's records via similar items; none by category name alone"
+  expect: "Only tail suppliers whose items (supplier_items) Acme already provides per supplier_discovery; none by category name alone"
   expert_graded: false
 - id: c1
   kind: conflicting_data

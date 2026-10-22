@@ -1,6 +1,5 @@
 # Configurable defaults for this skill. They are starting points for review, not governed policy.
 thresholds:
-  rejection_notice_days: 5    # days from receipt within which to notify the supplier when the contract states no window
 unavailable_tools:
   - record_goods_receipt
   - hold_invoice
@@ -16,9 +15,6 @@ routing:                         # how the orchestrator decides this skill cover
     - "arrived short"
     - "came short"
     - "units short"
-    - "short and"
-    - "and damaged"
-    - "damaged"
     - "damaged goods"
     - "arrived damaged"
     - "damaged on arrival"
@@ -71,6 +67,12 @@ routing:                         # how the orchestrator decides this skill cover
     - "delivered more than"
     - "only received"
     - "we received only"
+    - "arrived damaged"
+    - "came damaged"
+    - "units damaged"
+    - "damaged units"
+    - "short on the order"
+    - "short of what we ordered"
   support:                       # 1 point each
     - "deliver*"
     - "supplier"

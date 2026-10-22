@@ -23,9 +23,9 @@ Not for claiming service credits (dispute-and-claims), for the quarterly review 
 
 - Use `tool:search_contracts` for comparable agreements on the register
 - Use `tool:extract_clauses` for the service-level, measurement, credit, step-in and termination clauses in those agreements and in the draft, quoted
-- Use `tool:calc_supplier_scorecard` for what the platform already measures (on-time delivery, findings) and the supplier's current record
-- Use `tool:run_calculation` with `otif.delivery_performance` where a delivery measure is proposed, so the measurement is the platform's definition, and `deal.pct_change` for a target's gap to current performance
+- Use `tool:calc_supplier_scorecard` for what the platform already measures (on-time delivery where expected dates and receipts exist, findings) and the supplier's current record; quality, responsiveness and credits are not recorded there
 - Use `tool:get_policy` for any service-level standards or credit limits the organisation has set
+- Use `tool:run_calculation` with `deal.pct_change` for a target's gap to current performance
 NOT AVAILABLE: build_docx. the schedule is given as structured text for legal
 
 Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.max_measures`, `config.thresholds.max_credit_pct`.
@@ -34,7 +34,7 @@ Settings this skill reads from its own configuration, named by key and never res
 
 1. Frame: the service, what matters to the owner, what data we will hold.
 2. Measures: at most `config.thresholds.max_measures` service levels, each tied to an outcome the owner named, each measurable from data we will hold (named), each with a definition (what counts, what is excluded, the period). A measure without a data source is dropped or becomes a reporting obligation on the supplier with audit rights.
-3. Targets: each with a basis (the supplier's current record from the scorecard, a comparable contract on the register, the specification, the owner's requirement); the gap to current performance via the registry where a record exists; no target from memory.
+3. Targets: each with a basis (the supplier's current record from the scorecard where it assesses the measure, a comparable contract on the register, the specification, the owner's requirement); the gap to current performance via `deal.pct_change` where a record exists; no target from memory.
 4. Remedies: service credits with a formula on the invoice value and a cap within `config.thresholds.max_credit_pct`, escalating with persistence; step-in and termination-for-persistent-failure triggers stated as counts over periods; credits as the sole remedy or not, as legal advises; earn-back only if the owner wants it.
 5. Governance: reporting by the supplier at a stated cadence from stated data; review meetings; dispute route for measurement disagreements.
 6. Review of a draft: each proposed level tested against the rules above; gaps, unmeasurable levels, targets with no basis, remedies with no formula or cap, named for legal and the owner.
@@ -73,7 +73,7 @@ Escalate to legal for the wording and the sole-remedy question, to the owner for
 
 ## Worked example
 
-Asked what SLAs the new logistics contract should have, the skill reads the specification, finds the platform measures on-time delivery and findings for the incumbent, reads two comparable contracts' service-level clauses on the register, proposes four measures (on-time in full by the platform's definition, damage rate from findings, booking response time reported by the supplier with audit, invoice accuracy from findings), sets targets with bases (the incumbent's record plus the owner's requirement, the comparable contracts), credits as a share of the monthly invoice with a cap within the configured limit and a persistence trigger, step-in and termination triggers as counts, monthly reporting and quarterly reviews, and lists the open points for legal.
+Asked what SLAs the new logistics contract should have, the skill reads the specification, finds the platform measures on-time delivery and findings for the incumbent, reads two comparable contracts' service-level clauses on the register, proposes four measures (on-time delivery as the scorecard measures it where expected dates and receipts exist, damage rate from findings, booking response time reported by the supplier with audit, invoice accuracy from findings), sets targets with bases (the incumbent's record plus the owner's requirement, the comparable contracts), credits as a share of the monthly invoice with a cap within the configured limit and a persistence trigger, step-in and termination triggers as counts, monthly reporting and quarterly reviews, and lists the open points for legal.
 
 ## Anti-patterns
 

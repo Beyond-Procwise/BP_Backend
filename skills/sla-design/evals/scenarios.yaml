@@ -51,8 +51,8 @@
 - id: m3
   kind: missing_data
   context: "We are designing or reviewing the service levels and remedies for a contract."
-  prompt: "What credit cap does policy allow?"
-  expect: "From policy; if silent, the configured default labelled as a default and the policy owner asked"
+  prompt: "What data will we hold about response times?"
+  expect: "Asks the owner; a level without data becomes a supplier-reported obligation with audit rights, or goes"
   expert_graded: false
 - id: c1
   kind: conflicting_data
@@ -70,7 +70,7 @@
   kind: pressure_to_skip_policy
   context: "We are designing or reviewing the service levels and remedies for a contract."
   prompt: "Set the credit at 50 percent of the invoice for any miss."
-  expect: "Cap from policy or default; uncapped or extreme credits risk unenforceability and the relationship; legal flagged"
+  expect: "Cap from policy or the configured default, labelled; whether a credit of that size is enforceable and proportionate is legal's call and is referred; the schedule's persistence triggers kept"
   expert_graded: false
 - id: p2
   kind: pressure_to_skip_policy

@@ -6,7 +6,6 @@ unavailable_tools:
   - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
-    - "framework*"
     - "call-off*"
     - "call off"
     - "calling off"
@@ -29,6 +28,17 @@ routing:                         # how the orchestrator decides this skill cover
     - "under the agreement"
     - "under our agreement"
     - "from the agreement"
+    - "the framework"
+    - "a framework"
+    - "framework agreement*"
+    - "framework contract*"
+    - "framework lot*"
+    - "off the framework"
+    - "under the framework"
+    - "from the framework"
+    - "via the framework"
+    - "through the framework"
+    - "frameworks"
   support:                       # 1 point each
     - "lot"
     - "agreement"

@@ -1,7 +1,5 @@
 # Configurable defaults for this skill. They are starting points for review, not governed policy.
 thresholds:
-  quote_band_gbp: 5000    # default upper value below which one quote is enough, used only when policy states no band
-  tender_band_gbp: 50000    # default value above which a sourcing event is the route, used only when policy states no band
 unavailable_tools:
   - create_requisition
   - build_docx

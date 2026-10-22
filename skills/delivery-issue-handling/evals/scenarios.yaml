@@ -46,7 +46,7 @@
   kind: missing_data
   context: "We are handling a delivery that arrived late, short, damaged or wrong."
   prompt: "How long do we have to reject?"
-  expect: "From the clause if stored; otherwise policy; otherwise the configured default labelled as a default"
+  expect: "From the clause if stored; otherwise says no window is on record, advises notifying the supplier now and asks legal; no default number of days"
   expert_graded: false
 - id: m3
   kind: missing_data

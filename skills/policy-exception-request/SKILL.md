@@ -26,8 +26,8 @@ Not for the compliance ruling itself (procurement-policy-compliance), for a fram
 - Use `tool:invoice_reconciliation` for the order and invoice facts where the purchase already happened
 - Use `tool:supplier_lookup` for the supplier's record and status
 - Use `tool:screening_summary` for the supplier's screening status
-- Use `tool:similar_items` for whether an alternative supplier on record could have been used, which the justification must address
 - Use `tool:search_contracts` for an agreement that covered the need, if one exists
+- Use `tool:supplier_discovery` with the item or service, for the other suppliers on our records that could have been used, which the justification must address
 NOT AVAILABLE: send_message. the request is drafted; the requester submits it to the approver
 NOT AVAILABLE: approve_exception. no approval is given by the skill; the approver the policy names decides
 
@@ -36,7 +36,7 @@ Settings this skill reads from its own configuration, named by key and never res
 ## Workflow
 
 1. Frame: the purchase, the rule, whether it is past or future, and the user's reasons.
-2. Quote the rule and the exception grounds the policy allows (genuine urgency, sole capable supplier, compatibility, value below a band, and whatever else the policy lists); the approver and the record the policy requires. Where the policy allows no exception, say so and stop at the facts.
+2. Quote the rule and the exception grounds exactly as the policy lists them, with the approver and the record it requires. Where the policy lists no grounds, the request states the facts and asks the policy owner which ground, if any, applies; no ground is supplied from general practice. Where the policy allows no exception, say so and stop at the facts.
 3. Facts from the records: the order and invoice if placed; the supplier's status and screening; alternatives on record for the items; any agreement that covered the need.
 4. Test the justification against each allowed ground with the facts; name the grounds met and the ones not met; an exception above `config.thresholds.senior_approval_gbp` goes to the senior approver the policy names.
 5. Risks (price not tested, supplier unscreened, pattern of repeat exceptions) and mitigations (benchmark now, screen now, plan the next purchase compliantly); the record to be kept.

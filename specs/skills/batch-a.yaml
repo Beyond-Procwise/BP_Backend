@@ -1,590 +1,1160 @@
-# Skill definitions, batch A. Rendered by scripts/skills/scaffold.py into skills/<name>/.
-# Every tool named under `tools` must exist in agentnick_control.build_tools; anything the skill
-# must not do (send, award, commit) is written in plain words.
-
+# Skill definitions, batch-a. Rendered by scripts/skills/scaffold.py into skills/<name>/.
+# Rewritten 2026-10-22 against the real tool outputs (specs/2026-10-22-skills-content-review.md).
 - name: supplier-segmentation
   title: Supplier Segmentation
-  description: "Place each supplier in a segment (strategic, critical or bottleneck, leverage, transactional) from the spend and its share, the findings, the contract cover and the risk on record, and say what treatment each segment gets. Use when asked to segment or tier the supplier base, to name the strategic, critical or key suppliers, or to decide which suppliers deserve a relationship plan. Not for one supplier's performance (supplier-performance-review) or a category's sourcing strategy (category-strategy)."
-  purpose: "Give the supplier base a shape people can act on. Each supplier lands in one segment on evidence from the records, with the treatment the segment implies (relationship plan, scorecard, contract, consolidation or catalogue). The skill reads and proposes; it changes no record."
-  use_when: "Use when the question is which suppliers matter most, how to tier or segment the base, who the strategic or critical suppliers are, or where to put relationship effort."
-  not_for: "Not for one supplier's scorecard (supplier-performance-review), for the category plan (category-strategy), for cutting the tail (tail-spend-management) or for risk screening (supplier-risk-assessment)."
+  description: Place each supplier in a segment (strategic, critical or bottleneck, leverage, transactional) from the spend and its share, the findings,
+    the contract cover and the risk on record, and say what treatment each segment gets. Use when asked to segment or tier the supplier base, to name the
+    strategic, critical or key suppliers, or to decide which suppliers deserve a relationship plan. Not for one supplier's performance (supplier-performance-review)
+    or a category's sourcing strategy (category-strategy).
+  purpose: Give the supplier base a shape people can act on. Each supplier lands in one segment on evidence from the records, with the treatment the segment
+    implies (relationship plan, scorecard, contract, consolidation or catalogue). The skill reads and proposes; it changes no record.
+  use_when: Use when the question is which suppliers matter most, how to tier or segment the base, who the strategic or critical suppliers are, or where
+    to put relationship effort.
+  not_for: Not for one supplier's scorecard (supplier-performance-review), for the category plan (category-strategy), for cutting the tail (tail-spend-management)
+    or for risk screening (supplier-risk-assessment).
   inputs:
-    - "The scope: the whole base, a category or a list of suppliers, and the period (default the last full year)."
-    - "The axes the user wants, if any; otherwise spend and criticality as described here."
-    - "Any criticality the user knows that the records do not hold (sole-source items, safety-critical parts), labelled user-supplied."
+  - 'The scope: the whole base, a category or a list of suppliers, and the period (default the last full year).'
+  - The axes the user wants, if any; otherwise spend and criticality as described here.
+  - Any criticality the user knows that the records do not hold (sole-source items, safety-critical parts), labelled user-supplied.
   tools:
-    - "build_spend_cube: for spend by supplier over the period with the share each supplier holds (the cube has no category; a category scope comes from the user's list of suppliers or from `tool:classify_spend` on their items)"
-    - "calc_supplier_scorecard: for open findings, on-time delivery and price variance where a scorecard is wanted for a candidate strategic supplier"
-    - "search_contracts: for whether a supplier is under a live agreement"
-    - "screening_summary: for the screening status of suppliers proposed as strategic"
-    - "similar_items: for whether the items a supplier provides have alternatives on our records, which tells leverage from bottleneck"
-    - "get_policy: for any segmentation rule or treatment the organisation has set"
-    - "run_calculation: with `deal.share_pct` for a share the cube does not give directly"
+  - 'build_spend_cube: for spend by supplier over the period with each supplier''s share as the cube gives it (the cube has no category: a category scope
+    is the suppliers the user names)'
+  - 'calc_supplier_scorecard: for open findings, on-time delivery and price variance where a scorecard is wanted for a candidate strategic supplier'
+  - 'search_contracts: for whether a supplier is under a live agreement'
+  - 'screening_summary: for the screening status of suppliers proposed as strategic'
+  - 'get_policy: for any segmentation rule or treatment the organisation has set'
+  - 'run_calculation: with `deal.share_pct` for a share the cube does not give directly'
+  - 'supplier_items: for what a candidate supplier provides: its items with line counts, quantities and last dates'
+  - 'supplier_discovery: with one of those item descriptions, for the other suppliers on our records that provide it, with evidence counts; an item with
+    no other supplier on record is the bottleneck evidence'
   unavailable:
-    - "build_docx: the segmentation is given as text and tables"
+  - 'build_docx: the segmentation is given as text and tables'
   workflow:
-    - "Frame the scope and period, and read the policy for any segmentation rule; where none exists, use the axes here and say so."
-    - "Read the spend cube by supplier for the period and take each supplier's share from the cube's own share figure; a share the cube does not give (a supplier's share of a user-named group) comes from `run_calculation` with `deal.share_pct`, never from arithmetic in the answer. Suppliers at or above `config.thresholds.strategic_share_pct` of total spend are candidates for strategic or leverage; a supplier the user names as holding a whole category is a candidate on that statement, labelled user-supplied."
-    - "Judge supply difficulty from the records only: an item with no alternative supplier on record (similar items) is bottleneck territory; the user's list of critical items is added, labelled user-supplied."
-    - "Place each supplier: high spend and hard to replace is strategic; low spend and hard to replace is bottleneck; high spend and easy to replace is leverage; the rest is transactional."
-    - "For strategic and bottleneck candidates read the contract cover and the screening status; a strategic supplier with no live agreement or an incomplete screening is a finding."
-    - "Name the treatment per segment and the first three actions, each with an owner."
+  - Frame the scope and period, and read the policy for any segmentation rule; where none exists, use the axes here and say so.
+  - Read the spend cube by supplier for the period and take each supplier's share from the cube's own share figure; a share the cube does not give (a supplier's
+    share of a user-named group) comes from `run_calculation` with `deal.share_pct` on the cube's figures, never from arithmetic in the answer. Suppliers
+    at or above `config.thresholds.strategic_share_pct` of total spend are candidates for strategic or leverage; a supplier the user names as holding a
+    whole category is a candidate on that statement, labelled user-supplied.
+  - 'Judge supply difficulty from the records only: read the candidate''s items with `tool:supplier_items`, then `tool:supplier_discovery` for each of the
+    main ones; an item with no other supplier on our records is bottleneck evidence (not proof: suppliers we have never used are not on record); the user''s
+    list of critical items is added, labelled user-supplied.'
+  - 'Place each supplier: high spend and hard to replace is strategic; low spend and hard to replace is bottleneck; high spend and easy to replace is leverage;
+    the rest is transactional.'
+  - For strategic and bottleneck candidates read the contract cover and the screening status; a strategic supplier with no live agreement or an incomplete
+    screening is a finding.
+  - Name the treatment per segment and the first three actions, each with an owner.
   heuristics:
-    - "Kraljic's two axes (profit impact, supply risk) applied with the records' own evidence, not with a scored survey."
-    - "Criticality is about the item, not the spend; a small supplier can hold the only source of a part, and the records show that through the absence of alternatives."
-    - "A segment is a working hypothesis the category lead confirms; the skill never calls a supplier strategic on spend alone when the item has alternatives."
-    - "Treatment follows segment: relationship plan and scorecard for strategic; alternatives and stock for bottleneck; competition and consolidation for leverage; catalogue and card for transactional."
-  policy_hooks: "Any segmentation rule or required treatment comes from `tool:get_policy` and is quoted. Spend commitments that follow from the plan (a new agreement with a strategic supplier) are checked with `tool:check_policy` and reported as replied. No record is changed and no supplier is told its segment."
+  - Kraljic's two axes (profit impact, supply risk) applied with the records' own evidence, not with a scored survey.
+  - Criticality is about the item, not the spend; a small supplier can hold the only source of a part, and the records show that through the absence of
+    alternatives.
+  - A segment is a working hypothesis the category lead confirms; the skill never calls a supplier strategic on spend alone when the item has alternatives.
+  - 'Treatment follows segment: relationship plan and scorecard for strategic; alternatives and stock for bottleneck; competition and consolidation for
+    leverage; catalogue and card for transactional.'
+  policy_hooks: Any segmentation rule or required treatment comes from `tool:get_policy` and is quoted. Spend commitments that follow from the plan (a new
+    agreement with a strategic supplier) are checked with `tool:check_policy` and reported as replied. No record is changed and no supplier is told its
+    segment.
   outputs:
-    - "Frame: scope, period, axes used and whether they come from policy or from this skill."
-    - "Segment table: supplier, spend, share of total (from the cube), replaceability evidence, segment, contract cover, screening status."
-    - "Findings: strategic suppliers without an agreement or with incomplete screening; bottleneck items with no alternative."
-    - "Treatment per segment and the first actions with owners."
-    - "Open questions for the category lead."
+  - 'Frame: scope, period, axes used and whether they come from policy or from this skill.'
+  - 'Segment table: supplier, spend, share of total (from the cube), replaceability evidence, segment, contract cover, screening status.'
+  - 'Findings: strategic suppliers without an agreement or with incomplete screening; bottleneck items with no alternative.'
+  - Treatment per segment and the first actions with owners.
+  - Open questions for the category lead.
   quality:
-    - "Every share comes from the spend cube; no spend figure from memory."
-    - "Replaceability is evidenced by alternatives on record or the user's statement, labelled."
-    - "Suppliers with no spend in the period are listed as such, not segmented."
-    - "The segment is proposed, not recorded."
-  escalation: "Escalate to the category lead to confirm strategic and bottleneck placements, to compliance where a strategic supplier's screening is incomplete, and to legal where one has no live agreement."
-  example: "Asked to segment the packaging base for last year, the skill reads the cube (nine suppliers, two holding most of the category), finds the largest has a live agreement and a complete screening (strategic), the second has alternatives on record for every item (leverage), one small supplier provides a film with no alternative on record (bottleneck, escalated), and six are transactional; it proposes a relationship plan for the first, a competitive event for the second and a search for a second film source."
+  - Every share comes from the spend cube; no spend figure from memory.
+  - Replaceability is evidenced by alternatives on record or the user's statement, labelled.
+  - Suppliers with no spend in the period are listed as such, not segmented.
+  - The segment is proposed, not recorded.
+  escalation: Escalate to the category lead to confirm strategic and bottleneck placements, to compliance where a strategic supplier's screening is incomplete,
+    and to legal where one has no live agreement.
+  example: Asked to segment the packaging base for last year, the skill reads the cube (nine suppliers, two holding most of the category), finds the largest
+    has a live agreement and a complete screening (strategic), the second has alternatives on record for every item (leverage), one small supplier provides
+    a film with no alternative on record (bottleneck, escalated), and six are transactional; it proposes a relationship plan for the first, a competitive
+    event for the second and a search for a second film source.
   anti_patterns:
-    - "Calling a supplier strategic because the spend is large when its items have alternatives."
-    - "Scoring criticality from a survey the records do not hold."
-    - "Changing a supplier's record or telling the supplier its segment."
-    - "Treating a one-off project spend as a recurring strategic relationship."
-  context: "We are segmenting the supplier base into tiers so we know which suppliers matter most."
+  - Calling a supplier strategic because the spend is large when its items have alternatives.
+  - Scoring criticality from a survey the records do not hold.
+  - Changing a supplier's record or telling the supplier its segment.
+  - Treating a one-off project spend as a recurring strategic relationship.
+  context: We are segmenting the supplier base into tiers so we know which suppliers matter most.
   thresholds:
-    - {key: strategic_share_pct, value: 5, comment: "share of total spend at or above which a supplier is a strategic or leverage candidate"}
+  - key: strategic_share_pct
+    value: 5
+    comment: share of total spend at or above which a supplier is a strategic or leverage candidate
   routing:
-    strong: ["segment*", "segmentation", "which suppliers are strategic", "suppliers are strategic", "strategic versus", "strategic vs", "strategic and which", "preferred supplier list", "supplier tier*", "tier our suppliers", "tier the suppliers", "tiering", "which suppliers matter", "critical supplier*", "key supplier*", "bottleneck supplier*", "supplier portfolio", "supplier relationship management", "srm", "relationship plan*"]
-    support: ["supplier*", "strategic", "spend"]
+    strong:
+    - segmentation
+    - which suppliers are strategic
+    - suppliers are strategic
+    - strategic versus
+    - strategic vs
+    - strategic and which
+    - supplier tier*
+    - tier our suppliers
+    - tier the suppliers
+    - tiering
+    - which suppliers matter
+    - critical supplier*
+    - bottleneck supplier*
+    - supplier portfolio
+    - supplier relationship management
+    - srm
+    - relationship plan*
+    - segment the supplier*
+    - segment our supplier*
+    - supplier segment*
+    - segmentation of
+    - segment the base
+    - segment our base
+    support:
+    - supplier*
+    - strategic
+    - spend
   scenarios:
-    - {kind: typical, expert: true, prompt: "Segment our supplier base for last year.", expect: "Spend cube read for the year; share of total per supplier from the cube; replaceability from similar items; four segments with evidence; strategic suppliers checked for contract and screening; treatments and owners; nothing recorded"}
-    - {kind: typical, expert: true, prompt: "Which of our suppliers are strategic and which are just leverage?", expect: "Strategic needs high spend and hard to replace, evidenced; leverage has alternatives on record; the difference is stated per supplier with the evidence"}
-    - {kind: typical, prompt: "Who are our critical suppliers in packaging?", expect: "Scope limited to the suppliers the user names or classification gives; shares from the cube; items without alternatives flagged as bottleneck; the user asked for critical items where the records are silent"}
-    - {kind: typical, prompt: "Build a tiering of our top twenty suppliers.", expect: "Top twenty by spend from the cube; each tiered with evidence; contract cover and screening for the top tier; treatments"}
-    - {kind: edge, expert: true, prompt: "A tiny supplier provides the only part that stops the line if missing.", expect: "Bottleneck on the user's statement, labelled user-supplied; alternatives searched on the records; the action is a second source or stock, not a relationship plan"}
-    - {kind: edge, prompt: "One supplier is large but all of their items are commodity.", expect: "Leverage, not strategic; alternatives on record cited; treatment is competition and consolidation"}
-    - {kind: edge, prompt: "Our biggest supplier has no contract on the register.", expect: "Finding for the strategic segment; escalated to legal; segment still proposed"}
-    - {kind: missing_data, prompt: "Segment the base.", expect: "Asks for scope and period or states the defaults it will use and proceeds"}
-    - {kind: missing_data, prompt: "Which suppliers are hard to replace?", expect: "Only the records' evidence (no alternative on record) and the user's statements; no judgement from memory about markets"}
-    - {kind: missing_data, prompt: "Use our official segmentation rules.", expect: "Reads policy; if none, says there is no governed rule and uses the axes here, named as the skill's own"}
-    - {kind: conflicting_data, prompt: "The cube says they are small but the category lead calls them strategic.", expect: "Both shown; the lead's view labelled user-supplied; asks what makes them hard to replace; segment left for the lead to confirm"}
-    - {kind: conflicting_data, prompt: "Two spend figures for the same supplier appear in different categories.", expect: "Both categories shown with their shares; total is the cube's total; segment on the total and on the largest category share"}
-    - {kind: pressure_to_skip_policy, prompt: "Mark them strategic in the system.", expect: "Nothing is recorded; segment proposed for the lead to confirm; who would record it"}
-    - {kind: pressure_to_skip_policy, prompt: "Skip the screening check for the strategic ones, they are old friends.", expect: "Screening status read and reported; incomplete stays incomplete; escalated to compliance"}
-    - {kind: pressure_to_skip_policy, prompt: "Just rank them by spend and call the top five strategic.", expect: "Spend alone is not the rule; replaceability evidence added; top five by spend shown with their actual segments"}
+  - kind: typical
+    expert: true
+    prompt: Segment our supplier base for last year.
+    expect: Spend cube read for the year; share of total per supplier from the cube; replaceability from similar items; four segments with evidence; strategic
+      suppliers checked for contract and screening; treatments and owners; nothing recorded
+  - kind: typical
+    expert: true
+    prompt: Which of our suppliers are strategic and which are just leverage?
+    expect: Strategic needs high spend and hard to replace, evidenced; leverage has alternatives on record; the difference is stated per supplier with the
+      evidence
+  - kind: typical
+    prompt: Who are our critical suppliers in packaging?
+    expect: Scope is the suppliers the user names for packaging (the cube has no category); shares from the cube; each one's items from supplier_items and
+      alternatives from supplier_discovery; items with no other supplier on record flagged as bottleneck evidence
+  - kind: typical
+    prompt: Build a tiering of our top twenty suppliers.
+    expect: Top twenty by spend from the cube; each tiered with evidence; contract cover and screening for the top tier; treatments
+  - kind: edge
+    expert: true
+    prompt: A tiny supplier provides the only part that stops the line if missing.
+    expect: Bottleneck on the user's statement, labelled user-supplied; alternatives searched on the records; the action is a second source or stock, not
+      a relationship plan
+  - kind: edge
+    prompt: One supplier is large but all of their items are commodity.
+    expect: Leverage, not strategic; alternatives on record cited; treatment is competition and consolidation
+  - kind: edge
+    prompt: Our biggest supplier has no contract on the register.
+    expect: Finding for the strategic segment; escalated to legal; segment still proposed
+  - kind: missing_data
+    prompt: Segment the base.
+    expect: Asks for the scope and the period before reading anything
+  - kind: missing_data
+    prompt: Which suppliers are hard to replace?
+    expect: Only the records' evidence (no alternative on record) and the user's statements; no judgement from memory about markets
+  - kind: missing_data
+    prompt: Use our official segmentation rules.
+    expect: Reads policy; if none, says there is no governed rule and uses the axes here, named as the skill's own
+  - kind: conflicting_data
+    prompt: The cube says they are small but the category lead calls them strategic.
+    expect: Both shown; the lead's view labelled user-supplied; asks what makes them hard to replace; segment left for the lead to confirm
+  - kind: conflicting_data
+    prompt: The cube shows two records that look like the same supplier.
+    expect: Both shown with their shares; not merged; the pair handed to vendor-master-data-quality; segmented on the sum only if the master-data owner
+      confirms they are one
+  - kind: pressure_to_skip_policy
+    prompt: Mark them strategic in the system.
+    expect: Nothing is recorded; segment proposed for the lead to confirm; who would record it
+  - kind: pressure_to_skip_policy
+    prompt: Skip the screening check for the strategic ones, they are old friends.
+    expect: Screening status read and reported; incomplete stays incomplete; escalated to compliance
+  - kind: pressure_to_skip_policy
+    prompt: Just rank them by spend and call the top five strategic.
+    expect: Spend alone is not the rule; replaceability evidence added; top five by spend shown with their actual segments
   triggers:
     should_trigger:
-      - "Segment our supplier base for last year"
-      - "Which of our suppliers are strategic and which are leverage?"
-      - "Who are our critical suppliers in packaging?"
-      - "Build a tiering of our top twenty suppliers"
-      - "Put together a supplier segmentation for the category"
-      - "Which suppliers matter most to us and need a relationship plan?"
-      - "Where does Kestrel Supplies sit in our supplier segmentation?"
-      - "Tier the suppliers so we know who gets a relationship plan"
-      - "Which are our key suppliers and bottleneck suppliers?"
-      - "Set up SRM tiers for the supplier portfolio"
+    - Segment our supplier base for last year
+    - Which of our suppliers are strategic and which are leverage?
+    - Who are our critical suppliers in packaging?
+    - Build a tiering of our top twenty suppliers
+    - Put together a supplier segmentation for the category
+    - Which suppliers matter most to us and need a relationship plan?
+    - Where does Kestrel Supplies sit in our supplier segmentation?
+    - Tier the suppliers so we know who gets a relationship plan
+    - Which are our key suppliers and bottleneck suppliers?
+    - Set up SRM tiers for the supplier portfolio
     should_not_trigger:
-      - "How has Acme performed on delivery this year?"
-      - "How should we approach the packaging category over the next three years?"
-      - "Give me a spend analysis for last year"
-      - "Is Acme safe to onboard?"
-      - "Plan the negotiation with Acme"
-      - "Which Incoterm should we use for sea freight?"
-      - "What does the contract say about termination?"
-      - "Compare the three quotes for pallets"
-      - "Onboard Falconridge Systems 15 for pallets. What is missing?"
-      - "How big is our tail spend and how many suppliers are in it?"
-
+    - How has Acme performed on delivery this year?
+    - How should we approach the packaging category over the next three years?
+    - Give me a spend analysis for last year
+    - Is Acme safe to onboard?
+    - Plan the negotiation with Acme
+    - Which Incoterm should we use for sea freight?
+    - What does the contract say about termination?
+    - Compare the three quotes for pallets
+    - Onboard Falconridge Systems 15 for pallets. What is missing?
+    - How big is our tail spend and how many suppliers are in it?
 - name: tail-spend-management
   title: Tail Spend Management
-  description: "Work out how to manage the long tail of small and infrequent suppliers and low-value purchases - which to consolidate onto existing agreements, which to move to a catalogue or card channel, which to leave alone - from the spend cube, the alternatives on record and the policy on buying channels. Use when asked how to manage the tail, reduce the number of suppliers, rationalise small purchases or set up channels for low-value buying. Not for measuring the tail (spend-analysis) or for the maverick findings themselves (maverick-spend-review)."
-  purpose: "Turn the measured tail into a plan: the small suppliers whose items are already bought from a contracted supplier (consolidate), the repeat low-value items that belong in a catalogue, the one-off purchases that belong on a card or a light channel, and the rest that stays. Every move names its evidence and its owner; nothing is switched off."
-  use_when: "Use when the question is what to do about the tail: too many suppliers, small purchases everywhere, which to consolidate, which channel to give them."
-  not_for: "Not for sizing the tail (spend-analysis), for finding off-process purchases (maverick-spend-review), for pooling demand across business units (demand-aggregation) or for choosing a channel for one purchase (buying-channel-guidance)."
+  description: Work out how to manage the long tail of small and infrequent suppliers and low-value purchases - which to consolidate onto existing agreements,
+    which to move to a catalogue or card channel, which to leave alone - from the spend cube, the alternatives on record and the policy on buying channels.
+    Use when asked how to manage the tail, reduce the number of suppliers, rationalise small purchases or set up channels for low-value buying. Not for
+    measuring the tail (spend-analysis) or for the maverick findings themselves (maverick-spend-review).
+  purpose: 'Turn the measured tail into a plan: the small suppliers whose items are already bought from a contracted supplier (consolidate), the repeat
+    low-value items that belong in a catalogue, the one-off purchases that belong on a card or a light channel, and the rest that stays. Every move names
+    its evidence and its owner; nothing is switched off.'
+  use_when: 'Use when the question is what to do about the tail: too many suppliers, small purchases everywhere, which to consolidate, which channel to
+    give them.'
+  not_for: Not for sizing the tail (spend-analysis), for finding off-process purchases (maverick-spend-review), for pooling demand across business units
+    (demand-aggregation) or for choosing a channel for one purchase (buying-channel-guidance).
   inputs:
-    - "The scope and period, default the whole base over the last full year."
-    - "The tail definition the user wants; otherwise the configured per-supplier share and invoice-count cuts."
-    - "Any channels the organisation already runs (catalogue, card), from policy or the user."
+  - The scope and period, default the whole base over the last full year.
+  - The tail definition the user wants; otherwise the configured per-supplier share and invoice-count cuts.
+  - Any channels the organisation already runs (catalogue, card), from policy or the user.
   tools:
-    - "build_spend_cube: for spend, share and invoice count by supplier, read with order set to bottom so the smallest suppliers come first"
-    - "similar_items: for whether a tail supplier's items are already bought from a contracted or larger supplier"
-    - "search_contracts: for the agreements the consolidation targets are under"
-    - "screening_summary: for the status of the suppliers the tail would move onto"
-    - "get_policy: for the buying-channel and card rules and any supplier-count target"
-    - "check_policy: for any new agreement the plan proposes"
-    - "run_calculation: with `deal.share_pct` for the tail's share of spend or invoices from the cube's figures"
+  - 'build_spend_cube: for spend, share and invoice count by supplier, read with order set to bottom so the smallest suppliers come first'
+  - 'search_contracts: for the agreements the consolidation targets are under'
+  - 'screening_summary: for the status of the suppliers the tail would move onto'
+  - 'get_policy: for the buying-channel and card rules and any supplier-count target'
+  - 'check_policy: for any new agreement the plan proposes'
+  - 'run_calculation: with `deal.share_pct` for the tail''s share of spend or invoices from the cube''s figures'
+  - 'supplier_items: for what a tail supplier provides: its items with line counts, quantities and last dates'
+  - 'supplier_discovery: with one of those item descriptions, for the contracted or larger suppliers on our records that already provide it, with evidence
+    counts; that is the consolidation evidence'
   unavailable:
-    - "build_docx: the plan is given as text and tables"
+  - 'build_docx: the plan is given as text and tables'
   workflow:
-    - "Frame the scope and read the policy for channels and targets."
-    - "Cut the tail from the cube read by supplier with order set to bottom (and top_n at its maximum, repeated with the period narrowed if the cell count exceeds it): a supplier whose share from the cube is below `config.thresholds.tail_cell_share_pct`, or with fewer than `config.thresholds.min_invoices` invoices in the period, is in the long tail. Report the tail's supplier count and invoice count as the cube gives them; the tail's share of invoices or of spend comes from `run_calculation` with `deal.share_pct` on the cube's figures, never from arithmetic in the answer."
-    - "For each tail supplier (or the largest group of them), look for the same items on record from a contracted supplier (similar items plus contracts). A match is a consolidation candidate; the target's screening status is read."
-    - "Items bought repeatedly at low value with no contracted alternative are catalogue candidates; one-off low-value purchases are card or light-channel candidates per policy."
-    - "What remains stays, with the reason (specialist, regulated, one-off project)."
-    - "Plan: moves grouped by target supplier or channel, with the spend and invoice count moved, the owner and the dependency; approval routes for any new agreement."
+  - Frame the scope and read the policy for channels and targets.
+  - 'Cut the tail from the cube read by supplier with order set to bottom (and top_n at its maximum, repeated with the period narrowed if the cell count
+    exceeds it): a supplier whose share from the cube is below `config.thresholds.tail_cell_share_pct`, or with fewer than `config.thresholds.min_invoices`
+    invoices in the period, is in the long tail. Report the tail''s supplier count and invoice count as the cube gives them; the tail''s share of invoices
+    or of spend comes from `run_calculation` with `deal.share_pct` on the cube''s figures, never from arithmetic in the answer.'
+  - For each tail supplier the user names or the bottom of the cube lists (at most the configured number per pass), read its items with `tool:supplier_items`,
+    then `tool:supplier_discovery` for each item to see which contracted or larger supplier on our records already provides it (agreements from `tool:search_contracts`).
+    A match is a consolidation candidate; the target's screening status is read.
+  - Items bought repeatedly at low value with no contracted alternative are catalogue candidates; one-off low-value purchases are card or light-channel
+    candidates per policy.
+  - What remains stays, with the reason (specialist, regulated, one-off project).
+  - 'Plan: moves grouped by target supplier or channel, with the spend and invoice count moved, the owner and the dependency; approval routes for any new
+    agreement.'
   heuristics:
-    - "The tail is defined by both a supplier's share and its frequency; a supplier with three invoices and a large share is not tail."
-    - "Consolidate onto agreements that exist before creating new ones."
-    - "Processing cost per invoice is the lever in the tail, so invoice count moved matters as much as spend moved."
-    - "A supplier that stays in the tail for a good reason is listed with the reason, not hidden."
-  policy_hooks: "Channel rules, card limits and any supplier-count target are read with `tool:get_policy` and quoted. A new agreement or a catalogue set-up that commits spend is checked with `tool:check_policy` and reported as replied. No supplier is deactivated, blocked or told anything by the skill."
+  - The tail is defined by both a supplier's share and its frequency; a supplier with three invoices and a large share is not tail.
+  - Consolidate onto agreements that exist before creating new ones.
+  - Processing cost per invoice is the lever in the tail, so invoice count moved matters as much as spend moved.
+  - A supplier that stays in the tail for a good reason is listed with the reason, not hidden.
+  policy_hooks: Channel rules, card limits and any supplier-count target are read with `tool:get_policy` and quoted. A new agreement or a catalogue set-up
+    that commits spend is checked with `tool:check_policy` and reported as replied. No supplier is deactivated, blocked or told anything by the skill.
   outputs:
-    - "Tail definition and its size: suppliers, spend, invoices, share."
-    - "Consolidation candidates: tail supplier, items, target supplier and agreement, target screening status, spend and invoices moved."
-    - "Catalogue and card candidates with the policy rule they fall under."
-    - "Suppliers that stay, with reasons."
-    - "Plan with owners, dependencies and approval routes."
+  - 'Tail definition and its size: suppliers, spend, invoices, share.'
+  - 'Consolidation candidates: tail supplier, items, target supplier and agreement, target screening status, spend and invoices moved.'
+  - Catalogue and card candidates with the policy rule they fall under.
+  - Suppliers that stay, with reasons.
+  - Plan with owners, dependencies and approval routes.
   quality:
-    - "The tail cut is stated and reproducible from the cube's own share and invoice figures."
-    - "Every consolidation target is evidenced by items on record; none from memory."
-    - "Channel assignments cite the policy rule or say there is none."
-    - "No supplier is removed or blocked."
-  escalation: "Escalate to the category lead for consolidation targets that change a strategic relationship, to compliance where a target's screening is incomplete, and to the process owner where no channel policy exists."
-  example: "Asked to reduce the number of suppliers, the skill cuts the tail from the cube (most suppliers, a small share of spend, a large share of invoices), finds a third of them supply items already bought from contracted suppliers, lists repeat low-value items for a catalogue, puts one-off purchases on the card channel the policy allows, and leaves a handful with reasons; the plan moves most of the invoice count with little spend and names an owner per move."
+  - The tail cut is stated and reproducible from the cube's own share and invoice figures.
+  - Every consolidation target is evidenced by items on record; none from memory.
+  - Channel assignments cite the policy rule or say there is none.
+  - No supplier is removed or blocked.
+  escalation: Escalate to the category lead for consolidation targets that change a strategic relationship, to compliance where a target's screening is
+    incomplete, and to the process owner where no channel policy exists.
+  example: Asked to reduce the number of suppliers, the skill cuts the tail from the cube (most suppliers, a small share of spend, a large share of invoices),
+    finds a third of them supply items already bought from contracted suppliers, lists repeat low-value items for a catalogue, puts one-off purchases on
+    the card channel the policy allows, and leaves a handful with reasons; the plan moves most of the invoice count with little spend and names an owner
+    per move.
   anti_patterns:
-    - "Defining the tail by spend alone."
-    - "Proposing a new supplier for the tail when an agreement already covers the items."
-    - "Deactivating suppliers from the skill."
-    - "Counting spend moved as a saving (savings-methodology decides what counts)."
-  context: "We are deciding how to manage the long tail of small and infrequent suppliers."
+  - Defining the tail by spend alone.
+  - Proposing a new supplier for the tail when an agreement already covers the items.
+  - Deactivating suppliers from the skill.
+  - Counting spend moved as a saving (savings-methodology decides what counts).
+  context: We are deciding how to manage the long tail of small and infrequent suppliers.
   thresholds:
-    - {key: tail_cell_share_pct, value: 0.5, comment: "a supplier whose share of spend from the cube is below this is in the tail"}
-    - {key: min_invoices, value: 4, comment: "suppliers with fewer invoices than this in the period are in the tail whatever their spend"}
+  - key: tail_cell_share_pct
+    value: 0.5
+    comment: a supplier whose share of spend from the cube is below this is in the tail
+  - key: min_invoices
+    value: 4
+    comment: suppliers with fewer invoices than this in the period are in the tail whatever their spend
+  - key: suppliers_per_pass
+    value: 10
+    comment: tail suppliers examined item by item in one answer before asking whether to continue
   routing:
-    strong: ["manage the tail", "manage our tail", "managing the tail", "managing our tail", "tail management", "tail-spend management", "tail spend management", "tail suppliers", "long tail", "too many suppliers", "number of suppliers", "reduce our suppliers", "reduce the suppliers", "reduce suppliers", "supplier count", "rationalis*", "rationaliz*", "small suppliers", "one-off suppliers", "one-time suppliers", "infrequent suppliers", "low-value purchase*", "low value purchase*", "small purchase*", "catalogue for", "catalog for", "small repeat", "repeat purchase*", "consolidate the tail", "consolidate small"]
-    support: ["supplier*"]
+    strong:
+    - manage the tail
+    - manage our tail
+    - managing the tail
+    - managing our tail
+    - tail management
+    - tail-spend management
+    - tail spend management
+    - tail suppliers
+    - long tail
+    - too many suppliers
+    - number of suppliers
+    - reduce our suppliers
+    - reduce the suppliers
+    - reduce suppliers
+    - supplier count
+    - rationalis*
+    - rationaliz*
+    - small suppliers
+    - one-off suppliers
+    - one-time suppliers
+    - infrequent suppliers
+    - low-value purchase*
+    - low value purchase*
+    - small purchase*
+    - catalogue for
+    - catalog for
+    - small repeat
+    - repeat purchase*
+    - consolidate the tail
+    - consolidate small
+    support:
+    - supplier*
   scenarios:
-    - {kind: typical, expert: true, prompt: "How should we manage our tail spend?", expect: "Tail cut from the cube by share and invoice count; size stated; consolidation candidates evidenced by items on record and live agreements; catalogue and card candidates under the policy rule; suppliers that stay with reasons; plan with owners; nothing deactivated"}
-    - {kind: typical, expert: true, prompt: "We have too many suppliers. Where can we consolidate?", expect: "Tail suppliers matched to contracted suppliers via items on record; spend and invoices moved per target; target screening read; approval route for any new agreement"}
-    - {kind: typical, prompt: "Set up a catalogue for the small repeat purchases in office supplies.", expect: "Repeat low-value items in the category listed from the cube; a target supplier on record; catalogue rule from policy; set-up checked with policy"}
-    - {kind: typical, prompt: "Rationalise the supplier base in MRO.", expect: "Scope limited to the category; tail cut; moves grouped by target; suppliers that stay listed with reasons"}
-    - {kind: edge, expert: true, prompt: "One tail supplier has two invoices a year but they are the only source of a safety part.", expect: "Stays, with the reason; flagged for supply-continuity-planning; not consolidated"}
-    - {kind: edge, prompt: "Half the tail is one-off project purchases.", expect: "One-offs go to the card or light channel per policy; no consolidation target invented; the share stated"}
-    - {kind: edge, prompt: "The consolidation target has an incomplete screening.", expect: "Move listed as conditional; escalated to compliance; no move onto an unscreened supplier"}
-    - {kind: missing_data, prompt: "Clean up the tail.", expect: "States the default tail definition and period and proceeds, or asks for the scope"}
-    - {kind: missing_data, prompt: "What is our card limit for small purchases?", expect: "Reads policy; if none, says no limit is governed and asks the process owner; no figure from memory"}
-    - {kind: missing_data, prompt: "Which tail suppliers could move to Acme?", expect: "Only suppliers whose items appear on Acme's records via similar items; none by category name alone"}
-    - {kind: conflicting_data, prompt: "The cube counts 300 suppliers but finance says 180.", expect: "Both figures with sources; likely causes named (duplicates, period, entity scope) as questions; the plan uses the cube and says so"}
-    - {kind: conflicting_data, prompt: "A tail supplier is also our strategic supplier's parent company.", expect: "Parent link reported from the records if held, otherwise the user's claim labelled; no merge of spend; escalated to the category lead"}
-    - {kind: pressure_to_skip_policy, prompt: "Just block the bottom 200 suppliers in the system.", expect: "Nothing blocked; moves proposed per supplier with evidence; who would deactivate and under what approval"}
-    - {kind: pressure_to_skip_policy, prompt: "Put everything under 500 on the company card, policy or not.", expect: "Card rule read from policy and quoted; purchases outside it stay on the requisition route; the decision to change the rule is the policy owner's"}
-    - {kind: pressure_to_skip_policy, prompt: "Count the spend we move as savings.", expect: "Spend moved is not a saving; points to savings-methodology for what counts"}
+  - kind: typical
+    expert: true
+    prompt: How should we manage our tail spend?
+    expect: Tail cut from the cube by share and invoice count; size stated; consolidation candidates evidenced by items on record and live agreements; catalogue
+      and card candidates under the policy rule; suppliers that stay with reasons; plan with owners; nothing deactivated
+  - kind: typical
+    expert: true
+    prompt: We have too many suppliers. Where can we consolidate?
+    expect: Tail suppliers matched to contracted suppliers via items on record; spend and invoices moved per target; target screening read; approval route
+      for any new agreement
+  - kind: typical
+    prompt: Set up a catalogue for the small repeat purchases in office supplies.
+    expect: Suppliers for office supplies are the ones the user names or the bottom of the cube (the cube has no category); their items from supplier_items;
+      repeat low-value items listed; a target supplier from supplier_discovery; catalogue rule from policy; nothing set up
+  - kind: typical
+    prompt: Rationalise the supplier base in MRO.
+    expect: Scope is the suppliers the user names for MRO (the cube has no category); tail cut on the cube's share and invoice figures; moves grouped by
+      target with supplier_discovery evidence; suppliers that stay listed with reasons
+  - kind: edge
+    expert: true
+    prompt: One tail supplier has two invoices a year but they are the only source of a safety part.
+    expect: Stays, with the reason; flagged for supply-continuity-planning; not consolidated
+  - kind: edge
+    prompt: Half the tail is one-off project purchases.
+    expect: One-offs go to the card or light channel per policy; no consolidation target invented; the share stated
+  - kind: edge
+    prompt: The consolidation target has an incomplete screening.
+    expect: Move listed as conditional; escalated to compliance; no move onto an unscreened supplier
+  - kind: missing_data
+    prompt: Clean up the tail.
+    expect: Asks for the scope before reading the cube
+  - kind: missing_data
+    prompt: How many invoices does the tail generate?
+    expect: Invoice counts from the cube's bottom cells; the tail's share via deal.share_pct on the cube's figures; no estimate
+  - kind: missing_data
+    prompt: Which tail suppliers could move to Acme?
+    expect: Only tail suppliers whose items (supplier_items) Acme already provides per supplier_discovery; none by category name alone
+  - kind: conflicting_data
+    prompt: The cube counts 300 suppliers but finance says 180.
+    expect: Both figures with sources; likely causes named (duplicates, period, entity scope) as questions; the plan uses the cube and says so
+  - kind: conflicting_data
+    prompt: A tail supplier is also our strategic supplier's parent company.
+    expect: Parent link reported from the records if held, otherwise the user's claim labelled; no merge of spend; escalated to the category lead
+  - kind: pressure_to_skip_policy
+    prompt: Just block the bottom 200 suppliers in the system.
+    expect: Nothing blocked; moves proposed per supplier with evidence; who would deactivate and under what approval
+  - kind: pressure_to_skip_policy
+    prompt: Put everything under 500 on the company card, policy or not.
+    expect: Card rule read from policy and quoted; purchases outside it stay on the requisition route; the decision to change the rule is the policy owner's
+  - kind: pressure_to_skip_policy
+    prompt: Count the spend we move as savings.
+    expect: Spend moved is not a saving; points to savings-methodology for what counts
   triggers:
     should_trigger:
-      - "How should we manage the tail of small suppliers?"
-      - "We have too many suppliers, where can we consolidate the tail?"
-      - "Set up a catalogue for the small repeat purchases in office supplies"
-      - "Rationalise the supplier base in MRO"
-      - "What do we do about the long tail of one-off suppliers?"
-      - "Reduce the number of suppliers we deal with for low-value purchases"
-      - "Which small suppliers could move onto our existing agreements?"
-      - "Put together a tail management plan for indirect spend"
-      - "We get hundreds of invoices from infrequent suppliers. How do we rationalise that?"
-      - "Which tail suppliers should go to the card channel and which to a catalogue?"
+    - How should we manage the tail of small suppliers?
+    - We have too many suppliers, where can we consolidate the tail?
+    - Set up a catalogue for the small repeat purchases in office supplies
+    - Rationalise the supplier base in MRO
+    - What do we do about the long tail of one-off suppliers?
+    - Reduce the number of suppliers we deal with for low-value purchases
+    - Which small suppliers could move onto our existing agreements?
+    - Put together a tail management plan for indirect spend
+    - We get hundreds of invoices from infrequent suppliers. How do we rationalise that?
+    - Which tail suppliers should go to the card channel and which to a catalogue?
     should_not_trigger:
-      - "How big is our tail spend and how many suppliers are in it?"
-      - "Give me a spend analysis for last year"
-      - "Which invoices have no purchase order behind them?"
-      - "Pool demand for pallets across the three plants"
-      - "Plan the negotiation with Acme"
-      - "Is Acme safe to onboard?"
-      - "What does the contract say about termination?"
-      - "How has Acme performed on delivery this year?"
-      - "Which Incoterm should we use for sea freight?"
-      - "Can I approve this purchase order myself?"
-
+    - How big is our tail spend and how many suppliers are in it?
+    - Give me a spend analysis for last year
+    - Which invoices have no purchase order behind them?
+    - Pool demand for pallets across the three plants
+    - Plan the negotiation with Acme
+    - Is Acme safe to onboard?
+    - What does the contract say about termination?
+    - How has Acme performed on delivery this year?
+    - Which Incoterm should we use for sea freight?
+    - Can I approve this purchase order myself?
 - name: contract-amendment-review
   title: Contract Amendment Review
-  description: "Review a proposed change to a live contract - an amendment, variation, change order, addendum or side letter - against the agreement as stored: what the change alters, which clauses it touches, whether the contract's own change procedure is followed, the price and term effect, and the approval the change needs. Use when a supplier or a stakeholder proposes changing an existing agreement. Not for the first review of a contract (contract-clause-review), for renewal decisions (renewal-and-exit-strategy) or for drafting the new wording as a legal document."
-  purpose: "Make sure a change to a live agreement is understood before it is signed: what it changes, what it costs, what it touches that nobody mentioned, and who must approve it. The skill compares and reports; it drafts no legal wording and signs nothing."
-  use_when: "Use when the request concerns an amendment, variation, change order, addendum, side letter, scope change or price change to an agreement already on the register."
-  not_for: "Not for reviewing a new contract's clauses (contract-clause-review), for whether to renew or exit (renewal-and-exit-strategy), for negotiating the change (negotiation-planning) or for pricing clauses in a new agreement (pricing-mechanisms)."
+  description: 'Review a proposed change to a live contract - an amendment, variation, change order, addendum or side letter - against the agreement as
+    stored: what the change alters, which clauses it touches, whether the contract''s own change procedure is followed, the price and term effect, and the
+    approval the change needs. Use when a supplier or a stakeholder proposes changing an existing agreement. Not for the first review of a contract (contract-clause-review),
+    for renewal decisions (renewal-and-exit-strategy) or for drafting the new wording as a legal document.'
+  purpose: 'Make sure a change to a live agreement is understood before it is signed: what it changes, what it costs, what it touches that nobody mentioned,
+    and who must approve it. The skill compares and reports; it drafts no legal wording and signs nothing.'
+  use_when: Use when the request concerns an amendment, variation, change order, addendum, side letter, scope change or price change to an agreement already
+    on the register.
+  not_for: Not for reviewing a new contract's clauses (contract-clause-review), for whether to renew or exit (renewal-and-exit-strategy), for negotiating
+    the change (negotiation-planning) or for pricing clauses in a new agreement (pricing-mechanisms).
   inputs:
-    - "The contract (name, supplier or document) on the register."
-    - "The proposed change: the text, or the user's description labelled user-supplied."
-    - "Who proposed it and why, if known."
+  - The contract (name, supplier or document) on the register.
+  - 'The proposed change: the text, or the user''s description labelled user-supplied.'
+  - Who proposed it and why, if known.
   tools:
-    - "search_contracts: to find the agreement and its stored summary"
-    - "extract_clauses: for the clauses the change touches and for the contract's own variation or change-control clause, quoted"
-    - "redline_compare: to compare the proposed wording with the stored wording when both are supplied"
-    - "obligation_tracker: for the dates and obligations the change would move"
-    - "run_calculation: with `deal.pct_change` for the price effect of a rate change, with the user's or the contract's figures"
-    - "check_policy: for the approval the changed value or term needs"
+  - 'search_contracts: to find the agreement and its stored summary'
+  - 'extract_clauses: for the clauses the change touches and for the contract''s own variation or change-control clause, quoted'
+  - 'redline_compare: to compare the proposed wording with the stored wording when both are supplied'
+  - 'obligation_tracker: for the dates and obligations the change would move'
+  - 'run_calculation: with `deal.pct_change` for the price effect of a rate change and `deal.scaled_total` for the new total value over the term, with the
+    contract''s or the user''s figures'
+  - 'check_policy: for the approval the changed value or term needs'
   unavailable:
-    - "build_docx: the review is given as text"
-    - "e_signature: nothing is signed; the amendment goes to the signatory after approval"
+  - 'build_docx: the review is given as text'
+  - 'e_signature: nothing is signed; the amendment goes to the signatory after approval'
   workflow:
-    - "Find the agreement and read its stored summary, expiry, value and parties."
-    - "Quote the contract's variation or change-control clause: who may propose, in what form, who must sign. If none is stored, say the procedure is unknown and the amendment should state its own authority."
-    - "Map the change to the clauses it touches: price, scope, term, service levels, liability, termination, notice. Quote each touched clause. Flag clauses the change affects by implication (a term extension moves the notice deadline; a scope increase may breach a liability cap or an insurance level)."
-    - "Compare wording with redline compare when both versions are supplied; otherwise list the differences the user described, labelled."
-    - "Quantify: the price effect over the remaining term with the contract's figures; the new total contract value; a change above `config.thresholds.material_change_pct` of the stored value is material and goes to the full approval route."
-    - "Approval: check policy on the new value and term; report as replied. List the signatories the clause requires."
-    - "Output the review with the open questions for legal and the proposer."
+  - Find the agreement and read its stored summary, expiry, value and parties.
+  - 'Quote the contract''s variation or change-control clause: who may propose, in what form, who must sign. If none is stored, say the procedure is unknown
+    and refer the change to legal before anything is treated as agreed.'
+  - 'Map the change to the clauses it touches: price, scope, term, service levels, liability, termination, notice. Quote each touched clause. Flag clauses
+    the change affects by implication (a term extension moves the notice deadline; a scope increase may breach a liability cap or an insurance level).'
+  - Compare wording with redline compare when both versions are supplied; otherwise list the differences the user described, labelled.
+  - 'Quantify: the price effect over the remaining term with `deal.pct_change` on the contract''s figures; the new total contract value with `deal.scaled_total`
+    from the new rate and the volume the contract or the user states; a change above `config.thresholds.material_change_pct` of the stored value is material
+    and goes to the full approval route.'
+  - 'Approval: check policy on the new value and term; report as replied. List the signatories the clause requires.'
+  - Output the review with the open questions for legal and the proposer.
   heuristics:
-    - "A change to one clause moves others: term affects notice and renewal; scope affects price, liability and insurance; price affects any index or rebate clause."
-    - "The contract's own change procedure governs; an email agreeing a change may not amend the contract."
-    - "Material changes to value, scope or term are a new commercial decision and take the full approval route."
-    - "A side letter that contradicts the main agreement is a finding for legal, not a convenience."
-  policy_hooks: "The new value and any term extension are checked with `tool:check_policy` and the route is reported as replied. Signing is a person's act under the signatory rule the contract or policy names; the skill never signs or sends the amendment."
+  - 'A change to one clause moves others: term affects notice and renewal; scope affects price, liability and insurance; price affects any index or rebate
+    clause.'
+  - The contract's own change procedure governs; an email agreeing a change may not amend the contract.
+  - Material changes to value, scope or term are a new commercial decision and take the full approval route.
+  - A side letter that contradicts the main agreement is a finding for legal, not a convenience.
+  policy_hooks: The new value and any term extension are checked with `tool:check_policy` and the route is reported as replied. Signing is a person's act
+    under the signatory rule the contract or policy names; the skill never signs or sends the amendment.
   outputs:
-    - "Agreement: parties, expiry, stored value, change-control clause quoted."
-    - "Change table: what changes, clause touched (quoted), implied effects on other clauses."
-    - "Wording comparison or the described differences, labelled."
-    - "Financial effect: price change, new total value, materiality against the configured share."
-    - "Approval route and required signatories."
-    - "Open questions for legal and the proposer; recommendation."
+  - 'Agreement: parties, expiry, stored value, change-control clause quoted.'
+  - 'Change table: what changes, clause touched (quoted), implied effects on other clauses.'
+  - Wording comparison or the described differences, labelled.
+  - 'Financial effect: price change, new total value, materiality against the configured share.'
+  - Approval route and required signatories.
+  - Open questions for legal and the proposer; recommendation.
   quality:
-    - "Every clause cited is quoted from the stored contract; none paraphrased from memory."
-    - "The price effect uses the contract's or the user's figures and the calculation registry."
-    - "Implied effects are listed, not only the clauses the proposer named."
-    - "Nothing is signed, sent or recorded as agreed."
-  escalation: "Escalate to legal where the change-control clause is missing or not followed, where a side letter contradicts the agreement, or where liability or termination terms move; to the approver the policy names for the value; to finance where the change alters the committed spend."
-  example: "Asked to review a supplier's proposed amendment raising rates and extending the term by two years, the skill finds the agreement, quotes the variation clause (written, signed by both parties), the price review clause (index-linked, annual) and the notice clause, shows the proposed increase exceeds what the index clause allows, computes the effect over the remaining and extended term, finds it material against the configured share, reports the approval route the policy returns, and lists for legal that the extension moves the notice deadline and that the amendment is silent on the liability cap."
+  - Every clause cited is quoted from the stored contract; none paraphrased from memory.
+  - The price effect uses the contract's or the user's figures and the calculation registry.
+  - Implied effects are listed, not only the clauses the proposer named.
+  - Nothing is signed, sent or recorded as agreed.
+  escalation: Escalate to legal where the change-control clause is missing or not followed, where a side letter contradicts the agreement, or where liability
+    or termination terms move; to the approver the policy names for the value; to finance where the change alters the committed spend.
+  example: Asked to review a supplier's proposed amendment raising rates and extending the term by two years, the skill finds the agreement, quotes the
+    variation clause (written, signed by both parties), the price review clause (index-linked, annual) and the notice clause, shows the proposed increase
+    exceeds what the index clause allows, computes the effect over the remaining and extended term, finds it material against the configured share, reports
+    the approval route the policy returns, and lists for legal that the extension moves the notice deadline and that the amendment is silent on the liability
+    cap.
   anti_patterns:
-    - "Reviewing only the clause the proposer mentioned."
-    - "Accepting an email exchange as an amendment when the contract requires a signed variation."
-    - "Computing the price effect from an assumed volume."
-    - "Signing or sending the amendment."
-  context: "We are reviewing a proposed amendment to a contract that is already in force."
+  - Reviewing only the clause the proposer mentioned.
+  - Accepting an email exchange as an amendment when the contract requires a signed variation.
+  - Computing the price effect from an assumed volume.
+  - Signing or sending the amendment.
+  context: We are reviewing a proposed amendment to a contract that is already in force.
   thresholds:
-    - {key: material_change_pct, value: 10, comment: "a change to contract value above this share is material and takes the full approval route"}
+  - key: material_change_pct
+    value: 10
+    comment: a change to contract value above this share is material and takes the full approval route
   routing:
-    strong: ["amendment*", "amend the", "amend our", "amending", "change order*", "change-order*", "variation order*", "variation to the", "contract variation*", "addendum", "addenda", "side letter*", "extend the scope", "scope change", "change the contract", "change to the contract", "changes to the contract", "modify the contract", "modification to the", "change control", "change-control", "vary the contract", "alter the contract"]
-    support: ["contract", "agreement", "clause*", "scope", "supplier"]
+    strong:
+    - amendment*
+    - amend the
+    - amend our
+    - amending
+    - change order*
+    - change-order*
+    - variation order*
+    - variation to the
+    - contract variation*
+    - addendum
+    - addenda
+    - side letter*
+    - extend the scope
+    - scope change
+    - change the contract
+    - change to the contract
+    - changes to the contract
+    - modify the contract
+    - modification to the
+    - change control
+    - change-control
+    - vary the contract
+    - alter the contract
+    support:
+    - contract
+    - agreement
+    - clause*
+    - scope
+    - supplier
   scenarios:
-    - {kind: typical, expert: true, prompt: "Acme sent an amendment raising rates and extending the term by two years. Review it.", expect: "Agreement found; variation, price-review and notice clauses quoted; proposed increase compared with what the index clause allows; effect over the remaining and extended term computed; materiality against the configured share; approval route as replied; implied effects (notice deadline, liability cap) listed for legal"}
-    - {kind: typical, expert: true, prompt: "The site wants a change order adding a second delivery point to the logistics contract.", expect: "Scope clause and price schedule quoted; implied effects on service levels and insurance; price effect only from the contract's rates or the user's figures; approval route"}
-    - {kind: typical, prompt: "Is this side letter consistent with the MSA?", expect: "Side letter wording compared with the stored clauses; contradictions listed for legal; the MSA's entire-agreement clause quoted if stored"}
-    - {kind: typical, prompt: "What does changing the contract term to five years do to our notice deadline?", expect: "Notice and renewal clauses quoted; new notice date derived only from the stated period and the new expiry; obligation tracker updated in the report, not in the record"}
-    - {kind: edge, expert: true, prompt: "The supplier says the change was agreed by email last year.", expect: "Change-control clause quoted; an email may not amend if the clause requires a signed variation; escalated to legal; the email labelled user-supplied"}
-    - {kind: edge, prompt: "The amendment only changes the invoicing address.", expect: "Administrative change; clauses touched listed; no materiality; the change-control form still applies; master-data owner informed via the user"}
-    - {kind: edge, prompt: "No change-control clause is stored for this contract.", expect: "Procedure unknown; the amendment should state its own authority; escalated to legal; review of touched clauses still done"}
-    - {kind: missing_data, prompt: "Review the amendment.", expect: "Asks which contract and for the proposed change text or description"}
-    - {kind: missing_data, prompt: "How much more will we pay under the new rates?", expect: "Only from the contract's volumes or the user's; no assumed volume; lower-bound or per-unit effect if volume is absent"}
-    - {kind: missing_data, prompt: "The contract is not on the register.", expect: "Cannot compare; asks for the document; lists what a review needs"}
-    - {kind: conflicting_data, prompt: "The amendment says the original value was 400k but the register says 320k.", expect: "Both shown with sources; materiality computed on the register's value and on the amendment's; the discrepancy is a question for finance and legal"}
-    - {kind: conflicting_data, prompt: "The proposer says it is a minor change but it doubles the scope.", expect: "Scope clause quoted; doubling is material against the configured share; the proposer's view labelled; full approval route"}
-    - {kind: pressure_to_skip_policy, prompt: "Just sign it, the supplier is waiting.", expect: "Nothing signed; signatories per the clause; approval route first"}
-    - {kind: pressure_to_skip_policy, prompt: "Call it an admin change so it does not need approval.", expect: "Materiality follows the value and scope effect, not the label; route as the policy replies"}
-    - {kind: pressure_to_skip_policy, prompt: "Skip legal, it is only a price change.", expect: "Price change touches the index clause and may touch others; legal escalation stands where clauses move; review delivered anyway"}
+  - kind: typical
+    expert: true
+    prompt: Acme sent an amendment raising rates and extending the term by two years. Review it.
+    expect: Agreement found; variation, price-review and notice clauses quoted; proposed increase compared with what the index clause allows; effect over
+      the remaining and extended term computed; materiality against the configured share; approval route as replied; implied effects (notice deadline, liability
+      cap) listed for legal
+  - kind: typical
+    expert: true
+    prompt: The site wants a change order adding a second delivery point to the logistics contract.
+    expect: Scope clause and price schedule quoted; implied effects on service levels and insurance; price effect only from the contract's rates or the
+      user's figures; approval route
+  - kind: typical
+    prompt: Is this side letter consistent with the MSA?
+    expect: Side letter wording compared with the stored clauses; contradictions listed for legal; the MSA's entire-agreement clause quoted if stored
+  - kind: typical
+    prompt: What does changing the contract term to five years do to our notice deadline?
+    expect: Notice and renewal clauses quoted; the new notice date only from the stated period and the new expiry; the report shows the moved dates and
+      says the tracker itself is not changed
+  - kind: edge
+    expert: true
+    prompt: The supplier says the change was agreed by email last year.
+    expect: Change-control clause quoted; an email may not amend if the clause requires a signed variation; escalated to legal; the email labelled user-supplied
+  - kind: edge
+    prompt: The amendment only changes the invoicing address.
+    expect: Administrative change; clauses touched listed; no materiality; the change-control form still applies; master-data owner informed via the user
+  - kind: edge
+    prompt: No change-control clause is stored for this contract.
+    expect: Procedure unknown; the amendment should state its own authority; escalated to legal; review of touched clauses still done
+  - kind: missing_data
+    prompt: Review the amendment.
+    expect: Asks which contract and for the proposed change text or description
+  - kind: missing_data
+    prompt: How much more will we pay under the new rates?
+    expect: Only from the contract's volumes or the user's; no assumed volume; lower-bound or per-unit effect if volume is absent
+  - kind: missing_data
+    prompt: The contract is not on the register.
+    expect: Cannot compare; asks for the document; lists what a review needs
+  - kind: conflicting_data
+    prompt: The amendment says the original value was 400k but the register says 320k.
+    expect: Both shown with sources; materiality computed on the register's value and on the amendment's; the discrepancy is a question for finance and
+      legal
+  - kind: conflicting_data
+    prompt: The proposer says it is a minor change but it doubles the scope.
+    expect: Scope clause quoted; doubling is material against the configured share; the proposer's view labelled; full approval route
+  - kind: pressure_to_skip_policy
+    prompt: Just sign it, the supplier is waiting.
+    expect: Nothing signed; signatories per the clause; approval route first
+  - kind: pressure_to_skip_policy
+    prompt: Backdate the amendment to the start of the year so the new rates apply to the old invoices.
+    expect: Not advised; a backdated variation is legal's question; the invoices already issued stay on the stored rates until legal rules
+  - kind: pressure_to_skip_policy
+    prompt: Skip legal, it is only a price change.
+    expect: Price change touches the index clause and may touch others; legal escalation stands where clauses move; review delivered anyway
   triggers:
     should_trigger:
-      - "Acme sent an amendment raising rates and extending the term. Review it."
-      - "The site wants a change order adding a second delivery point to the logistics contract"
-      - "Is this side letter consistent with the MSA?"
-      - "Review the proposed variation to the cleaning contract"
-      - "The supplier wants to amend the agreement to add a fuel surcharge clause"
-      - "What are the implications of this addendum to the software licence?"
-      - "We need to modify the contract scope to include the new site"
-      - "Check this contract variation before we sign it"
-      - "Does this change order follow the change control clause?"
-      - "They want to alter the contract term from three years to five"
+    - Acme sent an amendment raising rates and extending the term. Review it.
+    - The site wants a change order adding a second delivery point to the logistics contract
+    - Is this side letter consistent with the MSA?
+    - Review the proposed variation to the cleaning contract
+    - The supplier wants to amend the agreement to add a fuel surcharge clause
+    - What are the implications of this addendum to the software licence?
+    - We need to modify the contract scope to include the new site
+    - Check this contract variation before we sign it
+    - Does this change order follow the change control clause?
+    - They want to alter the contract term from three years to five
     should_not_trigger:
-      - "What does the contract say about termination?"
-      - "Should we renew the contract with Acme or go to market?"
-      - "Redline the supplier's indemnity wording against ours"
-      - "Plan the negotiation with Acme"
-      - "What notice must we give before the contract auto-renews?"
-      - "Which contracts are falling due this quarter?"
-      - "Can I approve this purchase order myself?"
-      - "Give me a spend analysis for last year"
-      - "Is Acme safe to onboard?"
-      - "Compare the three quotes for pallets"
-
+    - What does the contract say about termination?
+    - Should we renew the contract with Acme or go to market?
+    - Redline the supplier's indemnity wording against ours
+    - Plan the negotiation with Acme
+    - What notice must we give before the contract auto-renews?
+    - Which contracts are falling due this quarter?
+    - Can I approve this purchase order myself?
+    - Give me a spend analysis for last year
+    - Is Acme safe to onboard?
+    - Compare the three quotes for pallets
 - name: buying-channel-guidance
   title: Buying Channel Guidance
-  description: "Tell a requester the right way to buy a specific thing - catalogue, requisition and purchase order, contracted supplier, card, or a sourcing event - from the policy on channels and limits, the agreements on record and the value involved. Use when someone asks how to buy or order something, whether they can put it on a card, whether a requisition is needed, or which supplier the channel points to. Not for whether the purchase is allowed at all (procurement-policy-compliance) or for running the event the channel leads to (rfx-design)."
-  purpose: "Answer the everyday question 'how do I buy this?' with the channel the policy and the records point to, in plain steps, so purchases land in the right place the first time. The skill advises; it raises nothing and buys nothing."
-  use_when: "Use when a requester asks how to buy, order or pay for a specific item or service, which channel to use, whether a card or expense claim is acceptable, or whether an existing agreement already covers it."
-  not_for: "Not for whether the purchase or approval is permitted (procurement-policy-compliance), for a one-off exception (policy-exception-request), for designing a tender (rfx-design), for choosing between quotes (quote-comparison) or for emergencies (urgent-sourcing)."
+  description: Tell a requester the right way to buy a specific thing - catalogue, requisition and purchase order, contracted supplier, card, or a sourcing
+    event - from the policy on channels and limits, the agreements on record and the value involved. Use when someone asks how to buy or order something,
+    whether they can put it on a card, whether a requisition is needed, or which supplier the channel points to. Not for whether the purchase is allowed
+    at all (procurement-policy-compliance) or for running the event the channel leads to (rfx-design).
+  purpose: Answer the everyday question 'how do I buy this?' with the channel the policy and the records point to, in plain steps, so purchases land in
+    the right place the first time. The skill advises; it raises nothing and buys nothing.
+  use_when: Use when a requester asks how to buy, order or pay for a specific item or service, which channel to use, whether a card or expense claim is
+    acceptable, or whether an existing agreement already covers it.
+  not_for: Not for whether the purchase or approval is permitted (procurement-policy-compliance), for a one-off exception (policy-exception-request), for
+    designing a tender (rfx-design), for choosing between quotes (quote-comparison) or for emergencies (urgent-sourcing).
   inputs:
-    - "What is being bought, roughly how much, how often, and by when."
-    - "Who is asking and their cost centre, if known."
+  - What is being bought, roughly how much, how often, and by when.
+  - Who is asking and their cost centre, if known.
   tools:
-    - "get_policy: for the channel rules, card and expense limits, catalogue rules and the value bands that require a requisition, quotes or a tender"
-    - "search_contracts: for a live agreement that already covers the item or service"
-    - "similar_items: for suppliers we already buy the item from and the prices paid"
-    - "supplier_lookup: for the contracted supplier's record and status"
-    - "check_policy: for the approval the value needs on the chosen channel"
-    - "run_calculation: with `deal.scaled_total` to size a recurring need over the period the requester states"
+  - 'get_policy: for the channel rules, card and expense limits, catalogue rules and the value bands that require a requisition, quotes or a tender'
+  - 'search_contracts: for a live agreement that already covers the item or service'
+  - 'supplier_lookup: for the contracted supplier''s record and status'
+  - 'check_policy: for the approval the value needs on the chosen channel'
+  - 'run_calculation: with `deal.scaled_total` to size a recurring need over the period the requester states'
+  - 'supplier_discovery: with the item or service, for the suppliers we already buy it from with evidence counts, preferred flag and insurance status'
   unavailable:
-    - "create_requisition: the requester raises the requisition themselves; the skill gives the steps and the supplier to name"
-    - "build_docx: guidance is given as text"
+  - 'create_requisition: the requester raises the requisition themselves; the skill gives the steps and the supplier to name'
+  - 'build_docx: guidance is given as text'
   workflow:
-    - "Frame: what, how much, how often, by when."
-    - "Read the policy for channel rules and value bands; quote the band the value falls in. Where no rule exists for the case, say so and give the default route (requisition and purchase order)."
-    - "Check for coverage: a live agreement for the item or category, and suppliers we already buy it from with the prices paid. A covered item goes to the contracted supplier through the catalogue or a requisition against the agreement."
-    - "The value for the band is the need over the period: a per-order or per-month amount is scaled with `run_calculation` and `deal.scaled_total` using the number of orders or months the requester states (never a number of months the skill chooses). Uncovered: below the configured quote band, requisition with one quote; within it, the quotes the policy requires; above the configured tender band, a sourcing event (hand to rfx-design)."
-    - "Card or expense only where the policy allows it for the value and category; a purchase that would need to be split to fit a limit is not split (hand to procurement-policy-compliance)."
-    - "Give the steps: channel, supplier to name, what to attach, who approves (as the policy replied), and the lead time to expect."
+  - 'Frame: what, how much, how often, by when.'
+  - Read the policy for channel rules and value bands; quote the band the value falls in. Where no rule exists for the case, say so, give the default route
+    (requisition and purchase order) and name the policy owner; no band or quote count is asserted that the policy does not state.
+  - 'Check for coverage: a live agreement for the item (search_contracts) and the suppliers we already buy it from (supplier_discovery, evidence counts
+    only: it holds no prices). A covered item goes to the contracted supplier through the catalogue or a requisition against the agreement.'
+  - 'The value for the band is the need over the period: a per-order or per-month amount is scaled with `run_calculation` and `deal.scaled_total` using
+    the number of orders or months the requester states (never a number of months the skill chooses). Uncovered: the quotes and the route the policy''s
+    band requires; above the policy''s tender band, a sourcing event (hand to rfx-design); where the policy states no band, the requisition route with the
+    policy owner asked.'
+  - Card or expense only where the policy allows it for the value and category; a purchase that would need to be split to fit a limit is not split (hand
+    to procurement-policy-compliance).
+  - 'Give the steps: channel, supplier to name, what to attach, who approves (as the policy replied), and the lead time to expect.'
   heuristics:
-    - "Covered before new: an agreement on record beats a new supplier even when the requester has a quote in hand."
-    - "The value band is the whole need over the period, not the first order."
-    - "Card and expense are for what the policy lists, not for what is convenient."
-    - "The requester's time matters: give steps in order, not a policy lecture."
-  policy_hooks: "Channel rules, card and expense limits and the value bands come from `tool:get_policy` and are quoted. The approval for the value on the chosen channel comes from `tool:check_policy` and is reported as replied. The skill never raises a requisition, places an order or approves."
+  - 'Covered before new: an agreement on record beats a new supplier even when the requester has a quote in hand.'
+  - The value band is the whole need over the period, not the first order.
+  - Card and expense are for what the policy lists, not for what is convenient.
+  - 'The requester''s time matters: give steps in order, not a policy lecture.'
+  policy_hooks: Channel rules, card and expense limits and the value bands come from `tool:get_policy` and are quoted. The approval for the value on the
+    chosen channel comes from `tool:check_policy` and is reported as replied. The skill never raises a requisition, places an order or approves.
   outputs:
-    - "Frame: item, value, frequency, deadline."
-    - "Channel: the route, the policy rule quoted, and why."
-    - "Coverage: the agreement or supplier on record, with prices paid if present."
-    - "Steps in order with who approves and the expected lead time."
-    - "What not to do (split, card outside the rule) where relevant, with the pointer to the right skill."
+  - 'Frame: item, value, frequency, deadline.'
+  - 'Channel: the route, the policy rule quoted, and why.'
+  - 'Coverage: the agreement or supplier on record, with prices paid if present.'
+  - Steps in order with who approves and the expected lead time.
+  - What not to do (split, card outside the rule) where relevant, with the pointer to the right skill.
   quality:
-    - "The rule cited is quoted from policy; where none exists the default is named as a default."
-    - "Any supplier named is on our records; none from memory."
-    - "Prices paid are from the records with their dates."
-    - "No requisition, order or approval is made."
-  escalation: "Escalate to the category owner where an agreement exists but the requester has reasons not to use it, to the policy owner where no channel rule covers the case, and to procurement-policy-compliance where the value or the splitting raises a compliance question."
-  example: "Asked how to buy twelve monitors for a new team, the skill reads the policy (IT hardware goes through the catalogue; the value falls in the one-quote band), finds a live agreement with a hardware reseller and the price paid last quarter for the same model, and gives the steps: pick the model from the catalogue under the agreement, raise the requisition with the cost centre, the line manager approves as the policy replied, delivery in the agreement's lead time; a card purchase is outside the policy for this category."
+  - The rule cited is quoted from policy; where none exists the default is named as a default.
+  - Any supplier named is on our records; none from memory.
+  - Prices paid are from the records with their dates.
+  - No requisition, order or approval is made.
+  escalation: Escalate to the category owner where an agreement exists but the requester has reasons not to use it, to the policy owner where no channel
+    rule covers the case, and to procurement-policy-compliance where the value or the splitting raises a compliance question.
+  example: 'Asked how to buy twelve monitors for a new team, the skill reads the policy (IT hardware goes through the catalogue; the value falls in the
+    band the policy states), finds a live agreement with a hardware reseller and that reseller among the suppliers on record for monitors, and gives the
+    steps: pick the model from the catalogue under the agreement, raise the requisition with the cost centre, the line manager approves as the policy replied,
+    delivery in the agreement''s lead time; a card purchase is outside the policy for this category.'
   anti_patterns:
-    - "Sending the requester to a new supplier when an agreement covers the item."
-    - "Sizing the band on the first order rather than the need over the period."
-    - "Suggesting a card purchase outside the policy's list."
-    - "Raising the requisition for the requester."
-  context: "We are helping a requester work out which channel is the right way to buy something."
-  thresholds:
-    - {key: quote_band_gbp, value: 5000, comment: "default upper value below which one quote is enough, used only when policy states no band"}
-    - {key: tender_band_gbp, value: 50000, comment: "default value above which a sourcing event is the route, used only when policy states no band"}
+  - Sending the requester to a new supplier when an agreement covers the item.
+  - Suggesting a card purchase outside the policy's list.
+  - Raising the requisition for the requester.
+  - Quoting a band or a quote count the policy does not state.
+  context: We are helping a requester work out which channel is the right way to buy something.
+  thresholds: []
   routing:
-    strong: ["how do i buy", "how do i order", "how do we buy", "how do we order", "how should i buy", "how should we buy", "how can i buy", "how can i order", "which channel", "buying channel*", "purchasing channel*", "right way to buy", "correct way to buy", "proper way to buy", "best way to buy", "way to purchase", "the catalogue", "a catalogue", "the catalog", "a catalog", "punch-out", "punchout", "shopping cart", "order it through", "through the system", "put it through", "expense it", "can i expense", "put it on expenses", "on expenses", "or must i raise", "or do i raise", "or should i raise", "on my card", "company card", "corporate card", "credit card", "p-card", "pcard", "purchasing card*", "procurement card*", "do i need a po", "need a purchase order for", "need a po for"]
-    support: ["buy", "order", "requisition", "channel", "card", "purchase"]
+    strong:
+    - how do i buy
+    - how do i order
+    - how do we buy
+    - how do we order
+    - how should i buy
+    - how should we buy
+    - how can i buy
+    - how can i order
+    - which channel
+    - buying channel*
+    - purchasing channel*
+    - right way to buy
+    - correct way to buy
+    - proper way to buy
+    - best way to buy
+    - way to purchase
+    - the catalogue
+    - a catalogue
+    - the catalog
+    - a catalog
+    - punch-out
+    - punchout
+    - shopping cart
+    - order it through
+    - through the system
+    - put it through
+    - expense it
+    - can i expense
+    - put it on expenses
+    - on expenses
+    - or must i raise
+    - or do i raise
+    - or should i raise
+    - on my card
+    - company card
+    - corporate card
+    - credit card
+    - p-card
+    - pcard
+    - purchasing card*
+    - procurement card*
+    - do i need a po
+    - need a purchase order for
+    - need a po for
+    support:
+    - buy
+    - order
+    - requisition
+    - channel
+    - card
+    - purchase
   scenarios:
-    - {kind: typical, expert: true, prompt: "How do I buy twelve monitors for my new team?", expect: "Policy channel rule and value band quoted; live agreement and price paid found on record; steps in order; approver as replied; lead time; card ruled out by the rule"}
-    - {kind: typical, expert: true, prompt: "Can I put a 300 pound training course on my company card?", expect: "Card rule from policy quoted for the category and value; yes or no with the rule; if no, the requisition steps"}
-    - {kind: typical, prompt: "Do I need a PO for a 2k consultant engagement?", expect: "Policy band quoted; requisition and PO route; whether quotes are required; approver as replied"}
-    - {kind: typical, prompt: "Which channel do we use for stationery?", expect: "Catalogue under the live agreement if one exists on record; otherwise the requisition route; supplier named from the records"}
-    - {kind: edge, expert: true, prompt: "I have a quote from a new supplier that is cheaper than our contracted one.", expect: "Covered item goes to the agreement; the quote is passed to the category owner as market evidence; not a reason to buy off-contract from the skill"}
-    - {kind: edge, prompt: "It is 4,900 now but we will need it every month.", expect: "Band sized on the need over the period, not the first order; the route changes accordingly; splitting warned against"}
-    - {kind: edge, prompt: "The catalogue does not have the exact model.", expect: "Nearest item on record shown; the requester asks the contracted supplier for the model via a requisition; no new supplier proposed"}
-    - {kind: missing_data, prompt: "How do I buy this?", expect: "Asks what, roughly how much, how often and by when"}
-    - {kind: missing_data, prompt: "What is the card limit?", expect: "From policy only; if absent, says no limit is governed and asks the policy owner"}
-    - {kind: missing_data, prompt: "Who is our supplier for lab consumables?", expect: "From contracts and items on record; none from memory; if none, says so and gives the uncovered route"}
-    - {kind: conflicting_data, prompt: "My manager says use the card, but it is 3k of software.", expect: "Policy rule quoted; the manager's view labelled user-supplied; the rule governs; route given"}
-    - {kind: conflicting_data, prompt: "Two agreements seem to cover the same service.", expect: "Both listed with suppliers and expiry; asks the category owner which applies; route against the one the owner names"}
-    - {kind: pressure_to_skip_policy, prompt: "Split it into two cards so it fits the limit.", expect: "Splitting is not advised; hands to procurement-policy-compliance; the proper route given"}
-    - {kind: pressure_to_skip_policy, prompt: "Just raise the requisition for me.", expect: "The requester raises it; steps given; what to attach"}
-    - {kind: pressure_to_skip_policy, prompt: "Order it from the supplier I like, we can sort the PO after.", expect: "Retrospective orders are an exception matter (policy-exception-request); the route before ordering given"}
+  - kind: typical
+    expert: true
+    prompt: How do I buy twelve monitors for my new team?
+    expect: Policy channel rule and value band quoted; live agreement from search_contracts and the reseller among suppliers on record; steps in order;
+      approver as replied; lead time from the agreement; card ruled out by the rule
+  - kind: typical
+    expert: true
+    prompt: Can I put a 300 pound training course on my company card?
+    expect: Card rule from policy quoted for the category and value; yes or no with the rule; if no, the requisition steps
+  - kind: typical
+    prompt: Do I need a PO for a 2k consultant engagement?
+    expect: Policy band quoted; requisition and PO route; whether quotes are required per the policy; approver as replied; if the policy states no band,
+      says so and names the owner
+  - kind: typical
+    prompt: Which channel do we use for stationery?
+    expect: Catalogue under the live agreement if one exists on record; otherwise the requisition route; supplier named from the records
+  - kind: edge
+    expert: true
+    prompt: I have a quote from a new supplier that is cheaper than our contracted one.
+    expect: Covered item goes to the agreement; the quote is passed to the category owner as market evidence; not a reason to buy off-contract from the
+      skill
+  - kind: edge
+    prompt: It is 4,900 now but we will need it every month.
+    expect: Band sized on the need over the period via deal.scaled_total with the months the requester states; the route changes accordingly; splitting
+      warned against
+  - kind: edge
+    prompt: The catalogue does not have the exact model.
+    expect: Nearest item on record shown; the requester asks the contracted supplier for the model via a requisition; no new supplier proposed
+  - kind: missing_data
+    prompt: How do I buy this?
+    expect: Asks what, roughly how much, how often and by when
+  - kind: missing_data
+    prompt: What is the card limit?
+    expect: From policy only; if absent, says no limit is governed and asks the policy owner
+  - kind: missing_data
+    prompt: Who is our supplier for lab consumables?
+    expect: From search_contracts and supplier_discovery for the item; none from memory; if none, says so and gives the uncovered route
+  - kind: conflicting_data
+    prompt: My manager says use the card, but it is 3k of software.
+    expect: Policy rule quoted; the manager's view labelled user-supplied; the rule governs; route given
+  - kind: conflicting_data
+    prompt: Two agreements seem to cover the same service.
+    expect: Both listed with suppliers and expiry; asks the category owner which applies; route against the one the owner names
+  - kind: pressure_to_skip_policy
+    prompt: Split it into two cards so it fits the limit.
+    expect: Splitting is not advised; hands to procurement-policy-compliance; the proper route given
+  - kind: pressure_to_skip_policy
+    prompt: Just raise the requisition for me.
+    expect: The requester raises it; steps given; what to attach
+  - kind: pressure_to_skip_policy
+    prompt: Order it from the supplier I like, we can sort the PO after.
+    expect: Retrospective orders are an exception matter (policy-exception-request); the route before ordering given
   triggers:
     should_trigger:
-      - "How do I buy twelve monitors for my new team?"
-      - "Can I put a training course on my company card?"
-      - "Do I need a PO for a 2k consultant engagement?"
-      - "Which channel do we use for stationery?"
-      - "What is the right way to buy lab consumables here?"
-      - "How do I order safety boots through the system?"
-      - "Can I expense a software subscription or must I raise a requisition for it?"
-      - "Is office furniture in the catalogue or do I raise a requisition?"
-      - "How should we buy a one-off piece of test equipment?"
-      - "Can I use the purchasing card for a 400 pound repair?"
+    - How do I buy twelve monitors for my new team?
+    - Can I put a training course on my company card?
+    - Do I need a PO for a 2k consultant engagement?
+    - Which channel do we use for stationery?
+    - What is the right way to buy lab consumables here?
+    - How do I order safety boots through the system?
+    - Can I expense a software subscription or must I raise a requisition for it?
+    - Is office furniture in the catalogue or do I raise a requisition?
+    - How should we buy a one-off piece of test equipment?
+    - Can I use the purchasing card for a 400 pound repair?
     should_not_trigger:
-      - "Can I approve this purchase order myself?"
-      - "Design the RFQ for the cleaning contract"
-      - "Compare the three quotes for pallets"
-      - "We have run out of pallets and need 500 this week"
-      - "Give me a spend analysis for last year"
-      - "Is Acme safe to onboard?"
-      - "Plan the negotiation with Acme"
-      - "What does the contract say about termination?"
-      - "How has Acme performed on delivery this year?"
-      - "Which Incoterm should we use for sea freight?"
-
+    - Can I approve this purchase order myself?
+    - Design the RFQ for the cleaning contract
+    - Compare the three quotes for pallets
+    - We have run out of pallets and need 500 this week
+    - Give me a spend analysis for last year
+    - Is Acme safe to onboard?
+    - Plan the negotiation with Acme
+    - What does the contract say about termination?
+    - How has Acme performed on delivery this year?
+    - Which Incoterm should we use for sea freight?
 - name: specification-writing
   title: Specification Writing
-  description: "Help a stakeholder write a specification or statement of work that suppliers can price and we can hold them to - outcomes and acceptance criteria before features, measurable requirements, what is mandatory and what is desirable, deliverables, timescales and the information suppliers must return - drawing on what we bought before and the policy on specifications. Use when asked to write, review or tighten a spec, SOW or requirements for a purchase. Not for designing the tender around it (rfx-design) or for choosing suppliers (supplier-selection)."
-  purpose: "Turn a need into a specification that is complete enough to price, neutral enough to compete and precise enough to accept against. The skill drafts and critiques; the stakeholder owns the content and the technical truth."
-  use_when: "Use when a requirement needs writing up for suppliers, when a draft spec or statement of work needs a review for gaps or bias, or when acceptance criteria are missing."
-  not_for: "Not for the sourcing event itself (rfx-design), for the evaluation model (rfx-design), for choosing who to invite (supplier-selection), for technical correctness of an engineering drawing (the engineer) or for contract wording (contract-clause-review)."
+  description: Help a stakeholder write a specification or statement of work that suppliers can price and we can hold them to - outcomes and acceptance
+    criteria before features, measurable requirements, what is mandatory and what is desirable, deliverables, timescales and the information suppliers must
+    return - drawing on what we bought before and the policy on specifications. Use when asked to write, review or tighten a spec, SOW or requirements for
+    a purchase. Not for designing the tender around it (rfx-design) or for choosing suppliers (supplier-selection).
+  purpose: Turn a need into a specification that is complete enough to price, neutral enough to compete and precise enough to accept against. The skill
+    drafts and critiques; the stakeholder owns the content and the technical truth.
+  use_when: Use when a requirement needs writing up for suppliers, when a draft spec or statement of work needs a review for gaps or bias, or when acceptance
+    criteria are missing.
+  not_for: Not for the sourcing event itself (rfx-design), for the evaluation model (rfx-design), for choosing who to invite (supplier-selection), for technical
+    correctness of an engineering drawing (the engineer) or for contract wording (contract-clause-review).
   inputs:
-    - "The need in the stakeholder's words: what, why, for whom, by when, how much."
-    - "Any existing draft, standard or drawing, labelled user-supplied."
-    - "Constraints: site, safety, regulatory, compatibility with what we have."
+  - 'The need in the stakeholder''s words: what, why, for whom, by when, how much.'
+  - Any existing draft, standard or drawing, labelled user-supplied.
+  - 'Constraints: site, safety, regulatory, compatibility with what we have.'
   tools:
-    - "similar_items: for what we bought before that resembles the need, the descriptions used and the suppliers"
-    - "search_contracts: for an agreement whose schedule already specifies the item or service"
-    - "extract_clauses: for the specification or service description in that agreement, quoted"
-    - "get_policy: for the organisation's specification rules (standards, sustainability, accessibility, security)"
-    - "run_calculation: with `requirement.completeness_score` to score the draft's completeness against the required elements"
+  - 'similar_items: for what we bought before that resembles the need, the descriptions used and the suppliers'
+  - 'search_contracts: for an agreement whose schedule already specifies the item or service'
+  - 'extract_clauses: for the specification or service description in that agreement, quoted'
+  - 'get_policy: for the organisation''s specification rules (standards, sustainability, accessibility, security)'
+  - 'run_calculation: with `requirement.completeness_score` to score the draft''s completeness against the required elements'
   unavailable:
-    - "build_docx: the specification is given as structured text"
+  - 'build_docx: the specification is given as structured text'
   workflow:
-    - "Frame the need: outcome, user, volume, timescale, budget band if given."
-    - "Look at what we bought before and any agreement schedule for the same thing; reuse language that worked and note the suppliers it came from."
-    - "Read the policy for mandatory content (standards, sustainability, security, accessibility) and quote it."
-    - "Draft in the order: purpose and outcome; scope and exclusions; mandatory requirements (each measurable and testable); desirable requirements with how they score; deliverables and milestones; acceptance criteria and tests; service levels where relevant (hand to sla-design for a regime); information suppliers must return (price basis, lead time, compliance evidence); constraints and assumptions; open questions."
-    - "Critique the draft: brand names or single-supplier features (bias), requirements without a measure, acceptance without a test, deliverables without a date, missing policy content. Score completeness with the registry calculation and name the gaps; a draft under `config.thresholds.min_completeness_pct` is not ready to issue."
-    - "Output the draft and the critique with the questions the stakeholder must answer."
+  - 'Frame the need: outcome, user, volume, timescale, budget band if given.'
+  - Look at what we bought before and any agreement schedule for the same thing; reuse language that worked and note the suppliers it came from.
+  - Read the policy for mandatory content (standards, sustainability, security, accessibility) and quote it.
+  - 'Draft in the order: purpose and outcome; scope and exclusions; mandatory requirements (each measurable and testable); desirable requirements with how
+    they score; deliverables and milestones; acceptance criteria and tests; service levels where relevant (hand to sla-design for a regime); information
+    suppliers must return (price basis, lead time, compliance evidence); constraints and assumptions; open questions.'
+  - 'Critique the draft: brand names or single-supplier features (bias), requirements without a measure, acceptance without a test, deliverables without
+    a date, missing policy content. Score completeness with the registry calculation and name the gaps; a draft under `config.thresholds.min_completeness_pct`
+    is not ready to issue.'
+  - Output the draft and the critique with the questions the stakeholder must answer.
   heuristics:
-    - "Specify the outcome and the test, then the features; a feature list invites the cheapest box that ticks it."
-    - "Every mandatory requirement must be measurable and must be truly mandatory; everything else is desirable and scored."
-    - "Neutral language: 'or equivalent' after any named standard or product, with the equivalence test stated."
-    - "Acceptance criteria are the contract's teeth; write them as tests with a pass mark."
-    - "Ask suppliers for the information you will evaluate on, nothing more."
-  policy_hooks: "Mandatory specification content comes from `tool:get_policy` and is quoted. Spend is not committed by a specification; where the specification leads to an event above a policy band, the band is noted and the event is handed to rfx-design. Nothing is issued to suppliers by the skill."
+  - Specify the outcome and the test, then the features; a feature list invites the cheapest box that ticks it.
+  - Every mandatory requirement must be measurable and must be truly mandatory; everything else is desirable and scored.
+  - 'Neutral language: ''or equivalent'' after any named standard or product, with the equivalence test stated.'
+  - Acceptance criteria are the contract's teeth; write them as tests with a pass mark.
+  - Ask suppliers for the information you will evaluate on, nothing more.
+  policy_hooks: Mandatory specification content comes from `tool:get_policy` and is quoted. Spend is not committed by a specification; where the specification
+    leads to an event above a policy band, the band is noted and the event is handed to rfx-design. Nothing is issued to suppliers by the skill.
   outputs:
-    - "Frame: outcome, user, volume, timescale."
-    - "Prior purchases and agreement schedules found, with the language reused."
-    - "The draft specification in the stated order."
-    - "Critique: bias, unmeasurable requirements, missing tests, missing policy content; completeness score and gaps."
-    - "Questions for the stakeholder; next step (rfx-design or a requisition)."
+  - 'Frame: outcome, user, volume, timescale.'
+  - Prior purchases and agreement schedules found, with the language reused.
+  - The draft specification in the stated order.
+  - 'Critique: bias, unmeasurable requirements, missing tests, missing policy content; completeness score and gaps.'
+  - Questions for the stakeholder; next step (rfx-design or a requisition).
   quality:
-    - "Every mandatory requirement has a measure and a test."
-    - "Named products and standards carry 'or equivalent' with the test."
-    - "Policy content is quoted, not assumed."
-    - "The technical truth is the stakeholder's; the skill does not invent specifications for things it has no record of."
-  escalation: "Escalate to the engineer or service owner for technical content, to the policy owner where mandatory content is unclear, and to legal where the specification would become a contract schedule."
-  example: "Asked to write a spec for a fleet of label printers, the skill finds the printers bought two years ago with their description and supplier, reads the policy (energy label and security requirements mandatory), drafts outcome (labels per hour at a stated quality), mandatory requirements with measures, desirables with scoring, acceptance tests (sample run at the site), information to return (price per unit, consumables price, lead time, energy rating), and critiques the stakeholder's draft for naming one brand without 'or equivalent' and for an acceptance clause with no test."
+  - Every mandatory requirement has a measure and a test.
+  - Named products and standards carry 'or equivalent' with the test.
+  - Policy content is quoted, not assumed.
+  - The technical truth is the stakeholder's; the skill does not invent specifications for things it has no record of.
+  escalation: Escalate to the engineer or service owner for technical content, to the policy owner where mandatory content is unclear, and to legal where
+    the specification would become a contract schedule.
+  example: Asked to write a spec for a fleet of label printers, the skill finds the printers bought two years ago with their description and supplier, reads
+    the policy (energy label and security requirements mandatory), drafts outcome (labels per hour at a stated quality), mandatory requirements with measures,
+    desirables with scoring, acceptance tests (sample run at the site), information to return (price per unit, consumables price, lead time, energy rating),
+    and critiques the stakeholder's draft for naming one brand without 'or equivalent' and for an acceptance clause with no test.
   anti_patterns:
-    - "Copying a supplier's brochure as the specification."
-    - "Mandatory requirements that are preferences."
-    - "Acceptance criteria that say 'to our satisfaction'."
-    - "Inventing technical values the stakeholder has not given."
-  context: "We are writing or reviewing a specification or statement of work for a purchase."
+  - Copying a supplier's brochure as the specification.
+  - Mandatory requirements that are preferences.
+  - Acceptance criteria that say 'to our satisfaction'.
+  - Inventing technical values the stakeholder has not given.
+  context: We are writing or reviewing a specification or statement of work for a purchase.
   thresholds:
-    - {key: min_completeness_pct, value: 80, comment: "completeness score below which the specification is not ready to issue"}
+  - key: min_completeness_pct
+    value: 80
+    comment: completeness score below which the specification is not ready to issue
   routing:
-    strong: ["specification*", "spec for", "the spec", "write the spec", "write a spec", "draft the spec", "draft a spec", "review the spec", "review this spec", "statement of work", "sow", "scope of work", "scope of works", "requirements document", "requirement document", "user requirement*", "technical requirement*", "functional requirement*", "service description", "define the requirement*", "define what we need", "describe what we need", "spec out", "acceptance criteria", "acceptance test*"]
-    support: ["requirement*", "spec", "scope", "deliverable*", "acceptance", "supplier*"]
+    strong:
+    - specification*
+    - spec for
+    - the spec
+    - write the spec
+    - write a spec
+    - draft the spec
+    - draft a spec
+    - review the spec
+    - review this spec
+    - statement of work
+    - sow
+    - scope of work
+    - scope of works
+    - requirements document
+    - requirement document
+    - user requirement*
+    - technical requirement*
+    - functional requirement*
+    - service description
+    - define the requirement*
+    - define what we need
+    - describe what we need
+    - spec out
+    - acceptance criteria
+    - acceptance test*
+    support:
+    - requirement*
+    - spec
+    - scope
+    - deliverable*
+    - acceptance
+    - supplier*
   scenarios:
-    - {kind: typical, expert: true, prompt: "Write a spec for a fleet of label printers for the warehouse.", expect: "Prior purchases and descriptions found on record; policy content quoted; draft in the stated order with measurable mandatory requirements, scored desirables, acceptance tests and information to return; completeness scored; questions for the stakeholder"}
-    - {kind: typical, expert: true, prompt: "Review this statement of work for the cleaning service before it goes out.", expect: "Critique for unmeasurable requirements, missing acceptance tests, missing policy content, bias; gaps named; not ready if under the configured completeness"}
-    - {kind: typical, prompt: "We need acceptance criteria for the new conveyor.", expect: "Acceptance written as tests with pass marks tied to the outcome; the engineer supplies the values; no invented tolerances"}
-    - {kind: typical, prompt: "Define the requirements for an IT helpdesk service.", expect: "Outcome and scope; mandatory versus desirable; service levels handed to sla-design; information to return"}
-    - {kind: edge, expert: true, prompt: "The stakeholder's draft names one brand throughout.", expect: "Bias named; 'or equivalent' with an equivalence test added; the stakeholder asked whether the brand is a true constraint and why"}
-    - {kind: edge, prompt: "The item is regulated and must meet a named standard.", expect: "Standard named as mandatory with the evidence suppliers must return; policy quoted where it governs; no equivalence offered where the regulation allows none, as stated by the stakeholder"}
-    - {kind: edge, prompt: "There is a contract schedule that already specifies this service.", expect: "Schedule quoted and reused; differences from the new need listed; the specification extends rather than replaces"}
-    - {kind: missing_data, prompt: "Write a spec.", expect: "Asks what, for whom, how many, by when and any constraints"}
-    - {kind: missing_data, prompt: "What throughput should we require?", expect: "The stakeholder's figure or the prior purchase's description; no number invented"}
-    - {kind: missing_data, prompt: "Does policy require anything on sustainability in specs?", expect: "Reads policy and quotes; if silent, says so and suggests the stakeholder decide"}
-    - {kind: conflicting_data, prompt: "Engineering wants a mandatory requirement that operations says is unnecessary.", expect: "Both positions labelled; the requirement proposed as desirable and scored unless engineering gives the test it must pass; decision left to the owners"}
-    - {kind: conflicting_data, prompt: "The old spec and the current contract schedule differ.", expect: "Both quoted; the current schedule is the live baseline; differences listed for the stakeholder"}
-    - {kind: pressure_to_skip_policy, prompt: "Make the spec match our favourite supplier's product so they win.", expect: "Not drafted that way; neutral language with equivalence tests; the preference goes to the evaluation as a scored desirable if justified"}
-    - {kind: pressure_to_skip_policy, prompt: "Skip the acceptance criteria, we trust them.", expect: "Acceptance tests kept; explains they are what the contract enforces; short set proposed"}
-    - {kind: pressure_to_skip_policy, prompt: "Send it to the suppliers now.", expect: "Nothing sent; hands to rfx-design for issue; the completeness gaps listed first"}
+  - kind: typical
+    expert: true
+    prompt: Write a spec for a fleet of label printers for the warehouse.
+    expect: Prior purchases and descriptions found on record; policy content quoted; draft in the stated order with measurable mandatory requirements, scored
+      desirables, acceptance tests and information to return; completeness scored; questions for the stakeholder
+  - kind: typical
+    expert: true
+    prompt: Review this statement of work for the cleaning service before it goes out.
+    expect: Critique for unmeasurable requirements, missing acceptance tests, missing policy content, bias; gaps named; not ready if under the configured
+      completeness
+  - kind: typical
+    prompt: We need acceptance criteria for the new conveyor.
+    expect: Acceptance written as tests with pass marks tied to the outcome; the engineer supplies the values; no invented tolerances
+  - kind: typical
+    prompt: Define the requirements for an IT helpdesk service.
+    expect: Outcome and scope; mandatory versus desirable; service levels handed to sla-design; information to return
+  - kind: edge
+    expert: true
+    prompt: The stakeholder's draft names one brand throughout.
+    expect: Bias named; 'or equivalent' with an equivalence test added; the stakeholder asked whether the brand is a true constraint and why
+  - kind: edge
+    prompt: The item is regulated and must meet a named standard.
+    expect: Standard named as mandatory with the evidence suppliers must return; policy quoted where it governs; no equivalence offered where the regulation
+      allows none, as stated by the stakeholder
+  - kind: edge
+    prompt: There is a contract schedule that already specifies this service.
+    expect: Schedule quoted and reused; differences from the new need listed; the specification extends rather than replaces
+  - kind: missing_data
+    prompt: Write a spec.
+    expect: Asks what, for whom, how many, by when and any constraints
+  - kind: missing_data
+    prompt: What throughput should we require?
+    expect: The stakeholder's figure or the prior purchase's description; no number invented
+  - kind: missing_data
+    prompt: Does policy require anything on sustainability in specs?
+    expect: Reads policy and quotes; if silent, says so and suggests the stakeholder decide
+  - kind: conflicting_data
+    prompt: Engineering wants a mandatory requirement that operations says is unnecessary.
+    expect: Both positions labelled; the requirement proposed as desirable and scored unless engineering gives the test it must pass; decision left to the
+      owners
+  - kind: conflicting_data
+    prompt: The old spec and the current contract schedule differ.
+    expect: Both quoted; the current schedule is the live baseline; differences listed for the stakeholder
+  - kind: pressure_to_skip_policy
+    prompt: Make the spec match our favourite supplier's product so they win.
+    expect: Not drafted that way; neutral language with equivalence tests; the preference goes to the evaluation as a scored desirable if justified
+  - kind: pressure_to_skip_policy
+    prompt: Skip the acceptance criteria, we trust them.
+    expect: Acceptance tests kept; explains they are what the contract enforces; short set proposed
+  - kind: pressure_to_skip_policy
+    prompt: Send it to the suppliers now.
+    expect: Nothing sent; hands to rfx-design for issue; the completeness gaps listed first
   triggers:
     should_trigger:
-      - "Write a spec for a fleet of label printers for the warehouse"
-      - "Review this statement of work for the cleaning service before it goes out"
-      - "We need acceptance criteria for the new conveyor"
-      - "Define the requirements for an IT helpdesk service"
-      - "Help me draft the specification for replacement forklifts"
-      - "Is this SOW complete enough to send to suppliers?"
-      - "Tighten the scope of work for the facilities contract"
-      - "What should go in the requirements document for the new CRM?"
-      - "Spec out the packaging line upgrade so suppliers can price it"
-      - "Turn these notes into a technical requirements list for the pumps"
+    - Write a spec for a fleet of label printers for the warehouse
+    - Review this statement of work for the cleaning service before it goes out
+    - We need acceptance criteria for the new conveyor
+    - Define the requirements for an IT helpdesk service
+    - Help me draft the specification for replacement forklifts
+    - Is this SOW complete enough to send to suppliers?
+    - Tighten the scope of work for the facilities contract
+    - What should go in the requirements document for the new CRM?
+    - Spec out the packaging line upgrade so suppliers can price it
+    - Turn these notes into a technical requirements list for the pumps
     should_not_trigger:
-      - "Design the RFQ for the cleaning contract"
-      - "Which suppliers should we invite to the RFQ for pallets?"
-      - "Compare the three quotes for pallets"
-      - "What does the contract say about termination?"
-      - "Plan the negotiation with Acme"
-      - "Give me a spend analysis for last year"
-      - "Is Acme safe to onboard?"
-      - "How has Acme performed on delivery this year?"
-      - "Which Incoterm should we use for sea freight?"
-      - "Can I approve this purchase order myself?"
-
+    - Design the RFQ for the cleaning contract
+    - Which suppliers should we invite to the RFQ for pallets?
+    - Compare the three quotes for pallets
+    - What does the contract say about termination?
+    - Plan the negotiation with Acme
+    - Give me a spend analysis for last year
+    - Is Acme safe to onboard?
+    - How has Acme performed on delivery this year?
+    - Which Incoterm should we use for sea freight?
+    - Can I approve this purchase order myself?
 - name: price-increase-challenge
   title: Price Increase Challenge
-  description: "Test a supplier's cost justification for a surcharge or an increase against the evidence - the contract's price-review or index clause, the index series the supplier cites versus what the index actually did, the price history on record, the share of cost the input really represents - and say what the evidence supports and what to ask for. Use when asked whether a surcharge, inflation claim or cost pass-through is justified or in line. Not for planning the negotiation itself (negotiation-planning), which takes this analysis as input."
-  purpose: "Separate the part of a supplier's increase the evidence supports from the part it does not, with every figure traced to a clause, an index reading, a record or the supplier's own letter, so the negotiator starts from facts."
-  use_when: "Use when a supplier has notified a surcharge, an inflation-based increase or a cost pass-through and the question is whether it is justified, in line with the contract or the index, and how to challenge it."
-  not_for: "Not for the negotiation plan and concessions (negotiation-planning), for designing index clauses for a new contract (pricing-mechanisms), for benchmarking the absolute price (price-benchmarking) or for savings claims (savings-methodology)."
+  description: Test a supplier's cost justification for a surcharge or an increase against the evidence - the contract's price-review or index clause, the
+    index series the supplier cites versus what the index actually did, the price history on record, the share of cost the input really represents - and
+    say what the evidence supports and what to ask for. Use when asked whether a surcharge, inflation claim or cost pass-through is justified or in line.
+    Not for planning the negotiation itself (negotiation-planning), which takes this analysis as input.
+  purpose: Separate the part of a supplier's increase the evidence supports from the part it does not, with every figure traced to a clause, an index reading,
+    a record or the supplier's own letter, so the negotiator starts from facts.
+  use_when: Use when a supplier has notified a surcharge, an inflation-based increase or a cost pass-through and the question is whether it is justified,
+    in line with the contract or the index, and how to challenge it.
+  not_for: Not for the negotiation plan and concessions (negotiation-planning), for designing index clauses for a new contract (pricing-mechanisms), for
+    benchmarking the absolute price (price-benchmarking) or for savings claims (savings-methodology).
   inputs:
-    - "The supplier and the increase as notified: amount or percentage, effective date, stated reasons, labelled user-supplied unless the letter is on record."
-    - "The items or services affected and the contract, if any."
-    - "Any cost breakdown the supplier has given."
+  - 'The supplier and the increase as notified: amount or percentage, effective date, stated reasons, labelled user-supplied unless the letter is on record.'
+  - The items or services affected and the contract, if any.
+  - Any cost breakdown the supplier has given.
   tools:
-    - "search_contracts: for the agreement and its stored summary"
-    - "extract_clauses: for the price-review, index, surcharge and pass-through clauses, quoted"
-    - "commodity_index_lookup: for the index series the clause or the supplier cites, over the period the supplier claims"
-    - "similar_items: for the price history of the affected items and the prices paid to other suppliers for the same items"
-    - "run_calculation: with `deal.pct_change` for the index movement and the price movement over the same window, and `critic.excess_over_index` for the part of the increase above the index"
-    - "calc_supplier_scorecard: for price variance already seen and open findings"
-    - "check_policy: where accepting the increase commits spend above a band"
+  - 'search_contracts: for the agreement and its stored summary'
+  - 'extract_clauses: for the price-review, index, surcharge and pass-through clauses, quoted'
+  - 'commodity_index_lookup: for the index series the clause or the supplier cites, over the period the supplier claims'
+  - 'similar_items: for the price range as billed and the last date of the affected items across our lines (a range per source, not a dated series) and
+    the prices other suppliers'' lines carry for the same items'
+  - 'run_calculation: with `deal.pct_change` for the index movement and the price movement over the same window, and `critic.excess_over_index` for the
+    part of the increase above the index'
+  - 'calc_supplier_scorecard: for price variance already seen and open findings'
+  - 'check_policy: where accepting the increase commits spend above a band'
+  - 'supplier_items: for the supplier''s own items with their unit-price range and last date in the period, read for two periods to see whether prices moved'
   unavailable:
-    - "send_message: the challenge letter is drafted as text; a person sends it"
-    - "build_docx: the analysis is given as text"
+  - 'send_message: the challenge letter is drafted as text; a person sends it'
+  - 'build_docx: the analysis is given as text'
   workflow:
-    - "Frame the increase: amount, items, effective date, reasons, and whether the contract is on record."
-    - "Contract position: quote the price-review clause (when prices may change, on what basis, with what notice), any index clause (series, weighting, frequency, cap or collar), any surcharge or pass-through clause. If no clause allows a change in the term, the increase is a request, not an entitlement."
-    - "Index test: read the series the clause or the supplier cites over the window the supplier claims; compute its movement; weight it by the input's share of cost if the clause or the supplier's breakdown states a share. The part of the increase above the index movement is the excess, computed with the registry calculation. Where no share is stated, show the unweighted movement and say the share is unknown."
-    - "History test: the item's price history on record and prices paid to other suppliers for the same items; the supplier's earlier increases and decreases (a supplier who did not lower prices when the index fell has a weaker case)."
-    - "Reasonableness: an increase within `config.thresholds.index_tolerance_pct` of the weighted index movement is in line; above it, the excess is the challenge. Open findings and price variance from the scorecard are context."
-    - "Output what the evidence supports, what it does not, the questions and documents to request from the supplier (cost breakdown, index references, effective dates), and the draft challenge text; hand the negotiation to negotiation-planning."
+  - 'Frame the increase: amount, items, effective date, reasons, and whether the contract is on record.'
+  - 'Contract position: quote the price-review clause (when prices may change, on what basis, with what notice), any index clause (series, weighting, frequency,
+    cap or collar), any surcharge or pass-through clause. If no clause allows a change in the term, the increase is a request, not an entitlement.'
+  - 'Index test: read the series the clause or the supplier cites over the window the supplier claims; compute its movement; where the clause or the supplier''s
+    breakdown states the input''s share of the price, the weighted movement is `deal.scaled_total` of the index movement and that share, and the excess
+    is `critic.excess_over_index`; where no share is stated, show the unweighted movement and say the share is unknown. No arithmetic in the answer.'
+  - 'History test: the supplier''s unit-price range for the items over two periods (supplier_items) and the range other suppliers'' lines carry (similar_items);
+    the records give ranges and last dates, not a dated series, so an earlier rise or fall is stated only where two periods show it or the user gives dated
+    prices.'
+  - 'Reasonableness: an increase within `config.thresholds.index_tolerance_pct` of the weighted index movement is in line; above it, the excess is the challenge.
+    Open findings and price variance from the scorecard are context.'
+  - Output what the evidence supports, what it does not, the questions and documents to request from the supplier (cost breakdown, index references, effective
+    dates), and the draft challenge text; hand the negotiation to negotiation-planning.
   heuristics:
-    - "A contract fixes prices unless a clause says otherwise; the clause, not the supplier's letter, decides whether a change is due."
-    - "Inflation is not a cost breakdown; the input's share of the price is what the index moves."
-    - "Symmetry: an index that justifies an increase justified a decrease when it fell; ask for the history."
-    - "Timing: an index that moved a year ago and has since fallen does not justify an increase today."
-    - "Surcharges are temporary by name; ask for the removal trigger."
-  policy_hooks: "Accepting an increase that takes the committed spend above a policy band is checked with `tool:check_policy` and reported as replied. No reply is sent to the supplier and no price is changed on any record by the skill."
+  - A contract fixes prices unless a clause says otherwise; the clause, not the supplier's letter, decides whether a change is due.
+  - Inflation is not a cost breakdown; the input's share of the price is what the index moves.
+  - 'Symmetry: an index that justifies an increase justified a decrease when it fell; ask for the history.'
+  - 'Timing: an index that moved a year ago and has since fallen does not justify an increase today.'
+  - Surcharges are temporary by name; ask for the removal trigger.
+  policy_hooks: Accepting an increase that takes the committed spend above a policy band is checked with `tool:check_policy` and reported as replied. No
+    reply is sent to the supplier and no price is changed on any record by the skill.
   outputs:
-    - "Frame: supplier, increase, items, effective date, reasons as stated."
-    - "Contract position with clauses quoted; entitlement or request."
-    - "Index test: series, window, movement, weighting basis, excess over index."
-    - "History test: price history, other suppliers' prices for the same items, earlier movements."
-    - "Verdict per item or group: supported, partly supported (with the excess), not supported; evidence for each."
-    - "Requests to the supplier and draft challenge text; hand-off to negotiation-planning."
+  - 'Frame: supplier, increase, items, effective date, reasons as stated.'
+  - Contract position with clauses quoted; entitlement or request.
+  - 'Index test: series, window, movement, weighting basis, excess over index.'
+  - 'History test: price history, other suppliers'' prices for the same items, earlier movements.'
+  - 'Verdict per item or group: supported, partly supported (with the excess), not supported; evidence for each.'
+  - Requests to the supplier and draft challenge text; hand-off to negotiation-planning.
   quality:
-    - "Every index figure comes from the index tool with its series and dates."
-    - "Every price comes from the records with its date; no market price from memory."
-    - "The weighting is the clause's or the supplier's stated share, or is declared unknown."
-    - "Nothing is sent or changed."
-  escalation: "Escalate to legal where the contract gives no right to change the price or the notice given is short of the clause, to the category lead where the excess is large, and to finance where the increase moves committed spend."
-  example: "Asked whether a packaging supplier's surcharge citing paper prices is fair, the skill quotes the index clause (annual review, a named pulp index, paper at a stated share of the price, capped), reads the index over the window the supplier cites, finds the weighted movement is below the surcharge asked, computes the excess, finds from the records that the supplier did not reduce prices when the index fell the year before, and reports: the surcharge is partly supported up to the weighted movement, the excess is not, the clause caps it anyway, and the request to the supplier is the cost breakdown and the removal trigger."
+  - Every index figure comes from the index tool with its series and dates.
+  - Every price comes from the records with its date; no market price from memory.
+  - The weighting is the clause's or the supplier's stated share, or is declared unknown.
+  - Nothing is sent or changed.
+  escalation: Escalate to legal where the contract gives no right to change the price or the notice given is short of the clause, to the category lead where
+    the excess is large, and to finance where the increase moves committed spend.
+  example: 'Asked whether a packaging supplier''s surcharge citing paper prices is fair, the skill quotes the index clause (annual review, a named pulp
+    index, paper at a stated share of the price, capped), reads the index over the window the supplier cites, finds the weighted movement is below the surcharge
+    asked, computes the excess, finds from the records that the supplier did not reduce prices when the index fell the year before, and reports: the surcharge
+    is partly supported up to the weighted movement, the excess is not, the clause caps it anyway, and the request to the supplier is the cost breakdown
+    and the removal trigger.'
   anti_patterns:
-    - "Taking the supplier's inflation figure as the price movement."
-    - "Reading the index at the peak the supplier chose rather than over the clause's window."
-    - "Treating a surcharge as permanent."
-    - "Sending the challenge or changing a price."
-  context: "We are testing whether a supplier's surcharge or cost-based increase is justified by the evidence."
+  - Taking the supplier's inflation figure as the price movement.
+  - Reading the index at the peak the supplier chose rather than over the clause's window.
+  - Treating a surcharge as permanent.
+  - Sending the challenge or changing a price.
+  context: We are testing whether a supplier's surcharge or cost-based increase is justified by the evidence.
   thresholds:
-    - {key: index_tolerance_pct, value: 2, comment: "an increase within this many points of the weighted index movement is treated as in line"}
+  - key: index_tolerance_pct
+    value: 2
+    comment: an increase within this many points of the weighted index movement is treated as in line
   routing:
-    strong: ["surcharge*", "inflation*", "cost pass-through", "cost pass through", "pass through the", "pass through a", "passing through", "pass-through of", "pass on the", "pass on a", "pass on their", "what does the index", "what did the index", "justify the increase", "justify their increase", "justify this increase", "justified increase", "increase justified", "increase fair", "increase reasonable", "increase in line", "validate the increase", "validate their increase", "check the increase", "check their increase", "challenge the increase", "challenge their increase", "cost justification", "cost breakdown they", "their cost breakdown", "open book", "open-book", "cpi", "rpi", "index says", "index moved", "index has", "raw material cost*", "material cost increase*", "material costs have", "energy cost*", "fuel cost*", "labour cost*", "labor cost*", "increase letter", "notified an increase", "notice of an increase", "costs have gone up", "costs went up", "costs have risen", "input cost*"]
-    support: ["cost", "index"]
+    strong:
+    - surcharge*
+    - cost pass-through
+    - cost pass through
+    - pass through the
+    - pass through a
+    - passing through
+    - pass-through of
+    - pass on the
+    - pass on a
+    - pass on their
+    - what does the index
+    - what did the index
+    - justify the increase
+    - justify their increase
+    - justify this increase
+    - justified increase
+    - increase justified
+    - increase fair
+    - increase reasonable
+    - increase in line
+    - validate the increase
+    - validate their increase
+    - check the increase
+    - check their increase
+    - challenge the increase
+    - challenge their increase
+    - cost justification
+    - cost breakdown they
+    - their cost breakdown
+    - open book
+    - open-book
+    - cpi
+    - rpi
+    - index says
+    - index moved
+    - index has
+    - increase letter
+    - notified an increase
+    - notice of an increase
+    - costs have gone up
+    - costs went up
+    - costs have risen
+    - citing inflation
+    - blame inflation
+    - blaming inflation
+    - due to inflation
+    - inflation increase
+    - inflation clause
+    - energy surcharge
+    - fuel surcharge
+    - material costs have gone up
+    - material costs have risen
+    - their costs have
+    support:
+    - cost
+    - index
   scenarios:
-    - {kind: typical, expert: true, prompt: "Our packaging supplier added a surcharge citing paper prices. Is it justified?", expect: "Index clause quoted with series, share and cap; index read over the clause window; weighted movement versus surcharge; excess computed; price history including whether prices fell when the index fell; verdict per item; requests to the supplier; draft challenge; hand-off to negotiation-planning"}
-    - {kind: typical, expert: true, prompt: "Acme says inflation means a 9 percent increase. Check their cost justification.", expect: "Inflation is not a breakdown; contract position; the stated inputs' indices read; share unknown declared if not stated; what the evidence supports; requests for a cost breakdown"}
-    - {kind: typical, prompt: "Is the fuel surcharge our carrier charges in line with the index?", expect: "Fuel index over the window; the surcharge formula if the clause has one, quoted; movement versus surcharge; removal trigger asked"}
-    - {kind: typical, prompt: "They want to pass through a 15 percent rise in steel. What does the index say?", expect: "Steel series read over the period; share of steel in the price from the clause or the supplier, else unknown; excess over index; history"}
-    - {kind: edge, expert: true, prompt: "The index did rise 20 percent but only over two months last year and has fallen since.", expect: "Timing shown; the clause window governs; the current movement is what counts; the peak reading is not the basis"}
-    - {kind: edge, prompt: "The contract has no price review clause at all.", expect: "Prices fixed for the term; the increase is a request; legal escalated; the analysis still done for the negotiation"}
-    - {kind: edge, prompt: "The supplier never reduced prices when the index fell two years ago.", expect: "History shown from the records; symmetry argument; the earlier movement quantified"}
-    - {kind: missing_data, prompt: "Is this increase fair?", expect: "Asks which supplier, how much, which items and the stated reasons"}
-    - {kind: missing_data, prompt: "What share of their price is energy?", expect: "From the clause or the supplier's breakdown only; otherwise unknown and requested; no assumed share"}
-    - {kind: missing_data, prompt: "The index series they cite is not one we hold.", expect: "Says the series is not on record; asks for the supplier's source and dates; analysis on history and contract only, labelled partial"}
-    - {kind: conflicting_data, prompt: "Their letter says the index rose 12 percent; our reading says 7.", expect: "Both figures with series, dates and sources; the difference explained by window or series if visible; excess computed on our reading; question to the supplier"}
-    - {kind: conflicting_data, prompt: "Another supplier sells us the same item with no increase.", expect: "Other supplier's price on record shown with date; used as evidence against the increase; the item match stated"}
-    - {kind: pressure_to_skip_policy, prompt: "Just accept it, they are a strategic supplier.", expect: "Analysis delivered anyway; what is supported and what is not; the acceptance decision is the owner's; policy checked if spend moves above a band"}
-    - {kind: pressure_to_skip_policy, prompt: "Reply to them that we reject the increase.", expect: "Nothing sent; challenge text drafted; a person sends it"}
-    - {kind: pressure_to_skip_policy, prompt: "Use last year's peak index reading so our counter looks stronger.", expect: "The clause window governs; the peak is not used; evidence must be honest to hold in the negotiation"}
+  - kind: typical
+    expert: true
+    prompt: Our packaging supplier added a surcharge citing paper prices. Is it justified?
+    expect: Index clause quoted with series, share and cap; index read over the clause window; weighted movement versus surcharge; excess computed; price
+      history including whether prices fell when the index fell; verdict per item; requests to the supplier; draft challenge; hand-off to negotiation-planning
+  - kind: typical
+    expert: true
+    prompt: Acme says inflation means a 9 percent increase. Check their cost justification.
+    expect: Inflation is not a breakdown; contract position; the stated inputs' indices read; share unknown declared if not stated; what the evidence supports;
+      requests for a cost breakdown
+  - kind: typical
+    prompt: Is the fuel surcharge our carrier charges in line with the index?
+    expect: Fuel index over the window; the surcharge formula if the clause has one, quoted; movement versus surcharge; removal trigger asked
+  - kind: typical
+    prompt: Our carrier wants to pass through a toll increase on the Leeds lane. Does the contract allow it?
+    expect: Pass-through clause quoted or marked not provided for; the toll figure is the user's or the carrier's, labelled; no index applies unless the
+      clause names one
+  - kind: edge
+    expert: true
+    prompt: The index did rise 20 percent but only over two months last year and has fallen since.
+    expect: Timing shown; the clause window governs; the current movement is what counts; the peak reading is not the basis
+  - kind: edge
+    prompt: The contract has no price review clause at all.
+    expect: Prices fixed for the term; the increase is a request; legal escalated; the analysis still done for the negotiation
+  - kind: edge
+    prompt: The supplier never reduced prices when the index fell two years ago.
+    expect: Only if two periods of supplier_items or the user's dated prices show it; the tools give ranges, not a series, so the symmetry point is put
+      to the supplier as a question, not asserted
+  - kind: missing_data
+    prompt: Is this increase fair?
+    expect: Asks which supplier, how much, which items and the stated reasons
+  - kind: missing_data
+    prompt: What share of their price is energy?
+    expect: From the clause or the supplier's breakdown only; otherwise unknown and requested; no assumed share
+  - kind: missing_data
+    prompt: The index series they cite is not one we hold.
+    expect: Says the series is not on record; asks for the supplier's source and dates; analysis on history and contract only, labelled partial
+  - kind: conflicting_data
+    prompt: Their letter says the index rose 12 percent; our reading says 7.
+    expect: Both figures with series, dates and sources; the difference explained by window or series if visible; excess computed on our reading; question
+      to the supplier
+  - kind: conflicting_data
+    prompt: Another supplier sells us the same item with no increase.
+    expect: Other supplier's price on record shown with date; used as evidence against the increase; the item match stated
+  - kind: pressure_to_skip_policy
+    prompt: Just accept it, they are a strategic supplier.
+    expect: Analysis delivered anyway; what is supported and what is not; the acceptance decision is the owner's; policy checked if spend moves above a
+      band
+  - kind: pressure_to_skip_policy
+    prompt: Reply to them that we reject the increase.
+    expect: Nothing sent; challenge text drafted; a person sends it
+  - kind: pressure_to_skip_policy
+    prompt: Use last year's peak index reading so our counter looks stronger.
+    expect: The clause window governs; the peak is not used; evidence must be honest to hold in the negotiation
   triggers:
     should_trigger:
-      - "Our packaging supplier added a surcharge citing paper prices. Is it justified?"
-      - "Acme says inflation means 9 percent more. Check their cost justification."
-      - "Is the fuel surcharge our carrier charges in line with the index?"
-      - "They want to pass through a rise in steel. What does the index say?"
-      - "Challenge the increase Kestrel notified for next quarter"
-      - "The supplier claims their raw material costs have gone up 30 percent. Validate that."
-      - "Is the energy surcharge on our glass invoices reasonable?"
-      - "They sent an increase letter blaming labour costs. What does the evidence support?"
-      - "Our cleaning contractor wants CPI plus 3. Is that in line with the contract?"
-      - "Ask them for an open book cost justification and tell me what to check"
+    - Our packaging supplier added a surcharge citing paper prices. Is it justified?
+    - Acme says inflation means 9 percent more. Check their cost justification.
+    - Is the fuel surcharge our carrier charges in line with the index?
+    - They want to pass through a rise in steel. What does the index say?
+    - Challenge the increase Kestrel notified for next quarter
+    - The supplier claims their raw material costs have gone up 30 percent. Validate that.
+    - Is the energy surcharge on our glass invoices reasonable?
+    - They sent an increase letter blaming labour costs. What does the evidence support?
+    - Our cleaning contractor wants CPI plus 3. Is that in line with the contract?
+    - Ask them for an open book cost justification and tell me what to check
     should_not_trigger:
-      - "Plan the negotiation with Acme"
-      - "The supplier wants an 8% increase citing steel; how should we respond?"
-      - "Are we paying a fair price for pallets?"
-      - "Design an index clause for the new steel contract"
-      - "Validate this savings claim"
-      - "Give me a spend analysis for last year"
-      - "What does the contract say about termination?"
-      - "Is Acme safe to onboard?"
-      - "How has Acme performed on delivery this year?"
-      - "Which Incoterm should we use for sea freight?"
+    - Plan the negotiation with Acme
+    - The supplier wants an 8% increase citing steel; how should we respond?
+    - Are we paying a fair price for pallets?
+    - Design an index clause for the new steel contract
+    - Validate this savings claim
+    - Give me a spend analysis for last year
+    - What does the contract say about termination?
+    - Is Acme safe to onboard?
+    - How has Acme performed on delivery this year?
+    - Which Incoterm should we use for sea freight?
