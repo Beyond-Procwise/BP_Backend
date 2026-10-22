@@ -433,23 +433,26 @@ def observe(purpose: Purpose, destination: str, *, agent: Optional[str] = None,
     call raises ``EgressDenied`` here, before the library runs.
     """
     agent = agent or UNKNOWN_AGENT
+    from src.services import egress_classify
     from src.services.egress_log import payload_digest
     _sha, _bytes = payload_digest(payload)
-    decision = _evaluate(purpose, destination, agent)
+    local = _is_local_destination(destination)
+    tags: list = [] if local else egress_classify.classify(f"https://{destination}/", payload)
+    decision = _evaluate(purpose, destination, agent, local=local, level=egress_classify.level_of(tags))
     if not decision.permitted:
         _record(purpose=purpose, destination=destination, method="LIBRARY", outcome="denied",
                 detail=decision.reason, payload_sha256=_sha, payload_bytes=_bytes,
-                agent=agent, decision=decision)
+                agent=agent, decision=decision, classification=tags)
         raise EgressDenied(reason=decision.reason, destination=destination, purpose=purpose.value)
     try:
         yield
-    except Exception as exc:  # noqa: BLE001 - recorded, then re-raised unchanged
+    except Exception as exc:  # noqa: BLE001 - recorded, then re-raised unchanged (as request() does)
         _record(purpose=purpose, destination=destination, method="LIBRARY", outcome="library_error",
                 detail=type(exc).__name__, payload_sha256=_sha, payload_bytes=_bytes,
-                agent=agent, decision=decision)
+                agent=agent, decision=decision, classification=tags)
         raise
     _record(purpose=purpose, destination=destination, method="LIBRARY", outcome="library_call",
-            payload_sha256=_sha, payload_bytes=_bytes, agent=agent, decision=decision)
+            payload_sha256=_sha, payload_bytes=_bytes, agent=agent, decision=decision, classification=tags)
 
 
 def get(url: str, *, purpose: Purpose, **kwargs: Any) -> Optional[requests.Response]:

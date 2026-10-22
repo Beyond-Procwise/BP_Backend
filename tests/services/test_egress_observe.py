@@ -111,3 +111,18 @@ def test_the_boundary_lint_knows_the_search_library():
     b = importlib.import_module("test_egress_import_boundary")
     assert "ddgs" in b._NETWORK_MODULES
     assert "src/services/supplier_enrichment/web_tools.py" in b._KNOWN
+
+
+def test_an_observed_payload_is_classified_and_the_cap_judges_it(events, monkeypatch):
+    monkeypatch.setattr(ep, "_load_row", lambda: ep.Policy(version=1, rules=ep.SEED_RULES))
+    ep.invalidate()
+    with egress.observe(Purpose.SUPPLIER_RESEARCH, "html.duckduckgo.com", agent="supplier_research",
+                        payload="Borcelle Ltd head office"):
+        pass
+    assert events[-1]["classification"] == [] and events[-1]["shadow_decision"] == "allow"
+    with egress.observe(Purpose.SUPPLIER_RESEARCH, "html.duckduckgo.com", agent="supplier_research",
+                        payload="Borcelle invoice INV-2024-001 for £17,065.50"):
+        pass
+    e = events[-1]
+    assert sorted(e["classification"]) == ["amount", "document_ref"]
+    assert e["shadow_decision"] == "deny" and "commercial" in e["shadow_reason"]
