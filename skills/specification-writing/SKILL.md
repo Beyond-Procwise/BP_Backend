@@ -21,11 +21,12 @@ Not for the sourcing event itself (rfx-design), for the evaluation model (rfx-de
 - Any existing draft, standard or drawing, labelled user-supplied.
 - Constraints: site, safety, regulatory, compatibility with what we have.
 
-- Use `tool:similar_items` for what we bought before that resembles the need, the descriptions used and the suppliers
+- Use `tool:similar_items` for the descriptions we bought under before that resemble the need (line counts and a price range per source; it names no supplier)
 - Use `tool:search_contracts` for an agreement whose schedule already specifies the item or service
 - Use `tool:extract_clauses` for the specification or service description in that agreement, quoted
 - Use `tool:get_policy` for the organisation's specification rules (standards, sustainability, accessibility, security)
 - Use `tool:run_calculation` with `requirement.completeness_score` to score the draft's completeness against the required elements
+- Use `tool:supplier_discovery` with the item description, for the suppliers on our records that provide it
 NOT AVAILABLE: build_docx. the specification is given as structured text
 
 Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.min_completeness_pct`.
@@ -33,7 +34,7 @@ Settings this skill reads from its own configuration, named by key and never res
 ## Workflow
 
 1. Frame the need: outcome, user, volume, timescale, budget band if given.
-2. Look at what we bought before and any agreement schedule for the same thing; reuse language that worked and note the suppliers it came from.
+2. Look at the descriptions we bought under before (similar_items), the suppliers on record for them (supplier_discovery) and any agreement schedule for the same thing; reuse language that worked.
 3. Read the policy for mandatory content (standards, sustainability, security, accessibility) and quote it.
 4. Draft in the order: purpose and outcome; scope and exclusions; mandatory requirements (each measurable and testable); desirable requirements with how they score; deliverables and milestones; acceptance criteria and tests; service levels where relevant (hand to sla-design for a regime); information suppliers must return (price basis, lead time, compliance evidence); constraints and assumptions; open questions.
 5. Critique the draft: brand names or single-supplier features (bias), requirements without a measure, acceptance without a test, deliverables without a date, missing policy content. Score completeness with the registry calculation and name the gaps; a draft under `config.thresholds.min_completeness_pct` is not ready to issue.
@@ -72,7 +73,7 @@ Escalate to the engineer or service owner for technical content, to the policy o
 
 ## Worked example
 
-Asked to write a spec for a fleet of label printers, the skill finds the printers bought two years ago with their description and supplier, reads the policy (energy label and security requirements mandatory), drafts outcome (labels per hour at a stated quality), mandatory requirements with measures, desirables with scoring, acceptance tests (sample run at the site), information to return (price per unit, consumables price, lead time, energy rating), and critiques the stakeholder's draft for naming one brand without 'or equivalent' and for an acceptance clause with no test.
+Asked to write a spec for a fleet of label printers, the skill finds the printer descriptions bought before (similar_items) and the suppliers on record for them (supplier_discovery), reads the policy (energy label and security requirements mandatory), drafts outcome (labels per hour at a stated quality), mandatory requirements with measures, desirables with scoring, acceptance tests (sample run at the site), information to return (price per unit, consumables price, lead time, energy rating), and critiques the stakeholder's draft for naming one brand without 'or equivalent' and for an acceptance clause with no test.
 
 ## Anti-patterns
 

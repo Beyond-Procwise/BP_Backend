@@ -113,8 +113,9 @@
   - kind: typical
     expert: true
     prompt: Segment our supplier base for last year.
-    expect: Spend cube read for the year; share of total per supplier from the cube; replaceability from similar items; four segments with evidence; strategic
-      suppliers checked for contract and screening; treatments and owners; nothing recorded
+    expect: Spend cube read for the year; share of total per supplier from the cube; replaceability from each candidate's items (supplier_items) and the
+      other suppliers on record for them (supplier_discovery); four segments with evidence; strategic suppliers checked for contract and screening; treatments
+      and owners; nothing recorded
   - kind: typical
     expert: true
     prompt: Which of our suppliers are strategic and which are just leverage?
@@ -294,7 +295,6 @@
     - infrequent suppliers
     - low-value purchase*
     - low value purchase*
-    - small purchase*
     - catalogue for
     - catalog for
     - small repeat
@@ -514,7 +514,7 @@
     expect: Administrative change; clauses touched listed; no materiality; the change-control form still applies; master-data owner informed via the user
   - kind: edge
     prompt: No change-control clause is stored for this contract.
-    expect: Procedure unknown; the amendment should state its own authority; escalated to legal; review of touched clauses still done
+    expect: Procedure unknown; the change is referred to legal before anything is treated as agreed; review of touched clauses still done
   - kind: missing_data
     prompt: Review the amendment.
     expect: Asks which contract and for the proposed change text or description
@@ -611,13 +611,13 @@
   outputs:
   - 'Frame: item, value, frequency, deadline.'
   - 'Channel: the route, the policy rule quoted, and why.'
-  - 'Coverage: the agreement or supplier on record, with prices paid if present.'
+  - 'Coverage: the agreement on record and the suppliers on record for the item with their evidence counts (no cited tool holds prices).'
   - Steps in order with who approves and the expected lead time.
   - What not to do (split, card outside the rule) where relevant, with the pointer to the right skill.
   quality:
   - The rule cited is quoted from policy; where none exists the default is named as a default.
   - Any supplier named is on our records; none from memory.
-  - Prices paid are from the records with their dates.
+  - Suppliers named come from supplier_discovery with their evidence counts; no price is quoted, because no cited tool holds one.
   - No requisition, order or approval is made.
   escalation: Escalate to the category owner where an agreement exists but the requester has reasons not to use it, to the policy owner where no channel
     rule covers the case, and to procurement-policy-compliance where the value or the splitting raises a compliance question.
@@ -778,16 +778,18 @@
   - Any existing draft, standard or drawing, labelled user-supplied.
   - 'Constraints: site, safety, regulatory, compatibility with what we have.'
   tools:
-  - 'similar_items: for what we bought before that resembles the need, the descriptions used and the suppliers'
+  - 'similar_items: for the descriptions we bought under before that resemble the need (line counts and a price range per source; it names no supplier)'
   - 'search_contracts: for an agreement whose schedule already specifies the item or service'
   - 'extract_clauses: for the specification or service description in that agreement, quoted'
   - 'get_policy: for the organisation''s specification rules (standards, sustainability, accessibility, security)'
   - 'run_calculation: with `requirement.completeness_score` to score the draft''s completeness against the required elements'
+  - 'supplier_discovery: with the item description, for the suppliers on our records that provide it'
   unavailable:
   - 'build_docx: the specification is given as structured text'
   workflow:
   - 'Frame the need: outcome, user, volume, timescale, budget band if given.'
-  - Look at what we bought before and any agreement schedule for the same thing; reuse language that worked and note the suppliers it came from.
+  - Look at the descriptions we bought under before (similar_items), the suppliers on record for them (supplier_discovery) and any agreement schedule for
+    the same thing; reuse language that worked.
   - Read the policy for mandatory content (standards, sustainability, security, accessibility) and quote it.
   - 'Draft in the order: purpose and outcome; scope and exclusions; mandatory requirements (each measurable and testable); desirable requirements with how
     they score; deliverables and milestones; acceptance criteria and tests; service levels where relevant (hand to sla-design for a regime); information
@@ -817,10 +819,11 @@
   - The technical truth is the stakeholder's; the skill does not invent specifications for things it has no record of.
   escalation: Escalate to the engineer or service owner for technical content, to the policy owner where mandatory content is unclear, and to legal where
     the specification would become a contract schedule.
-  example: Asked to write a spec for a fleet of label printers, the skill finds the printers bought two years ago with their description and supplier, reads
-    the policy (energy label and security requirements mandatory), drafts outcome (labels per hour at a stated quality), mandatory requirements with measures,
-    desirables with scoring, acceptance tests (sample run at the site), information to return (price per unit, consumables price, lead time, energy rating),
-    and critiques the stakeholder's draft for naming one brand without 'or equivalent' and for an acceptance clause with no test.
+  example: Asked to write a spec for a fleet of label printers, the skill finds the printer descriptions bought before (similar_items) and the suppliers
+    on record for them (supplier_discovery), reads the policy (energy label and security requirements mandatory), drafts outcome (labels per hour at a stated
+    quality), mandatory requirements with measures, desirables with scoring, acceptance tests (sample run at the site), information to return (price per
+    unit, consumables price, lead time, energy rating), and critiques the stakeholder's draft for naming one brand without 'or equivalent' and for an acceptance
+    clause with no test.
   anti_patterns:
   - Copying a supplier's brochure as the specification.
   - Mandatory requirements that are preferences.
@@ -833,7 +836,6 @@
     comment: completeness score below which the specification is not ready to issue
   routing:
     strong:
-    - specification*
     - spec for
     - the spec
     - write the spec
@@ -858,6 +860,17 @@
     - spec out
     - acceptance criteria
     - acceptance test*
+    - specification for
+    - a specification
+    - the specification for
+    - write a specification
+    - write the specification
+    - draft a specification
+    - draft the specification
+    - review the specification
+    - review this specification
+    - specifications for
+    - specification document*
     support:
     - requirement*
     - spec
@@ -1009,9 +1022,9 @@
     the excess is large, and to finance where the increase moves committed spend.
   example: 'Asked whether a packaging supplier''s surcharge citing paper prices is fair, the skill quotes the index clause (annual review, a named pulp
     index, paper at a stated share of the price, capped), reads the index over the window the supplier cites, finds the weighted movement is below the surcharge
-    asked, computes the excess, finds from the records that the supplier did not reduce prices when the index fell the year before, and reports: the surcharge
-    is partly supported up to the weighted movement, the excess is not, the clause caps it anyway, and the request to the supplier is the cost breakdown
-    and the removal trigger.'
+    asked, computes the excess, finds from two periods of supplier_items that the supplier''s price range did not fall when the index fell the year before
+    (put to the supplier as a question, since the records hold ranges, not a dated series), and reports: the surcharge is partly supported up to the weighted
+    movement, the excess is not, the clause caps it anyway, and the request to the supplier is the cost breakdown and the removal trigger.'
   anti_patterns:
   - Taking the supplier's inflation figure as the price movement.
   - Reading the index at the peak the supplier chose rather than over the clause's window.
@@ -1084,8 +1097,9 @@
   - kind: typical
     expert: true
     prompt: Our packaging supplier added a surcharge citing paper prices. Is it justified?
-    expect: Index clause quoted with series, share and cap; index read over the clause window; weighted movement versus surcharge; excess computed; price
-      history including whether prices fell when the index fell; verdict per item; requests to the supplier; draft challenge; hand-off to negotiation-planning
+    expect: Index clause quoted with series, share and cap; index read over the clause window; weighted movement via the registry where the share is stated;
+      excess computed; price ranges over two periods from supplier_items, with 'did prices fall when the index fell' put as a question unless the two periods
+      show it; verdict per item; requests to the supplier; draft challenge; hand-off to negotiation-planning
   - kind: typical
     expert: true
     prompt: Acme says inflation means a 9 percent increase. Check their cost justification.

@@ -40,7 +40,7 @@
   kind: missing_data
   context: "We are reviewing the quality of the supplier master records."
   prompt: "Check the data quality."
-  expect: "Asks the scope or states the default (whole file) and proceeds"
+  expect: "Asks the scope before reading anything"
   expert_graded: false
 - id: m2
   kind: missing_data

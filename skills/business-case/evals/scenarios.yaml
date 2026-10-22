@@ -1,17 +1,17 @@
 - id: t1
   kind: typical
   prompt: "Build the business case for replacing the forklift fleet."
-  expect: "Options including keep-and-maintain; rate and horizon quoted from policy; costs from quotes, cube and sponsor figures with gaps named; benefits with owners and status; net position, payback, sensitivity via the registry; risks; assumptions table; approval route; nothing assumed"
+  expect: "Options including keep-and-maintain; rate and horizon quoted from policy; costs from quotes, cube and sponsor figures with gaps named; benefits with owners and status; present-value cost via the registry; net and payback labelled unverified with inputs; sensitivity; risks; assumptions table; approval route; nothing assumed"
   expert_graded: true
 - id: t2
   kind: typical
   prompt: "Is it worth moving the cleaning contract in-house?"
-  expect: "Status quo costed from the contract and cube; in-house costs from the sponsor's figures labelled; benefits owned; net position via the registry; the sponsor's headcount figure is an assumption"
+  expect: "Status quo costed from the contract and cube; in-house costs from the sponsor's figures labelled; benefits owned; present-value cost via the registry; net labelled unverified; the sponsor's headcount figure is an assumption"
   expert_graded: true
 - id: t3
   kind: typical
   prompt: "What is the payback on the new packaging machine?"
-  expect: "Payback via the registry from quoted cost and owned benefits; rate from policy; sensitivity"
+  expect: "Cost via the registry from the quote; owned benefits over the horizon via deal.scaled_total; payback shown with inputs and labelled unverified; rate from policy; sensitivity"
   expert_graded: false
 - id: t4
   kind: typical

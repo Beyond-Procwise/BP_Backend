@@ -22,8 +22,10 @@ Not for a ruling on a specific purchase (procurement-policy-compliance), for the
 
 - Use `tool:get_policy` for the governed rules at each stage (approval bands, required quotes, receipt rules, payment terms) quoted
 - Use `tool:list_governance` for the policies and rules that exist, so the explanation names what governs and what does not
-- Use `tool:invoice_reconciliation` for where a specific order or invoice sits and any finding or hold on it
 - Use `tool:contract_pipeline` for where a specific contract sits in its life
+- Use `tool:open_orders` for where a specific order sits: its invoices booked, balance, receipts, and the stored status and expected date ('not recorded' is said as such)
+- Use `tool:invoice_status` for where a specific invoice sits: status, due and paid dates as stored and its open-finding count
+- Use `tool:invoice_reconciliation` for the open findings on a supplier's documents in full, when a finding is what stops an item
 NOT AVAILABLE: build_docx. the walk-through is given as text
 
 Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.max_stages`.
@@ -33,7 +35,7 @@ Settings this skill reads from its own configuration, named by key and never res
 1. Frame: which process or stage, for whom, and whether a specific item is in question.
 2. Read what governs: the policies and rules that exist for the stages asked about; quote the ones that apply; name the stages where nothing is governed and describe the default practice as a default.
 3. Walk the stages in order with, for each, what happens, who acts, what the system records, what can stop it and who clears a stop. Keep each stage to a few sentences; `config.thresholds.max_stages` stages at most before splitting into two answers.
-4. Where a specific item is in question, read its record and say where it sits, what is open on it and who acts next.
+4. Where a specific item is in question, read it with open_orders or invoice_status (the supplier is needed; the stored status is usually 'not recorded', which is said as such) and the findings in full; say what the records show, what they do not, and who acts next.
 5. Point to the skill (by name, from the ones this playbook mentions) or the person for the next step; list the terms used with one-line meanings.
 
 ## Frameworks and heuristics

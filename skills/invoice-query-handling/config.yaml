@@ -61,7 +61,6 @@ routing:                         # how the orchestrator decides this skill cover
     - "paying the invoice"
     - "why we haven't paid"
     - "invoice was rejected"
-    - "invoices are blocked"
     - "invoice has been rejected"
   support:                       # 1 point each
     - "invoice*"

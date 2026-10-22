@@ -1,6 +1,6 @@
 # Configurable defaults for this skill. They are starting points for review, not governed policy.
 thresholds:
-  legal_referral_gbp: 10000    # claim value above which legal reviews before any step is taken
+  legal_referral_gbp: 10000    # claim value above which legal leads from the start; legal reviews every draft regardless
 unavailable_tools:
   - send_message
   - build_docx

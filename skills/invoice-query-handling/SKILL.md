@@ -21,7 +21,7 @@ Not for a price or quantity overcharge (overbilling-investigation), for terms ne
 - Who is asking (supplier, requester, finance) so the reply fits.
 
 - Use `tool:invoice_status` for the supplier's invoices (or one by id) with amount, PO, payment terms, status, due and paid dates exactly as stored ('not recorded' when absent), overdue only from a stored due date, and the count of open findings on each
-- Use `tool:invoice_reconciliation` for the open findings in full (the hold reasons the triage engine recorded) and the line matches behind them
+- Use `tool:invoice_reconciliation` for the open findings in full (the catches that would hold an invoice) and the line matches behind them
 - Use `tool:supplier_lookup` for the supplier's record and status (never bank details)
 - Use `tool:search_contracts` for the agreement's payment terms
 - Use `tool:extract_clauses` for the payment, invoicing and dispute clauses, quoted
@@ -38,7 +38,7 @@ Settings this skill reads from its own configuration, named by key and never res
 3. Where no finding and no status is recorded, the records do not say why the invoice is unpaid: say so, and list what a person must check (receipt recorded, approval, payment run), without asserting any of them.
 4. Terms: the agreement's payment terms quoted; overdue only as invoice_status judges it from a stored due date; where no due date is stored, say the due date is not on record and do not compute one from the terms.
 5. What the supplier must do (resubmit with the order number, issue a credit note, provide the delivery note) and what we must do (record the receipt, clear the finding, approve), each with the role responsible; the reply names roles, never people.
-6. Draft the reply for the asker: status as stored, blocker, what is needed from whom; no payment date promised unless the record holds a paid date or a scheduled one; hand the text to supplier-communication-drafting where tone matters.
+6. Draft the reply for the asker: status as stored, blocker, what is needed from whom; no payment date promised unless the record holds a paid date; hand the text to supplier-communication-drafting where tone matters.
 7. Patterns: several invoices with the same finding kind are reported as one finding for the process owner.
 
 ## Frameworks and heuristics

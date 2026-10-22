@@ -272,3 +272,21 @@ def test_each_skills_scenario_context_line_routes_to_that_skill(router):
         if line and (router.route(line) or sr.NO_MATCH).skill != e.name:
             off.append((e.name, (router.route(line) or sr.NO_MATCH).skill))
     assert off == []
+
+
+# Probes from the 2026-10-22 content review: ordinary requests that a broad routing term once captured
+# ("segment*", "budget*", "framework*", "inflation*", "sla*", "exception*", "specification*"), and one
+# legitimate framework question that a first narrowing silenced. Pinned so the terms stay narrow.
+REVIEW_PROBES_SILENT = [
+    "What is the budget code for this requisition?", "What is the framework for evaluating supplier risk?",
+    "What is the specification of the laptops we bought?", "Are there any exceptions in the audit report?",
+    "Which market segment does Acme serve?", "What are the energy costs in our spend this year?",
+    "Show me the preferred supplier list", "Did the consignment arrive?", "What is our ytd spend with Acme?",
+]
+REVIEW_PROBES = {"framework-call-off": ["Which framework do we use for IT hardware?"]}
+
+
+def test_review_probes_stay_silent_and_the_framework_question_routes(router):
+    noisy = [(p, router.route(p).skill) for p in REVIEW_PROBES_SILENT if router.route(p) is not None]
+    assert noisy == []
+    assert [(sk, p) for sk, ps in REVIEW_PROBES.items() for p in ps if (router.route(p) or sr.NO_MATCH).skill != sk] == []

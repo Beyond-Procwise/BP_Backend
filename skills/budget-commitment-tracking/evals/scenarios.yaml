@@ -1,7 +1,7 @@
 - id: t1
   kind: typical
   prompt: "How much of the facilities budget is left this year?"
-  expect: "Budget from the user or policy with source; invoiced from the cube; open orders from reconciliation; contracted ahead from pipeline and trackers; run rate and projection via the calculations; overspend flag against the configured share; scope caveat; nothing posted"
+  expect: "Budget from the user or policy with source; invoiced from the cube; open balances from open_orders; contracts ending from the pipeline with stored totals, amounts due as the user states; projection via deal.scaled_total from the latest full month and share via deal.share_pct; overspend flag against the configured share; mapping caveat; nothing posted"
   expert_graded: true
 - id: t2
   kind: typical
@@ -11,7 +11,7 @@
 - id: t3
   kind: typical
   prompt: "Are we going to overspend on IT this year?"
-  expect: "Needs the budget figure; run rate from the elapsed period; projection; flag if above the configured share; caveats"
+  expect: "Needs the budget figure; projection via deal.scaled_total from the latest full month and the months remaining; flag if above the configured share; caveats"
   expert_graded: false
 - id: t4
   kind: typical
@@ -40,7 +40,7 @@
   kind: missing_data
   context: "We are reporting where a budget stands against invoiced spend and open commitments."
   prompt: "Where are we against budget?"
-  expect: "Asks scope, period and the budget figure before reading anything; offers a commitment-only position if no budget exists"
+  expect: "Asks scope, period and the budget figure before reading anything"
   expert_graded: false
 - id: m2
   kind: missing_data
@@ -52,7 +52,7 @@
   kind: missing_data
   context: "We are reporting where a budget stands against invoiced spend and open commitments."
   prompt: "Project to year end."
-  expect: "Run rate via the calculation over the elapsed period; states the elapsed months; no seasonality assumed"
+  expect: "Projection via deal.scaled_total from the latest full month's invoiced figure and the months remaining; states which month; no seasonality assumed"
   expert_graded: false
 - id: c1
   kind: conflicting_data

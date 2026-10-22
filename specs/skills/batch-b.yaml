@@ -18,11 +18,12 @@
   - Any facts the user has that the records do not hold, labelled user-supplied.
   tools:
   - 'supplier_lookup: for the supplier''s record and the contact role on file (never personal contact details in the draft)'
-  - 'invoice_reconciliation: for the order and invoice facts a chaser or query cites (numbers, dates, amounts)'
+  - 'invoice_reconciliation: for the order and invoice line facts and the open findings a chaser or query cites (numbers, dates, amounts)'
   - 'search_contracts: for the agreement the message refers to'
   - 'extract_clauses: for the clause wording a message relies on, quoted'
   - 'obligation_tracker: for the dates and obligations the message cites'
   - 'get_policy: for any communication rule (who may write to suppliers, confidentiality, what may not be promised)'
+  - 'invoice_status: for an invoice''s status, due and paid dates as stored (''not recorded'' is said as such) when the message concerns an invoice'
   unavailable:
   - 'send_message: the draft is given as text; a person sends it from their own mailbox'
   - 'build_docx: a letter is given as text'
@@ -141,8 +142,8 @@
   - kind: typical
     expert: true
     prompt: Reply to the supplier who asked why their invoice has not been paid.
-    expect: Invoice status from reconciliation (on hold reason, missing PO, open finding); facts with references; no payment promise; ask for what is missing;
-      flag to finance if a commitment is needed
+    expect: Status as stored via invoice_status (usually not recorded, said so) and the open findings from reconciliation as the reason; facts with references;
+      no payment promise; ask for what is missing; flag to finance if a commitment is needed
   - kind: typical
     prompt: Write to Borealis asking for their insurance certificate and ISO documents.
     expect: Documents named; deadline; where to send; no personal data; courteous first request
@@ -345,7 +346,6 @@
     - delivered more than
     - only received
     - we received only
-    - arrived damaged
     - came damaged
     - units damaged
     - damaged units
@@ -512,7 +512,7 @@
   thresholds:
   - key: legal_referral_gbp
     value: 10000
-    comment: claim value above which legal reviews before any step is taken
+    comment: claim value above which legal leads from the start; legal reviews every draft regardless
   routing:
     strong:
     - dispute with
@@ -706,9 +706,9 @@
   escalation: Escalate to finance where value figures differ from the ledger's, to the CPO where a target is missing, and to the data owner where a source
     is incomplete for the period.
   example: Asked for the quarterly procurement report for the board, the skill reads the cube for the quarter and the prior one, the contract pipeline for
-    coverage and expiries, the ledger for value by status, the reconciliation for no-order invoices and findings, and the scorecards of the top suppliers;
-    it writes a summary page of seven figures with movements and the two targets the policy holds, the five sections with sources, names that one category
-    has no contract coverage data, and lists the three questions the figures raise.
+    coverage and expiries, the ledger for value by status, the corpus facts for findings by type and invoices without orders, and the scorecards of the
+    top suppliers; it writes a summary page of seven figures with movements and the two targets the policy holds, the five sections with sources, says that
+    the share of spend under a live agreement is not measured by any tool, and lists the three questions the figures raise.
   anti_patterns:
   - Reporting claimed savings as delivered.
   - Explaining a movement with a cause the records do not show.
@@ -770,8 +770,8 @@
   - kind: typical
     expert: true
     prompt: Prepare the quarterly procurement report for the board.
-    expect: Period and prior period framed; cube, pipeline, ledger, reconciliation and scorecards read; summary figures with movements and policy targets;
-      value by ledger status; data gaps named; sources per figure; nothing invented
+    expect: Period and prior period framed; cube, pipeline, ledger, corpus facts and scorecards read; summary figures with movements and policy targets;
+      value as the ledger names it; data gaps named (no category cut, coverage not measured); sources per figure; nothing invented
   - kind: typical
     expert: true
     prompt: How is procurement doing this year against last?
@@ -792,7 +792,7 @@
     expect: Says the cube has no category; offers supplier, buyer, country or month cuts, or a category built from the suppliers the user names, labelled
   - kind: edge
     prompt: Spend fell 20 percent. Why?
-    expect: Movement reported; causes only where the cube shows them (category, supplier); otherwise a question for the reader
+    expect: Movement reported via deal.pct_change; causes only where the cube shows them (supplier, buyer, month); otherwise a question for the reader
   - kind: missing_data
     prompt: Write the report.
     expect: Asks the period and the reader before reading anything
@@ -1087,7 +1087,7 @@
     commits spend is checked with `tool:check_policy` and reported as replied. Nothing is ordered, screened or signed by the skill; the plan names the acts
     and their owners.
   outputs:
-  - 'Frame and exposure: spend, items, category shares, items with no alternative.'
+  - 'Frame and exposure: spend and share of total, items from supplier_items, items with no other supplier on record.'
   - 'Alternatives table: supplier, items, price and date, screening status, lead time (user-supplied).'
   - 'Signals: financial health and date, risk events, clauses quoted.'
   - Gaps by colour with the rule applied.
@@ -1099,11 +1099,11 @@
   - Nothing is ordered or signed.
   escalation: Escalate to the category lead for red gaps, to compliance to screen backups, to legal for continuity and escrow clauses, and to urgent-sourcing
     when a trigger fires.
-  example: 'Asked what happens if a machined-parts supplier goes into administration, the skill reads the cube (a large share of the machining category),
-    finds one alternative on record for most items (screened) but none for two parts, reads the financial health record (dated, lower rating), the contract''s
-    insolvency termination clause and the absence of a tooling clause, notes the user''s stock cover is short for the two parts, marks them red, and plans:
-    screen a second candidate found by discovery, confirm tooling ownership with legal, a stock build for the two parts via the approval route, triggers
-    to watch, and the first-day actions in order.'
+  example: 'Asked what happens if a machined-parts supplier goes into administration, the skill reads the cube (a notable share of total spend) and the
+    supplier''s items (supplier_items), finds one alternative on record for most items (screened) but none for two parts, reads the financial health record
+    (dated, lower rating), the contract''s insolvency termination clause and the absence of a tooling clause, notes the user''s stock cover is short for
+    the two parts, marks them red, and plans: screen a second candidate found by discovery, confirm tooling ownership with legal, a stock build for the
+    two parts via the approval route, triggers to watch, and the first-day actions in order.'
   anti_patterns:
   - Calling a supplier a backup without screening or records of the items.
   - Estimating lead times or stock the user has not given.
@@ -1190,7 +1190,8 @@
     expect: Lanes and volumes from the records; alternative carriers on record; force-majeure clause quoted; day-one actions
   - kind: typical
     prompt: Which of our suppliers are a single point of failure?
-    expect: Items with one supplier on record across the cube; category shares; screened alternatives absent; ranked by exposure; no market knowledge invented
+    expect: Suppliers whose items (supplier_items) have no other supplier on record (supplier_discovery), for the suppliers the user names or the largest
+      in the cube; shares of total; ranked by exposure; no market knowledge invented
   - kind: edge
     expert: true
     prompt: The supplier holds our tooling and the drawings.

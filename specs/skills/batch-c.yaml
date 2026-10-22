@@ -18,8 +18,11 @@
   tools:
   - 'get_policy: for the governed rules at each stage (approval bands, required quotes, receipt rules, payment terms) quoted'
   - 'list_governance: for the policies and rules that exist, so the explanation names what governs and what does not'
-  - 'invoice_reconciliation: for where a specific order or invoice sits and any finding or hold on it'
   - 'contract_pipeline: for where a specific contract sits in its life'
+  - 'open_orders: for where a specific order sits: its invoices booked, balance, receipts, and the stored status and expected date (''not recorded'' is
+    said as such)'
+  - 'invoice_status: for where a specific invoice sits: status, due and paid dates as stored and its open-finding count'
+  - 'invoice_reconciliation: for the open findings on a supplier''s documents in full, when a finding is what stops an item'
   unavailable:
   - 'build_docx: the walk-through is given as text'
   workflow:
@@ -28,7 +31,8 @@
     and describe the default practice as a default.'
   - Walk the stages in order with, for each, what happens, who acts, what the system records, what can stop it and who clears a stop. Keep each stage to
     a few sentences; `config.thresholds.max_stages` stages at most before splitting into two answers.
-  - Where a specific item is in question, read its record and say where it sits, what is open on it and who acts next.
+  - Where a specific item is in question, read it with open_orders or invoice_status (the supplier is needed; the stored status is usually 'not recorded',
+    which is said as such) and the findings in full; say what the records show, what they do not, and who acts next.
   - Point to the skill (by name, from the ones this playbook mentions) or the person for the next step; list the terms used with one-line meanings.
   heuristics:
   - Explain the process the organisation runs, not a textbook one; the policy is the source and its absence is said.
@@ -133,7 +137,8 @@
     expect: Stages from requisition to payment as governed; where the three-way match sits; findings and holds explained with owners; glossary
   - kind: typical
     prompt: Why is my order stuck?
-    expect: Asks for the order if not given; reads its record; says what is open on it and who acts next; no change made
+    expect: Asks for the order and the supplier if not given; reads open_orders for its invoices, balance, receipts and stored status (usually not recorded,
+      said so) and the findings; says what the records show and who acts next; no change made
   - kind: typical
     prompt: How does contract approval work?
     expect: Approval bands and signatory rules quoted; the contract pipeline stages; who signs; where nothing is governed, said
@@ -470,8 +475,6 @@
     - under the agreement
     - under our agreement
     - from the agreement
-    - the framework
-    - a framework
     - framework agreement*
     - framework contract*
     - framework lot*
@@ -480,7 +483,14 @@
     - from the framework
     - via the framework
     - through the framework
-    - frameworks
+    - on the framework
+    - which framework
+    - framework do we
+    - framework covers
+    - framework for buying
+    - framework for purchasing
+    - buy under the framework
+    - buy from the framework
     support:
     - lot
     - agreement
@@ -641,7 +651,6 @@
     comment: exception value above which the senior approver the policy names decides
   routing:
     strong:
-    - exception*
     - deviation*
     - exemption*
     - dispensation*
@@ -680,6 +689,15 @@
     - outside the rules
     - against the rules
     - derogation*
+    - exception request
+    - an exception
+    - exception to the
+    - exception for
+    - request an exception
+    - policy exception*
+    - exceptions to the
+    - grant an exception
+    - need an exception
     support:
     - policy
     - rule*
@@ -797,14 +815,15 @@
   - Invoiced to date from the cube for the scope and period.
   - 'Open commitments: for each supplier in scope, the open balance per order from open_orders (order total minus invoices booked, same currency, as stored);
     contracts ending in the period from the pipeline with their stored total value, and any amounts due that the user states, labelled.'
-  - 'Position: budget, invoiced, open order balances, contracted amounts the user states, remaining; the year-end projection from the monthly invoiced figure
-    and the months remaining via `deal.scaled_total`; the share of budget used via `deal.share_pct`; a projection above the budget by more than `config.thresholds.overspend_alert_pct`
-    is flagged.'
+  - 'Position: budget, invoiced, open order balances, contracted amounts the user states, remaining; the year-end projection from the latest full month''s
+    invoiced figure (cube by month) and the months remaining via `deal.scaled_total`; the share of budget used via `deal.share_pct`; a projection above
+    the budget by more than `config.thresholds.overspend_alert_pct` is flagged.'
   - Movements against the prior period via `deal.pct_change`; the largest open balances named.
   - 'Caveats: the scope mapping; order and invoice tax basis; currencies without rates; orders with no value.'
   heuristics:
   - Committed is the open order balance plus what the user states as contracted and due; invoiced is spent; the sum against the budget is the position.
-  - The projection scales the invoiced-to-date monthly figure by the months remaining; say that is what it is.
+  - The projection scales the latest full month's invoiced figure (from the cube by month) by the months remaining via the registry; say which month it
+    rests on.
   - The budget is the user's or the policy's figure; the skill never sets one.
   - Budgets live by cost centre or category and the records do not; the mapping to suppliers or buyers is stated, never silent.
   policy_hooks: A governed budget or limit comes from `tool:get_policy` and is quoted; otherwise the budget figure is the user's and labelled. Nothing is
@@ -817,21 +836,22 @@
   - Caveats on mapping, tax basis, currency and missing values.
   quality:
   - Every figure traces to a tool result or the user's budget statement.
-  - The run rate and movements come from the calculation registry.
+  - The projection, the share of budget and the movements come from the calculation registry (scaled_total, share_pct, pct_change); no average is computed
+    in the answer.
   - Scope mapping between the records and the budget is stated.
   - Nothing is posted or committed.
   escalation: Escalate to the budget owner where the projection exceeds the budget by the configured share, to finance for accruals and scope reconciliation,
     and to the category lead where one commitment dominates.
   example: Asked how much of the facilities budget is left this fiscal year, the skill takes the budget from the user, maps the scope to the facilities
     buyer, reads invoiced spend for that buyer from the cube, the open balances on the facilities suppliers' orders from open_orders, the maintenance contract
-    ending this year from the pipeline with its stored total and the user's statement of what is still due, projects year end from the monthly invoiced
-    figure via the registry, finds the projection above the budget by more than the configured share, and reports the position with the three largest open
-    balances and the caveat that the budget line and the buyer dimension do not match exactly.
+    ending this year from the pipeline with its stored total and the user's statement of what is still due, projects year end from the latest full month's
+    invoiced figure and the months remaining via the registry, finds the projection above the budget by more than the configured share, and reports the
+    position with the three largest open balances and the caveat that the budget line and the buyer dimension do not match exactly.
   anti_patterns:
   - Inventing a budget figure.
   - Counting an order both as open commitment and as invoiced.
-  - Projecting from one month's spend as if it were the run rate.
   - Posting an accrual or releasing a commitment from the skill.
+  - Projecting from a part-month or an average the registry did not compute.
   context: We are reporting where a budget stands against invoiced spend and open commitments.
   thresholds:
   - key: overspend_alert_pct
@@ -868,10 +888,6 @@
     - year-end position
     - outturn
     - out-turn
-    - budget for
-    - budget left
-    - the budget
-    - our budget
     - against budget
     - against the budget
     - budget position
@@ -879,9 +895,16 @@
     - budget remaining
     - left of the budget
     - committed value
-    - full-year spend
-    - full year spend
-    - full-year position
+            - full-year position
+    - how much budget
+    - budget is left
+    - of our budget
+    - of the budget
+    - budget do we have
+    - over the budget
+    - within budget
+    - within the budget
+    - budget this quarter
     support:
     - budget
     - forecast
@@ -891,8 +914,9 @@
   - kind: typical
     expert: true
     prompt: How much of the facilities budget is left this year?
-    expect: Budget from the user or policy with source; invoiced from the cube; open orders from reconciliation; contracted ahead from pipeline and trackers;
-      run rate and projection via the calculations; overspend flag against the configured share; scope caveat; nothing posted
+    expect: Budget from the user or policy with source; invoiced from the cube; open balances from open_orders; contracts ending from the pipeline with
+      stored totals, amounts due as the user states; projection via deal.scaled_total from the latest full month and share via deal.share_pct; overspend
+      flag against the configured share; mapping caveat; nothing posted
   - kind: typical
     expert: true
     prompt: What is our committed spend with Acme for the rest of the year?
@@ -900,7 +924,8 @@
       user states them, labelled; invoiced to date separately; no double count
   - kind: typical
     prompt: Are we going to overspend on IT this year?
-    expect: Needs the budget figure; run rate from the elapsed period; projection; flag if above the configured share; caveats
+    expect: Needs the budget figure; projection via deal.scaled_total from the latest full month and the months remaining; flag if above the configured
+      share; caveats
   - kind: typical
     prompt: What should finance accrue for open orders at month end?
     expect: Open order balances by supplier from open_orders with the tax-basis caveat; finance posts; the skill reports
@@ -917,13 +942,13 @@
       invented
   - kind: missing_data
     prompt: Where are we against budget?
-    expect: Asks scope, period and the budget figure before reading anything; offers a commitment-only position if no budget exists
+    expect: Asks scope, period and the budget figure before reading anything
   - kind: missing_data
     prompt: What is the budget for packaging?
     expect: From policy or the user only; if neither, says no budget is on record
   - kind: missing_data
     prompt: Project to year end.
-    expect: Run rate via the calculation over the elapsed period; states the elapsed months; no seasonality assumed
+    expect: Projection via deal.scaled_total from the latest full month's invoiced figure and the months remaining; states which month; no seasonality assumed
   - kind: conflicting_data
     prompt: Finance says 400k spent, the cube says 350k.
     expect: Both with scope and period; likely scope or timing differences named as questions; the report uses the cube and says so
@@ -1015,7 +1040,7 @@
   - Duplicate pairs with evidence and proposed survivor.
   - Incomplete and unscreened records with the empty fields; invoices on unonboarded records.
   - Dormant records with last invoice date.
-  - 'Change requests: the verification steps and the owner; no details shown.'
+  - 'Change requests: routed to finance and the master-data owner for the verification procedure; the steps are not reproduced; no details shown.'
   - Findings by type with counts, owners and actions.
   quality:
   - Every finding is evidenced by a record, a spend figure or a rule.
@@ -1026,8 +1051,8 @@
     lead for duplicate survivors.
   example: Asked to clean up the supplier file for packaging, the skill quotes the master-data rules, finds three near-duplicate pairs by name and shared
     items with a proposed survivor each, lists records with the required fields empty, two suppliers with invoices but no screening, four records with no
-    invoices beyond the dormancy period, and, for a pending email asking to change a supplier's bank account, sets out the verification steps through the
-    contact on record and names finance as the owner, showing no account details.
+    invoices beyond the dormancy period, and, for a pending email asking to change a supplier's bank account, routes it to finance and the master-data owner
+    for the verification procedure without reproducing its steps, showing no account details.
   anti_patterns:
   - Actioning or displaying a bank-detail change.
   - Merging records on a name score.
@@ -1114,7 +1139,7 @@
     expect: Control gap finding; compliance and master-data owner; supplier-onboarding-checklist
   - kind: missing_data
     prompt: Check the data quality.
-    expect: Asks the scope or states the default (whole file) and proceeds
+    expect: Asks the scope before reading anything
   - kind: missing_data
     prompt: What fields are required on a supplier record?
     expect: From policy only; if silent, lists the record's own fields as what exists and asks the owner

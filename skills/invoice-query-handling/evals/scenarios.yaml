@@ -11,7 +11,7 @@
 - id: t3
   kind: typical
   prompt: "When will Borealis be paid for last month's deliveries?"
-  expect: "Invoice statuses; a date only if the record holds a scheduled payment; otherwise the terms quoted and the blockers"
+  expect: "Invoice statuses as stored; a paid date only if recorded; otherwise the terms quoted, the findings as blockers and no promise"
   expert_graded: false
 - id: t4
   kind: typical

@@ -11,7 +11,7 @@
 - id: t3
   kind: typical
   prompt: "Why is my order stuck?"
-  expect: "Asks for the order if not given; reads its record; says what is open on it and who acts next; no change made"
+  expect: "Asks for the order and the supplier if not given; reads open_orders for its invoices, balance, receipts and stored status (usually not recorded, said so) and the findings; says what the records show and who acts next; no change made"
   expert_graded: false
 - id: t4
   kind: typical

@@ -30,7 +30,6 @@ routing:                         # how the orchestrator decides this skill cover
     - "infrequent suppliers"
     - "low-value purchase*"
     - "low value purchase*"
-    - "small purchase*"
     - "catalogue for"
     - "catalog for"
     - "small repeat"

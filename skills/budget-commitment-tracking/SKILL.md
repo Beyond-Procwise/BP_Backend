@@ -37,14 +37,14 @@ Settings this skill reads from its own configuration, named by key and never res
 1. Frame: scope mapped to a records dimension (suppliers, buyer, country, region), period, budget figure and its source. Where no budget is given or governed, the report is a commitment position only, and says so.
 2. Invoiced to date from the cube for the scope and period.
 3. Open commitments: for each supplier in scope, the open balance per order from open_orders (order total minus invoices booked, same currency, as stored); contracts ending in the period from the pipeline with their stored total value, and any amounts due that the user states, labelled.
-4. Position: budget, invoiced, open order balances, contracted amounts the user states, remaining; the year-end projection from the monthly invoiced figure and the months remaining via `deal.scaled_total`; the share of budget used via `deal.share_pct`; a projection above the budget by more than `config.thresholds.overspend_alert_pct` is flagged.
+4. Position: budget, invoiced, open order balances, contracted amounts the user states, remaining; the year-end projection from the latest full month's invoiced figure (cube by month) and the months remaining via `deal.scaled_total`; the share of budget used via `deal.share_pct`; a projection above the budget by more than `config.thresholds.overspend_alert_pct` is flagged.
 5. Movements against the prior period via `deal.pct_change`; the largest open balances named.
 6. Caveats: the scope mapping; order and invoice tax basis; currencies without rates; orders with no value.
 
 ## Frameworks and heuristics
 
 - Committed is the open order balance plus what the user states as contracted and due; invoiced is spent; the sum against the budget is the position.
-- The projection scales the invoiced-to-date monthly figure by the months remaining; say that is what it is.
+- The projection scales the latest full month's invoiced figure (from the cube by month) by the months remaining via the registry; say which month it rests on.
 - The budget is the user's or the policy's figure; the skill never sets one.
 - Budgets live by cost centre or category and the records do not; the mapping to suppliers or buyers is stated, never silent.
 
@@ -63,7 +63,7 @@ A governed budget or limit comes from `tool:get_policy` and is quoted; otherwise
 ## Quality bar
 
 - Every figure traces to a tool result or the user's budget statement.
-- The run rate and movements come from the calculation registry.
+- The projection, the share of budget and the movements come from the calculation registry (scaled_total, share_pct, pct_change); no average is computed in the answer.
 - Scope mapping between the records and the budget is stated.
 - Nothing is posted or committed.
 
@@ -73,11 +73,11 @@ Escalate to the budget owner where the projection exceeds the budget by the conf
 
 ## Worked example
 
-Asked how much of the facilities budget is left this fiscal year, the skill takes the budget from the user, maps the scope to the facilities buyer, reads invoiced spend for that buyer from the cube, the open balances on the facilities suppliers' orders from open_orders, the maintenance contract ending this year from the pipeline with its stored total and the user's statement of what is still due, projects year end from the monthly invoiced figure via the registry, finds the projection above the budget by more than the configured share, and reports the position with the three largest open balances and the caveat that the budget line and the buyer dimension do not match exactly.
+Asked how much of the facilities budget is left this fiscal year, the skill takes the budget from the user, maps the scope to the facilities buyer, reads invoiced spend for that buyer from the cube, the open balances on the facilities suppliers' orders from open_orders, the maintenance contract ending this year from the pipeline with its stored total and the user's statement of what is still due, projects year end from the latest full month's invoiced figure and the months remaining via the registry, finds the projection above the budget by more than the configured share, and reports the position with the three largest open balances and the caveat that the budget line and the buyer dimension do not match exactly.
 
 ## Anti-patterns
 
 - Inventing a budget figure.
 - Counting an order both as open commitment and as invoiced.
-- Projecting from one month's spend as if it were the run rate.
 - Posting an accrual or releasing a commitment from the skill.
+- Projecting from a part-month or an average the registry did not compute.

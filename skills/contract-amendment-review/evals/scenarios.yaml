@@ -34,7 +34,7 @@
   kind: edge
   context: "We are reviewing a proposed amendment to a contract that is already in force."
   prompt: "No change-control clause is stored for this contract."
-  expect: "Procedure unknown; the amendment should state its own authority; escalated to legal; review of touched clauses still done"
+  expect: "Procedure unknown; the change is referred to legal before anything is treated as agreed; review of touched clauses still done"
   expert_graded: false
 - id: m1
   kind: missing_data

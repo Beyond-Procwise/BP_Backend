@@ -77,7 +77,7 @@ Escalate to legal where the contract gives no right to change the price or the n
 
 ## Worked example
 
-Asked whether a packaging supplier's surcharge citing paper prices is fair, the skill quotes the index clause (annual review, a named pulp index, paper at a stated share of the price, capped), reads the index over the window the supplier cites, finds the weighted movement is below the surcharge asked, computes the excess, finds from the records that the supplier did not reduce prices when the index fell the year before, and reports: the surcharge is partly supported up to the weighted movement, the excess is not, the clause caps it anyway, and the request to the supplier is the cost breakdown and the removal trigger.
+Asked whether a packaging supplier's surcharge citing paper prices is fair, the skill quotes the index clause (annual review, a named pulp index, paper at a stated share of the price, capped), reads the index over the window the supplier cites, finds the weighted movement is below the surcharge asked, computes the excess, finds from two periods of supplier_items that the supplier's price range did not fall when the index fell the year before (put to the supplier as a question, since the records hold ranges, not a dated series), and reports: the surcharge is partly supported up to the weighted movement, the excess is not, the clause caps it anyway, and the request to the supplier is the cost breakdown and the removal trigger.
 
 ## Anti-patterns
 

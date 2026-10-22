@@ -6,7 +6,7 @@
 - id: t2
   kind: typical
   prompt: "Reply to the supplier who asked why their invoice has not been paid."
-  expect: "Invoice status from reconciliation (on hold reason, missing PO, open finding); facts with references; no payment promise; ask for what is missing; flag to finance if a commitment is needed"
+  expect: "Status as stored via invoice_status (usually not recorded, said so) and the open findings from reconciliation as the reason; facts with references; no payment promise; ask for what is missing; flag to finance if a commitment is needed"
   expert_graded: true
 - id: t3
   kind: typical

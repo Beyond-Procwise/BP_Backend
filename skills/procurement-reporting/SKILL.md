@@ -77,7 +77,7 @@ Escalate to finance where value figures differ from the ledger's, to the CPO whe
 
 ## Worked example
 
-Asked for the quarterly procurement report for the board, the skill reads the cube for the quarter and the prior one, the contract pipeline for coverage and expiries, the ledger for value by status, the reconciliation for no-order invoices and findings, and the scorecards of the top suppliers; it writes a summary page of seven figures with movements and the two targets the policy holds, the five sections with sources, names that one category has no contract coverage data, and lists the three questions the figures raise.
+Asked for the quarterly procurement report for the board, the skill reads the cube for the quarter and the prior one, the contract pipeline for coverage and expiries, the ledger for value by status, the corpus facts for findings by type and invoices without orders, and the scorecards of the top suppliers; it writes a summary page of seven figures with movements and the two targets the policy holds, the five sections with sources, says that the share of spend under a live agreement is not measured by any tool, and lists the three questions the figures raise.
 
 ## Anti-patterns
 

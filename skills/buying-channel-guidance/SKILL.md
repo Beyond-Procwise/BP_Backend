@@ -55,7 +55,7 @@ Channel rules, card and expense limits and the value bands come from `tool:get_p
 
 1. Frame: item, value, frequency, deadline.
 2. Channel: the route, the policy rule quoted, and why.
-3. Coverage: the agreement or supplier on record, with prices paid if present.
+3. Coverage: the agreement on record and the suppliers on record for the item with their evidence counts (no cited tool holds prices).
 4. Steps in order with who approves and the expected lead time.
 5. What not to do (split, card outside the rule) where relevant, with the pointer to the right skill.
 
@@ -63,7 +63,7 @@ Channel rules, card and expense limits and the value bands come from `tool:get_p
 
 - The rule cited is quoted from policy; where none exists the default is named as a default.
 - Any supplier named is on our records; none from memory.
-- Prices paid are from the records with their dates.
+- Suppliers named come from supplier_discovery with their evidence counts; no price is quoted, because no cited tool holds one.
 - No requisition, order or approval is made.
 
 ## Escalation and approval

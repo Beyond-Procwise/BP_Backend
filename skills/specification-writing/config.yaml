@@ -5,7 +5,6 @@ unavailable_tools:
   - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
-    - "specification*"
     - "spec for"
     - "the spec"
     - "write the spec"
@@ -30,6 +29,17 @@ routing:                         # how the orchestrator decides this skill cover
     - "spec out"
     - "acceptance criteria"
     - "acceptance test*"
+    - "specification for"
+    - "a specification"
+    - "the specification for"
+    - "write a specification"
+    - "write the specification"
+    - "draft a specification"
+    - "draft the specification"
+    - "review the specification"
+    - "review this specification"
+    - "specifications for"
+    - "specification document*"
   support:                       # 1 point each
     - "requirement*"
     - "spec"

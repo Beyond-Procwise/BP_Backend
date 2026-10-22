@@ -67,7 +67,6 @@ routing:                         # how the orchestrator decides this skill cover
     - "delivered more than"
     - "only received"
     - "we received only"
-    - "arrived damaged"
     - "came damaged"
     - "units damaged"
     - "damaged units"

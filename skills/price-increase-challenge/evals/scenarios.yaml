@@ -1,7 +1,7 @@
 - id: t1
   kind: typical
   prompt: "Our packaging supplier added a surcharge citing paper prices. Is it justified?"
-  expect: "Index clause quoted with series, share and cap; index read over the clause window; weighted movement versus surcharge; excess computed; price history including whether prices fell when the index fell; verdict per item; requests to the supplier; draft challenge; hand-off to negotiation-planning"
+  expect: "Index clause quoted with series, share and cap; index read over the clause window; weighted movement via the registry where the share is stated; excess computed; price ranges over two periods from supplier_items, with 'did prices fall when the index fell' put as a question unless the two periods show it; verdict per item; requests to the supplier; draft challenge; hand-off to negotiation-planning"
   expert_graded: true
 - id: t2
   kind: typical

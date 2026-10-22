@@ -22,11 +22,12 @@ Not for working out the position behind the message (negotiation-planning, price
 - Any facts the user has that the records do not hold, labelled user-supplied.
 
 - Use `tool:supplier_lookup` for the supplier's record and the contact role on file (never personal contact details in the draft)
-- Use `tool:invoice_reconciliation` for the order and invoice facts a chaser or query cites (numbers, dates, amounts)
+- Use `tool:invoice_reconciliation` for the order and invoice line facts and the open findings a chaser or query cites (numbers, dates, amounts)
 - Use `tool:search_contracts` for the agreement the message refers to
 - Use `tool:extract_clauses` for the clause wording a message relies on, quoted
 - Use `tool:obligation_tracker` for the dates and obligations the message cites
 - Use `tool:get_policy` for any communication rule (who may write to suppliers, confidentiality, what may not be promised)
+- Use `tool:invoice_status` for an invoice's status, due and paid dates as stored ('not recorded' is said as such) when the message concerns an invoice
 NOT AVAILABLE: send_message. the draft is given as text; a person sends it from their own mailbox
 NOT AVAILABLE: build_docx. a letter is given as text
 

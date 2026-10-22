@@ -6,7 +6,6 @@ unavailable_tools:
   - approve_exception
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
-    - "exception*"
     - "deviation*"
     - "exemption*"
     - "dispensation*"
@@ -45,6 +44,15 @@ routing:                         # how the orchestrator decides this skill cover
     - "outside the rules"
     - "against the rules"
     - "derogation*"
+    - "exception request"
+    - "an exception"
+    - "exception to the"
+    - "exception for"
+    - "request an exception"
+    - "policy exception*"
+    - "exceptions to the"
+    - "grant an exception"
+    - "need an exception"
   support:                       # 1 point each
     - "policy"
     - "rule*"

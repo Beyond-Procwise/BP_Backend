@@ -57,7 +57,7 @@ Required fields, dormancy and the payment-detail verification procedure come fro
 2. Duplicate pairs with evidence and proposed survivor.
 3. Incomplete and unscreened records with the empty fields; invoices on unonboarded records.
 4. Dormant records with last invoice date.
-5. Change requests: the verification steps and the owner; no details shown.
+5. Change requests: routed to finance and the master-data owner for the verification procedure; the steps are not reproduced; no details shown.
 6. Findings by type with counts, owners and actions.
 
 ## Quality bar
@@ -73,7 +73,7 @@ Escalate to finance and the master-data owner for any payment-detail change, to 
 
 ## Worked example
 
-Asked to clean up the supplier file for packaging, the skill quotes the master-data rules, finds three near-duplicate pairs by name and shared items with a proposed survivor each, lists records with the required fields empty, two suppliers with invoices but no screening, four records with no invoices beyond the dormancy period, and, for a pending email asking to change a supplier's bank account, sets out the verification steps through the contact on record and names finance as the owner, showing no account details.
+Asked to clean up the supplier file for packaging, the skill quotes the master-data rules, finds three near-duplicate pairs by name and shared items with a proposed survivor each, lists records with the required fields empty, two suppliers with invoices but no screening, four records with no invoices beyond the dormancy period, and, for a pending email asking to change a supplier's bank account, routes it to finance and the master-data owner for the verification procedure without reproducing its steps, showing no account details.
 
 ## Anti-patterns
 

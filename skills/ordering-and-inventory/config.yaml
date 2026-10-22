@@ -51,7 +51,6 @@ routing:                         # how the orchestrator decides this skill cover
     - "excess stock"
     - "slow-moving"
     - "slow moving"
-    - "consignment stock"
     - "consignment arrangement"
     - "a delivery schedule for"
     - "delivery schedule for the"

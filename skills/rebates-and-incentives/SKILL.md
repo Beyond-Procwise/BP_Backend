@@ -75,7 +75,7 @@ Escalate to finance for the claim and the accounting treatment, to legal where t
 
 ## Worked example
 
-Asked how much rebate Acme owes us this year, the skill quotes the clause (tiers at stated spend levels, a rate on whole spend above each, net of credit notes, calendar-year measurement, claim within a stated period after year end), counts the qualifying spend from the cube net of credits, finds spend above the second tier with the third just out of reach, computes the amount due by the formula, flags that the count is close to the second threshold, reads the claim deadline from the tracker, drafts the claim for finance, and notes that last year's rebate was never claimed.
+Asked how much rebate Acme owes us this year, the skill quotes the clause (tiers at stated spend levels, a rate on whole spend above each, net of credit notes, calendar-year measurement, claim within a stated period after year end), counts the qualifying spend from the cube net of the credit notes the user lists, finds spend above the second tier with the third just out of reach, computes the amount due by the formula, flags that the count is close to the second threshold, reads the claim deadline from the tracker, drafts the claim for finance, and notes that last year's rebate was never claimed.
 
 ## Anti-patterns
 

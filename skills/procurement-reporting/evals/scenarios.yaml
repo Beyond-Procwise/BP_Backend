@@ -1,7 +1,7 @@
 - id: t1
   kind: typical
   prompt: "Prepare the quarterly procurement report for the board."
-  expect: "Period and prior period framed; cube, pipeline, ledger, reconciliation and scorecards read; summary figures with movements and policy targets; value by ledger status; data gaps named; sources per figure; nothing invented"
+  expect: "Period and prior period framed; cube, pipeline, ledger, corpus facts and scorecards read; summary figures with movements and policy targets; value as the ledger names it; data gaps named (no category cut, coverage not measured); sources per figure; nothing invented"
   expert_graded: true
 - id: t2
   kind: typical
@@ -34,7 +34,7 @@
   kind: edge
   context: "We are assembling the procurement report on the period's results for the board."
   prompt: "Spend fell 20 percent. Why?"
-  expect: "Movement reported; causes only where the cube shows them (category, supplier); otherwise a question for the reader"
+  expect: "Movement reported via deal.pct_change; causes only where the cube shows them (supplier, buyer, month); otherwise a question for the reader"
   expert_graded: false
 - id: m1
   kind: missing_data

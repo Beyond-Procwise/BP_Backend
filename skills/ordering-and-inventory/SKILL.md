@@ -40,7 +40,7 @@ Settings this skill reads from its own configuration, named by key and never res
 2. Demand from the records: the item's quantities from supplier_items over the last `config.thresholds.history_months` months, read as two halves and compared via `deal.pct_change`; totals per period are stated, not a rate (an average is not a registered calculation); seasonality only if the user states it.
 3. Supplier terms quoted: minimum order quantity, lead time, price breaks, delivery schedule, consignment or stock-holding clauses; where no contract exists, the quote on record or the user's statement, labelled.
 4. Costs from policy: ordering cost per order, holding cost rate, service level; none means the pattern is given in units and frequency without a cost optimum, and the policy owner is asked.
-5. Pattern: order quantity and frequency that respect the minimum order quantity and the price breaks, with every figure from the registry or labelled unverified; reorder point from lead-time demand (the period's quantity scaled by the lead time via `deal.scaled_total`) plus safety stock only where the user gives variability or a service level; the price-break trade-off (discount versus holding) shown both ways with inputs.
+5. Pattern: order quantity and frequency that respect the minimum order quantity and the price breaks, with every figure from the registry or labelled unverified; reorder point only where the user states a consumption rate (per day or week) and the lead time is known: lead-time demand is `deal.scaled_total` of that rate and the lead time, plus safety stock only where the user gives variability or a service level; the records' period totals are not turned into a rate; the price-break trade-off (discount versus holding) shown both ways with inputs.
 6. Arrangements: a blanket order with scheduled releases where demand is steady and the contract allows; consignment or vendor-managed stock where the clause exists or the supplier offers it, with the risks (ownership, obsolescence, audit) named; policy check for any commitment.
 
 ## Frameworks and heuristics
@@ -58,7 +58,7 @@ Ordering cost, holding cost, service level and stock rules come from `tool:get_p
 ## Output specification
 
 1. Frame: item, supplier, user's stock and consumption facts.
-2. Demand history table and rate, with movement via the registry.
+2. Demand history table per period, with the movement via the registry.
 3. Supplier terms quoted: minimum quantity, lead time, breaks, schedule, consignment.
 4. Cost parameters from policy or absent.
 5. Recommended order quantity and frequency with the arithmetic; reorder point and safety stock where inputs exist; price-break trade-off.

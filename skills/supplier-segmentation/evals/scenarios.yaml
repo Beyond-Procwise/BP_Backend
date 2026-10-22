@@ -1,7 +1,7 @@
 - id: t1
   kind: typical
   prompt: "Segment our supplier base for last year."
-  expect: "Spend cube read for the year; share of total per supplier from the cube; replaceability from similar items; four segments with evidence; strategic suppliers checked for contract and screening; treatments and owners; nothing recorded"
+  expect: "Spend cube read for the year; share of total per supplier from the cube; replaceability from each candidate's items (supplier_items) and the other suppliers on record for them (supplier_discovery); four segments with evidence; strategic suppliers checked for contract and screening; treatments and owners; nothing recorded"
   expert_graded: true
 - id: t2
   kind: typical

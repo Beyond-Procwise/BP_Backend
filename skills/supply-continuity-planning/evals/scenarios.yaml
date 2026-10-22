@@ -16,7 +16,7 @@
 - id: t4
   kind: typical
   prompt: "Which of our suppliers are a single point of failure?"
-  expect: "Items with one supplier on record across the cube; category shares; screened alternatives absent; ranked by exposure; no market knowledge invented"
+  expect: "Suppliers whose items (supplier_items) have no other supplier on record (supplier_discovery), for the suppliers the user names or the largest in the cube; shares of total; ranked by exposure; no market knowledge invented"
   expert_graded: false
 - id: e1
   kind: edge

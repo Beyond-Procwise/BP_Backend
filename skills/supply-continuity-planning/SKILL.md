@@ -59,7 +59,7 @@ Continuity and minimum-stock rules come from `tool:get_policy` and are quoted. A
 
 ## Output specification
 
-1. Frame and exposure: spend, items, category shares, items with no alternative.
+1. Frame and exposure: spend and share of total, items from supplier_items, items with no other supplier on record.
 2. Alternatives table: supplier, items, price and date, screening status, lead time (user-supplied).
 3. Signals: financial health and date, risk events, clauses quoted.
 4. Gaps by colour with the rule applied.
@@ -78,7 +78,7 @@ Escalate to the category lead for red gaps, to compliance to screen backups, to 
 
 ## Worked example
 
-Asked what happens if a machined-parts supplier goes into administration, the skill reads the cube (a large share of the machining category), finds one alternative on record for most items (screened) but none for two parts, reads the financial health record (dated, lower rating), the contract's insolvency termination clause and the absence of a tooling clause, notes the user's stock cover is short for the two parts, marks them red, and plans: screen a second candidate found by discovery, confirm tooling ownership with legal, a stock build for the two parts via the approval route, triggers to watch, and the first-day actions in order.
+Asked what happens if a machined-parts supplier goes into administration, the skill reads the cube (a notable share of total spend) and the supplier's items (supplier_items), finds one alternative on record for most items (screened) but none for two parts, reads the financial health record (dated, lower rating), the contract's insolvency termination clause and the absence of a tooling clause, notes the user's stock cover is short for the two parts, marks them red, and plans: screen a second candidate found by discovery, confirm tooling ownership with legal, a stock build for the two parts via the approval route, triggers to watch, and the first-day actions in order.
 
 ## Anti-patterns
 
