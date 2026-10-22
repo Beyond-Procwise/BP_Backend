@@ -145,3 +145,42 @@ def test_run_reports_what_it_did(tmp_path):
     assert out["active"] == ["index_empty"]
     assert out["raised"] == ["index_empty"] and out["cleared"] == []
     assert out["notified"] is True
+
+
+
+# --- the health page is read through the egress chokepoint (1.20m) ------------------------------
+
+def test_the_health_page_is_fetched_through_egress(monkeypatch):
+    from types import SimpleNamespace
+    from src.services import egress
+    seen = {}
+
+    def _get(url, *, purpose, **kw):
+        seen.update(url=url, purpose=purpose, **kw)
+        return SimpleNamespace(json=lambda: {"ok": True})
+    monkeypatch.setattr(egress, "get", _get)
+    assert sa._fetch_health("http://127.0.0.1:8000/health") == {"ok": True}
+    assert seen["purpose"] == egress.Purpose.HEALTHCHECK
+    assert seen["require_global"] is False          # this host's own page
+    assert seen["agent"] == "health_alerts"
+    assert seen["timeout"] == 20
+
+
+def test_a_non_200_health_page_is_unreachable_not_parsed(monkeypatch):
+    """urllib raised on a 5xx and that read as api_down; requests returns the page, so the status is
+    checked before anything is parsed, or a 500 with a JSON body would read as a broken triage/index."""
+    from types import SimpleNamespace
+    from src.services import egress
+    monkeypatch.setattr(egress, "get", lambda url, **kw: SimpleNamespace(status_code=500, json=lambda: {"detail": "x"}))
+    assert sa._fetch_health("http://127.0.0.1:8000/health") is None
+
+
+def test_a_refused_or_failed_health_fetch_is_unreachable(monkeypatch):
+    from src.services import egress
+    monkeypatch.setattr(egress, "get", lambda url, **kw: None)
+    assert sa._fetch_health("http://127.0.0.1:8000/health") is None
+
+    def _boom(url, **kw):
+        raise RuntimeError("down")
+    monkeypatch.setattr(egress, "get", _boom)
+    assert sa._fetch_health("http://127.0.0.1:8000/health") is None

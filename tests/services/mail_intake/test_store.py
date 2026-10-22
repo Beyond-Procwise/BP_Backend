@@ -152,3 +152,15 @@ def test_an_unreadable_existing_object_is_not_called_a_mismatch():
 
     with pytest.raises(store.StorageUnavailable):
         objects.put_immutable(key, b"a")
+
+
+
+def test_a_store_without_a_client_builds_it_through_egress(monkeypatch):
+    """1.20m: the default S3 client comes from egress.aws_client, so its requests are in the audit."""
+    from src.services import egress
+    seen = {}
+    monkeypatch.setattr(egress, "aws_client", lambda service, *, purpose, **kw: seen.update(service=service, purpose=purpose) or object())
+    objects = store.ObjectStore("bucket")
+    first = objects._resolve_client()
+    assert seen == {"service": "s3", "purpose": egress.Purpose.OBJECT_STORAGE}
+    assert objects._resolve_client() is first        # built once, reused

@@ -81,9 +81,11 @@ class ObjectStore:
 
     def _resolve_client(self) -> Any:
         if self._client is None:
-            import boto3
+            # Through the egress chokepoint (1.20m): the same real boto3 client, with every request
+            # it makes recorded in the outbound audit under the object-storage purpose.
+            from src.services import egress
 
-            self._client = boto3.client("s3")
+            self._client = egress.aws_client("s3", purpose=egress.Purpose.OBJECT_STORAGE)
         return self._client
 
     def exists(self, key: str) -> bool:

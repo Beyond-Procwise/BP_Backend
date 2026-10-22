@@ -109,3 +109,16 @@ def test_adapter_yields_bytes_without_parsing_them():
         ),
     )
     assert len(list(source.iter_messages(_binding(), since=None))) == 1
+
+
+
+def test_a_relay_source_without_a_client_builds_it_through_egress(monkeypatch):
+    """1.20m: the default S3 client comes from egress.aws_client, so its requests are in the audit."""
+    from src.services import egress
+    from src.services.mail_intake.sources.relay import RelayMailSource
+    seen = {}
+    monkeypatch.setattr(egress, "aws_client", lambda service, *, purpose, **kw: seen.update(service=service, purpose=purpose) or object())
+    source = RelayMailSource("bucket", "inbox/")
+    first = source._resolve_client()
+    assert seen == {"service": "s3", "purpose": egress.Purpose.OBJECT_STORAGE}
+    assert source._resolve_client() is first
