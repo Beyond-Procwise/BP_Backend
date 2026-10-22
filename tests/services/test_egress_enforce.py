@@ -165,7 +165,7 @@ def test_the_research_loop_hands_the_model_a_readable_refusal(monkeypatch):
     told = json.loads(tool_msg["content"])
     assert told["result"] == "blocked" and told["reasonCode"] == "egress_policy"
     assert told["reason"] == "The outside-research policy does not allow this search."
-    for word in ("html.duckduckgo.com", "rule", "allow"):
+    for word in ("html.duckduckgo.com", "rule for", "permits up to", "commercial", "public", "agent "):
         assert word not in told["reason"], "the verdict would tell the model what to strip and retry"
 
 
