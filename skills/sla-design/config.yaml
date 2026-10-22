@@ -34,7 +34,6 @@ routing:                         # how the orchestrator decides this skill cover
     - "penalties for"
     - "penalties in"
     - "service failure*"
-    - "credits for"
     - "sla regime"
     - "sla schedule"
     - "service schedule"
