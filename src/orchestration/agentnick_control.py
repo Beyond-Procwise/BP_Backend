@@ -976,7 +976,7 @@ def _similarity_tools() -> List[Tool]:
 
 def _cost_tools() -> List[Tool]:
     """Landed cost then ownership cost for several options in one call, through the registered calculations."""
-    from src.services.cost import compare as CC
+    from src.services.cost import compare_tco as CC
 
     return [
         Tool(

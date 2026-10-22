@@ -1,4 +1,4 @@
-from src.services.cost import compare as C
+from src.services.cost import compare_tco as C
 
 A = {"name": "A", "lines": [{"unit_price": 32000, "quantity": 1, "currency": "GBP"}], "incoterm": "DAP Leeds",
      "cross_border": False, "payment_terms": {"net_days": 30},
