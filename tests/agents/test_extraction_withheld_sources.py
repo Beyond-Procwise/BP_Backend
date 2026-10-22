@@ -33,11 +33,10 @@ class _FakeS3:
 
 
 def _builder():
-    for name, member in inspect.getmembers(mod.DataExtractionAgent, inspect.isfunction):
-        params = inspect.signature(member).parameters
-        if "s3_object_keys" in params and "s3_prefix" in params and "s3_object_key" in params:
-            return member
-    pytest.fail("the key-map builder taking s3_prefix/s3_object_key/s3_object_keys was not found")
+    fn = mod.DataExtractionAgent._process_documents
+    params = inspect.signature(fn).parameters
+    assert {"s3_object_keys", "s3_prefix", "s3_object_key"} <= set(params), "the source forms moved"
+    return fn
 
 
 @pytest.fixture
@@ -56,7 +55,6 @@ def agent(monkeypatch):
     monkeypatch.setattr(a, "_borrow_s3_client", _borrow)
     monkeypatch.setattr(a, "_resolve_typed_reference", _resolve)
     monkeypatch.setattr(a, "_log_workflow_event", lambda **kw: None)
-    monkeypatch.setattr(a, "_already_extracted", lambda keys: set())
     return a
 
 

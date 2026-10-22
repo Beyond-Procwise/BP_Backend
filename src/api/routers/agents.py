@@ -1401,6 +1401,17 @@ def execute_agent(
     principal=Depends(require_user),
 ):
     """Execute a specified agent workflow."""
+    # A document-extraction run names its sources in the free payload; a withheld store (quarantine,
+    # raw MIME) or an ancestor of one is refused here as a 400 (1.3e), as process-document does, rather
+    # than inside the agent where it comes back as a FAILED envelope under a 200. The agent checks again.
+    if req.agent_type == "document_extraction" and isinstance(req.payload, dict):
+        keys = req.payload.get("s3_object_keys")
+        listed = keys if isinstance(keys, (list, tuple)) else [keys]
+        try:
+            refuse_withheld_any(req.payload.get("s3_prefix"), req.payload.get("s3_object_key"),
+                                *[k for k in listed if isinstance(k, str)])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
     if orchestrator.agent_nick is None:
         raise HTTPException(status_code=503, detail="Agent system not initialized")
     prs = orchestrator.agent_nick.process_routing_service

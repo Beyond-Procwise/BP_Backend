@@ -45,9 +45,10 @@ def refuse_withheld(path: str) -> str:
     for withheld in WITHHELD:
         if with_slash.startswith(withheld):
             raise ValueError(f"the path resolves under {withheld}, which holds content withheld from extraction")
-        if withheld.startswith(with_slash) or withheld.startswith(normalised):
-            # An ancestor: listing it would enumerate every withheld object beneath.
-            raise ValueError(f"the path contains {withheld}, which holds content withheld from extraction")
+        if withheld.startswith(normalised):
+            # An ancestor (any leading part of the store's prefix): listing it would enumerate every
+            # withheld object beneath. Word kept: callers and tests match on "ancestor".
+            raise ValueError(f"the path is an ancestor of {withheld}, which holds content withheld from extraction")
     return normalised
 
 

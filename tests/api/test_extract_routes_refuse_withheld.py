@@ -53,3 +53,23 @@ def test_a_withheld_source_is_a_400_before_anything_starts(client, path, body):
     detail = r.json()["detail"]
     assert "withheld" in detail
     assert "OWNER-7" not in detail and "MSG-9" not in detail      # the store is named; the caller's value is not
+
+
+@pytest.mark.parametrize("payload", [
+    pytest.param({"s3_object_keys": [QUARANTINE_PREFIX + "OWNER-7/x.pdf"]}, id="picker-list"),
+    pytest.param({"s3_object_keys": QUARANTINE_PREFIX + "OWNER-7/"}, id="typed-string"),
+    pytest.param({"s3_prefix": "mail-intake/"}, id="prefix-ancestor"),
+])
+def test_execute_refuses_a_withheld_extraction_source_as_a_400(client, payload):
+    """The document picker and the hand-typed box reach extraction through /agents/execute with a free
+    payload; a withheld source there is a 400 too, not a FAILED envelope under a 200."""
+    r = client.post("/agents/execute", json={"agent_type": "document_extraction", "payload": payload})
+    assert r.status_code == 400, (r.status_code, r.text[:200])
+    assert "withheld" in r.json()["detail"] and "OWNER-7" not in r.json()["detail"]
+
+
+def test_execute_leaves_other_agents_alone(client):
+    """A different agent type with a free payload is not inspected; it reaches the orchestrator (a bare
+    object here, so a 500) rather than being refused."""
+    r = client.post("/agents/execute", json={"agent_type": "supplier_ranking", "payload": {"s3_prefix": "mail-intake/"}})
+    assert r.status_code != 400
