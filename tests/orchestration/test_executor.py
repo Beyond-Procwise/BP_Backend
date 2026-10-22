@@ -171,7 +171,8 @@ def test_the_answer_is_released_only_through_the_output_check(mode, runner):
 def test_running_out_of_rounds_is_an_error_not_a_hang(mode, runner):
     s = Script([{"role": "assistant", "content": "", "tool_calls": [tc("a")]}] * 3)
     res = runner(s, [tool("a")], max_rounds=3)
-    assert res.rounds == 3 and "max_rounds (3) exhausted" in res.error and len(res.calls) == 3
+    # three tool rounds, then one closing turn the script cannot answer: still an error, never a hang
+    assert res.rounds == 4 and "max_rounds (3) exhausted" in res.error and len(res.calls) == 3
 
 
 @pytest.mark.parametrize("mode,runner", MODES)
@@ -424,3 +425,24 @@ def test_with_no_argument_check_nothing_changes(fn_name):
     s = Script([{"role": "assistant", "content": "", "tool_calls": [tc("a", rate=0.08)]}, FINAL])
     getattr(ex, fn_name)(s.wiring(), "t", [tool("a", record=ran)], "s", model="m", max_rounds=4, timeout_s=1)
     assert ran == [("a", {"rate": 0.08})]
+
+
+@pytest.mark.parametrize("mode,runner", MODES)
+def test_when_rounds_run_out_the_model_gets_one_closing_turn_without_tools(mode, runner):
+    """Live, 2026-10-22: multi-step playbooks spent every round on tools and returned nothing."""
+    seen = {}
+    s = Script([{"role": "assistant", "content": "", "tool_calls": [tc("a")]}] * 2 + [{"role": "assistant", "content": "From what I gathered: ok."}])
+    w = s.wiring()
+    inner = w.propose_turn
+
+    def turn(messages, schemas, model, timeout):
+        seen.setdefault("schemas", []).append(len(schemas))
+        seen["last_user"] = [m["content"] for m in messages if m["role"] == "user"][-1]
+        return inner(messages, schemas, model, timeout)
+    w = ex.Wiring(**{**w.__dict__, "propose_turn": turn})
+    fn = ex.run if mode == "whole" else ex.run_stream
+    res = fn(w, "task", [tool("a")], "system", model="m", max_rounds=2, timeout_s=5)
+    assert res.answer == "From what I gathered: ok." and res.error is None and res.rounds == 3 and len(res.calls) == 2
+    assert res.closed_without_tools is True
+    assert seen["schemas"][-1] == 0 and "No more tool calls" in seen["last_user"]
+    assert ("safety", "From what I gathered: ok.") in s.events

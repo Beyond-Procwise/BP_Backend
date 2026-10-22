@@ -110,6 +110,52 @@ def _release(w: Wiring, answer: str, result: Any, retried: bool):
     return verdict.answer, None
 
 
+CLOSING_INSTRUCTION = (
+    "No more tool calls are available for this request. Write the final answer now from the tool "
+    "results above, in the format the instructions ask for. State plainly which steps could not be "
+    "done and what is still needed; do not invent a figure to fill a gap."
+)
+
+
+def _closing_turn(w: Wiring, messages: List[Dict[str, Any]], model: str, timeout_s: int, result: Any,
+                  retried: bool, max_rounds: int) -> Any:
+    """The round budget is spent and the model is still proposing calls. Live, 2026-10-22: skills with a
+    multi-step playbook spent every round on tools and returned nothing. One more turn is offered with no
+    tool schemas, so the only thing the model can do is answer from what it has; the answer goes through
+    the same safety gate and verification as any other. If that turn yields nothing, the last thing said
+    is salvaged and the exhaustion is reported as before."""
+    messages.append({"role": "user", "content": CLOSING_INSTRUCTION})
+    result.rounds += 1
+    try:
+        message = w.propose_turn(messages, [], model, timeout_s)
+    except Exception as exc:  # noqa: BLE001
+        w.log.warning("closing turn failed: %s", exc)
+        message = {}
+    content = (message or {}).get("content") or ""
+    if not content.strip():
+        result.error = f"max_rounds ({max_rounds}) exhausted without a final answer"
+        for earlier in reversed(messages):
+            if earlier.get("role") == "assistant" and earlier.get("content"):
+                result.answer = earlier["content"]
+                break
+        return result
+    messages.append({"role": "assistant", "content": content})
+    answer = w.safety_gate(content, messages, [], model, timeout_s, result)
+    answer, again = _release(w, answer, result, retried)
+    if again is not None:
+        messages.append({"role": "user", "content": again})
+        try:
+            message = w.propose_turn(messages, [], model, timeout_s)
+            content = (message or {}).get("content") or content
+        except Exception as exc:  # noqa: BLE001
+            w.log.warning("closing retry failed: %s", exc)
+        answer = w.safety_gate(content, messages, [], model, timeout_s, result)
+        answer, _ = _release(w, answer, result, True)
+    result.answer = answer
+    result.closed_without_tools = True
+    return result
+
+
 def run_stream(w: Wiring, task: str, tools: Sequence[Any], system: str, *, model: str, max_rounds: int,
                timeout_s: int, on_tool: Optional[Callable[[Any], None]] = None,
                on_delta: Optional[Callable[[str], None]] = None, agent: Optional[str] = None,
@@ -164,8 +210,9 @@ def run_stream(w: Wiring, task: str, tools: Sequence[Any], system: str, *, model
                 on_tool(record)
             messages.append(_observation(w, record, refusal, allowed))
 
-    result.error = f"max_rounds ({max_rounds}) exhausted without a final answer"
-    return result
+    # Ran out of rounds with the model still asking for tools. One closing turn with no tools on
+    # offer: write the answer from what was gathered, and say what could not be done.
+    return _closing_turn(w, messages, model, timeout_s, result, retried, max_rounds)
 
 
 def run(w: Wiring, task: str, tools: Sequence[Any], system: str, *, model: str, max_rounds: int, timeout_s: int,
@@ -226,10 +273,6 @@ def run(w: Wiring, task: str, tools: Sequence[Any], system: str, *, model: str, 
             result.calls.append(record)
             messages.append(_observation(w, record, refusal, allowed))
 
-    # Ran out of rounds. Return the last thing said rather than nothing.
-    result.error = f"max_rounds ({max_rounds}) exhausted without a final answer"
-    for message in reversed(messages):
-        if message.get("role") == "assistant" and message.get("content"):
-            result.answer = message["content"]
-            break
-    return result
+    # Ran out of rounds with the model still asking for tools. One closing turn with no tools on
+    # offer: write the answer from what was gathered, and say what could not be done.
+    return _closing_turn(w, messages, model, timeout_s, result, retried, max_rounds)
