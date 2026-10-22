@@ -27,10 +27,10 @@ Ask for these; stop if the integrity items are missing.
 - The procurement regime, if public, and the baseline price for savings.
 
 Use `tool:savings_tracker` only to show what the ledger already counts as saved; the saving on this award is worked out against the baseline and is not logged by this tool.
-NOT AVAILABLE: screen_sanctions. Ask for the result and date from compliance. If none is supplied, record "not performed" and do not recommend an award.
-NOT AVAILABLE: financial_health_score. Ask for the result and date; if none, record "not performed".
-NOT AVAILABLE: esg_rating_lookup. Ask for the result and date; if none, record "not performed".
-NOT AVAILABLE: forced_labour_screen. Ask for the result and date where it applies; if none, record "not performed".
+Use `tool:screen_sanctions` for the sanctions result compliance recorded, with provider and date. It performs no check: if it says not performed, or the record is expired, record "not performed" and do not recommend an award until compliance performs and records the check.
+Use `tool:financial_health_score` for the recorded financial health assessment (provider, rating, score, date); if none is recorded, record "not performed".
+Use `tool:esg_rating_lookup` for the recorded ESG rating (provider, rating, date); if none is recorded, record "not performed".
+Use `tool:forced_labour_screen` where it applies, for the recorded result and date; if none is recorded, record "not performed".
 NOT AVAILABLE: route_approval. Say which approval is needed; a person submits it.
 NOT AVAILABLE: build_docx. Give the memo as text using templates/memo.md.
 

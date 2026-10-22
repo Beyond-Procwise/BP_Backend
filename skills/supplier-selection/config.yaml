@@ -18,12 +18,6 @@ qualification_criteria:                # the five parts of the qualification sco
   risk: null
   esg: null
 unavailable_tools:
-  - screen_sanctions
-  - forced_labour_screen
-  - conflict_minerals_check
-  - financial_health_score
-  - esg_rating_lookup
-  - monitor_risk_events
   - build_xlsx
   - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)

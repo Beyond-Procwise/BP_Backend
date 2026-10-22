@@ -63,6 +63,7 @@ from api import auth as _ask_auth
 from api.routers import agent_workflows as agent_workflows_router
 from api.routers import playbooks as playbooks_router
 from api.routers import agent_groups as agent_groups_router
+from api.routers import screening as screening_router
 from api.routers import models as models_router
 from api.routers import decisions as decisions_router
 from api.routers import support as support_router
@@ -623,6 +624,7 @@ _AUTHENTICATED_ROUTERS = [
     agent_workflows_router.router,
     playbooks_router.router,
     agent_groups_router.router,
+    screening_router.router,
     models_router.router,
     support_router.router,
     supplier_review_router.router,

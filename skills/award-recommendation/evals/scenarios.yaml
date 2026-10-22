@@ -46,7 +46,7 @@
 - id: m2
   kind: missing_data
   prompt: No financial health check was done.
-  expect: Records not performed; award blocked pending compliance; financial_health_score NOT AVAILABLE named
+  expect: Calls financial_health_score; the register has no record, so records not performed; award blocked pending compliance; does not treat the missing record as clear
   expert_graded: true
 - id: m3
   kind: missing_data

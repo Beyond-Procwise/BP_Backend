@@ -36,7 +36,7 @@
 - id: e5
   kind: edge
   prompt: Supplier appears to be in financial difficulty.
-  expect: Switches to continuity framing; financial_health_score NOT AVAILABLE; asks user for evidence
+  expect: Switches to continuity framing; calls financial_health_score and quotes the recorded assessment with its date, or says financial position is not assessed when none is recorded; asks user for evidence
   expert_graded: false
 - id: m1
   kind: missing_data

@@ -52,6 +52,9 @@ ACTIONS: Dict[str, str] = {
     "report.generate": "compute",
     # --- writing ---------------------------------------------------------
     "supplier.write": "write",
+    # Recording what a sanctions, credit, ESG, forced-labour, conflict-minerals or risk-event check found.
+    # A write by a named person into an append-only register; agents only read it.
+    "supplier.screening.record": "write",
     "sales.detect": "write",   # creates opportunity rows
     "contract.write": "write",
     "deal.write": "write",

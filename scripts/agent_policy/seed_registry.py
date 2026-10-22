@@ -35,6 +35,12 @@ FIXED_TOOLS = {
     "build_spend_cube": ["by", "start", "end", "currency", "top_n"],
     "obligation_tracker": ["contract", "supplier", "horizon_days"],
     "calc_supplier_scorecard": ["supplier", "start", "end", "currency"],
+    "screen_sanctions": ["supplier"],
+    "financial_health_score": ["supplier"],
+    "esg_rating_lookup": ["supplier"],
+    "forced_labour_screen": ["supplier"],
+    "conflict_minerals_check": ["supplier"],
+    "monitor_risk_events": ["supplier"],
 }
 
 # Tools the two older tool loops offer (services/governance_tools/governed_reasoning.py and

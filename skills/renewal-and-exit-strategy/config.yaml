@@ -11,8 +11,6 @@ thresholds:                      # configurable defaults for review, not policy
   escalate_days_to_deadline: 30
 unavailable_tools:
   - commodity_index_lookup
-  - financial_health_score
-  - monitor_risk_events
   - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending

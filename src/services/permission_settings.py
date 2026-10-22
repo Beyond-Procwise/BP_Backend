@@ -73,6 +73,11 @@ CATALOGUE: Tuple[Setting, ...] = (
             "Merge or split suppliers, scan for duplicates, apply or reject an enrichment proposal.",
             "SupplierMasterAuthorityPolicy", "supplier_master_authority",
             ("supplier.write",), "Admin"),
+    Setting("screening_record", "Who may record compliance screening results",
+            "Record what a sanctions, financial-health, ESG, forced-labour, conflict-minerals or risk-event check "
+            "found on a supplier, with the provider and date. Agents only read these results.",
+            "ScreeningRecordAuthorityPolicy", "screening_record_authority",
+            ("supplier.screening.record",), "Admin"),
     Setting("po_renumber", "Who may renumber purchase orders in bulk",
             "Rewrite the purchase-order number across all final records.",
             "PoRenumberAuthorityPolicy", "po_renumber_authority",

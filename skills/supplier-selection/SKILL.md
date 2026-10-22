@@ -28,12 +28,12 @@ Ask for these; do not guess any of them.
 If no longlist exists, ask the user for candidates or a source.
 
 Use `tool:supplier_discovery` to build the known-supplier part of the longlist from the organisation's own orders, invoices and quotes, and `tool:supplier_lookup` for a supplier's recorded profile. It is not a market scan: ask the user for any other source of candidates, and do not name suppliers from memory as if they were verified.
-NOT AVAILABLE: screen_sanctions. Ask compliance for the result and date for each legal entity, owner and director. If none is supplied, record "not performed"; that supplier cannot be shortlisted.
-NOT AVAILABLE: forced_labour_screen. Ask for the result and date where the geography or material is high risk; if none, record "not performed".
-NOT AVAILABLE: conflict_minerals_check. Ask for the result and date where tin, tantalum, tungsten or gold is in scope; if none, record "not performed".
-NOT AVAILABLE: financial_health_score. Ask for the probability of default, the score and its 12-month change with their date; if none, record "not performed".
-NOT AVAILABLE: esg_rating_lookup. Ask for the rating, the provider and the date; if none, record "not available" and request it by questionnaire.
-NOT AVAILABLE: monitor_risk_events. Ask the user or compliance for current country and event risk, with the index version and date; if none, record "not performed".
+Use `tool:screen_sanctions` for the sanctions result compliance recorded for the legal entity and for each owner and director screened as a subject, with provider and date. It performs no check: a supplier with no recorded (or an expired) result is "not performed" and cannot be shortlisted until compliance performs and records it.
+Use `tool:forced_labour_screen` where the geography or material is high risk, for the recorded result and date; if none is recorded, record "not performed".
+Use `tool:conflict_minerals_check` where tin, tantalum, tungsten or gold is in scope, for the recorded result and date; if none is recorded, record "not performed".
+Use `tool:financial_health_score` for the recorded assessment: quote the provider's rating, score and details (a probability of default or a 12-month change only if the record states it) with the date; if none is recorded, record "not performed".
+Use `tool:esg_rating_lookup` for the recorded rating, provider and date; if none is recorded, record "not available" and request it by questionnaire.
+Use `tool:monitor_risk_events` for the recorded risk-event review and the platform's own risk signals, each with its date; if nothing is recorded, record "not performed".
 For incumbents, use `tool:calc_supplier_scorecard` with the supplier and period for spend, purchase price variance, on-time delivery and open findings measured from this organisation's own records, and report each with its record count or its not-assessed reason. Quality is not recorded: record quality track record as "not available" unless the user supplies it with its period.
 NOT AVAILABLE: build_xlsx. Give the funnel and the registers as text tables.
 NOT AVAILABLE: build_docx. Give the memo as text using templates/memo.md.

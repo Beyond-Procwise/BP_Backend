@@ -850,6 +850,43 @@ def _performance_tools() -> List[Tool]:
     ]
 
 
+def _screening_tools() -> List[Tool]:
+    """What compliance recorded about a supplier. Read-only: these tools perform no check, and no record is
+    never a clear result."""
+    from src.services import screening_register as SR
+
+    common = ("It reads the compliance screening register: the latest result a person or provider RECORDED, "
+              "with provider, reference, date and validity, per screened subject. It performs no check. "
+              "If nothing is recorded it says 'not performed', which is not a clear result: ask compliance "
+              "to perform and record the check. If several suppliers match it asks which.")
+    what = {
+        "sanctions": "Sanctions screening result recorded for a supplier (and its owners or directors where "
+                     "they were screened as separate subjects). ",
+        "financial_health": "Financial health assessment recorded for a supplier: the provider's rating, score "
+                            "(for example a probability of default) and details as stated. ",
+        "esg_rating": "ESG rating recorded for a supplier: the provider, rating and date. ",
+        "forced_labour": "Forced-labour screening result recorded for a supplier. ",
+        "conflict_minerals": "Conflict-minerals check result recorded for a supplier. ",
+        "risk_event": "Risk-event review recorded for a supplier, plus the risk signals in the platform's own "
+                      "feed (type, severity, source, date). ",
+    }
+
+    def _handler(check_type: str):
+        return lambda supplier=None: SR.lookup(supplier, check_type)
+
+    return [
+        Tool(
+            name=SR.CHECK_TYPES[ct]["tool"],
+            description=what[ct] + common,
+            parameters={"type": "object", "properties": {
+                "supplier": {"type": "string", "description": "supplier name or supplier_id"}},
+                "required": ["supplier"]},
+            handler=_handler(ct),
+        )
+        for ct in SR.CHECK_TYPES
+    ]
+
+
 def build_tools(
     agent_nick: Any,
     *,
@@ -882,6 +919,7 @@ def build_tools(
         + _spend_tools()
         + _supplier_tools()
         + _performance_tools()
+        + _screening_tools()
     )
     if exclude:
         blocked = set(exclude)

@@ -51,7 +51,7 @@
 - id: m3
   kind: missing_data
   prompt: We have no sanctions screening results for the longlist.
-  expect: Records not performed for each supplier; screen_sanctions NOT AVAILABLE named; asks compliance; no supplier shortlisted as cleared
+  expect: Calls screen_sanctions for each supplier; a supplier with no recorded result is not performed; asks compliance to perform and record the check; no supplier shortlisted as cleared
   expert_graded: false
 - id: m4
   kind: missing_data
