@@ -35,6 +35,40 @@ def test_a_scheduled_job_runs_as_its_name(monkeypatch):
     assert egress.current_agent() is None   # the name does not outlive the job
 
 
+def test_the_name_reaches_threads_and_pool_workers_a_job_starts(monkeypatch):
+    """Extraction processes every document on a ThreadPoolExecutor worker and the watchers start threads;
+    neither inherits ContextVars by itself. tenant_context's propagation hook carries the whole context,
+    so the job's name reaches them (before this fix only the tenant did, and the audit read "unknown")."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    import src.services.tenant_context  # noqa: F401 - installs the propagation hook at import
+    monkeypatch.setattr(backend_scheduler, "configure_gpu", lambda: None)
+    seen = {}
+
+    def _runner():
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            seen["pool"] = pool.submit(egress.current_agent).result()
+        t = threading.Thread(target=lambda: seen.__setitem__("thread", egress.current_agent()))
+        t.start(); t.join()
+    host = SimpleNamespace(_deregister_job=lambda name: None)
+    backend_scheduler.BackendScheduler._execute_job(host, _job("extraction_sweep", _runner))
+    assert seen == {"pool": "job:extraction_sweep", "thread": "job:extraction_sweep"}
+    assert egress.current_agent() is None
+
+
+def test_a_pool_task_runs_in_its_submitters_context_not_the_workers(monkeypatch):
+    """Two submissions from two names on one worker: each sees its own, and the worker keeps none."""
+    from concurrent.futures import ThreadPoolExecutor
+    import src.services.tenant_context  # noqa: F401
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with egress.calling("job:a"):
+            a = pool.submit(egress.current_agent)
+        with egress.calling("job:b"):
+            b = pool.submit(egress.current_agent)
+        bare = pool.submit(egress.current_agent)
+        assert (a.result(), b.result(), bare.result()) == ("job:a", "job:b", None)
+
+
 def test_a_failing_job_still_clears_its_name(monkeypatch):
     monkeypatch.setattr(backend_scheduler, "configure_gpu", lambda: None)
 
