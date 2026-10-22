@@ -75,6 +75,18 @@ def main(argv=None) -> int:
     kinds = [k.strip() for k in args.kinds.split(",") if k.strip()]
 
     from src.orchestration import agentnick_control as control
+    from src.services import output_safety as OS
+    # The gate replaces a leaking answer with a stock sentence and logs why; the log did not reach the report
+    # (runs 7 and 9), so the reason is captured here and written beside the answer.
+    withheld: list = []
+    _enforce = OS.enforce
+
+    def _spy(text, **kw):
+        out = _enforce(text, **kw)
+        if out == OS.SAFE_REPLY and text != OS.SAFE_REPLY:
+            withheld.append({"matched": [v.match for v in OS.inspect(text, prose=kw.get("prose", True))][:6], "head": text[:300]})
+        return out
+    OS.enforce = _spy
     nick = _nick()
     skills_dir = ROOT / "skills"
     folders = sorted(p for p in skills_dir.iterdir() if p.is_dir() and (not args.skill or p.name in args.skill))
@@ -87,12 +99,14 @@ def main(argv=None) -> int:
                 sc = {**sc, "prompt": f"{sc['context'].strip()} {sc['prompt']}"}
             sc = {**sc, "prompt": _swap(sc["prompt"], swaps)}
             t0 = time.time()
+            withheld.clear()
             try:
                 res = control.reason(nick, sc["prompt"], user_id="scenario-runner")
                 record = {
                     "skill": folder.name, "scenario": sc.get("id"), "kind": sc.get("kind"), "prompt": sc["prompt"],
                     "expect": sc.get("expect"), "routed_to": [l["source"] for l in (res.context or []) if l.get("layer") == "skill"],
                     "rounds": res.rounds, "seconds": round(time.time() - t0, 1), "error": res.error,
+                    "withheld": list(withheld),
                     "tools": [{"name": getattr(c, "name", None), "arguments": getattr(c, "arguments", None),
                                "ok": getattr(c, "ok", None)} for c in (res.calls or [])],
                     "answer": res.answer, "unverified": "not verified" in (res.answer or ""),

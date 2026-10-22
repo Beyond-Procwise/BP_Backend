@@ -120,8 +120,8 @@ CLOSING_INSTRUCTION = (
 )
 
 
-_SCREEN_TALK = re.compile(r"\byou are (?:on|viewing|looking at|in) (?:the|a|an) [^.\n]{0,80}?\b(?:screen|page|view|dashboard|report)\b"
-                          r"|\bthe system has (?:automatically|identified|retrieved|checked|flagged)\b", re.IGNORECASE)
+_SCREEN_TALK = re.compile(r"\byou are (?:on|viewing|looking at) (?:the|a|an|your)\b"
+                          r"|\bthe system has (?:automatically|identified|retrieved|checked|flagged|analy[sz]ed)\b", re.IGNORECASE)
 REWRITE_INSTRUCTION = (
     "That answer describes a screen or something 'the system' did, which does not exist. Rewrite it as yourself "
     "in plain text with the same facts and figures and nothing added: no screen, no buttons, no 'the system has'."
@@ -131,6 +131,23 @@ REWRITE_INSTRUCTION = (
 def narrates_a_screen(text: str) -> bool:
     """True when an answer talks about a screen, page or 'the system' as if the reader were looking at a UI."""
     return bool(_SCREEN_TALK.search(text or ""))
+
+
+def _unnarrated(w: Wiring, content: str, messages: List[Dict[str, Any]], model: str, timeout_s: int, result: Any) -> str:
+    """An answer that narrates a screen is sent back once for a plain rewrite; the original is kept if the
+    rewrite comes back empty. Runs 5 to 9 on 2026-10-22: the habit showed in ordinary final answers as well as
+    closing turns, so every release path goes through here."""
+    if not content.strip() or not narrates_a_screen(content):
+        return content
+    messages.append({"role": "assistant", "content": content})
+    messages.append({"role": "user", "content": REWRITE_INSTRUCTION})
+    result.rounds += 1
+    try:
+        redo = (w.propose_turn(messages, [], model, timeout_s) or {}).get("content") or ""
+    except Exception as exc:  # noqa: BLE001
+        w.log.warning("screen rewrite failed: %s", exc)
+        redo = ""
+    return redo if redo.strip() else content
 
 
 def _closing_turn(w: Wiring, messages: List[Dict[str, Any]], model: str, timeout_s: int, result: Any,
@@ -147,21 +164,7 @@ def _closing_turn(w: Wiring, messages: List[Dict[str, Any]], model: str, timeout
     except Exception as exc:  # noqa: BLE001
         w.log.warning("closing turn failed: %s", exc)
         message = {}
-    content = (message or {}).get("content") or ""
-    if content.strip() and narrates_a_screen(content):
-        # Live, 2026-10-22 (runs 5, 7, 8): the closing answer opened "You are on the Tail Spend Management
-        # screen... the system has identified..." despite the instruction. One rewrite is asked for; the
-        # original is kept if the rewrite comes back empty.
-        messages.append({"role": "assistant", "content": content})
-        messages.append({"role": "user", "content": REWRITE_INSTRUCTION})
-        result.rounds += 1
-        try:
-            redo = (w.propose_turn(messages, [], model, timeout_s) or {}).get("content") or ""
-        except Exception as exc:  # noqa: BLE001
-            w.log.warning("closing rewrite failed: %s", exc)
-            redo = ""
-        if redo.strip():
-            content = redo
+    content = _unnarrated(w, (message or {}).get("content") or "", messages, model, timeout_s, result)
     if not content.strip():
         result.error = f"max_rounds ({max_rounds}) exhausted without a final answer"
         for earlier in reversed(messages):
@@ -219,6 +222,7 @@ def run_stream(w: Wiring, task: str, tools: Sequence[Any], system: str, *, model
             # answer is assembled, checked, re-framed if it was describing the machine, and only then
             # released. The cost is the typing effect on the final answer; the user still watches the
             # tool stages tick over live, so nothing looks frozen.
+            content = _unnarrated(w, content, messages, model, timeout_s, result)
             answer = w.safety_gate(content, messages, schemas, model, timeout_s, result)
             answer, again = _release(w, answer, result, retried)
             if again is not None:
@@ -287,6 +291,7 @@ def run(w: Wiring, task: str, tools: Sequence[Any], system: str, *, model: str, 
                         "you need to establish the facts, then answer from what they return."),
                 })
                 continue
+            content = _unnarrated(w, content, messages, model, timeout_s, result)
             answer = w.safety_gate(content, messages, schemas, model, timeout_s, result)
             answer, again = _release(w, answer, result, retried)
             if again is not None:

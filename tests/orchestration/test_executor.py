@@ -458,6 +458,9 @@ def test_the_closing_instruction_forbids_narrating_a_screen():
 @pytest.mark.parametrize("text, hit", [
     ("You are on the Tail Spend Management screen, reviewing small repeat purchases.", True),
     ("You are viewing the Supplier Segmentation report for the packaging category.", True),
+    ("You are viewing a spend analysis for the past 12 months.", True),
+    ("The system has analyzed your spend and supplier data.", True),
+    ("You are in breach of the notice clause if you wait.", False),
     ("The system has automatically retrieved the supplier's record.", True),
     ("1. Frame: scope is the packaging suppliers the user named.", False),
     ("The screen printers are bought from two suppliers on record.", False),
@@ -495,3 +498,14 @@ def test_when_the_rewrite_comes_back_empty_the_narrating_answer_is_kept(mode):
     fn = ex.run if mode == "whole" else ex.run_stream
     res = fn(s.wiring(), "task", [tool("a")], "system", model="m", max_rounds=2, timeout_s=5)
     assert res.answer.startswith("You are on the Tail Spend screen") and res.error is None
+
+
+@pytest.mark.parametrize("mode", ["whole", "stream"])
+def test_an_ordinary_final_answer_that_narrates_a_screen_is_rewritten_too(mode):
+    """Run 9, 2026-10-22: 'You are viewing a spend analysis...' arrived as a normal final answer, not a closing turn."""
+    s = Script([{"role": "assistant", "content": "", "tool_calls": [tc("a")]},
+                {"role": "assistant", "content": "You are viewing a spend analysis for the past 12 months. Top supplier: Crossfell."},
+                {"role": "assistant", "content": "Over the past 12 months the top supplier was Crossfell."}])
+    fn = ex.run if mode == "whole" else ex.run_stream
+    res = fn(s.wiring(), "task", [tool("a")], "system", model="m", max_rounds=4, timeout_s=5)
+    assert res.answer == "Over the past 12 months the top supplier was Crossfell." and res.error is None
