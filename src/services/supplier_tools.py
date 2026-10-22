@@ -146,11 +146,15 @@ def lookup(supplier: Any = None, *, rows: Optional[Callable[[str, Sequence[Any]]
         return {"found": False, "note": "No supplier on file by that name or id. Do not assume its status; ask the user."}
     today = today or date.today()
     profiles = []
+    asked = text.lower()
     for r in found[:5]:
         (sid, name, trading, stype, legal, reg_ctry, reg_no, pref, risk, credit, c1, c2, c3, ins_type, ins_amt,
          ins_exp, ccy, inco, lead, ctry, site, invoices) = r
+        # How this row was found: a partial name is a guess the model made, not a supplier the user named.
+        match = ("exact id" if str(sid).lower() == asked else
+                 "exact name" if asked in (str(name or "").lower(), str(trading or "").lower()) else "partial name")
         profiles.append({
-            "supplier_id": sid, "name": name, "trading_name": trading, "type": stype, "legal_structure": legal,
+            "supplier_id": sid, "name": name, "trading_name": trading, "match": match, "type": stype, "legal_structure": legal,
             "registered_country": reg_ctry, "registration_number": reg_no, "country": ctry,
             "preferred": bool(pref), "risk_score": risk if risk is not None else "not scored",
             "credit_limit": _num(credit), "default_currency": ccy, "incoterms": inco, "lead_time_days": lead,
@@ -163,4 +167,7 @@ def lookup(supplier: Any = None, *, rows: Optional[Callable[[str, Sequence[Any]]
         out["note"] += " More than five suppliers match that name; ask which one."
     elif len(found) > 1:
         out["note"] += " Several suppliers match that name; confirm which one before relying on it."
+    elif profiles[0]["match"] == "partial name":
+        out["note"] += (f" Matched on part of the name only ('{text}' is not this supplier's full name or id): confirm "
+                        "with the user that this is the supplier they mean before relying on it.")
     return out
