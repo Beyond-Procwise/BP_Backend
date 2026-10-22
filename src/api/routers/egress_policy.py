@@ -4,8 +4,8 @@ GET  /admin/egress-policy        -- the rules in force (empty until seeded; the 
 PUT  /admin/egress-policy        -- replace the rules (version-checked, audited, history kept).
 POST /admin/egress-policy/seed   -- write the starting rules if there are none.
 
-Shadow mode: the egress gate records what these rules WOULD decide on every outbound call and blocks
-nothing. Enforcing is a later, separate switch.
+The egress gate records what these rules decide on every outbound call and APPLIES the decision only for
+the purposes listed under ``rules.enforce`` (empty until an Admin adds one after the shadow week).
 """
 from __future__ import annotations
 

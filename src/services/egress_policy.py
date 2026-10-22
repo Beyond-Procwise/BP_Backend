@@ -11,8 +11,10 @@ or the rule says ``*``. A matching DENY wins over any ALLOW. Nothing matching me
 destinations (loopback, private addresses) are always allowed and never consult the row: the model
 host and the in-VPC services must keep working whatever the row says.
 
-SHADOW. This module only says what the gate WOULD do. ``services.egress._evaluate`` records the
-answer on every event row and still permits the call; the per-purpose enforce switch is step (d).
+SHADOW, THEN ENFORCE. ``shadow_for`` says what the gate WOULD do and ``services.egress._evaluate``
+records it on every event row. The row's ``enforce`` list (step d) names the purposes for which that
+answer is APPLIED: a denied call of an enforced purpose is refused before it leaves. The list is
+empty in the seed; an Admin adds a purpose after the shadow week. Local destinations are never refused.
 
 FAIL CLOSED. If the row cannot be read, every external destination would be denied, and the
 reason says so, so a week of shadow cannot show "all allowed" because the database was down.
@@ -44,8 +46,8 @@ POLICY_NAME = "EgressPolicy"
 IDENTIFIER = "egress"
 POLICY_TYPE = "security"
 DESCRIPTION = ("Which outside destinations each purpose and agent may call. Local destinations are always "
-               "allowed. A deny rule beats an allow rule; anything unmatched is denied. In shadow mode the "
-               "decision is recorded on every egress event and nothing is blocked.")
+               "allowed. A deny rule beats an allow rule; anything unmatched is denied. The decision is "
+               "recorded on every egress event; it is applied only for the purposes listed under 'enforce'.")
 
 DEFAULT_VERSION = egress.SHADOW_RULES_VERSION   # no row: the built-in rule set (one literal, in egress)
 UNREADABLE_VERSION = "egress-policy-unreadable"
@@ -53,7 +55,7 @@ _TTL = 30.0            # a good read is reused this long
 _FAIL_TTL = 5.0        # a failed read is remembered this long: an outage costs one connect attempt per 5 s, not one per call
 
 #: Starting rules: the external callers seen in the last week's egress events, plus the D-62 denial.
-SEED_RULES: Dict[str, List[Dict[str, Any]]] = {
+SEED_RULES: Dict[str, Any] = {
     "allow": [
         {"purpose": "fx_rates", "hosts": ["open.er-api.com"], "agents": ["*"],
          "note": "currency reference rates; no company text in the request"},
@@ -68,6 +70,9 @@ SEED_RULES: Dict[str, List[Dict[str, Any]]] = {
         {"purpose": "model_inference", "hosts": ["api.ollama.com"], "agents": ["*"],
          "note": "D-62: company text never goes to Ollama cloud"},
     ],
+    # Purposes whose decision is APPLIED, not just recorded. Empty until an Admin switches one on
+    # after the shadow week (D-62); switching is a PUT on the policy, audited like any rule change.
+    "enforce": [],
 }
 
 _PURPOSES = frozenset(p.value for p in Purpose)
@@ -126,6 +131,11 @@ class Policy:
     def label(self) -> str:
         return f"egress-policy-v{self.version}"
 
+    def enforced(self, purpose: Purpose) -> bool:
+        """Is this purpose's decision applied (step d), or only recorded?"""
+        got = self.rules.get("enforce") if isinstance(self.rules, dict) else None
+        return isinstance(got, list) and purpose.value in got
+
     def _rules(self, kind: str) -> List[Dict[str, Any]]:
         got = self.rules.get(kind) if isinstance(self.rules, dict) else None
         # A malformed rule is skipped, never read as "allow everything".
@@ -161,17 +171,21 @@ def _clean_host(pattern: str, where: str) -> str:
     return p
 
 
-def validate(rules: Any) -> Dict[str, List[Dict[str, Any]]]:
+def validate(rules: Any) -> Dict[str, Any]:
     """The rules as they will be stored, or ``InvalidRules``. Only ``allow`` and ``deny`` are known.
 
     Hosts are lower-cased and stripped; agents stripped. A pattern with a scheme, path, port or
     space can never match a host name and is refused rather than stored dead."""
     if not isinstance(rules, dict):
-        raise InvalidRules("rules must be an object with 'allow' and 'deny' lists")
-    extra = set(rules) - {"allow", "deny"}
+        raise InvalidRules("rules must be an object with 'allow' and 'deny' lists (and an optional 'enforce' list)")
+    extra = set(rules) - {"allow", "deny", "enforce"}
     if extra:
         raise InvalidRules(f"unknown key(s): {', '.join(sorted(extra))}")
-    out: Dict[str, List[Dict[str, Any]]] = {}
+    out: Dict[str, Any] = {}
+    enforce = rules.get("enforce", [])
+    if not isinstance(enforce, list) or any(not isinstance(e, str) or e not in _PURPOSES for e in enforce):
+        raise InvalidRules(f"'enforce' must be a list of purposes, each one of {sorted(_PURPOSES)}")
+    out["enforce"] = list(dict.fromkeys(enforce))
     for kind in ("allow", "deny"):
         got = rules.get(kind, [])
         if not isinstance(got, list):
@@ -222,12 +236,15 @@ _cached: Optional[Policy] = None
 _cached_error: Optional[BaseException] = None
 _cached_at = 0.0
 _cache_has = False
+_last_good: Optional[Policy] = None     # the last row read successfully: enforcement's anchor in an outage
 
 
-def invalidate() -> None:
-    global _cache_has, _cached, _cached_error, _cached_at
+def invalidate(forget_last_good: bool = False) -> None:
+    global _cache_has, _cached, _cached_error, _cached_at, _last_good
     with _cache_lock:
         _cache_has, _cached, _cached_error, _cached_at = False, None, None, 0.0
+        if forget_last_good:
+            _last_good = None
 
 
 def _policy() -> Optional[Policy]:
@@ -237,7 +254,7 @@ def _policy() -> Optional[Policy]:
     thundering herd at expiry), and a failed read is remembered for ``_FAIL_TTL`` so a database
     outage does not put a connection attempt in front of every external call.
     """
-    global _cache_has, _cached, _cached_error, _cached_at
+    global _cache_has, _cached, _cached_error, _cached_at, _last_good
     with _cache_lock:
         age = time.monotonic() - _cached_at
         if _cache_has and age < (_FAIL_TTL if _cached_error is not None else _TTL):
@@ -250,7 +267,21 @@ def _policy() -> Optional[Policy]:
             _cache_has, _cached, _cached_error, _cached_at = True, None, exc, time.monotonic()
             raise
         _cache_has, _cached, _cached_error, _cached_at = True, loaded, None, time.monotonic()
+        _last_good = loaded
         return loaded
+
+
+def enforced_for(purpose: Purpose) -> bool:
+    """Is ``purpose`` enforced? Reads the row; in an outage the last successfully read row answers,
+    so an outage never widens the LIST of enforced purposes (and never narrows it); a process that
+    has never read the row enforces nothing. The verdict in an outage is still deny for external
+    destinations (``shadow_for``), so an enforced purpose refuses its external calls until the row
+    reads again: fail closed, and the last-good RULES do not decide in its place."""
+    try:
+        policy = _policy()
+    except Exception:  # noqa: BLE001 - the last good read answers
+        policy = _last_good
+    return policy is not None and policy.enforced(purpose)
 
 
 def shadow_for(purpose: Purpose, host: str, agent: str, *, local: bool, level: str = "public") -> Verdict:
@@ -369,7 +400,7 @@ def current(conn=None) -> Dict[str, Any]:
     if not got:
         # No row: the gate's shadow verdict is "deny everything external" (the built-in default), so the
         # rules in force are EMPTY. The seed is offered separately as what POST /seed would write.
-        return {"configured": False, "version": 0, "rules": {"allow": [], "deny": []},
+        return {"configured": False, "version": 0, "rules": {"allow": [], "deny": [], "enforce": []},
                 "default_rules": True, "seed": SEED_RULES, "purposes": sorted(_PURPOSES)}
     _pid, version, details = got
     return {"configured": True, "version": version, "rules": details.get("rules") or {},

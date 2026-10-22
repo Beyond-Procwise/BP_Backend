@@ -35,6 +35,7 @@ from src.services.governed_limits import limit as _governed_limit
 from src.services import agentnick_driver as _driver
 from src.services.tool_runtime import gate_refusal
 
+from src.services.egress import EgressDenied
 from src.services.supplier_enrichment.web_tools import fetch_url, web_search
 
 log = logging.getLogger(__name__)
@@ -166,14 +167,24 @@ def _run_loop(supplier_name: str) -> tuple[str, dict[str, str]]:
             if refusal is not None:
                 content = json.dumps(refusal)
             elif name == "web_search":
-                results = web_search(str(args.get("query", "")))
-                for r in results:
+                try:
+                    results = web_search(str(args.get("query", "")))
+                except EgressDenied:
+                    # The outside-research policy refused the search (egress step d). Told to the
+                    # model in the same shape as a policy-gate refusal, as a FIXED sentence: the
+                    # engine's verdict (which rule, which cap, which host) would tell it what to
+                    # strip and retry. The verdict is in the log line and the egress event row.
+                    results = None
+                    content = json.dumps({"result": "blocked", "reasonCode": "egress_policy",
+                                          "reason": "The outside-research policy does not allow this search."})
+                for r in results or []:
                     # Title+snippet IS text the model read, so it can legitimately ground a
                     # fact. Appended rather than assigned: the same URL can surface in more
                     # than one search, and a later fetch of it must not lose the snippet.
                     snippet = f"{r.get('title') or ''} {r.get('snippet') or ''}".strip()
                     evidence[r["url"]] = (evidence.get(r["url"], "") + " " + snippet).strip()
-                content = json.dumps(results)
+                if results is not None:
+                    content = json.dumps(results)
             elif name == "fetch_url":
                 url = str(args.get("url", ""))
                 content = fetch_url(url)[:4000]

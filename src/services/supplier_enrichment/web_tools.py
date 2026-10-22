@@ -86,11 +86,11 @@ def web_search(query: str, max_results: int = 5) -> list[dict]:
                         })
         return out
     except EgressDenied as exc:
-        # Enforcement (egress step d) refuses BEFORE the library runs. Returned as "no results" for
-        # now; the research loop should hand the model a refusal it can read (as gate_refusal does)
-        # - that is step d's job, recorded in the backlog, not silently absorbed here.
+        # Enforcement (egress step d) refused the search BEFORE the library ran. Re-raised, not
+        # absorbed: the research loop tells the model why (as it does for a policy-gate refusal),
+        # so the model does not read "no results" and search again.
         log.warning("web_search refused by egress policy: %s", exc.reason)
-        return []
+        raise
     except Exception as exc:  # noqa: BLE001 - fail open
         log.warning("web_search failed for %r: %s", query, exc)
         return []

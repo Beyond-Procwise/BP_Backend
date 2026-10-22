@@ -95,16 +95,6 @@ def test_web_search_still_fails_open_and_records_the_error(events, monkeypatch):
     assert events[-1]["outcome"] == "library_error"
 
 
-def test_an_enforced_refusal_is_no_results_not_a_crash(events, monkeypatch):
-    from src.services.supplier_enrichment import web_tools
-    monkeypatch.setitem(sys.modules, "ddgs", types.SimpleNamespace(DDGS=object))
-
-    def refuse(*a, **k):
-        raise egress.EgressDenied(reason="policy", destination="html.duckduckgo.com", purpose="supplier_research")
-    monkeypatch.setattr(web_tools, "egress_observe", refuse)
-    assert web_tools.web_search("Borcelle") == []
-
-
 def test_the_boundary_lint_knows_the_search_library():
     import importlib
     sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]))

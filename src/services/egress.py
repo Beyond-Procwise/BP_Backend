@@ -28,13 +28,16 @@ making a request has not finished writing it.
 
 WHAT THIS DOES NOT DO YET, STATED PLAINLY
 
-  * It does not ENFORCE a policy. Since 1.20 (a) ``_evaluate`` computes a SHADOW
-    decision from a built-in default rule set (local destinations would be allowed,
-    external ones denied until a rule allows them) and records it, with the calling
-    agent, on every event row; it still permits every call. The administrator's
-    policy row that replaces the default rule set and the per-purpose enforce switch
-    are later steps. This records rather than refuses, and says so rather than
-    letting the presence of a "gate" imply a decision is being applied.
+  * It enforces a policy ONLY where the administrator says so. ``_evaluate`` computes
+    the decision from the EgressPolicy row (``services.egress_policy``; a built-in
+    default when there is no row) and records it, with the calling agent and what the
+    payload carries, on every event row. For a purpose the row lists under ``enforce``
+    the decision is applied: a denied call does not leave. For every other purpose it
+    is shadow: recorded, not applied. A local destination is never refused.
+    CAVEAT before enforcing model_inference: "local" is decided by what the host NAME
+    resolves to at that instant; a model host named by a public or dual-stack address,
+    or a lookup that fails, reads as external and would be refused. Name it by a
+    loopback/private address, or add an allow rule for it, first.
   * It does not classify payloads. There is no classification registry, so the
     ``classification`` column on every event row is empty.
 
@@ -225,7 +228,7 @@ class Decision:
     ``shadow="allow"``, because the shadow asks "would an egress rule stop this" and the
     guard already did. ``outcome`` on the event row says what actually happened.
     """
-    permitted: bool          # what the gate DOES (shadow mode: always True)
+    permitted: bool          # what the gate DOES (False only for an enforced purpose the rules deny)
     reason: str
     shadow: str              # what the gate WOULD do: "allow" | "deny"
     shadow_reason: str
@@ -249,11 +252,11 @@ def _evaluate(purpose: Purpose, destination: str, agent: str = UNKNOWN_AGENT,
               local: Optional[bool] = None, level: str = "public") -> Decision:
     """What the gate does (nothing yet) and what it WOULD do (recorded).
 
-    SHADOW MODE (1.20 step a, D-62): the call is always permitted. The decision an egress
-    policy would take is computed and recorded on the event row, not applied, so a period of
-    shadow shows exactly which calls enforcing would block, by purpose, host and agent,
-    before any of them is blocked. The policy row that will replace ``shadow-default-v0``
-    is step (b); ``permitted`` starts following ``shadow`` at step (d), one purpose at a time.
+    SHADOW BY DEFAULT (1.20 a-c, D-62): the decision an egress policy would take is computed and
+    recorded on the event row, not applied, so a period of shadow shows exactly which calls
+    enforcing would block, by purpose, host and agent. ENFORCED PER PURPOSE (step d): once an
+    Admin lists a purpose in the policy row's ``enforce`` list, ``permitted`` follows the
+    decision for that purpose; a local destination is never refused.
 
     The decision comes from the administrator's ``EgressPolicy`` row (``services.egress_policy``)
     when one exists, else from the built-in default rule set: a local destination would be
@@ -266,7 +269,12 @@ def _evaluate(purpose: Purpose, destination: str, agent: str = UNKNOWN_AGENT,
     if local is None:
         local = _is_local_destination(destination)
     verdict = egress_policy.shadow_for(purpose, destination, agent, local=local, level=level)
-    return Decision(True, "shadow mode: no destination policy is enforced",
+    if local or not egress_policy.enforced_for(purpose):
+        return Decision(True, f"shadow mode for {purpose.value}: recorded, not applied",
+                        verdict.effect, verdict.reason, verdict.version)
+    # Enforced (step d): the policy's answer is applied. A local destination never reaches here.
+    permitted = verdict.effect == "allow"
+    return Decision(permitted, verdict.reason if not permitted else f"enforced: {verdict.reason}",
                     verdict.effect, verdict.reason, verdict.version)
 
 
@@ -429,8 +437,8 @@ def observe(purpose: Purpose, destination: str, *, agent: Optional[str] = None,
     ``LIBRARY`` and outcome ``library_call`` or ``library_error``. The SSRF destination check
     does not apply: the destination is the library's fixed provider, not a model's choice.
 
-    Shadow: the decision is recorded, not applied. When enforcement arrives (step d) a denied
-    call raises ``EgressDenied`` here, before the library runs.
+    The decision is recorded on every call and applied for an enforced purpose: a denied call
+    raises ``EgressDenied`` here, before the library runs.
     """
     agent = agent or UNKNOWN_AGENT
     from src.services import egress_classify

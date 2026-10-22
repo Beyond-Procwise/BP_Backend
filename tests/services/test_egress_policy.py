@@ -155,7 +155,7 @@ def test_an_unreadable_row_denies_external_and_allows_local(monkeypatch):
 
 # ---- changing the rules --------------------------------------------------------------------------
 
-GOOD = {"allow": [{"purpose": "fx_rates", "hosts": ["open.er-api.com"], "agents": ["*"]}], "deny": []}
+GOOD = {"allow": [{"purpose": "fx_rates", "hosts": ["open.er-api.com"], "agents": ["*"]}], "deny": [], "enforce": []}
 
 
 def test_replace_rules_validates_bumps_version_and_records_history_and_audit(table):
@@ -175,7 +175,8 @@ def test_replace_rules_validates_bumps_version_and_records_history_and_audit(tab
     {"allow": [{"purpose": "fx_rates", "hosts": ["a"], "agents": []}]},
     {"allow": [{"purpose": "fx_rates", "hosts": "a", "agents": ["*"]}]},
     {"allow": "x"},
-    {"allow": [], "deny": [], "enforce": ["fx_rates"]},
+    {"allow": [], "deny": [], "enforce": ["teleport"]},
+    {"allow": [], "deny": [], "purposes": []},
 ])
 def test_bad_rules_are_refused_and_nothing_is_written(table, bad):
     ep.seed("admin-1")
@@ -192,7 +193,7 @@ def test_a_stale_save_is_refused(table):
 
 def test_current_reports_the_rules_version_and_whether_seeded(table):
     before = ep.current()
-    assert before["configured"] is False and before["rules"] == {"allow": [], "deny": []}
+    assert before["configured"] is False and before["rules"] == {"allow": [], "deny": [], "enforce": []}
     assert before["seed"] == ep.SEED_RULES, "the seed is offered, not presented as in force"
     ep.seed("admin-1")
     cur = ep.current()

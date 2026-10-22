@@ -67,7 +67,8 @@ SELECT 'EgressPolicy', 'security',
         ],
         "note": "D-62: company text never goes to Ollama cloud"
       }
-    ]
+    ],
+    "enforce": []
   }
 }$json$::jsonb,
        '', 1, 1, now(), 'migration:2026-10-22_egress_policy'
