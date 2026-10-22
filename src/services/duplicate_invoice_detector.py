@@ -751,8 +751,33 @@ def _conflict_opportunity_record(c: dict, rates: Optional[dict] = None) -> dict:
     }
 
 
-def run_detector(conn=None) -> int:
+# The two kinds of finding the detector raises. ``only`` narrows a run to one of them; ``refs``
+# narrows it to named invoice numbers. Both exist so an operator can write ONE reviewed case
+# (D-29: invoice 01-2024-002) without the first run writing the whole historical backlog.
+PAIRS = "pairs"                      # two promoted invoices the relationship engine judges a pair
+SAME_REFERENCE = "same_reference"    # one invoice number on two different raw documents
+KINDS = (PAIRS, SAME_REFERENCE)
+
+
+def _wanted(ref: Any, refs: Optional[set]) -> bool:
+    """Is this invoice number in the operator's list? No list (None) means every number; an
+    EMPTY set means no number at all, so a caller must pass None, not set(), for "all"."""
+    if refs is None:
+        return True
+    return _norm_ref(ref) in {_norm_ref(r) for r in refs}
+
+
+def _check_only(only: Optional[str]) -> None:
+    if only is not None and only not in KINDS:
+        raise ValueError(f"only must be one of {KINDS} or None, not {only!r}")
+
+
+def run_detector(conn=None, only: Optional[str] = None, refs: Optional[set] = None) -> int:
     """Find duplicates and record the ones not already recorded. Returns rows written.
+
+    ``only`` restricts the run to one kind (PAIRS or SAME_REFERENCE); ``refs`` to the named
+    invoice numbers (the flagged document's number, compared like the detector compares
+    references). Neither is set by the scheduler: it always runs everything.
 
     Each duplicate produces two things, because finding money and getting it back are two
     different jobs: a discrepancy on the document (the finding) and an opportunity on the
@@ -763,18 +788,21 @@ def run_detector(conn=None) -> int:
     opportunity upsert is keyed on the pair's content, so re-running never duplicates it
     and never demotes a recovery someone has already progressed.
     """
+    _check_only(only)
     if conn is not None:
-        return _run(conn)
+        return _run(conn, only=only, refs=refs)
     from src.services.extraction.persistence import get_conn
     with get_conn() as own:
-        return _run(own)
+        return _run(own, only=only, refs=refs)
 
 
-def _run(conn) -> int:
+def _run(conn, only: Optional[str] = None, refs: Optional[set] = None) -> int:
     from src.services.opportunity_store import upsert_opportunity
 
+    _check_only(only)
     cur = conn.cursor()
-    dups = find_duplicates(load_invoices(cur))
+    dups = find_duplicates(load_invoices(cur)) if only in (None, PAIRS) else []
+    dups = [d for d in dups if _wanted(d["later"]["invoice_id"], refs)]
     rates = _get_rates()
     written = opportunities = 0
     for dup in dups:
@@ -800,7 +828,9 @@ def _run(conn) -> int:
         written += 1
 
     # One number on two different documents (read from the permanent raw record).
-    conflicts = find_reference_conflicts(load_reference_documents(cur))
+    conflicts = (find_reference_conflicts(load_reference_documents(cur))
+                 if only in (None, SAME_REFERENCE) else [])
+    conflicts = [c for c in conflicts if _wanted(c["ref"], refs)]
     for c in conflicts:
         doc_pk = str(c["ref"])
         upsert_opportunity(cur, _conflict_opportunity_record(c, rates))

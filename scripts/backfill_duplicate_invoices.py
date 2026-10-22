@@ -15,6 +15,14 @@ anchored to the same invoice, so the value-summary counts it once.
     PYTHONPATH=.:src ./venv/bin/python scripts/backfill_duplicate_invoices.py          # dry run
     PYTHONPATH=.:src ./venv/bin/python scripts/backfill_duplicate_invoices.py --apply  # write
 
+Narrowing (D-29): ``--only pairs`` or ``--only same-reference`` runs one kind of check, and
+``--ref NUMBER`` (repeatable) limits it to those invoice numbers. The listing and the write obey
+the same filters, so ``--apply`` writes a finding for exactly the cases a dry run lists (and keeps
+the matching recovery items in step, as it always has):
+
+    ... backfill_duplicate_invoices.py --only same-reference --ref 01-2024-002           # list one
+    ... backfill_duplicate_invoices.py --only same-reference --ref 01-2024-002 --apply   # write one
+
 PYTHONPATH must include src: the FX repository lives there, and without it every non-GBP
 recovery is written with a NULL amount (honest, but useless) instead of a converted one.
 """
@@ -23,11 +31,13 @@ from __future__ import annotations
 import argparse
 
 from src.services.duplicate_invoice_detector import (
-    _already_raised, _conflict_already_raised, _conflict_note, _conflict_severity, find_duplicates,
-    find_reference_conflicts, load_invoices, load_reference_documents, payment_evidence,
-    run_detector,
+    PAIRS, SAME_REFERENCE, _already_raised, _conflict_already_raised, _conflict_note, _conflict_severity,
+    _wanted, find_duplicates, find_reference_conflicts, load_invoices, load_reference_documents,
+    payment_evidence, run_detector,
 )
 from src.services.extraction.persistence import get_conn
+
+_ONLY = {"pairs": PAIRS, "same-reference": SAME_REFERENCE}
 
 
 def _fmt(row: dict) -> str:
@@ -45,15 +55,28 @@ def _signals(link: dict) -> str:
     return "  ".join(f"{s['id']}={s['status']}" for s in link.get("signals", []))
 
 
-def main() -> int:
+def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--apply", action="store_true",
                     help="write the findings (default is a dry run that writes nothing)")
-    args = ap.parse_args()
+    ap.add_argument("--only", choices=sorted(_ONLY),
+                    help="run one kind of check only: 'pairs' (two promoted invoices) or "
+                         "'same-reference' (one number on two raw documents)")
+    ap.add_argument("--ref", action="append", metavar="INVOICE_NUMBER",
+                    help="limit to this invoice number (repeatable; case and spacing ignored)")
+    args = ap.parse_args(argv)
+    only = _ONLY[args.only] if args.only else None
+    refs = set(args.ref) if args.ref else None
+    if refs:
+        print(f"limited to invoice number(s): {', '.join(sorted(refs))}")
 
     with get_conn() as conn:
         cur = conn.cursor()
-        dups = find_duplicates(load_invoices(cur))
+        if only in (None, PAIRS):
+            dups = [d for d in find_duplicates(load_invoices(cur)) if _wanted(d["later"]["invoice_id"], refs)]
+        else:
+            dups = []
+            print("pair scan skipped (--only same-reference)")
         fresh = [d for d in dups if not _already_raised(cur, str(d["later"]["invoice_id"]))]
 
         print(f"{len(dups)} duplicate candidate(s); {len(fresh)} not already recorded")
@@ -69,7 +92,11 @@ def main() -> int:
             print(f"  recovery : {payment_evidence(d['later'])[1]}\n")
 
         # One invoice number on two different documents (read from proc.bp_invoice_raw).
-        conflicts = find_reference_conflicts(load_reference_documents(cur))
+        if only in (None, SAME_REFERENCE):
+            conflicts = [c for c in find_reference_conflicts(load_reference_documents(cur)) if _wanted(c["ref"], refs)]
+        else:
+            conflicts = []
+            print("same-number check skipped (--only pairs)")
         fresh_conflicts = [c for c in conflicts if not _conflict_already_raised(cur, str(c["ref"]))]
         print(f"{len(conflicts)} same-number conflict(s); {len(fresh_conflicts)} not already recorded\n")
         for c in fresh_conflicts:
@@ -92,7 +119,7 @@ def main() -> int:
                   "whole corpus, so its first run writes this entire backlog at once.")
             return 0
 
-        written = run_detector(conn)
+        written = run_detector(conn, only=only, refs=refs)
         print(f"wrote {written} finding(s)")
         return 0
 
