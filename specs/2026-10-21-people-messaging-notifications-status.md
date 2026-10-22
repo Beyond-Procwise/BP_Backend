@@ -129,3 +129,13 @@ bp_people.sql, bp_notification.sql, bp_messaging.sql, bp_graph.sql applied to bp
 bp_notification, bp_conversation, bp_conversation_participant, bp_message, bp_activity, bp_proposed_edge (+ bp_person.title). All additive (CREATE ... IF NOT EXISTS / ADD COLUMN IF NOT EXISTS); nothing existing was altered.
 Verified against bp_testdb: columns (99), indexes (23), constraints (17) and grants identical; all 9 tables empty. Reversible per the file headers (DROP the tables / the title column).
 Consequence: code from this branch is now safe to deploy against bp_sqldb. bp_person is EMPTY, so nobody is notified until the org chart is entered (PUT /admin/people). The branch itself is still unmerged/unpushed.
+
+## Update — delivery chain proven on the running service (2026-10-22 09:32 UTC)
+After the scheduler-lane fix (d42a9d56, drain in its own lane) the chain was proven against procwise.service on bp_testdb without touching the HTTP layer:
+two throwaway people (requester -> manager, no email addresses, so nothing left the host), one `requisition.submitted` event written to bp_domain_event
+through intake.build_event + emit_on_cursor; the service's `domain-event-drain` job processed it 45 s later (attempts 0, no error) and wrote one bp_notification
+for the manager (reason `approver`, in_app sent). Rows removed afterwards; both tables and bp_person are empty again. Suites: tests/services/people,
+tests/api/test_people_router.py, tests/api/test_messaging_router.py, tests/test_backend_scheduler.py -> 161 passed, 49 skipped (live-DB tests need PROCWISE_TEST_LIVE_DB=1).
+Backend scope is closed. UI packet v2 (field names checked against the routers): specs/2026-10-22-people-messaging-ui-briefing.md, copied to
+../beyond_procwise_ui/ui-packet-people-messaging.md (untracked there; that repo has another session's uncommitted edits). The UI calls BP_Backend directly
+over VITE_AI_API_URL, so the Node gateway needs no change. Accepted limits unchanged: no attachment upload, no notification grouping, no message search.
