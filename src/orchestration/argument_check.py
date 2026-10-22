@@ -34,6 +34,8 @@ ASSUMPTION_ARGS = frozenset({
     # deal.share_pct and deal.scaled_total: the same rule; a share or a scaled total is only as honest as
     # the two figures that go in.
     "part", "whole", "unit_value", "multiplier",
+    # finance.average_per_period, finance.payback_years: the totals, counts and benefits must come from the run too.
+    "period_total", "periods", "initial_cost", "annual_benefit",
 })
 
 #: Identifiers a model passes to a tool. An id is never worked out: it comes from the request or from
