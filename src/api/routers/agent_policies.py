@@ -3,9 +3,10 @@
 WHY A GATEWAY KEY (design §3.2, ruling C 2026-10-08): this service's own sign-in check
 (ASK_AUTH_MODE) is off in development and unconfirmed in production, so a direct browser
 call could not be shown to carry the gateway's checks. These routes therefore trust ONLY
-the gateway: it verifies the Cognito token and the role, then forwards the verified
-identity with a shared key. No key, wrong key, or unset key -> refused. The role is
-re-derived here from the forwarded groups through the same role table every other gate
+the gateway: it verifies the Cognito token, then forwards the user's bearer token with a
+shared key (N8). No key, wrong key, or unset key -> refused. While sign-in is enforced the
+identity is the token, verified here again; the x-user-* headers count only when sign-in is
+switched off. The role is derived from the token's groups through the same role table every other gate
 uses, and every write is audited before it returns.
 """
 from __future__ import annotations
@@ -24,7 +25,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Reques
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
-from api.auth import Principal
+from api.auth import Principal, require_user
 from repositories import agent_policy_repo as repo
 from services import agent_actions, permission_settings, rbac
 from services.agent_policy import (approval_views, approvals, conditions, conflict_cases, conflict_detect,
@@ -61,7 +62,23 @@ def _role_of(principal: Principal) -> str:
 
 
 def gateway_principal(request: Request) -> Principal:
+    """Who is calling through the gateway.
+
+    The shared key proves the PATH (the call came through the gateway). It is not an identity:
+    while sign-in is enforced the identity is the user's own bearer token, forwarded by the gateway
+    and verified here by the same verifier every other route uses (N8 part 1). The x-user-* headers
+    are read only when sign-in is switched off, where they are all there is - as before.
+    Enforced-but-unconfigured refuses (503) rather than falling back to the headers.
+    """
     _key_ok(request.headers.get("x-gateway-key"), "AGENT_POLICY_GATEWAY_KEY")
+    verified = require_user(request)       # 401 without a valid bearer when enforced; None only when off
+    if verified is not None:
+        forwarded = (request.headers.get("x-user-sub") or "").strip()
+        if forwarded and forwarded != verified.subject:
+            # The header disagrees with the token: a gateway bug or a forgery attempt. The token wins.
+            logger.warning("gateway forwarded x-user-sub %r but the bearer token is for %r; using the token",
+                           forwarded, verified.subject)
+        return verified
     sub = (request.headers.get("x-user-sub") or "").strip()
     if not sub:
         raise HTTPException(status_code=401, detail="not accepted")

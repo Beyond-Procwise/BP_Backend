@@ -10,6 +10,9 @@ KEY = "test-gateway-key"
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setenv("AGENT_POLICY_GATEWAY_KEY", KEY)
+    # N8: with sign-in enforced the identity is the forwarded bearer token, not these headers; these
+    # tests are about the key + header path, which remains the contract only when sign-in is OFF.
+    monkeypatch.setattr("api.auth._active_verifier", lambda: None)
     monkeypatch.setattr("api.routers.compliance.po_variance", lambda deal_id=None: {"cases": 3, "deal": deal_id})
     from api.main import app
     return TestClient(app)

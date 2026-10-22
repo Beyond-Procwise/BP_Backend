@@ -374,10 +374,11 @@ def run_tools_stream(
     """
     from orchestration import executor
 
-    return executor.run_stream(
-        _wiring(verify, check_arguments), task, tools, system, model=model or _DEFAULT_MODEL, max_rounds=max_rounds,
-        timeout_s=timeout_s, on_tool=on_tool, on_delta=on_delta, agent=agent, workflow_id=workflow_id,
-        user_id=user_id)
+    with egress.calling(agent):           # the whole stream runs as the agent (1.20j)
+        return executor.run_stream(
+            _wiring(verify, check_arguments), task, tools, system, model=model or _DEFAULT_MODEL, max_rounds=max_rounds,
+            timeout_s=timeout_s, on_tool=on_tool, on_delta=on_delta, agent=agent, workflow_id=workflow_id,
+            user_id=user_id)
 
 
 def run_tools(
@@ -406,7 +407,8 @@ def run_tools(
     """
     from orchestration import executor
 
-    return executor.run(
-        _wiring(verify, check_arguments), task, tools, system, model=model or _DEFAULT_MODEL, max_rounds=max_rounds,
-        timeout_s=timeout_s, require_tool_use=require_tool_use, nudge=nudge, agent=agent,
-        workflow_id=workflow_id, user_id=user_id)
+    with egress.calling(agent):           # every outbound call of this turn is audited under the agent (1.20j)
+        return executor.run(
+            _wiring(verify, check_arguments), task, tools, system, model=model or _DEFAULT_MODEL, max_rounds=max_rounds,
+            timeout_s=timeout_s, require_tool_use=require_tool_use, nudge=nudge, agent=agent,
+            workflow_id=workflow_id, user_id=user_id)

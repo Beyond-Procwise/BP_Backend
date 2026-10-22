@@ -66,6 +66,7 @@ import socket
 from dataclasses import dataclass
 from enum import Enum
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Iterator, Optional
 from urllib.parse import urljoin, urlsplit
 
@@ -216,6 +217,31 @@ def check_destination(url: str, *, allowed_ports: frozenset[int] | None = None,
 #: ``policy_version`` so a reader knows which rules "would have" decided it.
 SHADOW_RULES_VERSION = "shadow-default-v0"
 UNKNOWN_AGENT = "unknown"
+
+# The agent on whose behalf the current work runs (1.20j). A context variable: it follows the
+# request through awaits and into threads started from it. Set by the tool loop for the agent it
+# runs, read by request()/observe() when the caller names no agent, so the model client, the FX
+# lookup and every other caller inside a reasoning turn are audited under the agent's name.
+_calling_agent: ContextVar[Optional[str]] = ContextVar("egress_calling_agent", default=None)
+
+
+def current_agent() -> Optional[str]:
+    """The agent the current work runs for, or None outside any ``calling`` block."""
+    return _calling_agent.get()
+
+
+@contextmanager
+def calling(agent: Optional[str]) -> Iterator[None]:
+    """Everything inside runs as ``agent`` for the egress audit. Nests; an explicit ``agent=`` on a
+    call still wins. A blank name leaves the current agent in place."""
+    if not agent:
+        yield
+        return
+    token = _calling_agent.set(str(agent))
+    try:
+        yield
+    finally:
+        _calling_agent.reset(token)
 _LOCAL_NAMES = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
@@ -385,7 +411,7 @@ def request(
         kwargs.get("json") if kwargs.get("json") is not None else kwargs.get("data")
     )
 
-    agent = agent or UNKNOWN_AGENT
+    agent = agent or current_agent() or UNKNOWN_AGENT
     # What the payload carries (1.20 c): classified only for EXTERNAL destinations, so the local
     # model host never pays for the scan. The tags ride on every outcome branch's event row.
     from src.services import egress_classify
@@ -457,7 +483,7 @@ def observe(purpose: Purpose, destination: str, *, agent: Optional[str] = None,
     The decision is recorded on every call and applied for an enforced purpose: a denied call
     raises ``EgressDenied`` here, before the library runs.
     """
-    agent = agent or UNKNOWN_AGENT
+    agent = agent or current_agent() or UNKNOWN_AGENT
     from src.services import egress_classify
     from src.services.egress_log import payload_digest
     _sha, _bytes = payload_digest(payload)
