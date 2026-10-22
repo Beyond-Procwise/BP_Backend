@@ -65,6 +65,10 @@ def main(argv=None) -> int:
     results = []
     for folder in folders:
         for sc in _scenarios(folder, kinds, args.per_skill, args.include_expert):
+            # An edge scenario is often a mid-conversation follow-up ("Two contracts have never been read for
+            # clauses."); an optional `context:` line in the scenario gives the router and the model the setting.
+            if sc.get("context"):
+                sc = {**sc, "prompt": f"{sc['context'].strip()} {sc['prompt']}"}
             for old_name, new_name in swaps:
                 sc = {**sc, "prompt": sc["prompt"].replace(old_name, new_name)}
             t0 = time.time()
