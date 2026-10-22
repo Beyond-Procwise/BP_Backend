@@ -1,13 +1,11 @@
 """Analysis-event routes."""
 import importlib
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 mod = importlib.import_module("src.api.routers.analysis")
-
-
-import pytest
 
 
 @pytest.fixture(autouse=True)

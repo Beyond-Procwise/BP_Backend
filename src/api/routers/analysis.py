@@ -35,9 +35,9 @@ def _query(sql: str, params: tuple) -> list[dict]:
 
 
 class AnalysisStartIn(BaseModel):
-    session_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1, max_length=128)   # recorded in the audit row
     name: Optional[str] = None
-    mode: str = "new"
+    mode: str = Field(default="new", max_length=32)         # the store checks the value; the length is bounded here
     created_by: Optional[str] = None
 
 

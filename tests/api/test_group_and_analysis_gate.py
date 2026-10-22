@@ -97,6 +97,19 @@ def test_every_attempt_is_audited_under_its_name(serve, router, path, body, acti
 
 @pytest.mark.parametrize("router,path,body,action,work", CASES, ids=IDS)
 def test_no_principal_is_refused(serve, router, path, body, action, work):
+    """Before this unit a request with no principal wrote a row owned by nobody; the gate now refuses it."""
     client = serve(router, None)
-    assert client.post(path, json=body).status_code in (401, 403)
+    assert client.post(path, json=body).status_code == 403
     assert client.did == []
+
+
+def test_changing_or_deleting_a_group_asks_the_same_gate(serve, monkeypatch):
+    """Every write to a group is audited under one name; a Viewer (a demoted owner included) is refused
+    before the owner-or-Admin rule is even consulted."""
+    monkeypatch.setattr(ag.repo, "get", lambda gid: {"group_id": gid, "created_by": "sub-viewer", "members": [], "links": []})
+    monkeypatch.setattr(ag.repo, "update", lambda gid, **k: None)
+    monkeypatch.setattr(ag.repo, "soft_delete", lambda gid: None)
+    client = serve(ag, viewer())
+    assert client.put("/agent-groups/5", json={"name": "renamed"}).status_code == 403
+    assert client.delete("/agent-groups/5").status_code == 403
+    assert [(a["action_type"], a["status"]) for a in client.audit].count(("agent_group.write", "denied")) == 2

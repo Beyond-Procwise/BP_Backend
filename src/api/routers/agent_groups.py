@@ -47,7 +47,7 @@ class Link(BaseModel):
 
 
 class GroupBody(BaseModel):
-    name: str
+    name: str = Field(max_length=120)      # recorded in the audit row before anything else judges it
     members: List[Member] = Field(default_factory=list)
     links: List[Link] = Field(default_factory=list)
 
@@ -93,13 +93,14 @@ def _validate(members: List[Member], links: List[Link]) -> None:
 def _require_owner_or_admin(principal, group: Dict[str, Any]) -> None:
     """Only the group's creator, or an Admin, may change or delete it (decision D-61).
 
-    Groups are shared: everyone may LIST them, and any signed-in user may CREATE one.
-    A legacy group (creator blank, missing or the old placeholder "system") has no
-    owner, so only an Admin may change it. ``created_by`` is written from the token's
-    subject, so that is what is compared here.
+    Groups are shared: everyone may LIST them; creating, changing and deleting one each
+    ask the gate first under agent_group.write (Buyer and above), and this check sits ON
+    TOP of it for changes and deletions. A legacy group (creator blank, missing or the old
+    placeholder "system") has no owner, so only an Admin may change it. ``created_by`` is
+    written from the token's subject, so that is what is compared here.
 
-    No principal means sign-in is switched off (the same convention as the support
-    list): nobody is identified, so nothing is refused and behaviour is as it was.
+    No principal here means the gate was stubbed (a test) or sign-in is off: nobody is
+    identified, so this ownership check refuses nothing; the gate has already decided.
     """
     if principal is None:
         return
@@ -148,6 +149,9 @@ def update_group(group_id: int, body: GroupPatch,
     below), not against an empty list, which every links-only PUT would
     otherwise fail against unconditionally.
     """
+    # The same write gate as creating (RT-23), so every change is audited and a demoted owner is
+    # refused like anyone else; the owner-or-Admin rule of D-61 then applies on top.
+    gate("agent_group.write", principal, agent="AgentGroupsRouter", context={"op": "update", "group_id": group_id})
     current = repo.get(group_id)
     if current is None:
         raise HTTPException(status_code=404, detail="No such group.")
@@ -175,6 +179,7 @@ def update_group(group_id: int, body: GroupPatch,
 
 @router.delete("/{group_id}")
 def delete_group(group_id: int, principal=Depends(require_user)) -> Dict[str, Any]:
+    gate("agent_group.write", principal, agent="AgentGroupsRouter", context={"op": "delete", "group_id": group_id})
     current = repo.get(group_id)  # only live groups: a deleted one is gone, 404
     if current is None:
         raise HTTPException(status_code=404, detail="No such group.")
