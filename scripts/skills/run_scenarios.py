@@ -66,6 +66,10 @@ def main(argv=None) -> int:
     ap.add_argument("--replace", action="append", default=[],
                     help="OLD=NEW: substitute a fixture name in prompts with one the corpus holds, e.g. 'Acme=Falconridge Systems 15'")
     args = ap.parse_args(argv)
+    # The output-safety gate and the verifier explain themselves through logging; without a handler those
+    # lines vanish and a withheld answer in the report has no stated cause (run 7, 2026-10-22).
+    import logging
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr, force=True)
     swaps = [tuple(r.split("=", 1)) for r in args.replace if "=" in r]
     out_dir = Path(args.out); out_dir.mkdir(parents=True, exist_ok=True)
     kinds = [k.strip() for k in args.kinds.split(",") if k.strip()]
