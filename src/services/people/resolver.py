@@ -52,10 +52,19 @@ class StaticRules:
         return self._rules.get((tenant_id, event_type)) or self._rules.get(("default", event_type))
 
 
-def _detail(reason: str, actor: Person, entity: EntityRef, delegated_from: Optional[str]) -> str:
+#: What an explicit choice means, by event: the chip under a hand-off says who asked.
+_EXPLICIT_BY_EVENT = {
+    "approval.delegated": "{who} asked you to decide this",
+    "task.assigned": "{who} handed this to you",
+    "message.received": "{who} wrote to you",
+}
+
+
+def _detail(reason: str, actor: Person, entity: EntityRef, delegated_from: Optional[str],
+            event_type: str = "") -> str:
     who = actor.display_name or actor.subject
     text = {
-        "explicit": "You were chosen as a recipient",
+        "explicit": _EXPLICIT_BY_EVENT.get(event_type, "You were chosen as a recipient").format(who=who),
         "mentioned": "You were mentioned",
         "approver": f"You approve {entity.entity_type} items" + (f" over this amount" if entity.amount else ""),
         "manager": f"You're {who}'s manager",
@@ -153,5 +162,5 @@ class RecipientResolver:
                 continue
             if not self._can_view(person, entity):
                 continue
-            out.append(Recipient(person, reason, _detail(reason, actor, entity, delegated_from), delegated_from))
+            out.append(Recipient(person, reason, _detail(reason, actor, entity, delegated_from, event_type), delegated_from))
         return out

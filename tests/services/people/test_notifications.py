@@ -210,3 +210,15 @@ def test_body_comes_from_the_event_when_it_says_what_it_is_about():
     svc, repo = build()
     svc.handle(ev())
     assert {r["body"] for r in repo.rows} == {"Jane submitted R1"}
+
+
+def test_the_reason_chip_on_a_hand_off_names_who_asked():
+    """A hand-off is an explicit choice, but the chip should say who asked, not "chosen as a recipient"."""
+    svc, repo = build()
+    for etype, expect in (("approval.delegated", "asked you to decide this"), ("task.assigned", "handed this to you"),
+                          ("message.received", "wrote to you"), ("comment.mentioned", "You were mentioned")):
+        repo.rows.clear()
+        key = "mentioned" if etype == "comment.mentioned" else "explicit"
+        svc.handle(DomainEvent(type=etype, actor_id="buyer", entity_type="finding", entity_id="F1",
+                               summary="s", data={key: ["cm"]}))
+        assert [r["detail"] for r in repo.rows] == [expect if expect.startswith("You") else f"Jane {expect}"], etype
