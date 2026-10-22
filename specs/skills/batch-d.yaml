@@ -234,9 +234,9 @@
   - 'get_policy: for the cost of capital, the horizon convention, the approval bands and the business-case rules, quoted'
   - 'similar_items: for the descriptions we bought under before (line counts and a price range per source; it names no supplier and gives no dated price)'
   - 'compare_total_cost: for the lifetime cost of each option on one horizon'
-  - 'run_calculation: with `tco.total_cost` for present-value cost over the horizon at the governed rate, `deal.pct_change` for the difference between options
-    and `deal.scaled_total` for a benefit over the horizon from an annual figure the owner states; payback and net position are not registry calculations,
-    so they are shown with their inputs and labelled unverified'
+  - 'run_calculation: with `tco.total_cost` for present-value cost over the horizon at the governed rate, `finance.net_present_value` for the net position
+    of dated costs and owned benefits at that rate, `finance.payback_years` for the simple payback from the initial cost and the owned annual benefit, `deal.pct_change`
+    for the difference between options and `deal.scaled_total` for a benefit over the horizon'
   - 'build_spend_cube: for the current spend the case would change'
   - 'calc_supplier_scorecard: for the incumbent''s record where the case is a supplier change'
   - 'check_policy: for the approval route the value needs'
@@ -251,15 +251,15 @@
   - 'Benefits per option: each with its basis (a figure from the cube, a contract price, a headcount the sponsor states), its owner, and its status (contracted,
     evidenced, estimated); a benefit over the horizon via `deal.scaled_total` from the annual figure the owner states. A benefit with no owner is listed
     as unowned and excluded from the net position.'
-  - 'Net position per option: the registry''s present-value cost set against the owned benefits over the horizon; a net or payback figure is not a registry
-    calculation, so it is shown with its inputs and labelled unverified; sensitivity at `config.thresholds.sensitivity_pct` on the largest benefit and the
-    largest cost, shown as the inputs that change; the option that wins and under what assumption it stops winning.'
+  - Net position per option via `finance.net_present_value` on the dated costs (negative) and owned benefits (positive) at the governed rate, and payback
+    via `finance.payback_years` from the initial cost and the owned annual benefit; sensitivity at `config.thresholds.sensitivity_pct` on the largest benefit
+    and the largest cost, shown as the inputs that change; the option that wins and under what assumption it stops winning.
   - Risks with owners; assumptions listed in one place; the approval route as replied; the recommendation and what the approver is asked to decide.
   heuristics:
   - Doing nothing is an option with a cost; the case is relative to it.
   - A benefit has an owner or it is a hope.
   - Costs come from quotes and records; a cost nobody quoted is a gap, not a zero.
-  - The rate and the horizon come from policy; the cost arithmetic comes from the registry, and a net figure says it is unverified.
+  - The rate and the horizon come from policy; the arithmetic comes from the registry.
   - One table of assumptions beats ten footnotes.
   policy_hooks: Cost of capital, horizon, business-case rules and approval bands come from `tool:get_policy` and are quoted; the route for the value comes
     from `tool:check_policy` as replied. The skill commits nothing and approves nothing; benefits are the sponsor's claims with owners, and the savings-methodology
@@ -269,26 +269,25 @@
   - 'Policy inputs quoted: rate, horizon, bands.'
   - Cost table per option with sources and the gaps.
   - Benefit table per option with basis, owner and status; unowned benefits excluded.
-  - Present-value cost per option via the registry; benefits over the horizon; net and payback labelled unverified with their inputs; sensitivity.
+  - Net present value and payback per option via the registry; sensitivity.
   - Risks, assumptions, approval route, recommendation and the decision asked for.
   quality:
   - Every cost and benefit traces to a quote, a record or a named owner's statement.
   - Rate and horizon are quoted from policy or the case says they are missing.
-  - Cost arithmetic is from the registry or the comparison tool; any net or payback figure is labelled unverified with its inputs.
+  - All arithmetic is from the registry or the comparison tool.
   - Doing nothing is costed.
   escalation: Escalate to finance for the rate, the horizon and the template, to the sponsor for unowned benefits, and to the approver the policy names
     for the decision.
   example: Asked to justify replacing the forklift fleet, the skill frames three options (keep and maintain, replace with the lower quote, replace with
     the dearer quote), reads the governed cost of capital and horizon, costs each option from the quotes, the maintenance spend in the cube and the sponsor's
     stated energy figures, lists the benefits with owners (maintenance spend reduction evidenced from the cube, downtime reduction estimated by operations),
-    computes present-value cost per option via the registry, sets the owned benefits against it with the net and payback labelled unverified, runs sensitivity
-    on the downtime benefit, finds the lower quote wins unless the downtime benefit is less than half the estimate, reports the approval route, and lists
-    the assumptions in one table.
+    computes net present value and payback per option via the registry, runs sensitivity on the downtime benefit, finds the lower quote wins unless the
+    downtime benefit is less than half the estimate, reports the approval route, and lists the assumptions in one table.
   anti_patterns:
   - Assuming a cost of capital or a horizon.
   - Counting a benefit nobody owns.
   - Costing the preferred option fully and the status quo at zero.
-  - Presenting a net or payback figure as verified when the registry did not produce it.
+  - Doing the net-position or payback arithmetic by hand.
   context: We are building the business case for a purchase or a procurement initiative.
   thresholds:
   - key: sensitivity_pct
@@ -338,17 +337,15 @@
     expert: true
     prompt: Build the business case for replacing the forklift fleet.
     expect: Options including keep-and-maintain; rate and horizon quoted from policy; costs from quotes, cube and sponsor figures with gaps named; benefits
-      with owners and status; present-value cost via the registry; net and payback labelled unverified with inputs; sensitivity; risks; assumptions table;
-      approval route; nothing assumed
+      with owners and status; net present value and payback via the registry; sensitivity; risks; assumptions table; approval route; nothing assumed
   - kind: typical
     expert: true
     prompt: Is it worth moving the cleaning contract in-house?
-    expect: Status quo costed from the contract and cube; in-house costs from the sponsor's figures labelled; benefits owned; present-value cost via the
-      registry; net labelled unverified; the sponsor's headcount figure is an assumption
+    expect: Status quo costed from the contract and cube; in-house costs from the sponsor's figures labelled; benefits owned; net present value via the
+      registry; the sponsor's headcount figure is an assumption
   - kind: typical
     prompt: What is the payback on the new packaging machine?
-    expect: Cost via the registry from the quote; owned benefits over the horizon via deal.scaled_total; payback shown with inputs and labelled unverified;
-      rate from policy; sensitivity
+    expect: Payback via finance.payback_years from the quoted cost and the owned annual benefit; net present value at the policy rate; sensitivity
   - kind: typical
     prompt: Write the capex request for the warehouse racking.
     expect: Policy's business-case rules quoted; options; costs with sources; benefits with owners; approval band; structured text for the template
@@ -627,8 +624,9 @@
   - 'search_contracts: for the agreement with the supplier'
   - 'extract_clauses: for minimum order quantity, lead time, price-break, call-off schedule, consignment and stock-holding clauses, quoted'
   - 'supplier_lookup: for the lead time on the supplier''s master record, as stored'
-  - 'run_calculation: with `deal.pct_change` for the movement in quantity between two periods and `deal.scaled_total` for a quantity over a number of periods
-    or a price break''s total; an order-quantity formula is not in the registry, so its result is labelled unverified with its inputs'
+  - 'run_calculation: with `finance.average_per_period` for the consumption rate from a period''s quantity and its months or weeks, `deal.pct_change` for
+    the movement between two periods and `deal.scaled_total` for lead-time demand (the rate over the lead time) or a price break''s total; an order-quantity
+    formula is not in the registry, so its result is labelled unverified with its inputs'
   - 'get_policy: for the ordering cost, holding cost rate, service-level target and any stock policy'
   unavailable:
   - 'create_purchase_order: nothing is ordered; the pattern is advice for the buyer'
@@ -636,16 +634,15 @@
   workflow:
   - Frame the item, supplier and the user's stock and consumption facts.
   - 'Demand from the records: the item''s quantities from supplier_items over the last `config.thresholds.history_months` months, read as two halves and
-    compared via `deal.pct_change`; totals per period are stated, not a rate (an average is not a registered calculation); seasonality only if the user
-    states it.'
+    compared via `deal.pct_change`; the rate per month or week via `finance.average_per_period`; seasonality only if the user states it.'
   - 'Supplier terms quoted: minimum order quantity, lead time, price breaks, delivery schedule, consignment or stock-holding clauses; where no contract
     exists, the quote on record or the user''s statement, labelled.'
   - 'Costs from policy: ordering cost per order, holding cost rate, service level; none means the pattern is given in units and frequency without a cost
     optimum, and the policy owner is asked.'
   - 'Pattern: order quantity and frequency that respect the minimum order quantity and the price breaks, with every figure from the registry or labelled
-    unverified; reorder point only where the user states a consumption rate (per day or week) and the lead time is known: lead-time demand is `deal.scaled_total`
-    of that rate and the lead time, plus safety stock only where the user gives variability or a service level; the records'' period totals are not turned
-    into a rate; the price-break trade-off (discount versus holding) shown both ways with inputs.'
+    unverified; reorder point from lead-time demand (`deal.scaled_total` of the registry''s rate and the lead time from the clause, the quote or the user)
+    plus safety stock only where the user gives variability or a service level; the price-break trade-off (discount versus holding) shown both ways with
+    inputs.'
   - 'Arrangements: a blanket order with scheduled releases where demand is steady and the contract allows; consignment or vendor-managed stock where the
     clause exists or the supplier offers it, with the risks (ownership, obsolescence, audit) named; policy check for any commitment.'
   heuristics:
@@ -658,7 +655,7 @@
     Any commitment (blanket order, consignment agreement) is checked with `tool:check_policy` and reported as replied. Nothing is ordered by the skill.
   outputs:
   - 'Frame: item, supplier, user''s stock and consumption facts.'
-  - Demand history table per period, with the movement via the registry.
+  - Demand history table per period with the rate and the movement via the registry.
   - 'Supplier terms quoted: minimum quantity, lead time, breaks, schedule, consignment.'
   - Cost parameters from policy or absent.
   - Recommended order quantity and frequency with the arithmetic; reorder point and safety stock where inputs exist; price-break trade-off.
@@ -746,9 +743,9 @@
   - kind: typical
     expert: true
     prompt: How much safety gloves should we order and how often?
-    expect: Quantities from two periods of supplier_items compared via deal.pct_change; minimum quantity, lead time and price break quoted; ordering and
-      holding costs from policy; quantity and frequency with registry figures or labelled unverified; price-break trade-off both ways; reorder point with
-      the user's variability; blanket order under the call-off clause; nothing ordered
+    expect: Quantities from two periods of supplier_items compared via deal.pct_change and the rate via finance.average_per_period; minimum quantity, lead
+      time and price break quoted; ordering and holding costs from policy; quantity and frequency with registry figures or labelled unverified; price-break
+      trade-off both ways; reorder point from the rate over the lead time; blanket order under the call-off clause; nothing ordered
   - kind: typical
     expert: true
     prompt: Should we accept the price break at 5,000 units on the labels?

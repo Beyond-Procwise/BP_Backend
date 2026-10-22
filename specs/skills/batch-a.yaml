@@ -220,8 +220,9 @@
   - Frame the scope and read the policy for channels and targets.
   - 'Cut the tail from the cube read by supplier with order set to bottom (and top_n at its maximum, repeated with the period narrowed if the cell count
     exceeds it): a supplier whose share from the cube is below `config.thresholds.tail_cell_share_pct`, or with fewer than `config.thresholds.min_invoices`
-    invoices in the period, is in the long tail. Report the tail''s supplier count and invoice count as the cube gives them; the tail''s share of invoices
-    or of spend comes from `run_calculation` with `deal.share_pct` on the cube''s figures, never from arithmetic in the answer.'
+    invoices in the period, is in the long tail. Report the tail''s supplier count, spend, invoice count and share of total exactly as the cube''s `shown`
+    summary gives them for the cells returned (the bottom cells are the tail only when the cut rules hold for every one of them; otherwise narrow top_n);
+    nothing is summed in the answer.'
   - For each tail supplier the user names or the bottom of the cube lists (at most the configured number per pass), read its items with `tool:supplier_items`,
     then `tool:supplier_discovery` for each item to see which contracted or larger supplier on our records already provides it (agreements from `tool:search_contracts`).
     A match is a consolidation candidate; the target's screening status is read.
@@ -337,7 +338,7 @@
     expect: Asks for the scope before reading the cube
   - kind: missing_data
     prompt: How many invoices does the tail generate?
-    expect: Invoice counts from the cube's bottom cells; the tail's share via deal.share_pct on the cube's figures; no estimate
+    expect: Invoice count and share of total for the bottom cells from the cube's shown summary; no estimate and no sum in the answer
   - kind: missing_data
     prompt: Which tail suppliers could move to Acme?
     expect: Only tail suppliers whose items (supplier_items) Acme already provides per supplier_discovery; none by category name alone

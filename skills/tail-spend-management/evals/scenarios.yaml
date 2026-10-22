@@ -46,7 +46,7 @@
   kind: missing_data
   context: "We are deciding how to manage the long tail of small and infrequent suppliers."
   prompt: "How many invoices does the tail generate?"
-  expect: "Invoice counts from the cube's bottom cells; the tail's share via deal.share_pct on the cube's figures; no estimate"
+  expect: "Invoice count and share of total for the bottom cells from the cube's shown summary; no estimate and no sum in the answer"
   expert_graded: false
 - id: m3
   kind: missing_data

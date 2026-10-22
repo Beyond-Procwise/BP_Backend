@@ -27,7 +27,7 @@ Not for the emergency when stock has run out (urgent-sourcing), for pooling dema
 - Use `tool:search_contracts` for the agreement with the supplier
 - Use `tool:extract_clauses` for minimum order quantity, lead time, price-break, call-off schedule, consignment and stock-holding clauses, quoted
 - Use `tool:supplier_lookup` for the lead time on the supplier's master record, as stored
-- Use `tool:run_calculation` with `deal.pct_change` for the movement in quantity between two periods and `deal.scaled_total` for a quantity over a number of periods or a price break's total; an order-quantity formula is not in the registry, so its result is labelled unverified with its inputs
+- Use `tool:run_calculation` with `finance.average_per_period` for the consumption rate from a period's quantity and its months or weeks, `deal.pct_change` for the movement between two periods and `deal.scaled_total` for lead-time demand (the rate over the lead time) or a price break's total; an order-quantity formula is not in the registry, so its result is labelled unverified with its inputs
 - Use `tool:get_policy` for the ordering cost, holding cost rate, service-level target and any stock policy
 NOT AVAILABLE: create_purchase_order. nothing is ordered; the pattern is advice for the buyer
 NOT AVAILABLE: build_chart. figures are given as tables
@@ -37,10 +37,10 @@ Settings this skill reads from its own configuration, named by key and never res
 ## Workflow
 
 1. Frame the item, supplier and the user's stock and consumption facts.
-2. Demand from the records: the item's quantities from supplier_items over the last `config.thresholds.history_months` months, read as two halves and compared via `deal.pct_change`; totals per period are stated, not a rate (an average is not a registered calculation); seasonality only if the user states it.
+2. Demand from the records: the item's quantities from supplier_items over the last `config.thresholds.history_months` months, read as two halves and compared via `deal.pct_change`; the rate per month or week via `finance.average_per_period`; seasonality only if the user states it.
 3. Supplier terms quoted: minimum order quantity, lead time, price breaks, delivery schedule, consignment or stock-holding clauses; where no contract exists, the quote on record or the user's statement, labelled.
 4. Costs from policy: ordering cost per order, holding cost rate, service level; none means the pattern is given in units and frequency without a cost optimum, and the policy owner is asked.
-5. Pattern: order quantity and frequency that respect the minimum order quantity and the price breaks, with every figure from the registry or labelled unverified; reorder point only where the user states a consumption rate (per day or week) and the lead time is known: lead-time demand is `deal.scaled_total` of that rate and the lead time, plus safety stock only where the user gives variability or a service level; the records' period totals are not turned into a rate; the price-break trade-off (discount versus holding) shown both ways with inputs.
+5. Pattern: order quantity and frequency that respect the minimum order quantity and the price breaks, with every figure from the registry or labelled unverified; reorder point from lead-time demand (`deal.scaled_total` of the registry's rate and the lead time from the clause, the quote or the user) plus safety stock only where the user gives variability or a service level; the price-break trade-off (discount versus holding) shown both ways with inputs.
 6. Arrangements: a blanket order with scheduled releases where demand is steady and the contract allows; consignment or vendor-managed stock where the clause exists or the supplier offers it, with the risks (ownership, obsolescence, audit) named; policy check for any commitment.
 
 ## Frameworks and heuristics
@@ -58,7 +58,7 @@ Ordering cost, holding cost, service level and stock rules come from `tool:get_p
 ## Output specification
 
 1. Frame: item, supplier, user's stock and consumption facts.
-2. Demand history table per period, with the movement via the registry.
+2. Demand history table per period with the rate and the movement via the registry.
 3. Supplier terms quoted: minimum quantity, lead time, breaks, schedule, consignment.
 4. Cost parameters from policy or absent.
 5. Recommended order quantity and frequency with the arithmetic; reorder point and safety stock where inputs exist; price-break trade-off.

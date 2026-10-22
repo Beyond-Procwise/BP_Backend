@@ -802,28 +802,28 @@
     tool''s tax-basis caveat)'
   - 'contract_pipeline: for the contracts ending in the period with their total value as stored (no amounts due by period are recorded: a contract''s remaining
     value is the user''s figure or not available)'
-  - 'run_calculation: with `deal.pct_change` for the movement against the prior period, `deal.scaled_total` for the year-end projection from a monthly figure
-    and the months remaining, and `deal.share_pct` for the share of budget used'
+  - 'run_calculation: with `finance.average_per_period` for the monthly run rate from the invoiced total and the months elapsed, `deal.scaled_total` for
+    the year-end projection from that rate and the months remaining, `deal.share_pct` for the share of budget used and `deal.pct_change` for the movement
+    against the prior period'
   - 'get_policy: for a governed budget or limit for the scope'
   - 'get_corpus_facts: for the period and totals the corpus holds, so scope and period are stated once'
   unavailable:
   - 'post_accrual: accruals are finance''s posting; the skill reports the uninvoiced open order value finance may accrue'
   - 'build_chart: figures are given as tables'
   workflow:
-  - 'Frame: scope mapped to a records dimension (suppliers, buyer, country, region), period, budget figure and its source. Where no budget is given or governed,
-    the report is a commitment position only, and says so.'
+  - 'Frame: scope mapped to a records dimension (suppliers, buyer, country, region) by the user, never inferred from supplier names; period; budget figure
+    and its source. Where no budget is given or governed, the report is a commitment position only, and says so.'
   - Invoiced to date from the cube for the scope and period.
   - 'Open commitments: for each supplier in scope, the open balance per order from open_orders (order total minus invoices booked, same currency, as stored);
     contracts ending in the period from the pipeline with their stored total value, and any amounts due that the user states, labelled.'
-  - 'Position: budget, invoiced, open order balances, contracted amounts the user states, remaining; the year-end projection from the latest full month''s
-    invoiced figure (cube by month) and the months remaining via `deal.scaled_total`; the share of budget used via `deal.share_pct`; a projection above
-    the budget by more than `config.thresholds.overspend_alert_pct` is flagged.'
+  - 'Position: budget, invoiced, open order balances, contracted amounts the user states, remaining; the monthly run rate via `finance.average_per_period`
+    from the invoiced total and the months elapsed, the year-end projection via `deal.scaled_total` from that rate and the months remaining; the share of
+    budget used via `deal.share_pct`; a projection above the budget by more than `config.thresholds.overspend_alert_pct` is flagged.'
   - Movements against the prior period via `deal.pct_change`; the largest open balances named.
   - 'Caveats: the scope mapping; order and invoice tax basis; currencies without rates; orders with no value.'
   heuristics:
   - Committed is the open order balance plus what the user states as contracted and due; invoiced is spent; the sum against the budget is the position.
-  - The projection scales the latest full month's invoiced figure (from the cube by month) by the months remaining via the registry; say which month it
-    rests on.
+  - The run rate is the registry's average over the months elapsed, and the projection scales it by the months remaining; say how many months it rests on.
   - The budget is the user's or the policy's figure; the skill never sets one.
   - Budgets live by cost centre or category and the records do not; the mapping to suppliers or buyers is stated, never silent.
   policy_hooks: A governed budget or limit comes from `tool:get_policy` and is quoted; otherwise the budget figure is the user's and labelled. Nothing is
@@ -836,22 +836,23 @@
   - Caveats on mapping, tax basis, currency and missing values.
   quality:
   - Every figure traces to a tool result or the user's budget statement.
-  - The projection, the share of budget and the movements come from the calculation registry (scaled_total, share_pct, pct_change); no average is computed
-    in the answer.
-  - Scope mapping between the records and the budget is stated.
+  - The run rate, the projection, the share of budget and the movements come from the calculation registry (average_per_period, scaled_total, share_pct,
+    pct_change); no arithmetic in the answer.
+  - Scope mapping between the records and the budget is the user's and is stated; suppliers are never assigned to a budget by their names.
   - Nothing is posted or committed.
   escalation: Escalate to the budget owner where the projection exceeds the budget by the configured share, to finance for accruals and scope reconciliation,
     and to the category lead where one commitment dominates.
   example: Asked how much of the facilities budget is left this fiscal year, the skill takes the budget from the user, maps the scope to the facilities
     buyer, reads invoiced spend for that buyer from the cube, the open balances on the facilities suppliers' orders from open_orders, the maintenance contract
-    ending this year from the pipeline with its stored total and the user's statement of what is still due, projects year end from the latest full month's
-    invoiced figure and the months remaining via the registry, finds the projection above the budget by more than the configured share, and reports the
+    ending this year from the pipeline with its stored total and the user's statement of what is still due, takes the run rate over the months elapsed and
+    projects year end over the months remaining via the registry, finds the projection above the budget by more than the configured share, and reports the
     position with the three largest open balances and the caveat that the budget line and the buyer dimension do not match exactly.
   anti_patterns:
   - Inventing a budget figure.
   - Counting an order both as open commitment and as invoiced.
   - Posting an accrual or releasing a commitment from the skill.
-  - Projecting from a part-month or an average the registry did not compute.
+  - Projecting from a figure the registry did not compute.
+  - Deciding which suppliers belong to a budget from their names.
   context: We are reporting where a budget stands against invoiced spend and open commitments.
   thresholds:
   - key: overspend_alert_pct
@@ -894,8 +895,7 @@
     - budget this year
     - budget remaining
     - left of the budget
-    - committed value
-            - full-year position
+    - committed value - full-year position
     - how much budget
     - budget is left
     - of our budget
@@ -914,9 +914,9 @@
   - kind: typical
     expert: true
     prompt: How much of the facilities budget is left this year?
-    expect: Budget from the user or policy with source; invoiced from the cube; open balances from open_orders; contracts ending from the pipeline with
-      stored totals, amounts due as the user states; projection via deal.scaled_total from the latest full month and share via deal.share_pct; overspend
-      flag against the configured share; mapping caveat; nothing posted
+    expect: Budget from the user or policy with source; scope mapping from the user; invoiced from the cube; open balances from open_orders; contracts ending
+      from the pipeline with stored totals, amounts due as the user states; run rate via finance.average_per_period and projection via deal.scaled_total;
+      share via deal.share_pct; overspend flag against the configured share; nothing posted
   - kind: typical
     expert: true
     prompt: What is our committed spend with Acme for the rest of the year?
@@ -924,8 +924,8 @@
       user states them, labelled; invoiced to date separately; no double count
   - kind: typical
     prompt: Are we going to overspend on IT this year?
-    expect: Needs the budget figure; projection via deal.scaled_total from the latest full month and the months remaining; flag if above the configured
-      share; caveats
+    expect: Needs the budget figure and the user's mapping of IT to suppliers or a buyer; run rate via finance.average_per_period over the months elapsed;
+      projection via deal.scaled_total; flag if above the configured share; caveats
   - kind: typical
     prompt: What should finance accrue for open orders at month end?
     expect: Open order balances by supplier from open_orders with the tax-basis caveat; finance posts; the skill reports
@@ -948,7 +948,7 @@
     expect: From policy or the user only; if neither, says no budget is on record
   - kind: missing_data
     prompt: Project to year end.
-    expect: Projection via deal.scaled_total from the latest full month's invoiced figure and the months remaining; states which month; no seasonality assumed
+    expect: Run rate via finance.average_per_period over the months elapsed and projection via deal.scaled_total; states the months; no seasonality assumed
   - kind: conflicting_data
     prompt: Finance says 400k spent, the cube says 350k.
     expect: Both with scope and period; likely scope or timing differences named as questions; the report uses the cube and says so
