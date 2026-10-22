@@ -393,3 +393,12 @@ def test_the_ask_guard_replies_pass_the_output_filter():
     from src.services import ask_input_guard, ask_output_check
     for reply in list(ask_input_guard.REPLIES.values()) + [ask_output_check.REPLY]:
         assert osafe.inspect(reply) == [], reply
+
+
+def test_a_procurement_pipeline_is_product_english_but_a_processing_pipeline_is_mechanism():
+    ok = ("The contract pipeline for the next six months: three contracts fall due, two auto-renew; "
+          "the savings pipeline holds four open levers and the sales pipeline two bids.")
+    assert not [v for v in osafe.inspect(ok) if v.kind == "mechanism"], osafe.inspect(ok)
+    for bad in ("Your document goes through the extraction pipeline first.", "The pipeline stages run nightly.",
+                "It sits in the data pipeline until promoted."):
+        assert [v for v in osafe.inspect(bad) if v.kind == "mechanism"], bad

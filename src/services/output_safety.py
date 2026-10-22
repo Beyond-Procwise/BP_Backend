@@ -230,7 +230,10 @@ _PATTERNS: Sequence[tuple[str, re.Pattern[str]]] = [
 
 _MECHANISM = re.compile(
     r"\b("
-    r"pipeline|pipelines"
+    # A processing pipeline is mechanism; a renewal, savings, sales or opportunity pipeline is procurement
+    # English (live, 2026-10-22: every contract-pipeline answer was refused for the word alone).
+    r"(?:data|extraction|processing|ingestion|document|promotion|etl|ci|build|deployment)\s+pipelines?"
+    r"|pipelines?\s+(?:stage|step|run|job|worker)s?"
     r"|extraction\s+(?:stage|pass|layer|engine|logic|process)"
     r"|(?:database|db)\s+trigger|triggered\s+by\s+the|fires?\s+the\s+trigger"
     r"|watcher|poller|listener\s+process"
