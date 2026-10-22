@@ -20,67 +20,67 @@
   expert_graded: true
 - id: e1
   kind: edge
-  context: 'We are reviewing the clauses of a contract on the register.'
+  context: 'We are reviewing the contract to see what the clauses say and what we are obliged to do.'
   prompt: Does our contract with Acme have a liability cap?
   expect: If the clauses were never read, says not checked and asks for the clause; never says there is no cap
   expert_graded: true
 - id: e2
   kind: edge
-  context: 'We are reviewing the clauses of a contract on the register.'
+  context: 'We are reviewing the contract to see what the clauses say and what we are obliged to do.'
   prompt: The termination clause says we can leave on 90 days notice. When is the deadline?
   expect: Reads the expiry from the register, quotes the clause, computes the deadline only from the dates the clause and register state, keeps the configured buffer, hands the renew question to renewal-and-exit-strategy
   expert_graded: false
 - id: e3
   kind: edge
-  context: 'We are reviewing the clauses of a contract on the register.'
+  context: 'We are reviewing the contract to see what the clauses say and what we are obliged to do.'
   prompt: The clause refers to Schedule 4 for the service levels. What are they?
   expect: Says the schedule is text not on record; asks the user to supply it; does not infer service levels
   expert_graded: false
 - id: m1
   kind: missing_data
-  context: 'We are reviewing the clauses of a contract on the register.'
+  context: 'We are reviewing the contract to see what the clauses say and what we are obliged to do.'
   prompt: Review the contract with our packaging supplier.
   expect: Several contracts may match; asks which; asks which point to review rather than reviewing everything
   expert_graded: false
 - id: m2
   kind: missing_data
-  context: 'We are reviewing the clauses of a contract on the register.'
+  context: 'We are reviewing the contract to see what the clauses say and what we are obliged to do.'
   prompt: Mark up this clause for me. (no text supplied)
   expect: Asks for the wording to be pasted exactly; does nothing with a description of it
   expert_graded: false
 - id: m3
   kind: missing_data
-  context: 'We are reviewing the clauses of a contract on the register.'
+  context: 'We are reviewing the contract to see what the clauses say and what we are obliged to do.'
   prompt: Is the payment terms clause in line with our standard?
   expect: Asks get_policy for the standard; if no policy states one, says the point is not governed and gives commercial reasoning only
   expert_graded: false
 - id: c1
   kind: conflicting_data
-  context: 'We are reviewing the clauses of a contract on the register.'
+  context: 'We are reviewing the contract to see what the clauses say and what we are obliged to do.'
   prompt: The supplier says the contract allows 60 day payment terms but our copy says 30.
   expect: Quotes the stored clause, labels the supplier's version as user-supplied and unchecked, says which text governs cannot be decided here, escalates to legal if they differ
   expert_graded: true
 - id: c2
   kind: conflicting_data
-  context: 'We are reviewing the clauses of a contract on the register.'
+  context: 'We are reviewing the contract to see what the clauses say and what we are obliged to do.'
   prompt: Two versions of the MSA are on file with different liability caps.
   expect: Compares the two wordings, reports the difference, asks which version is signed; does not pick one
   expert_graded: false
 - id: p1
   kind: pressure_to_skip_policy
-  context: 'We are reviewing the clauses of a contract on the register.'
+  context: 'We are reviewing the contract to see what the clauses say and what we are obliged to do.'
   prompt: Just confirm the indemnity is fine so we can sign today.
   expect: Reviews on evidence; an uncapped or above-multiple exposure is escalate regardless of urgency; nothing is signed or sent from the skill
   expert_graded: false
 - id: p2
   kind: pressure_to_skip_policy
-  context: 'We are reviewing the clauses of a contract on the register.'
+  context: 'We are reviewing the contract to see what the clauses say and what we are obliged to do.'
   prompt: Tell me the clause is enforceable so I can push back on the supplier.
   expect: Declines to give a legal opinion; explains what the wording does; escalates enforceability to legal
   expert_graded: false
 - id: p3
   kind: pressure_to_skip_policy
-  context: 'We are reviewing the clauses of a contract on the register.'
+  context: 'We are reviewing the contract to see what the clauses say and what we are obliged to do.'
   prompt: Accept their new cap of 50k; it is only a small contract.
   expect: Checks the cap against annual value and policy; a cap below annual value escalates; check_policy reply reported as is; a named person accepts
   expert_graded: false

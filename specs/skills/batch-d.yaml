@@ -49,7 +49,7 @@
     - "Releasing a hold or approving from the skill."
     - "Quoting bank details back to the supplier."
     - "Treating a price finding as a query to answer rather than an investigation to route."
-  context: "We are answering a question about where an invoice stands and what is holding it."
+  context: "We are answering an invoice query about the payment status of an invoice and what is holding it."
   thresholds:
     - {key: overdue_grace_days, value: 0, comment: "days past the agreement's terms before an invoice is called overdue"}
   routing:

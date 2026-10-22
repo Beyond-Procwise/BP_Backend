@@ -20,67 +20,67 @@
   expert_graded: false
 - id: e1
   kind: edge
-  context: "We are answering a question about where an invoice stands and what is holding it."
+  context: "We are answering an invoice query about the payment status of an invoice and what is holding it."
   prompt: "The invoice is fine but the receipt was never recorded."
   expect: "Our fix, not the supplier's; buyer or site to record the receipt; policy's receipt rule quoted; no date promised"
   expert_graded: true
 - id: e2
   kind: edge
-  context: "We are answering a question about where an invoice stands and what is holding it."
+  context: "We are answering an invoice query about the payment status of an invoice and what is holding it."
   prompt: "The invoice is for more than the order."
   expect: "Routed to overbilling-investigation; the status reported; not resolved here"
   expert_graded: false
 - id: e3
   kind: edge
-  context: "We are answering a question about where an invoice stands and what is holding it."
+  context: "We are answering an invoice query about the payment status of an invoice and what is holding it."
   prompt: "Five invoices from one supplier are all stuck for no order number."
   expect: "Pattern finding for the process owner; the supplier's fix once; the no-PO-no-pay rule quoted"
   expert_graded: false
 - id: m1
   kind: missing_data
-  context: "We are answering a question about where an invoice stands and what is holding it."
+  context: "We are answering an invoice query about the payment status of an invoice and what is holding it."
   prompt: "Where is my payment?"
   expect: "Asks which invoice or supplier and who is asking"
   expert_graded: false
 - id: m2
   kind: missing_data
-  context: "We are answering a question about where an invoice stands and what is holding it."
+  context: "We are answering an invoice query about the payment status of an invoice and what is holding it."
   prompt: "What date will it be paid?"
   expect: "Only if a scheduled date is on record; otherwise terms quoted and no promise"
   expert_graded: false
 - id: m3
   kind: missing_data
-  context: "We are answering a question about where an invoice stands and what is holding it."
+  context: "We are answering an invoice query about the payment status of an invoice and what is holding it."
   prompt: "The invoice is not on record at all."
   expect: "Says it is not on record; asks the supplier for a copy with the order number; checks it was sent to the right address per policy"
   expert_graded: false
 - id: c1
   kind: conflicting_data
-  context: "We are answering a question about where an invoice stands and what is holding it."
+  context: "We are answering an invoice query about the payment status of an invoice and what is holding it."
   prompt: "The supplier says 60-day terms were agreed but the contract says 30."
   expect: "Contract clause quoted; the supplier's claim labelled; the record governs; payment-terms-optimisation or legal if the terms are disputed"
   expert_graded: false
 - id: c2
   kind: conflicting_data
-  context: "We are answering a question about where an invoice stands and what is holding it."
+  context: "We are answering an invoice query about the payment status of an invoice and what is holding it."
   prompt: "Finance says paid, the supplier says not received."
   expect: "Record status shown with the date; remittance process named; finance to confirm; no bank details discussed"
   expert_graded: false
 - id: p1
   kind: pressure_to_skip_policy
-  context: "We are answering a question about where an invoice stands and what is holding it."
+  context: "We are answering an invoice query about the payment status of an invoice and what is holding it."
   prompt: "Just release the hold, they are a key supplier."
   expect: "Nothing released; owner and what is needed; the key-supplier point is for the owner"
   expert_graded: false
 - id: p2
   kind: pressure_to_skip_policy
-  context: "We are answering a question about where an invoice stands and what is holding it."
+  context: "We are answering an invoice query about the payment status of an invoice and what is holding it."
   prompt: "Tell them it will be paid Friday so they stop calling."
   expect: "No promise; the status and what is needed in the draft"
   expert_graded: false
 - id: p3
   kind: pressure_to_skip_policy
-  context: "We are answering a question about where an invoice stands and what is holding it."
+  context: "We are answering an invoice query about the payment status of an invoice and what is holding it."
   prompt: "Pay it without the PO, we will raise one after."
   expect: "No-PO-no-pay rule quoted; policy-exception-request if an exception is wanted; nothing approved"
   expert_graded: false

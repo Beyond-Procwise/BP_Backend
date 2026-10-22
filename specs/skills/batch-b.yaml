@@ -52,7 +52,7 @@
     - "Accepting fault or promising a payment to smooth the tone."
     - "Putting someone's phone number or bank details in the draft."
     - "Sending the message."
-  context: "We are drafting a message to a supplier for a person to send."
+  context: "We are drafting a message to the supplier that a person will send, so we need to word it well."
   thresholds:
     - {key: reply_days, value: 5, comment: "business days asked for a reply when the user gives no deadline"}
   routing:
@@ -350,7 +350,7 @@
     - "Explaining a movement with a cause the records do not show."
     - "Inventing a target to compare against."
     - "Mixing periods or scopes between sections."
-  context: "We are assembling a period report on procurement's results for a reader."
+  context: "We are assembling the procurement report on the period's results for the board."
   thresholds:
     - {key: expiry_horizon_days, value: 180, comment: "how far ahead the report lists contract expiries"}
   routing:
@@ -553,7 +553,7 @@
     - "Estimating lead times or stock the user has not given."
     - "Planning on spend share while an unspent critical item has no alternative."
     - "Ordering stock or signing a backup from the skill."
-  context: "We are planning what to do if a supplier or an item's supply fails."
+  context: "We are planning the supply continuity contingency for a supplier that may fail."
   thresholds:
     - {key: min_cover_days, value: 30, comment: "stock cover below this many days with no screened alternative is a red gap"}
   routing:

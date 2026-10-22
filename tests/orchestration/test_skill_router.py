@@ -256,3 +256,16 @@ def test_phrasings_missed_in_live_runs_now_route(router):
 
 def test_the_new_approval_terms_do_not_take_an_award_question_from_the_award_skill(router):
     assert router.route("Can I approve the award to the winning bidder?").skill == "award-recommendation"
+
+
+def test_each_skills_scenario_context_line_routes_to_that_skill(router):
+    """The runner prepends a scenario's context line to a follow-up prompt; live, 2026-10-22, six
+    pressure scenarios ran without their skill because the line alone scored under the margin."""
+    import yaml
+    off = []
+    for e in router.entries:
+        rows = yaml.safe_load((SKILLS / e.name / "evals" / "scenarios.yaml").read_text())
+        line = next((r["context"] for r in rows if isinstance(r, dict) and r.get("context")), None)
+        if line and (router.route(line) or sr.NO_MATCH).skill != e.name:
+            off.append((e.name, (router.route(line) or sr.NO_MATCH).skill))
+    assert off == []

@@ -53,7 +53,7 @@
     - "Scoring criticality from a survey the records do not hold."
     - "Changing a supplier's record or telling the supplier its segment."
     - "Treating a one-off project spend as a recurring strategic relationship."
-  context: "We are segmenting the supplier base into strategic, bottleneck, leverage and transactional suppliers."
+  context: "We are segmenting the supplier base into tiers so we know which suppliers matter most."
   thresholds:
     - {key: strategic_share_pct, value: 5, comment: "share of total spend at or above which a supplier is a strategic or leverage candidate"}
   routing:
@@ -346,7 +346,7 @@
     - "Sizing the band on the first order rather than the need over the period."
     - "Suggesting a card purchase outside the policy's list."
     - "Raising the requisition for the requester."
-  context: "We are helping a requester work out the right channel to buy something."
+  context: "We are helping a requester work out which channel is the right way to buy something."
   thresholds:
     - {key: quote_band_gbp, value: 5000, comment: "default upper value below which one quote is enough, used only when policy states no band"}
     - {key: tender_band_gbp, value: 50000, comment: "default value above which a sourcing event is the route, used only when policy states no band"}

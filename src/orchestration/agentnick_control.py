@@ -29,6 +29,7 @@ import contextvars
 import json
 import logging
 import os
+import re
 import uuid
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -198,8 +199,14 @@ def _governance_tools() -> List[Tool]:
     except Exception:  # noqa: BLE001
         return []
 
-    def _policy(query: str) -> Any:
-        """Fetch a governed policy; on a miss, say what DOES exist.
+    def _policy(query: Any = None, slug: Any = None, type: Any = None, agent: Any = None, **_extra: Any) -> Any:  # noqa: A002
+        """Fetch a governed policy; on a miss, say what DOES exist and that the list is complete.
+
+        Live, 2026-10-22: skills told the model to "read the policy" and it spent whole round budgets
+        on get_policy(type="budget", slug="IT-2026"), get_policy(slug="SC-007") and five spellings of
+        "buying-channel": the schema took only `query`, so each call was an argument error, and the
+        miss note said "retry". Now any of query/slug/type/agent is accepted, and a miss says the
+        catalogue is complete and the topic is ungoverned unless a listed name clearly fits.
 
         A tool that returns an empty dict teaches the model nothing. AgentNick
         asked for 'approval_thresholds' (plural), missed the real
@@ -208,7 +215,10 @@ def _governance_tools() -> List[Tool]:
         caution. A miss now hands back the catalogue so the next round can
         self-correct, instead of leaving the model to guess the exact slug.
         """
-        hit = GT.get_policy(str(query))
+        query = next((str(v).strip() for v in (query, slug, type, agent) if v not in (None, "")), "")
+        if not query:
+            return {"found": False, "note": "get_policy needs a query: the topic, slug, type or agent name."}
+        hit = GT.get_policy(query)
         if hit:
             return _with_check_policy_note(hit)
 
@@ -227,13 +237,18 @@ def _governance_tools() -> List[Tool]:
             for p in (catalogue.get("policies") or [])
             if p.get("slug")
         ]
+        words = {w for w in re.findall(r"[a-z]{4,}", query.lower())}
+        suggested = [s for s in available if words & set(re.findall(r"[a-z]{4,}", str(s).lower()))]
         return {
             "found": False,
             "note": (
-                f"No governed policy matches '{query}'. Retry with one of the "
-                "names in 'available'. Do NOT invent a rule or a number."
+                f"No governed policy matches '{query}'. 'available' is the complete list of governed policies; "
+                "no other name or spelling will match. If one of them clearly covers this topic, call once more "
+                "with that exact name; otherwise the topic is not governed: say so and carry on with the "
+                "playbook's own defaults. Do NOT invent a rule or a number."
             ),
             "available": available,
+            "suggested": suggested,
         }
 
     return [
@@ -249,15 +264,16 @@ def _governance_tools() -> List[Tool]:
         Tool(
             name="get_policy",
             description=(
-                "Fetch a governed policy — its rules, weights and thresholds — by "
-                "type, slug, or the agent it applies to. Call this before applying "
-                "ANY rule or number. If it reports found=false it also lists the "
-                "policies that DO exist: retry with one of those."
+                "Fetch a governed policy — its rules, weights and thresholds — by topic, "
+                "type, slug, or the agent it applies to. One call per topic. Call it before applying "
+                "ANY rule or number. If it reports found=false, 'available' is the complete list of "
+                "policies: call again only if one of them clearly covers the topic; otherwise the topic "
+                "is ungoverned and you carry on with the playbook's defaults."
             ),
             parameters={
                 "type": "object",
-                "properties": {"query": {"type": "string"}},
-                "required": ["query"],
+                "properties": {"query": {"type": "string", "description": "The topic, slug, type or agent."},
+                               "slug": {"type": "string"}, "type": {"type": "string"}, "agent": {"type": "string"}},
             },
             handler=_policy,
         ),
