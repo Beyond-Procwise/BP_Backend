@@ -20,6 +20,7 @@ def test_a_backward_stage_move_is_a_409_with_the_reason(monkeypatch):
         raise IllegalTransition("opportunity O-1 is realised; it cannot move to identified")
 
     monkeypatch.setattr(module, "set_stage", _refuse)
+    monkeypatch.setattr(module, "gate", lambda *a, **k: None)   # RT-12: the route asks the gate first; its own tests cover it
     app = FastAPI()
     app.include_router(module.router)
     app.dependency_overrides[require_user] = lambda: object()

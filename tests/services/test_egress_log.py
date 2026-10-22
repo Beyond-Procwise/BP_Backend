@@ -168,6 +168,7 @@ def test_the_row_carries_no_policy_version_and_no_classification():
 
 
 def test_a_flush_failure_is_swallowed(monkeypatch):
+    monkeypatch.setattr(egress_log, "_writer_failing", False)   # the failure below sets it; restore it after
     """This observes outbound calls. An audit writer that can break the call it
     is watching is a worse problem than a gap in the audit."""
     import src.services.db as db

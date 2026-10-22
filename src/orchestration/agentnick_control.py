@@ -934,6 +934,31 @@ def _classification_tools() -> List[Tool]:
     ]
 
 
+def _similarity_tools() -> List[Tool]:
+    """Items bought under near-identical descriptions, from the organisation's own lines. Read-only."""
+    from src.services.analytics import similar_items as SI
+
+    return [
+        Tool(
+            name="similar_items",
+            description=(
+                "Find items bought under descriptions close to the one given, across this organisation's PO, "
+                "invoice and quote lines: for each match the name similarity (share of descriptive words in "
+                "common, 0 to 1), whether the item code is the same, and per source the line count, supplier "
+                "count, buyer count, price range as billed and last date. It shows where the same thing may be "
+                "bought separately; it does NOT say two items are the same: a person confirms specification and "
+                "unit of measure first. Prices are not normalised. Raise min_similarity to narrow."
+            ),
+            parameters={"type": "object", "properties": {
+                "description": {"type": "string", "description": "the item description to look for"},
+                "min_similarity": {"type": "number", "description": "0 to 1, default 0.6"},
+                "limit": {"type": "integer", "description": "at most 50, default 20"}},
+                "required": ["description"]},
+            handler=SI.find,
+        ),
+    ]
+
+
 def build_tools(
     agent_nick: Any,
     *,
@@ -969,6 +994,7 @@ def build_tools(
         + _screening_tools()
         + _index_tools()
         + _classification_tools()
+        + _similarity_tools()
     )
     if exclude:
         blocked = set(exclude)

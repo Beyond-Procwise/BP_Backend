@@ -42,6 +42,7 @@ def test_post_runs_and_returns_writes(client, monkeypatch):
     report = SimpleNamespace(run_id="RUN-1", failed={}, deals_done=1,
                              write_counts={"inserted": 1})
     monkeypatch.setattr(triage_router.engine, "run_triage", lambda ids, mode: report)
+    monkeypatch.setattr(triage_router, "gate", lambda *a, **k: None)   # RT-14: the route asks the gate first; its own tests cover it
     monkeypatch.setattr(triage_router.engine, "triage_deal_view", lambda d: VIEW)
     r = client.post("/triage/deals/D1/run")
     assert r.status_code == 200

@@ -47,6 +47,7 @@ _NETWORK_MODULES = {
     "qdrant_client",                                # external vector index
     "neo4j",                                        # graph
     "socket", "ftplib",                             # raw
+    "ddgs",                                         # search library with its own HTTP client
 }
 
 # Matched on the full dotted name rather than the root package, because the root
@@ -95,6 +96,8 @@ _KNOWN: dict[str, str] = {
     "src/services/kg_ingestion_service.py": "neo4j",
     "src/services/platform_kg.py": "neo4j",
     "src/services/procurement_kg_builder.py": "neo4j",
+    "src/services/supplier_enrichment/web_tools.py": "ddgs — the search library owns its transport; "
+                                                     "each call is observed through egress.observe (1.20g)",
 }
 
 

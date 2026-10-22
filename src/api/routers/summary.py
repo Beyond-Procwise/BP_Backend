@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from api.auth import require_user
+from api.endpoint_gate import require as gate
 import src.services.summary_agent as summary_agent
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,8 @@ class PrecomputeRequest(BaseModel):
 
 @router.post("", summary="Generate (refresh) a persona summary")
 def post_summary(req: SummaryRequest, principal=Depends(require_user)) -> dict[str, Any]:
+    gate("report.generate", principal, agent="summary_api",
+         context={"persona": req.persona, "deal_id": req.deal_id, "op": "summary"})
     try:
         result = summary_agent.generate_summary(
             req.persona, deal_id=req.deal_id, as_of=req.as_of
@@ -80,6 +83,10 @@ def get_history(persona: str, deal_id: Optional[str] = None) -> dict[str, Any]:
 
 @router.post("/precompute", summary="Warm the summary cache")
 def post_precompute(req: PrecomputeRequest, principal=Depends(require_user)) -> dict[str, Any]:
+    # Not report.generate: an explicit deal_ids list is honoured in full, so this can start an
+    # unbounded model job over the whole fleet. Its own configure-class action, Admin by the authority row.
+    gate("summary.precompute", principal, agent="summary_api",
+         context={"op": "precompute", "deal_count": len(req.deal_ids or [])})
     try:
         return summary_agent.precompute_summaries(
             personas=req.personas, deal_ids=req.deal_ids

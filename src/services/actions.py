@@ -61,6 +61,14 @@ ACTIONS: Dict[str, str] = {
     "contract.write": "write",
     "deal.write": "write",
     "finding.resolve": "write",
+    # A manual re-triage recomputes a deal's findings and writes them to the Action Centre.
+    "finding.triage": "write",
+    # Warming the persona-summary cache for MANY deals is a fleet-wide model job (an explicit deal_ids
+    # list bypasses the scheduler's caps). A configure action: refused for everyone, Admin included,
+    # until the authority row allows it (deploy/sql/2026-10-22_summary_precompute_authority.sql, Admin).
+    "summary.precompute": "configure",
+    # Appending to the value ledger: a finding's outcome or settlement, a realised saving, a correction.
+    "value.record": "write",
     # Rejecting an opportunity is permanent in the sense that matters: the reason is
     # written against it and the stage moves, and the opportunity card is where a person
     # does it. "Pursue", the card's other verb, gets NO name of its own -- it opens a
@@ -70,6 +78,10 @@ ACTIONS: Dict[str, str] = {
     # Answering "new information has arrived on something you rejected": re-open it or
     # keep it rejected. The same weight as the rejection it revisits.
     "opportunity.review": "write",
+    # Moving an opportunity's lifecycle stage (identified -> negotiation -> agreed -> realised -> closed).
+    # Its own name, not a second name for review: a condition an Admin writes for one must not stop the
+    # other. A move to "rejected" is asked as opportunity.reject, so one row governs every rejection.
+    "opportunity.stage": "write",
     "document.upload": "write",
     "document.promote": "write",
     # Bulk-rewrites po_id across every final table. Its own action so who may do it is its own setting.
@@ -134,6 +146,10 @@ ACTIONS: Dict[str, str] = {
     "entity_profile.write": "configure",
     # The templates every seller starts a customer quote from.
     "quote_template.write": "configure",
+    # Teaching a vendor extraction template (vendor onboarding form). A configure action: until an
+    # authority row allows it (deploy/sql/2026-10-22_extraction_template_write_authority.sql, Admin)
+    # the gate refuses everyone, an Admin included.
+    "extraction_template.write": "configure",
     "policy.reload": "configure",
     # Which buyers a Buyer/Viewer may see in reports. Changes what every report shows that person.
     "report.scope.write": "configure",

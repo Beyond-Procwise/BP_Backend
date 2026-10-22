@@ -260,7 +260,7 @@ def test_egress_permits_the_microsoft_hosts(monkeypatch, host):
     monkeypatch.setattr(egress, "_resolve", lambda h: ["20.190.151.1"])
     ok, why = egress.check_destination(f"https://{host}/x")
     assert ok, why
-    assert egress._evaluate(egress.Purpose.MAILBOX, host)[0] is True
+    assert egress._evaluate(egress.Purpose.MAILBOX, host).permitted is True
 
 
 def test_list_inbox_selects_the_sender_and_returns_a_bare_address():

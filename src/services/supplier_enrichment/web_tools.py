@@ -12,8 +12,10 @@ The URL handed to ``fetch_url`` is chosen by a language model
 context is seeded from supplier names that were themselves extracted from
 customer documents. That is a chain from "text inside a PDF" to "host this
 process connects to", which makes this the only server-side request forgery
-surface in the codebase. ``web_search`` posts to one fixed provider and cannot
-be pointed anywhere.
+surface in the codebase. ``web_search`` posts to one fixed provider (pinned: see
+``SEARCH_BACKEND``) and cannot be pointed anywhere; since 1.20g it is OBSERVED
+through ``egress.observe`` (the ``ddgs`` library owns its transport), so the query
+is recorded and judged like any other outbound call.
 
 The destination rules, the redirect handling and the audit line live in
 ``services.egress`` — scheme, port, post-resolution address check, per-hop
@@ -38,7 +40,7 @@ from __future__ import annotations
 
 import logging
 
-from src.services.egress import Purpose, get as egress_get
+from src.services.egress import EgressDenied, Purpose, get as egress_get, observe as egress_observe
 
 log = logging.getLogger(__name__)
 
@@ -52,24 +54,43 @@ _ALLOWED_PORTS = frozenset({80, 443})
 
 _UA = "Mozilla/5.0 (compatible; ProcWiseSupplierResearch/1.0)"
 
+# The search provider. The ddgs library owns its transport, so the call is OBSERVED through egress
+# (same decision, same event row) rather than made by it (1.20g). The backend is PINNED to
+# DuckDuckGo: in its default "auto" mode the library fans a query out to Wikipedia, Grokipedia,
+# Google, Yandex, Brave, Yahoo, Mojeek and Startpage, which would make this label a lie and let
+# company text reach providers nobody chose. The pin is what makes the audit row true; do not
+# remove it to "improve" search quality. Known limit of observing rather than owning the transport:
+# the library honours a DDGS_PROXY environment variable, which egress cannot see.
+SEARCH_BACKEND = "duckduckgo"
+SEARCH_HOST = "html.duckduckgo.com"
+SEARCH_AGENT = "supplier_research"
+
 
 def web_search(query: str, max_results: int = 5) -> list[dict]:
-    """Return [{title, url, snippet}] for a query (DuckDuckGo via ddgs)."""
+    """Return [{title, url, snippet}] for a query (DuckDuckGo via ddgs, backend pinned)."""
     if not query or not query.strip():
         return []
     try:
         from ddgs import DDGS
         out: list[dict] = []
-        with DDGS() as ddgs:
-            for r in ddgs.text(query.strip(), max_results=max_results):
-                url = r.get("href") or r.get("url") or ""
-                if url:
-                    out.append({
-                        "title": (r.get("title") or "")[:200],
-                        "url": url,
-                        "snippet": (r.get("body") or r.get("snippet") or "")[:400],
-                    })
+        # The query is the payload that leaves: it is digested and classified on the event row.
+        with egress_observe(Purpose.SUPPLIER_RESEARCH, SEARCH_HOST, agent=SEARCH_AGENT, payload=query.strip()):
+            with DDGS() as ddgs:
+                for r in ddgs.text(query.strip(), max_results=max_results, backend=SEARCH_BACKEND):
+                    url = r.get("href") or r.get("url") or ""
+                    if url:
+                        out.append({
+                            "title": (r.get("title") or "")[:200],
+                            "url": url,
+                            "snippet": (r.get("body") or r.get("snippet") or "")[:400],
+                        })
         return out
+    except EgressDenied as exc:
+        # Enforcement (egress step d) refused the search BEFORE the library ran. Re-raised, not
+        # absorbed: the research loop tells the model why (as it does for a policy-gate refusal),
+        # so the model does not read "no results" and search again.
+        log.warning("web_search refused by egress policy: %s", exc.reason)
+        raise
     except Exception as exc:  # noqa: BLE001 - fail open
         log.warning("web_search failed for %r: %s", query, exc)
         return []
@@ -106,6 +127,7 @@ def fetch_url(url: str) -> str:
     response = egress_get(
         url,
         purpose=Purpose.SUPPLIER_RESEARCH,
+        agent=SEARCH_AGENT,          # the outside-research agent: what an egress rule may be scoped to
         allowed_ports=_ALLOWED_PORTS,
         follow_redirects=True,
         timeout=10,

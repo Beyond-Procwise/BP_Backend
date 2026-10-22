@@ -43,6 +43,7 @@ FIXED_TOOLS = {
     "monitor_risk_events": ["supplier"],
     "commodity_index_lookup": ["series", "start", "end"],
     "classify_spend": ["items", "query"],
+    "similar_items": ["description", "min_similarity", "limit"],
 }
 
 # Tools the two older tool loops offer (services/governance_tools/governed_reasoning.py and
