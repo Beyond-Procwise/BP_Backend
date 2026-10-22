@@ -1,88 +1,89 @@
 # Model Inventory
 
-Generated from the formula registry by `model_inventory()` — 2026-10-22 16:26 UTC.
+Generated from the formula registry by `model_inventory()` — 2026-10-22 16:49 UTC.
 Do not hand-edit: regenerate with `python -m src.services.formulas.inventory`.
 
-**74 registered formulas.**
+**75 registered formulas.**
 
-**36 with no call site outside their own module** — either not yet migrated onto `evaluate`, or dead: `benchmark.evidence_confidence`, `benchmark.excel_round`, `deal_clustering.awarded_po`, `deal_clustering.cluster_confidence`, `duplicate_invoice.date_proximity`, `duplicate_invoice.reference_proximity`, `extraction.amount_agreement`, `extraction.completeness_score`, `extraction.line_arithmetic_state`, `finance.average_per_period`, `finance.net_present_value`, `finance.payback_years`, `linking.amount_agreement`, `linking.cluster_dampening`, `linking.decision_band`, `linking.line_pair_score`, `linking.line_set_composite`, `linking.location_agreement`, `linking.temporal_plausibility`, `negotiation.batna_strength`, `negotiation.market_context_score`, `negotiation.outlier_rails`, `negotiation.play_readiness`, `negotiation.policy_alignment_score`, `negotiation.supplier_performance_score`, `negotiation.threshold_confidence`, `negotiation.zopa_estimate`, `opportunity.price_variance_impact`, `opportunity.risk_normalisation`, `quote.weighting_score`, `requirement.completeness_score`, `risk.predictive_supplier_score`, `rivalry.description_overlap`, `rivalry.price_proximity`, `rivalry.volume_agreement`, `supplier.weight_renormalisation`
+**37 with no call site outside their own module** — either not yet migrated onto `evaluate`, or dead: `benchmark.evidence_confidence`, `benchmark.excel_round`, `deal_clustering.awarded_po`, `deal_clustering.cluster_confidence`, `duplicate_invoice.date_proximity`, `duplicate_invoice.reference_proximity`, `extraction.amount_agreement`, `extraction.completeness_score`, `extraction.line_arithmetic_state`, `finance.average_per_period`, `finance.carrying_cost`, `finance.net_present_value`, `finance.payback_years`, `linking.amount_agreement`, `linking.cluster_dampening`, `linking.decision_band`, `linking.line_pair_score`, `linking.line_set_composite`, `linking.location_agreement`, `linking.temporal_plausibility`, `negotiation.batna_strength`, `negotiation.market_context_score`, `negotiation.outlier_rails`, `negotiation.play_readiness`, `negotiation.policy_alignment_score`, `negotiation.supplier_performance_score`, `negotiation.threshold_confidence`, `negotiation.zopa_estimate`, `opportunity.price_variance_impact`, `opportunity.risk_normalisation`, `quote.weighting_score`, `requirement.completeness_score`, `risk.predictive_supplier_score`, `rivalry.description_overlap`, `rivalry.price_proximity`, `rivalry.volume_agreement`, `supplier.weight_renormalisation`
 
 | Formula | Ver | Owner | Purpose | GPSS | Last validated | Vectors | Dependents |
 |---|---|---|---|---|---|---|---|
-| `benchmark.adjusted_price` | 1.0.0+d0939572 | commercial | Fair benchmark unit price for one quote line, and the variance against it | — | 2026-10-22 16:25:46 | 2 | 3 |
-| `benchmark.evidence_confidence` | 1.0.0+8a74bdde | commercial | Confidence label for a benchmark, from how many comparable points backed it | — | 2026-10-22 16:25:46 | 5 | — |
-| `benchmark.excel_round` | 1.0.0+b600c6e4 | commercial | Excel ROUND semantics: half away from zero | — | 2026-10-22 16:25:46 | 2 | — |
-| `bids.normalise` | 1.0.0+f2eb58d4 | bids | Supplier bids on a like-for-like basis: same lines, units, currency and payment terms, with every adjustment shown beside the submitted price | — | 2026-10-22 16:25:46 | 2 | 1 |
-| `cost.should_cost` | 1.0.0+baae1fb7 | cost | Bottom-up modelled estimate of what a manufactured part should cost: material, conversion, labour, overhead, SG&A, logistics and margin per unit, with a tornado of drivers | — | 2026-10-22 16:25:46 | 2 | 1 |
-| `critic.addressable_value` | 1.0.0+5ea664fc | opportunity_critic | What is left of the detector's number after every haircut the tests justified | — | 2026-10-22 16:25:46 | 4 | 1 |
-| `critic.anchor_age_days` | 1.0.0+84414816 | opportunity_critic | How old the comparator is, so staleness can be tested against a governed rule | — | 2026-10-22 16:25:46 | 3 | 1 |
-| `critic.annualised_rate` | 1.0.0+82e26cae | opportunity_critic | Compound annual rate of change between an anchor price and the current one | — | 2026-10-22 16:25:46 | 5 | 2 |
-| `critic.excess_over_index` | 1.0.0+07b239a9 | opportunity_critic | The part of a price rise that is above index -- the only part that is an opportunity | — | 2026-10-22 16:25:46 | 4 | 1 |
-| `critic.fabricated_anchor` | 1.0.0+39078c99 | opportunity_critic | Whether an anchor price is an artefact of the miner's missing-data fallbacks | — | 2026-10-22 16:25:46 | 4 | 1 |
-| `critic.friction_haircut` | 1.0.0+0de054cd | opportunity_critic | Deduction for the real cost of switching or renegotiating | — | 2026-10-22 16:25:46 | 3 | 1 |
-| `critic.min_confidence` | 1.0.0+1d197c09 | opportunity_critic | A claim inherits the weakest confidence of the evidence it rests on | — | 2026-10-22 16:25:46 | 5 | 1 |
-| `critic.normalise_unit_rate` | 1.0.0+2b9e905a | opportunity_critic | Reduce a line to a per-unit rate so anchor and current can be compared like for like | — | 2026-10-22 16:25:46 | 3 | 1 |
-| `critic.relative_gap` | 1.0.0+ead52e09 | opportunity_critic | The gap as a proportion of its base -- 40% of GBP 3k is not 4% of GBP 3m | — | 2026-10-22 16:25:46 | 3 | 1 |
-| `critic.unit_basis_match` | 1.0.0+622ed8ee | opportunity_critic | Whether anchor and current are priced on the same basis -- mismatch invalidates outright | — | 2026-10-22 16:25:46 | 4 | 1 |
-| `critic.volume_delta` | 1.0.0+b847708d | opportunity_critic | Proportional change in volume between anchor and current, to test like-for-like | — | 2026-10-22 16:25:46 | 4 | 1 |
-| `deal.pct_change` | 1.0.0+39441e5c | analytics | Percentage change of a value against a baseline | — | 2026-10-22 16:25:46 | 4 | 7 |
-| `deal.realised_savings` | 1.0.0+09ac2b97 | analytics | Money actually saved: the quote-to-invoice unit price gap times invoiced volume | — | 2026-10-22 16:25:46 | 3 | 2 |
-| `deal.scaled_total` | 1.0.0+c758e942 | analytics | A unit amount scaled by a count (a monthly value over twelve months, a unit price over a quantity) | — | 2026-10-22 16:25:46 | 4 | 1 |
-| `deal.share_pct` | 1.0.0+4e079d17 | analytics | One part as a percentage of a whole (a supplier's share of spend, a tail's share of invoices) | — | 2026-10-22 16:25:46 | 5 | 1 |
-| `deal.weighted_unit_price` | 1.0.0+08d83ed7 | analytics | Volume-weighted unit price across a document type's line items | — | 2026-10-22 16:25:46 | 2 | 1 |
-| `deal_clustering.awarded_po` | 1.0.0+7b0692e8 | linkage | Which purchase order a bid won, by continuity scoring rather than name matching | — | 2026-10-22 16:25:46 | 1 | — |
-| `deal_clustering.cluster_confidence` | 1.0.0+dc15cf32 | linkage | Confidence that every member of a cluster belongs to the same sourcing event | — | 2026-10-22 16:25:46 | 2 | — |
-| `demand.price_harmonisation` | 1.0.0+dc2180c9 | demand | The saving from buying one identical item at a reference price (a percentile of the prices paid, not the lowest) instead of the higher prices actually paid | — | 2026-10-22 16:25:46 | 2 | 1 |
-| `duplicate_invoice.date_proximity` | 1.0.0+a120547b | assurance | How close two invoice dates are, on a graded ladder | — | 2026-10-22 16:25:46 | 3 | — |
-| `duplicate_invoice.pair_score` | 1.0.0+bc300d89 | assurance | How likely two invoices are the same invoice billed twice | — | 2026-10-22 16:25:46 | 2 | 1 |
-| `duplicate_invoice.reference_proximity` | 1.0.0+ef75b67d | assurance | Whether two invoice references are the same reference | — | 2026-10-22 16:25:46 | 3 | — |
-| `extraction.amount_agreement` | 1.0.0+d7f5c294 | extraction | Whether two money amounts agree within the three-way-match tolerance | — | 2026-10-22 16:25:47 | 3 | — |
-| `extraction.completeness_score` | 1.0.0+facea3ec | extraction | How much of a document's schema the extraction actually filled (0-100) | — | 2026-10-22 16:25:47 | 3 | — |
-| `extraction.line_arithmetic_state` | 1.0.0+93f89c05 | extraction | Whether quantity x unit rate = extended line corroborates the assigned roles | — | 2026-10-22 16:25:47 | 4 | — |
-| `finance.average_per_period` | 1.0.0+a817af6d | analytics | A total spread evenly over a number of periods (a monthly run rate from a year-to-date figure, a weekly consumption from a quarter's quantity) | — | 2026-10-22 16:25:47 | 4 | — |
-| `finance.net_present_value` | 1.0.0+0f9fe2b0 | analytics | Net present value of dated cash flows at an annual rate; year 0 is undiscounted, costs negative, benefits positive | — | 2026-10-22 16:25:47 | 4 | — |
-| `finance.payback_years` | 1.0.0+2282289a | analytics | Simple payback: years for an annual benefit to repay an initial cost, undiscounted | — | 2026-10-22 16:25:47 | 5 | — |
-| `landed_cost.total_cost` | 1.0.0+d672ffee | cost | What it costs to get the ordered goods to the buyer's delivery point, with every cost that is owed but not stated flagged rather than counted as zero | — | 2026-10-22 16:25:46 | 3 | 4 |
-| `linking.amount_agreement` | 1.0.0+9136b135 | linkage | Whether two amounts agree, decaying linearly to zero at 10% drift | — | 2026-10-22 16:25:47 | 4 | — |
-| `linking.cluster_dampening` | 1.0.0+89fdee3d | linkage | Correlated-signal dampening factor within one evidence cluster | — | 2026-10-22 16:25:47 | 3 | — |
-| `linking.decision_band` | 1.0.0+4f959f09 | linkage | Which action band a relationship confidence F falls into | — | 2026-10-22 16:25:47 | 5 | — |
-| `linking.line_pair_score` | 1.0.0+cb656046 | linkage | Similarity of two individual line items (description / qty / unit price) | — | 2026-10-22 16:25:47 | 2 | — |
-| `linking.line_set_composite` | 1.0.0+b4cdfa68 | linkage | Best-match line-set agreement with a source-extra coverage penalty | — | 2026-10-22 16:25:47 | 3 | — |
-| `linking.location_agreement` | 1.0.0+eac1a040 | linkage | Country and region agreement between two documents | — | 2026-10-22 16:25:47 | 2 | — |
-| `linking.relationship_confidence` | 1.0.0+3e3c340e | linkage | How confidently two procurement documents are the same relationship (F, 0-100) | — | 2026-10-22 16:25:47 | 2 | 1 |
-| `linking.temporal_plausibility` | 1.0.0+ba1d1b32 | linkage | Whether a child document's date is plausible against its parent's order date | — | 2026-10-22 16:25:47 | 4 | — |
-| `negotiation.batna_strength` | 1.0.0+aeabae8b | negotiation | The buyer's walk-away position from alternative quotes and trading history | — | 2026-10-22 16:25:54 | 5 | — |
-| `negotiation.counter_plan` | 1.1.0+9952a0ef | negotiation | What to counter at, and whether to counter at all, given the round and the gap | — | 2026-10-22 16:25:54 | 8 | 2 |
-| `negotiation.kraljic_quadrant` | 1.1.0+c696bef0 | negotiation | Kraljic quadrant and suggested negotiation style for a deal | — | 2026-10-22 16:25:54 | 7 | 1 |
-| `negotiation.market_context_score` | 1.0.0+60b018ae | negotiation | How far market conditions argue for one lever | — | 2026-10-22 16:25:54 | 2 | — |
-| `negotiation.outlier_rails` | 1.0.0+35afd9c8 | negotiation | Whether an offer breaches a review or escalation rail on price, volume or term | — | 2026-10-22 16:25:54 | 5 | — |
-| `negotiation.play_rank` | 1.0.0+9c252e65 | negotiation | Rank playbook plays for a (supplier type, style) pair against live signals | — | 2026-10-22 16:25:54 | 2 | 2 |
-| `negotiation.play_readiness` | 1.2.0+b7b9d068 | negotiation | Whether a play's precondition actually holds on this deal's evidence | — | 2026-10-22 16:25:54 | 5 | — |
-| `negotiation.policy_alignment_score` | 1.0.0+6224b68c | negotiation | How far governed policy pushes for or against one negotiation lever | — | 2026-10-22 16:25:54 | 3 | — |
-| `negotiation.supplier_performance_score` | 1.0.0+fad2575a | negotiation | How far a supplier's measured performance argues for one lever | — | 2026-10-22 16:25:54 | 3 | — |
-| `negotiation.threshold_confidence` | 1.0.0+08a1494e | negotiation | How far a value sits from a classification bar, as a 0.5-1.0 confidence | — | 2026-10-22 16:25:54 | 3 | — |
-| `negotiation.zopa_estimate` | 2.0.0+3f03aa12 | negotiation | Buyer's ceiling, the supplier's cost floor if any evidence exists, and an entry counter | — | 2026-10-22 16:25:54 | 3 | — |
-| `opportunity.finding_weight_factor` | 1.0.0+c361a830 | opportunity | One finding's unnormalised weight: money at stake, amplified by risk and coverage | — | 2026-10-22 16:25:54 | 2 | 2 |
-| `opportunity.price_variance_impact` | 1.0.0+5527a64c | opportunity | Money at stake when a paid price sits above a benchmark | — | 2026-10-22 16:25:54 | 2 | — |
-| `opportunity.risk_normalisation` | 1.0.0+bf07873b | opportunity | Coerce a supplier risk value onto 0-1, whatever scale it arrived on | — | 2026-10-22 16:25:54 | 5 | — |
-| `opportunity.weightage_shares` | 1.0.0+b908dedf | opportunity | Turn a run's weight factors into shares of that run | — | 2026-10-22 16:25:54 | 2 | 1 |
-| `otif.delivery_performance` | 1.0.0+f93ba46f | supplier_performance | The share of deliveries that were on time AND in full, over the deliveries that can be assessed | — | 2026-10-22 16:25:54 | 2 | 2 |
-| `ppv.purchase_price_variance` | 1.0.0+dbb6b52c | supplier_performance | What was paid above (+) or below (-) the PO price, on the quantity billed | — | 2026-10-22 16:25:54 | 2 | 2 |
-| `price_outlier.verdict` | 1.0.0+5f72312b | assurance | Whether a unit price is both statistically extreme and commercially material | — | 2026-10-22 16:25:54 | 5 | 2 |
-| `quote.weighting_score` | 1.0.0+903ffe16 | sourcing | Weighted 0-100 comparison score across competing quotes | — | 2026-10-22 16:25:54 | 2 | — |
-| `requirement.completeness_score` | 1.0.0+b744edd2 | analytics | Proportion of a requirement's required fields that are genuinely filled | — | 2026-10-22 16:25:46 | 2 | — |
-| `risk.predictive_supplier_score` | 1.0.0+573d6ee2 | risk | Forward-looking supplier risk 0-1 from decayed incident signals and performance | — | 2026-10-22 16:25:54 | 2 | — |
-| `rivalry.correlation` | 1.0.0+955cbb2c | linkage | How strongly two bids look like rivals for the same sourcing event | — | 2026-10-22 16:25:54 | 2 | 1 |
-| `rivalry.description_overlap` | 1.0.0+0565dc1f | linkage | Token Jaccard over two bids' aggregated line descriptions | — | 2026-10-22 16:25:54 | 2 | — |
-| `rivalry.price_proximity` | 1.0.0+1580e47b | linkage | Graded price closeness between two bids (proximity, never equality) | — | 2026-10-22 16:25:54 | 2 | — |
-| `rivalry.volume_agreement` | 1.0.0+d7b35f94 | linkage | Quantity-total ratio between two bids | — | 2026-10-22 16:25:54 | 2 | — |
-| `scoring.weighted_total` | 1.0.0+09f22cb8 | scoring | Ranked supplier totals from evaluator scores and criterion weights, with gates, a named normalisation, consistency flags and weight sensitivity | — | 2026-10-22 16:25:54 | 2 | 2 |
-| `supplier.composite_score` | 1.0.0+488a3cd8 | sourcing | Weighted composite supplier score over only the criteria we hold for them | — | 2026-10-22 16:25:54 | 2 | 3 |
-| `supplier.criterion_normalisation` | 1.0.0+2bc2ceb8 | sourcing | Min-max normalise one raw criterion to 0-100 across the suppliers being compared | — | 2026-10-22 16:25:54 | 4 | 2 |
-| `supplier.deal_price_score` | 1.0.0+d877d447 | sourcing | Price scored against the cheapest RIVAL bid on the same deal (100 = cheapest) | — | 2026-10-22 16:25:54 | 3 | 2 |
-| `supplier.payment_terms_score` | 1.0.0+36b959b6 | sourcing | Payment terms in days scored 0-100, longer terms being better for the buyer | — | 2026-10-22 16:25:54 | 6 | 4 |
-| `supplier.weight_renormalisation` | 1.0.0+cca0ca38 | sourcing | Drop criteria nobody can be scored on, and renormalise the rest to sum to 1 | — | 2026-10-22 16:25:54 | 2 | — |
-| `tco.total_cost` | 1.0.0+2ad3ef49 | cost | The present value, at the evaluation date, of every cash outflow to acquire, use and dispose of the goods over the horizon, minus inflows | — | 2026-10-22 16:25:46 | 2 | 5 |
+| `benchmark.adjusted_price` | 1.0.0+d0939572 | commercial | Fair benchmark unit price for one quote line, and the variance against it | — | 2026-10-22 16:49:10 | 2 | 3 |
+| `benchmark.evidence_confidence` | 1.0.0+8a74bdde | commercial | Confidence label for a benchmark, from how many comparable points backed it | — | 2026-10-22 16:49:10 | 5 | — |
+| `benchmark.excel_round` | 1.0.0+b600c6e4 | commercial | Excel ROUND semantics: half away from zero | — | 2026-10-22 16:49:10 | 2 | — |
+| `bids.normalise` | 1.0.0+f2eb58d4 | bids | Supplier bids on a like-for-like basis: same lines, units, currency and payment terms, with every adjustment shown beside the submitted price | — | 2026-10-22 16:49:10 | 2 | 1 |
+| `cost.should_cost` | 1.0.0+baae1fb7 | cost | Bottom-up modelled estimate of what a manufactured part should cost: material, conversion, labour, overhead, SG&A, logistics and margin per unit, with a tornado of drivers | — | 2026-10-22 16:49:10 | 2 | 1 |
+| `critic.addressable_value` | 1.0.0+5ea664fc | opportunity_critic | What is left of the detector's number after every haircut the tests justified | — | 2026-10-22 16:49:10 | 4 | 1 |
+| `critic.anchor_age_days` | 1.0.0+84414816 | opportunity_critic | How old the comparator is, so staleness can be tested against a governed rule | — | 2026-10-22 16:49:10 | 3 | 1 |
+| `critic.annualised_rate` | 1.0.0+82e26cae | opportunity_critic | Compound annual rate of change between an anchor price and the current one | — | 2026-10-22 16:49:10 | 5 | 2 |
+| `critic.excess_over_index` | 1.0.0+07b239a9 | opportunity_critic | The part of a price rise that is above index -- the only part that is an opportunity | — | 2026-10-22 16:49:10 | 4 | 1 |
+| `critic.fabricated_anchor` | 1.0.0+39078c99 | opportunity_critic | Whether an anchor price is an artefact of the miner's missing-data fallbacks | — | 2026-10-22 16:49:10 | 4 | 1 |
+| `critic.friction_haircut` | 1.0.0+0de054cd | opportunity_critic | Deduction for the real cost of switching or renegotiating | — | 2026-10-22 16:49:10 | 3 | 1 |
+| `critic.min_confidence` | 1.0.0+1d197c09 | opportunity_critic | A claim inherits the weakest confidence of the evidence it rests on | — | 2026-10-22 16:49:10 | 5 | 1 |
+| `critic.normalise_unit_rate` | 1.0.0+2b9e905a | opportunity_critic | Reduce a line to a per-unit rate so anchor and current can be compared like for like | — | 2026-10-22 16:49:10 | 3 | 1 |
+| `critic.relative_gap` | 1.0.0+ead52e09 | opportunity_critic | The gap as a proportion of its base -- 40% of GBP 3k is not 4% of GBP 3m | — | 2026-10-22 16:49:10 | 3 | 1 |
+| `critic.unit_basis_match` | 1.0.0+622ed8ee | opportunity_critic | Whether anchor and current are priced on the same basis -- mismatch invalidates outright | — | 2026-10-22 16:49:10 | 4 | 1 |
+| `critic.volume_delta` | 1.0.0+b847708d | opportunity_critic | Proportional change in volume between anchor and current, to test like-for-like | — | 2026-10-22 16:49:10 | 4 | 1 |
+| `deal.pct_change` | 1.0.0+39441e5c | analytics | Percentage change of a value against a baseline | — | 2026-10-22 16:49:10 | 4 | 7 |
+| `deal.realised_savings` | 1.0.0+09ac2b97 | analytics | Money actually saved: the quote-to-invoice unit price gap times invoiced volume | — | 2026-10-22 16:49:10 | 3 | 2 |
+| `deal.scaled_total` | 1.0.0+c758e942 | analytics | A unit amount scaled by a count (a monthly value over twelve months, a unit price over a quantity) | — | 2026-10-22 16:49:10 | 4 | 1 |
+| `deal.share_pct` | 1.0.0+4e079d17 | analytics | One part as a percentage of a whole (a supplier's share of spend, a tail's share of invoices) | — | 2026-10-22 16:49:10 | 5 | 1 |
+| `deal.weighted_unit_price` | 1.0.0+08d83ed7 | analytics | Volume-weighted unit price across a document type's line items | — | 2026-10-22 16:49:10 | 2 | 1 |
+| `deal_clustering.awarded_po` | 1.0.0+7b0692e8 | linkage | Which purchase order a bid won, by continuity scoring rather than name matching | — | 2026-10-22 16:49:10 | 1 | — |
+| `deal_clustering.cluster_confidence` | 1.0.0+54d2f472 | linkage | Confidence that every member of a cluster belongs to the same sourcing event | — | 2026-10-22 16:49:10 | 2 | — |
+| `demand.price_harmonisation` | 1.0.0+dc2180c9 | demand | The saving from buying one identical item at a reference price (a percentile of the prices paid, not the lowest) instead of the higher prices actually paid | — | 2026-10-22 16:49:10 | 2 | 1 |
+| `duplicate_invoice.date_proximity` | 1.0.0+a120547b | assurance | How close two invoice dates are, on a graded ladder | — | 2026-10-22 16:49:10 | 3 | — |
+| `duplicate_invoice.pair_score` | 1.0.0+bc300d89 | assurance | How likely two invoices are the same invoice billed twice | — | 2026-10-22 16:49:10 | 2 | 1 |
+| `duplicate_invoice.reference_proximity` | 1.0.0+ef75b67d | assurance | Whether two invoice references are the same reference | — | 2026-10-22 16:49:10 | 3 | — |
+| `extraction.amount_agreement` | 1.0.0+d7f5c294 | extraction | Whether two money amounts agree within the three-way-match tolerance | — | 2026-10-22 16:49:11 | 3 | — |
+| `extraction.completeness_score` | 1.0.0+facea3ec | extraction | How much of a document's schema the extraction actually filled (0-100) | — | 2026-10-22 16:49:11 | 3 | — |
+| `extraction.line_arithmetic_state` | 1.0.0+93f89c05 | extraction | Whether quantity x unit rate = extended line corroborates the assigned roles | — | 2026-10-22 16:49:11 | 4 | — |
+| `finance.average_per_period` | 1.0.0+a817af6d | analytics | A total spread evenly over a number of periods (a monthly run rate from a year-to-date figure, a weekly consumption from a quarter's quantity) | — | 2026-10-22 16:49:11 | 4 | — |
+| `finance.carrying_cost` | 1.0.0+49aa161b | analytics | What holding or releasing an amount for a number of days is worth at an annual rate (a payment-terms change, an early-payment discount, stock held) | — | 2026-10-22 16:49:11 | 4 | — |
+| `finance.net_present_value` | 1.0.0+0f9fe2b0 | analytics | Net present value of dated cash flows at an annual rate; year 0 is undiscounted, costs negative, benefits positive | — | 2026-10-22 16:49:11 | 4 | — |
+| `finance.payback_years` | 1.0.0+2282289a | analytics | Simple payback: years for an annual benefit to repay an initial cost, undiscounted | — | 2026-10-22 16:49:11 | 5 | — |
+| `landed_cost.total_cost` | 1.0.0+d672ffee | cost | What it costs to get the ordered goods to the buyer's delivery point, with every cost that is owed but not stated flagged rather than counted as zero | — | 2026-10-22 16:49:10 | 3 | 4 |
+| `linking.amount_agreement` | 1.0.0+9136b135 | linkage | Whether two amounts agree, decaying linearly to zero at 10% drift | — | 2026-10-22 16:49:11 | 4 | — |
+| `linking.cluster_dampening` | 1.0.0+89fdee3d | linkage | Correlated-signal dampening factor within one evidence cluster | — | 2026-10-22 16:49:11 | 3 | — |
+| `linking.decision_band` | 1.0.0+4f959f09 | linkage | Which action band a relationship confidence F falls into | — | 2026-10-22 16:49:11 | 5 | — |
+| `linking.line_pair_score` | 1.0.0+cb656046 | linkage | Similarity of two individual line items (description / qty / unit price) | — | 2026-10-22 16:49:11 | 2 | — |
+| `linking.line_set_composite` | 1.0.0+b4cdfa68 | linkage | Best-match line-set agreement with a source-extra coverage penalty | — | 2026-10-22 16:49:11 | 3 | — |
+| `linking.location_agreement` | 1.0.0+eac1a040 | linkage | Country and region agreement between two documents | — | 2026-10-22 16:49:11 | 2 | — |
+| `linking.relationship_confidence` | 1.0.0+3e3c340e | linkage | How confidently two procurement documents are the same relationship (F, 0-100) | — | 2026-10-22 16:49:11 | 2 | 1 |
+| `linking.temporal_plausibility` | 1.0.0+ba1d1b32 | linkage | Whether a child document's date is plausible against its parent's order date | — | 2026-10-22 16:49:11 | 4 | — |
+| `negotiation.batna_strength` | 1.0.0+aeabae8b | negotiation | The buyer's walk-away position from alternative quotes and trading history | — | 2026-10-22 16:49:18 | 5 | — |
+| `negotiation.counter_plan` | 1.1.0+9952a0ef | negotiation | What to counter at, and whether to counter at all, given the round and the gap | — | 2026-10-22 16:49:18 | 8 | 2 |
+| `negotiation.kraljic_quadrant` | 1.1.0+c696bef0 | negotiation | Kraljic quadrant and suggested negotiation style for a deal | — | 2026-10-22 16:49:18 | 7 | 1 |
+| `negotiation.market_context_score` | 1.0.0+60b018ae | negotiation | How far market conditions argue for one lever | — | 2026-10-22 16:49:18 | 2 | — |
+| `negotiation.outlier_rails` | 1.0.0+35afd9c8 | negotiation | Whether an offer breaches a review or escalation rail on price, volume or term | — | 2026-10-22 16:49:18 | 5 | — |
+| `negotiation.play_rank` | 1.0.0+9c252e65 | negotiation | Rank playbook plays for a (supplier type, style) pair against live signals | — | 2026-10-22 16:49:18 | 2 | 2 |
+| `negotiation.play_readiness` | 1.2.0+b7b9d068 | negotiation | Whether a play's precondition actually holds on this deal's evidence | — | 2026-10-22 16:49:18 | 5 | — |
+| `negotiation.policy_alignment_score` | 1.0.0+6224b68c | negotiation | How far governed policy pushes for or against one negotiation lever | — | 2026-10-22 16:49:18 | 3 | — |
+| `negotiation.supplier_performance_score` | 1.0.0+fad2575a | negotiation | How far a supplier's measured performance argues for one lever | — | 2026-10-22 16:49:18 | 3 | — |
+| `negotiation.threshold_confidence` | 1.0.0+08a1494e | negotiation | How far a value sits from a classification bar, as a 0.5-1.0 confidence | — | 2026-10-22 16:49:18 | 3 | — |
+| `negotiation.zopa_estimate` | 2.0.0+3f03aa12 | negotiation | Buyer's ceiling, the supplier's cost floor if any evidence exists, and an entry counter | — | 2026-10-22 16:49:18 | 3 | — |
+| `opportunity.finding_weight_factor` | 1.0.0+c361a830 | opportunity | One finding's unnormalised weight: money at stake, amplified by risk and coverage | — | 2026-10-22 16:49:18 | 2 | 2 |
+| `opportunity.price_variance_impact` | 1.0.0+5527a64c | opportunity | Money at stake when a paid price sits above a benchmark | — | 2026-10-22 16:49:18 | 2 | — |
+| `opportunity.risk_normalisation` | 1.0.0+bf07873b | opportunity | Coerce a supplier risk value onto 0-1, whatever scale it arrived on | — | 2026-10-22 16:49:18 | 5 | — |
+| `opportunity.weightage_shares` | 1.0.0+b908dedf | opportunity | Turn a run's weight factors into shares of that run | — | 2026-10-22 16:49:18 | 2 | 1 |
+| `otif.delivery_performance` | 1.0.0+f93ba46f | supplier_performance | The share of deliveries that were on time AND in full, over the deliveries that can be assessed | — | 2026-10-22 16:49:18 | 2 | 2 |
+| `ppv.purchase_price_variance` | 1.0.0+dbb6b52c | supplier_performance | What was paid above (+) or below (-) the PO price, on the quantity billed | — | 2026-10-22 16:49:18 | 2 | 2 |
+| `price_outlier.verdict` | 1.0.0+5f72312b | assurance | Whether a unit price is both statistically extreme and commercially material | — | 2026-10-22 16:49:18 | 5 | 2 |
+| `quote.weighting_score` | 1.0.0+903ffe16 | sourcing | Weighted 0-100 comparison score across competing quotes | — | 2026-10-22 16:49:18 | 2 | — |
+| `requirement.completeness_score` | 1.0.0+b744edd2 | analytics | Proportion of a requirement's required fields that are genuinely filled | — | 2026-10-22 16:49:10 | 2 | — |
+| `risk.predictive_supplier_score` | 1.0.0+573d6ee2 | risk | Forward-looking supplier risk 0-1 from decayed incident signals and performance | — | 2026-10-22 16:49:18 | 2 | — |
+| `rivalry.correlation` | 1.0.0+955cbb2c | linkage | How strongly two bids look like rivals for the same sourcing event | — | 2026-10-22 16:49:18 | 2 | 1 |
+| `rivalry.description_overlap` | 1.0.0+0565dc1f | linkage | Token Jaccard over two bids' aggregated line descriptions | — | 2026-10-22 16:49:18 | 2 | — |
+| `rivalry.price_proximity` | 1.0.0+1580e47b | linkage | Graded price closeness between two bids (proximity, never equality) | — | 2026-10-22 16:49:18 | 2 | — |
+| `rivalry.volume_agreement` | 1.0.0+d7b35f94 | linkage | Quantity-total ratio between two bids | — | 2026-10-22 16:49:18 | 2 | — |
+| `scoring.weighted_total` | 1.0.0+09f22cb8 | scoring | Ranked supplier totals from evaluator scores and criterion weights, with gates, a named normalisation, consistency flags and weight sensitivity | — | 2026-10-22 16:49:18 | 2 | 2 |
+| `supplier.composite_score` | 1.0.0+488a3cd8 | sourcing | Weighted composite supplier score over only the criteria we hold for them | — | 2026-10-22 16:49:18 | 2 | 3 |
+| `supplier.criterion_normalisation` | 1.0.0+2bc2ceb8 | sourcing | Min-max normalise one raw criterion to 0-100 across the suppliers being compared | — | 2026-10-22 16:49:18 | 4 | 2 |
+| `supplier.deal_price_score` | 1.0.0+d877d447 | sourcing | Price scored against the cheapest RIVAL bid on the same deal (100 = cheapest) | — | 2026-10-22 16:49:18 | 3 | 2 |
+| `supplier.payment_terms_score` | 1.0.0+36b959b6 | sourcing | Payment terms in days scored 0-100, longer terms being better for the buyer | — | 2026-10-22 16:49:18 | 6 | 4 |
+| `supplier.weight_renormalisation` | 1.0.0+cca0ca38 | sourcing | Drop criteria nobody can be scored on, and renormalise the rest to sum to 1 | — | 2026-10-22 16:49:18 | 2 | — |
+| `tco.total_cost` | 1.0.0+2ad3ef49 | cost | The present value, at the evaluation date, of every cash outflow to acquire, use and dispose of the goods over the horizon, minus inflows | — | 2026-10-22 16:49:10 | 2 | 5 |
 
 ---
 
@@ -591,9 +592,25 @@ An average is not a forecast: it says nothing about seasonality. The caller name
 
 **Dependents:** *none*
 
+### `finance.carrying_cost`
+
+*What holding or releasing an amount for a number of days is worth at an annual rate (a payment-terms change, an early-payment discount, stock held)* — scalar formula, owner **analytics**, effective from 2026-10-22, source `src.services.formulas.definitions.finance:86`.
+
+Simple, not compounded: the figure finance quotes for a terms change. Registered because the payment-terms skill had been feeding a spend figure into tco.total_cost, which needs a landed-cost result and so never ran.
+
+| Input | Unit | Range | Required |
+|---|---|---|---|
+| `amount` | money | [0, +inf] | no |
+| `annual_rate` | ratio | [0, +inf] | no |
+| `days` | count | [0, +inf] | no |
+
+**Output:** `float` in money — amount * annual_rate * days / 365, 2dp; None when an input is absent
+
+**Dependents:** *none*
+
 ### `finance.net_present_value`
 
-*Net present value of dated cash flows at an annual rate; year 0 is undiscounted, costs negative, benefits positive* — scalar formula, owner **analytics**, effective from 2026-10-22, source `src.services.formulas.definitions.finance:86`.
+*Net present value of dated cash flows at an annual rate; year 0 is undiscounted, costs negative, benefits positive* — scalar formula, owner **analytics**, effective from 2026-10-22, source `src.services.formulas.definitions.finance:116`.
 
 The rate is an assumption the policy or finance supplies; the argument check refuses one the model made up. A row without a numeric year and amount makes the whole result None rather than a partial sum.
 

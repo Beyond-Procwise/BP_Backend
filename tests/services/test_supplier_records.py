@@ -12,10 +12,10 @@ D = dt.date(2026, 3, 1)
 ITEMS = [("po", "ITM1", "ITM1", "Pallets", "each", 3, Decimal("300"), Decimal("9.5"), Decimal("10"), "GBP", D),
          ("invoice", "ITM1", "ITM1", "Pallets", "each", 2, Decimal("200"), Decimal("10"), Decimal("10"), "GBP", D),
          ("po", "Straps", None, "Straps", None, 1, Decimal("50"), Decimal("2"), Decimal("2"), "GBP", D)]
-# po_id, order_date, expected, status, currency, total, contract_id, invoiced_same_ccy, invoices, other_ccy, receipts
-ORDERS = [("PO1", D, None, None, "GBP", Decimal("1000"), "C1", Decimal("600"), 2, 0, 1),
-          ("PO2", D, dt.date(2026, 4, 1), "closed", "GBP", Decimal("500"), None, Decimal("500"), 1, 1, 0),
-          ("PO3", D, None, None, "EUR", None, None, Decimal("0"), 0, 0, 0)]
+# po_id, order_date, expected, status, currency, total, contract_id, buyer_id, invoiced_same_ccy, invoices, other_ccy, receipts
+ORDERS = [("PO1", D, None, None, "GBP", Decimal("1000"), "C1", "B7", Decimal("600"), 2, 0, 1),
+          ("PO2", D, dt.date(2026, 4, 1), "closed", "GBP", Decimal("500"), None, None, Decimal("500"), 1, 1, 0),
+          ("PO3", D, None, None, "EUR", None, None, "B7", Decimal("0"), 0, 0, 0)]
 # invoice_id, date, due, paid, status, ccy, amount, incl_tax, po_id, terms, open_findings
 INVOICES = [("INV1", D, dt.date(2026, 4, 1), None, None, "GBP", Decimal("600"), Decimal("720"), "PO1", "Net 30", 1),
             ("INV2", D, None, None, None, "GBP", Decimal("500"), None, None, None, 0),
@@ -60,6 +60,7 @@ def test_open_orders_balance_is_total_minus_same_currency_invoices_and_absent_fi
     by = {o["po_id"]: o for o in out["orders"]}
     assert by["PO1"]["balance"] == 400.0 and by["PO1"]["open_by_balance"] is True and by["PO1"]["receipts"] == 1
     assert by["PO1"]["status"] == "not recorded" and by["PO1"]["expected_delivery_date"] == "not recorded"
+    assert by["PO1"]["buyer_id"] == "B7" and by["PO2"]["buyer_id"] == "not recorded"
     assert by["PO2"]["balance"] == 0.0 and by["PO2"]["open_by_balance"] is False and by["PO2"]["invoices_in_another_currency"] == 1
     assert by["PO3"]["order_total"] is None and by["PO3"]["balance"] is None and by["PO3"]["open_by_balance"] is None
     assert out["totals_by_currency"]["GBP"] == {"order_total": 1500.0, "invoiced": 1100.0, "balance": 400.0, "orders": 2}
@@ -77,7 +78,8 @@ def test_invoices_report_status_due_and_paid_as_stored_and_overdue_only_from_a_s
     assert by["INV3"]["overdue"] is False and by["INV3"]["days_past_due"] == 0
     assert by["INV4"]["overdue"] is None and by["INV4"]["paid_date"] == "2026-04-02"
     assert out["counts"] == {"status_recorded": 2, "status_not_recorded": 2, "paid_date_recorded": 1,
-                             "due_date_recorded": 3, "overdue": 1, "with_open_findings": 1}
+                             "due_date_recorded": 3, "overdue": 1, "with_open_findings": 1, "without_po": 1}
+    assert out["without_po_by_currency"] == {"GBP": {"amount": 500.0, "invoices": 1}} and "1 with no order recorded" in out["summary"]
     assert out["totals_by_currency"] == {"GBP": {"amount": 1150.0, "invoices": 3}, "EUR": {"amount": 70.0, "invoices": 1}}
     assert "never computed from payment terms" in out["note"] and "not 'unpaid' and not 'paid'" in out["note"]
 

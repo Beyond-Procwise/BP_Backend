@@ -36,6 +36,8 @@ ASSUMPTION_ARGS = frozenset({
     "part", "whole", "unit_value", "multiplier",
     # finance.average_per_period, finance.payback_years: the totals, counts and benefits must come from the run too.
     "period_total", "periods", "initial_cost", "annual_benefit",
+    # finance.carrying_cost: the rate and the days are assumptions as much as the amount
+    "annual_rate", "days",
 })
 
 #: Identifiers a model passes to a tool. An id is never worked out: it comes from the request or from

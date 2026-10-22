@@ -1077,7 +1077,7 @@ def _supplier_record_tools() -> List[Tool]:
             description=(
                 "One supplier's purchase orders in a period (default three years) with, per order: order total, the "
                 "invoices booked against it in the same currency, the balance still open, receipts recorded, the "
-                "stored status and expected delivery date ('not recorded' when absent, which is not closed or on "
+                "stored status, expected delivery date and buyer id ('not recorded' when absent, which is not closed or on "
                 "time), and totals per currency. The balance is order total minus invoices as stored; the tax basis "
                 "of the two may differ, so check before quoting it as money owed. It writes nothing."
             ),
@@ -1090,8 +1090,8 @@ def _supplier_record_tools() -> List[Tool]:
                 "One supplier's invoices in a period (default three years), or one invoice by id: amount, PO, payment "
                 "terms, status, due date and paid date exactly as stored ('not recorded' when the record holds none, "
                 "which is neither paid nor unpaid), overdue only from a stored due date with no paid date, and the "
-                "count of open findings on each invoice (the hold reasons; invoice_reconciliation shows them in "
-                "full). It never computes a due date from payment terms and promises no payment date."
+                "count of open findings on each invoice (invoice_reconciliation shows them in full), plus the count and "
+                "amount of invoices with no order recorded. It never computes a due date from payment terms and promises no payment date."
             ),
             parameters={"type": "object", "properties": {**sup, "invoice_id": {"type": "string"}, **period},
                         "required": ["supplier"]},

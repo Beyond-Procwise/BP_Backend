@@ -51,7 +51,7 @@ LIMIT %s
 """
 
 _ORDERS_SQL = """
-SELECT h.po_id, h.order_date, h.expected_delivery_date, h.po_status, h.currency, h.total_amount, h.contract_id,
+SELECT h.po_id, h.order_date, h.expected_delivery_date, h.po_status, h.currency, h.total_amount, h.contract_id, h.buyer_id,
        (SELECT COALESCE(SUM(i.invoice_amount), 0) FROM proc.bp_invoice_trgt i
          WHERE i.po_id = h.po_id AND i.currency = h.currency) AS invoiced_same_currency,
        (SELECT COUNT(*) FROM proc.bp_invoice_trgt i WHERE i.po_id = h.po_id) AS invoices,
@@ -161,7 +161,7 @@ def open_orders(supplier: Any = None, start: Any = None, end: Any = None, *, row
     orders: List[Dict[str, Any]] = []
     totals: Dict[str, Dict[str, float]] = {}
     status_missing = 0
-    for po_id, odate, expected, status, ccy, total, contract_id, invoiced, n_inv, n_other, n_rec in raw:
+    for po_id, odate, expected, status, ccy, total, contract_id, buyer_id, invoiced, n_inv, n_other, n_rec in raw:
         total_d = Decimal(str(total)) if total is not None else None
         invoiced_d = Decimal(str(invoiced or 0))
         balance = None if total_d is None else total_d - invoiced_d
@@ -173,7 +173,7 @@ def open_orders(supplier: Any = None, start: Any = None, end: Any = None, *, row
             "invoiced_same_currency": _money(invoiced_d), "balance": _money(balance),
             "open_by_balance": None if balance is None else balance > 0,
             "invoices": int(n_inv or 0), "invoices_in_another_currency": int(n_other or 0),
-            "receipts": int(n_rec or 0), "contract_id": contract_id,
+            "receipts": int(n_rec or 0), "contract_id": contract_id, "buyer_id": buyer_id or NOT_RECORDED,
         })
         t = totals.setdefault(ccy or "unknown", {"order_total": 0.0, "invoiced": 0.0, "balance": 0.0, "orders": 0})
         t["orders"] += 1
@@ -210,7 +210,8 @@ def invoices(supplier: Any = None, invoice_id: Any = None, start: Any = None, en
     out: List[Dict[str, Any]] = []
     totals: Dict[str, Dict[str, float]] = {}
     counts = {"status_recorded": 0, "status_not_recorded": 0, "paid_date_recorded": 0, "due_date_recorded": 0,
-              "overdue": 0, "with_open_findings": 0}
+              "overdue": 0, "with_open_findings": 0, "without_po": 0}
+    without_po: Dict[str, Dict[str, float]] = {}
     for inv_id, idate, due, paid, status, ccy, amount, incl_tax, po_id, terms, findings in raw:
         overdue = None
         days_past_due = None
@@ -229,6 +230,12 @@ def invoices(supplier: Any = None, invoice_id: Any = None, start: Any = None, en
             counts["overdue"] += 1
         if int(findings or 0):
             counts["with_open_findings"] += 1
+        if po_id in (None, ""):
+            counts["without_po"] += 1
+            w = without_po.setdefault(ccy or "unknown", {"amount": 0.0, "invoices": 0})
+            w["invoices"] += 1
+            if amount is not None:
+                w["amount"] = float(round(Decimal(str(w["amount"])) + Decimal(str(amount)), 2))
         out.append({
             "invoice_id": inv_id, "invoice_date": _plain(idate), "due_date": _plain(due) or NOT_RECORDED,
             "paid_date": _plain(paid) or NOT_RECORDED, "status": status or NOT_RECORDED, "currency": ccy,
@@ -243,9 +250,9 @@ def invoices(supplier: Any = None, invoice_id: Any = None, start: Any = None, en
     summary = (f"{sname}: {len(out)} invoice(s) in the period; a payment status is recorded for "
                f"{counts['status_recorded']} of them, a due date for {counts['due_date_recorded']}, a paid date for "
                f"{counts['paid_date_recorded']}; {counts['overdue']} overdue by due date; {counts['with_open_findings']} "
-               f"with open findings." if out else f"{sname}: no invoices in the period.")
+               f"with open findings; {counts['without_po']} with no order recorded." if out else f"{sname}: no invoices in the period.")
     return {"found": True, "supplier_id": sid, "supplier": sname, "period": _period(period), "summary": summary,
-            "invoices": out, "totals_by_currency": totals, "counts": counts, "written": False,
+            "invoices": out, "totals_by_currency": totals, "without_po_by_currency": without_po, "counts": counts, "written": False,
             "note": f"Status, due and paid dates are as stored; '{NOT_RECORDED}' means the record holds none, which "
                     "is not 'unpaid' and not 'paid'. Overdue is judged only from a stored due date with no paid "
                     "date, never computed from payment terms. An invoice's hold reason, if any, is in its open "

@@ -84,6 +84,36 @@ def payback_years(initial_cost=None, annual_benefit=None):
 
 
 @formula(
+    "finance.carrying_cost",
+    version="1.0.0",
+    owner=_OWNER,
+    purpose="What holding or releasing an amount for a number of days is worth at an annual rate (a payment-terms change, an early-payment discount, stock held)",
+    effective_from=_FROM,
+    inputs=[
+        Term("amount", MONEY, "the amount carried", required=False, minimum=0.0),
+        Term("annual_rate", RATIO, "the annual rate as a fraction, from the governed policy or finance", required=False, minimum=0.0),
+        Term("days", COUNT, "days the amount is carried", required=False, minimum=0.0),
+    ],
+    output=Output("float", MONEY, "amount * annual_rate * days / 365, 2dp; None when an input is absent"),
+    notes=(
+        "Simple, not compounded: the figure finance quotes for a terms change. Registered because the payment-terms "
+        "skill had been feeding a spend figure into tco.total_cost, which needs a landed-cost result and so never ran."
+    ),
+    golden=[
+        GoldenVector(inputs={"amount": 1000000.0, "annual_rate": 0.08, "days": 30}, expected=6575.34, tolerance=0.01),
+        GoldenVector(inputs={"amount": 50000.0, "annual_rate": 0.1, "days": 365}, expected=5000.0),
+        GoldenVector(inputs={"amount": 50000.0, "annual_rate": 0.1, "days": 0}, expected=0.0),
+        GoldenVector(inputs={"amount": None, "annual_rate": 0.1, "days": 30}, expected=None),
+    ],
+)
+def carrying_cost(amount=None, annual_rate=None, days=None):
+    a, r, d = _num(amount), _num(annual_rate), _num(days)
+    if a is None or r is None or d is None or a < 0 or r < 0 or d < 0:
+        return None
+    return round(a * r * d / 365.0, 2)
+
+
+@formula(
     "finance.net_present_value",
     version="1.0.0",
     owner=_OWNER,
