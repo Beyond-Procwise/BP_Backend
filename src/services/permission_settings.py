@@ -86,11 +86,53 @@ CATALOGUE: Tuple[Setting, ...] = (
 _BY_KEY = {s.key: s for s in CATALOGUE}
 
 
+@dataclass(frozen=True)
+class ChoiceSetting:
+    """A setting whose value is one of a fixed list of named choices, not a role.
+
+    Stored in the same ``proc.bp_policy`` table, with the chosen value under ``rules.mode``. It has no
+    ``applies_to``: it is read by name by the code that needs it, not weighed by ``guardrail.authorize``
+    (the same treatment the governed limits get).
+    """
+    key: str
+    label: str
+    description: str
+    policy_name: str
+    policy_identifier: str
+    choices: Tuple[str, ...]
+    default: str
+
+
+CHOICES: Tuple[ChoiceSetting, ...] = (
+    ChoiceSetting(
+        "workflow_question_answer", "Who may answer a paused workflow's question",
+        "When a workflow stops and asks a person something, who may answer. approver_only: only people "
+        "with the approver permission, and never the person who started the run when the question is an "
+        "approval. starter_or_approver: the person who started the run, or an approver. any_signed_in: "
+        "anyone signed in.",
+        "WorkflowQuestionAnswerPolicy", "workflow_question_answer",
+        ("approver_only", "starter_or_approver", "any_signed_in"), "approver_only"),
+)
+
+_CHOICE_BY_KEY = {c.key: c for c in CHOICES}
+
+
+class InvalidChoice(ValueError):
+    """The value is not one of the setting's choices."""
+
+
 def setting(key: str) -> Setting:
     try:
         return _BY_KEY[key]
     except KeyError:
         raise UnknownSetting(f"{key!r} is not a permission setting") from None
+
+
+def choice_setting(key: str) -> ChoiceSetting:
+    try:
+        return _CHOICE_BY_KEY[key]
+    except KeyError:
+        raise UnknownSetting(f"{key!r} is not a choice setting") from None
 
 
 def _known_roles(roles: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -138,6 +180,21 @@ def _insert(cur, s: Setting, role: str, by: str, history: Optional[list] = None)
         (s.policy_name, POLICY_TYPE, s.description, json.dumps(_details(s, role, history)), by))
 
 
+def _choice_details(c: ChoiceSetting, value: str, history: Optional[list] = None) -> Dict[str, Any]:
+    d: Dict[str, Any] = {"policy_identifier": c.policy_identifier, "rules": {"mode": value}}
+    if history:
+        d["history"] = history
+    return d
+
+
+def _insert_choice(cur, c: ChoiceSetting, value: str, by: str, history: Optional[list] = None) -> None:
+    cur.execute(
+        "INSERT INTO proc.bp_policy (policy_name, policy_type, policy_desc, policy_details, "
+        "policy_linked_agents, policy_status, version, created_by, created_date) "
+        "VALUES (%s, %s, %s, %s::jsonb, '', 1, 1, %s, now())",
+        (c.policy_name, POLICY_TYPE, c.description, json.dumps(_choice_details(c, value, history)), by))
+
+
 def _in_transaction(conn, work):
     # get_conn() connections are autocommit: the lock, write, history and audit must stand together.
     previous = getattr(conn, "autocommit", True)
@@ -171,8 +228,36 @@ def current(conn=None) -> List[Dict[str, Any]]:
             "default_role": s.default_role,
             "configured": got is not None,
             "version": got[1] if got else 0,
+            "kind": "role",
+        })
+    chosen = _load(conn.cursor(), [c.policy_name for c in CHOICES])
+    for c in CHOICES:
+        got = chosen.get(c.policy_name)
+        value = ((got[2].get("rules") or {}).get("mode") if got else None) or c.default
+        out.append({
+            "key": c.key, "label": c.label, "description": c.description,
+            "actions": [], "kind": "choice", "choices": list(c.choices),
+            "value": value, "default_value": c.default,
+            "configured": got is not None, "version": got[1] if got else 0,
         })
     return out
+
+
+def choice_value(key: str, conn=None) -> str:
+    """The value now chosen for choice setting ``key``; its default if no row exists yet.
+
+    RAISES if the row cannot be read: the caller decides what an outage means (see
+    ``services.workflow_answer_policy``, which fails closed). A stored value that is not one of the
+    choices is returned as stored, so the caller can refuse it rather than quietly widen it.
+    """
+    c = choice_setting(key)
+    if conn is None:
+        with get_conn() as own:
+            return choice_value(key, own)
+    got = _load(conn.cursor(), [c.policy_name]).get(c.policy_name)
+    if not got:
+        return c.default
+    return str((got[2].get("rules") or {}).get("mode") or c.default)
 
 
 def minimum_role(key: str, conn=None, fallback: str = "Admin") -> str:
@@ -207,6 +292,11 @@ def seed_defaults(by: str, conn=None, roles: Optional[Dict[str, Any]] = None) ->
             if s.policy_name not in have:
                 _insert(cur, s, s.default_role, by)
                 created.append(s.key)
+        have_c = _load(cur, [c.policy_name for c in CHOICES], for_update=True)
+        for c in CHOICES:
+            if c.policy_name not in have_c:
+                _insert_choice(cur, c, c.default, by)
+                created.append(c.key)
         if created:
             _record(conn, phase="configure", action_type="permission_settings_seeded",
                     summary=f"onboarding defaults written for {', '.join(created)}",
@@ -256,3 +346,45 @@ def set_role(key: str, role: str, by: str, conn=None,
 def _history_line(version: int, by: str, before: Optional[str], after: str) -> Dict[str, Any]:
     return {"version": version, "changed_by": by, "changed_at": datetime.now(timezone.utc).isoformat(),
             "field": "required_role", "before": before, "after": after}
+
+
+def set_choice(key: str, value: str, by: str, conn=None) -> Dict[str, Any]:
+    """Make ``value`` the choice for ``key``. A value outside the list is refused; a no-op save writes nothing."""
+    c = choice_setting(key)
+    if value not in c.choices:
+        raise InvalidChoice(f"{value!r} is not one of: {', '.join(c.choices)}")
+    if conn is None:
+        with get_conn() as own:
+            return set_choice(key, value, by, own)
+
+    def work(cur):
+        have = _load(cur, [c.policy_name], for_update=True)
+        if c.policy_name not in have:
+            _insert_choice(cur, c, value, by, [_choice_history(1, by, None, value)])
+            _record(conn, phase="configure", action_type="permission_setting_changed",
+                    summary=f"{c.key}: set to {value} by {by}",
+                    details={"changed_by": by, "setting": c.key, "before": None, "after": value, "version": 1})
+            return {"key": c.key, "value": value, "changed": True, "version": 1}
+        pid, version, details = have[c.policy_name]
+        before = (details.get("rules") or {}).get("mode")
+        if before == value:
+            return {"key": c.key, "value": value, "changed": False, "version": version}
+        history = list(details.get("history") or []) + [_choice_history(version + 1, by, before, value)]
+        merged = {**details, "rules": {**(details.get("rules") or {}), "mode": value}, "history": history}
+        cur.execute(
+            "UPDATE proc.bp_policy SET policy_details = %s::jsonb, version = version + 1, "
+            "last_modified_by = %s, last_modified_date = now() WHERE policy_id = %s AND version = %s",
+            (json.dumps(merged), by, pid, version))
+        if cur.rowcount != 1:
+            raise SettingConflict(f"{c.label} was changed by somebody else; reload and try again")
+        _record(conn, phase="configure", action_type="permission_setting_changed",
+                summary=f"{c.key}: {before} -> {value} by {by}",
+                details={"changed_by": by, "setting": c.key, "before": before, "after": value,
+                         "version": version + 1})
+        return {"key": c.key, "value": value, "changed": True, "version": version + 1}
+    return _in_transaction(conn, work)
+
+
+def _choice_history(version: int, by: str, before: Optional[str], after: str) -> Dict[str, Any]:
+    return {"version": version, "changed_by": by, "changed_at": datetime.now(timezone.utc).isoformat(),
+            "field": "mode", "before": before, "after": after}

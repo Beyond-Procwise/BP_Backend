@@ -118,7 +118,7 @@ def test_unknown_key_is_refused():
 
 def test_seed_writes_one_row_per_setting_with_the_default_role(table):
     out = ps.seed_defaults(by="onboarding", conn=table, roles=ROLES)
-    assert set(out["created"]) == {s.key for s in ps.CATALOGUE}
+    assert set(out["created"]) == {s.key for s in ps.CATALOGUE} | {c.key for c in ps.CHOICES}
     for s in ps.CATALOGUE:
         d = table.rows[s.policy_name]["details"]
         assert d["required_role"] == s.default_role
@@ -198,3 +198,33 @@ def test_current_reports_each_setting_and_flags_the_unseeded_ones(table):
     assert got["po_renumber"]["configured"] is False
     assert got["po_renumber"]["role"] == ps.setting("po_renumber").default_role
     assert got["po_renumber"]["label"] and got["po_renumber"]["description"]
+
+
+# --- choice settings (workflow_question_answer, D-60) ----------------------
+
+def test_choice_listed_with_default_when_no_row(table):
+    row = next(r for r in ps.current(table) if r["key"] == "workflow_question_answer")
+    assert row["kind"] == "choice" and row["value"] == "approver_only" and not row["configured"]
+    assert row["choices"] == ["approver_only", "starter_or_approver", "any_signed_in"]
+    assert ps.choice_value("workflow_question_answer", table) == "approver_only"
+
+
+def test_seed_writes_the_choice_row_with_the_default(table):
+    ps.seed_defaults(by="onboarding", conn=table, roles=ROLES)
+    d = table.rows["WorkflowQuestionAnswerPolicy"]["details"]
+    assert d["rules"] == {"mode": "approver_only"} and "applies_to" not in d
+
+
+def test_set_choice_changes_records_history_and_refuses_unknown_values(table):
+    ps.seed_defaults(by="onboarding", conn=table, roles=ROLES)
+    out = ps.set_choice("workflow_question_answer", "any_signed_in", by="alice", conn=table)
+    assert out["changed"] and out["version"] == 2
+    d = table.rows["WorkflowQuestionAnswerPolicy"]["details"]
+    assert d["rules"]["mode"] == "any_signed_in"
+    assert d["history"][-1]["before"] == "approver_only" and d["history"][-1]["changed_by"] == "alice"
+    assert ps.set_choice("workflow_question_answer", "any_signed_in", by="alice", conn=table)["changed"] is False
+    with pytest.raises(ps.InvalidChoice):
+        ps.set_choice("workflow_question_answer", "everyone", by="alice", conn=table)
+    with pytest.raises(ps.UnknownSetting):
+        ps.set_choice("agent_use", "approver_only", by="alice", conn=table)
+    assert ps.choice_value("workflow_question_answer", table) == "any_signed_in"

@@ -9,7 +9,7 @@ when the policy cache reloads.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -22,7 +22,8 @@ router = APIRouter(prefix="/admin/permissions", tags=["permissions"])
 
 
 class RoleBody(BaseModel):
-    role: str
+    role: Optional[str] = None      # for a role setting
+    value: Optional[str] = None     # for a choice setting (e.g. workflow_question_answer)
 
 
 def _who(principal: Any) -> str:
@@ -39,7 +40,15 @@ def list_settings(principal=Depends(require_user)) -> dict[str, Any]:
 def change_setting(key: str, body: RoleBody, principal=Depends(require_user)) -> dict[str, Any]:
     gate("policy.write", principal, agent="permission_settings_api", context={"setting": key})
     try:
+        if key in {c.key for c in ps.CHOICES}:
+            if body.value is None:
+                raise HTTPException(status_code=422, detail=f"{key} needs a value")
+            return ps.set_choice(key, body.value, _who(principal))
+        if body.role is None:
+            raise HTTPException(status_code=422, detail=f"{key} needs a role")
         return ps.set_role(key, body.role, _who(principal))
+    except ps.InvalidChoice as exc:
+        raise HTTPException(status_code=422, detail=f"{exc}")
     except ps.UnknownSetting:
         raise HTTPException(status_code=404, detail=f"{key} is not a permission setting")
     except ps.InvalidRole as exc:

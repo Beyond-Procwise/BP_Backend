@@ -291,6 +291,19 @@ def request_run_id(request_id: int) -> Optional[str]:
         return r[0] if r else None
 
 
+def request_kind(request_id: int) -> Optional[Dict[str, Any]]:
+    """What a request asks: ``{"field_type", "required_field", "agent_slug"}``, or None if it does not exist.
+    Read-only; used to tell an approval question from an ordinary one before anyone is let answer it."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT field_type, required_field, agent_slug FROM proc.bp_workflow_input_request "
+            "WHERE request_id = %s", (request_id,))
+        r = cur.fetchone()
+        cur.close()
+        return {"field_type": r[0], "required_field": r[1], "agent_slug": r[2]} if r else None
+
+
 def answer(run_id: str, request_id: int, answer: Any, answered_by: str) -> bool:
     """Record the human's answer -- scoped to BOTH this request AND this run.
 

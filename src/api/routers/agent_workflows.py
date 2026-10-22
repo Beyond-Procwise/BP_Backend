@@ -27,6 +27,7 @@ from repositories import workflow_input_request_repo as reqrepo
 
 from api.auth import require_user
 from api.endpoint_gate import require as gate
+from services import agent_actions, workflow_answer_policy
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agent-workflows", tags=["Agent Workflows"])
@@ -252,6 +253,26 @@ def get_run(run_id: str) -> Dict[str, Any]:
     return out
 
 
+def _require_answer_permission(principal, run_id: str, request_id: int) -> None:
+    """Refuse (403, plain English) unless this person may answer this run's question.
+
+    The rule is the administrator's ``workflow_question_answer`` setting (see
+    ``services.workflow_answer_policy``); an unreadable setting means Admin only. The attempt is audited,
+    allowed or refused, before anything is changed.
+    """
+    started_by = reqrepo.initiator_for(run_id)
+    approval = workflow_answer_policy.is_approval_question(reqrepo.request_kind(request_id))
+    verdict = workflow_answer_policy.decide(principal, started_by, approval)
+    agent_actions.record_action_or_fail(
+        phase="authorize", action_type="workflow.answer", agent="AgentWorkflowsRouter",
+        status="allowed" if verdict.allowed else "denied", summary=verdict.reason,
+        details={"run_id": run_id, "request_id": request_id, "approval_question": approval,
+                 "mode": verdict.mode, "role": verdict.role,
+                 "principal": getattr(principal, "subject", None), "started_by": started_by})
+    if not verdict.allowed:
+        raise HTTPException(status_code=403, detail=verdict.reason)
+
+
 @router.post("/runs/{run_id}/input")
 def submit_input(run_id: str, body: AnswerBody, request: Request,
                  principal=Depends(require_user)) -> Dict[str, Any]:
@@ -274,6 +295,8 @@ def submit_input(run_id: str, body: AnswerBody, request: Request,
             status_code=404,
             detail=f"Request {body.request_id} does not belong to run {run_id}",
         )
+
+    _require_answer_permission(principal, run_id, body.request_id)
 
     # A no-op if this request was already answered (e.g. a replayed final
     # answer) -- idempotent, not an error, so a client retry still gets a
