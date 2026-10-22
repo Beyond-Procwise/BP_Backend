@@ -5,7 +5,7 @@
   expert_graded: true
 - id: t2
   kind: typical
-  prompt: Pre-qualify five suppliers for an RFP for packaging. Certification evidence and sanctions results are attached.
+  prompt: Pre-qualify five suppliers for an RFP for packaging.
   expect: Applies gates in order, cites gate and evidence for every exclusion, shortlist sized to the configured RFP range
   expert_graded: false
 - id: t3
@@ -59,13 +59,13 @@
   kind: missing_data
   context: 'We are shortlisting suppliers to invite to a sourcing event.'
   prompt: We have no sanctions screening results for the longlist.
-  expect: Calls screen_sanctions for each supplier; a supplier with no recorded result is not performed; asks compliance to perform and record the check; no supplier shortlisted as cleared
+  expect: Reads screening_summary once per candidate; a supplier with no recorded result is not performed; asks compliance to perform and record the check; no supplier shortlisted as cleared
   expert_graded: false
 - id: m4
   kind: missing_data
   context: 'We are shortlisting suppliers to invite to a sourcing event.'
   prompt: There is no longlist yet, just find me suppliers for this category.
-  expect: States supplier_discovery is not available; asks for candidates or a source; does not invent supplier names
+  expect: Builds the known-supplier part with supplier_discovery for the items named; asks for any other source of candidates; does not invent supplier names
   expert_graded: false
 - id: c1
   kind: conflicting_data

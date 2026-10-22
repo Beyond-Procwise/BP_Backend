@@ -25,7 +25,6 @@ routing:                         # how the orchestrator decides this skill cover
     - "market analysis for"
     - "dual source"
     - "dual-source"
-    - "second source"
     - "single source risk"
     - "approach the category"
     - "should we approach"
@@ -33,6 +32,8 @@ routing:                         # how the orchestrator decides this skill cover
     - "approach this category"
     - "over the next three years"
     - "over the next few years"
+    - "second source strategy"
+    - "second-source strategy"
   support:                       # 1 point each
     - "category"
     - "strategy"

@@ -22,7 +22,6 @@ routing:                         # how the orchestrator decides this skill cover
     - "opportunities are open"
     - "opportunities across"
     - "which opportunities"
-    - "stalled"
     - "pursue next"
     - "should we pursue"
     - "what to pursue"
@@ -30,6 +29,9 @@ routing:                         # how the orchestrator decides this skill cover
     - "realised versus claimed"
     - "value realised"
     - "value realized"
+    - "stalled opportunit*"
+    - "stalled lever*"
+    - "opportunities stalled"
   support:                       # 1 point each
     - "pipeline"
     - "ledger"

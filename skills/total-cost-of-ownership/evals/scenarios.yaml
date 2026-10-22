@@ -1,6 +1,6 @@
 - id: t1
   kind: typical
-  prompt: Which of these two forklift quotes is cheaper over five years? (quotes, maintenance, energy, disposal supplied)
+  prompt: Which of these two forklift quotes is cheaper over five years?
   expect: Cost of capital from policy; normalises currency with the user's dated rate; landed cost per option with component statuses; tco.total_cost over the same horizon; difference via deal.pct_change; sensitivity; lower bound labelled where a charge is missing
   expert_graded: true
 - id: t2

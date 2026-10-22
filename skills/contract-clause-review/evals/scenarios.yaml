@@ -5,7 +5,7 @@
   expert_graded: false
 - id: t2
   kind: typical
-  prompt: Compare the supplier's proposed limitation of liability wording with ours. (both pasted)
+  prompt: Compare the supplier's proposed limitation of liability wording with ours.
   expect: Runs redline_compare on the two texts as given, lists each change in reading order and who it favours, rates acceptable/negotiate/escalate against policy position
   expert_graded: true
 - id: t3

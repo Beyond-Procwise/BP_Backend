@@ -5,8 +5,8 @@
   expert_graded: true
 - id: t2
   kind: typical
-  prompt: What have we saved so far with Acme?
-  expect: Ledger entries for the period as the tracker states them; claimed apart from saved; open levers for Acme's items from the buckets
+  prompt: Which opportunities are open on Acme's items and what has the ledger recorded for the period?
+  expect: Ledger totals for the period as the tracker states them (it holds no per-supplier split, said so); claimed apart from saved; Acme's item ids from supplier_items; open levers from the buckets
   expert_graded: false
 - id: t3
   kind: typical

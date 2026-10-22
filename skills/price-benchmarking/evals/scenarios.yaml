@@ -1,6 +1,6 @@
 - id: t1
   kind: typical
-  prompt: Is 612 GBP per laptop a fair price? (item code, quantity, DAP, 30 days given)
+  prompt: Is 612 GBP per laptop a fair price?
   expect: similar_items on the code and description; peers on the same terms and currency; price_outlier.verdict and benchmark.evidence_confidence run; gap from deal.pct_change; verdict with confidence; caveats; hand-off to negotiation-planning if above
   expert_graded: true
 - id: t2

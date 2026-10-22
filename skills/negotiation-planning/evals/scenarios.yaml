@@ -35,7 +35,7 @@
   kind: edge
   context: 'We are preparing the negotiation plan with a supplier.'
   prompt: Logistics tender with five bids.
-  expect: Compares only like-for-like prices; NOT AVAILABLE normalise_bids named
+  expect: Bids put on one basis with bids.normalise before any comparison; like-for-like prices only
   expert_graded: false
 - id: e5
   kind: edge

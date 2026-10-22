@@ -18,9 +18,9 @@ Not for deciding one contract's renewal, renegotiation or exit (renewal-and-exit
 ## Inputs and preconditions
 
 - The horizon (default the next `config.thresholds.horizon_days` days) and the period for spend (default the trailing `config.thresholds.spend_period_months` months), the reporting currency, and any scope (a category's suppliers, a region, a business unit the user names).
-- The organisation's renewal rules (who decides, lead times, mandatory re-tender thresholds) from ONE call to `tool:get_policy` with the query `approval_threshold_policy` (the only purchasing-authority policy on this platform; there is no renewal-rules policy to search for); where it states nothing about renewals the configured lead times are defaults and the review says so. The round budget is small: policy once, the contracts once, then the trackers.
+- The organisation's renewal rules (who decides, lead times, mandatory re-tender thresholds) from ONE call to `tool:get_policy` for renewal rules; where none governs renewals the configured lead times are defaults and the review says so. The round budget is small: policy once, the contracts once, then the trackers.
 
-Use `tool:contract_pipeline` ONCE with `expires_within_days` set to the horizon (and `supplier` or `status` to narrow): it returns the contracts falling due soonest first with their end dates, values, auto-renewal flags and renewal terms as stored, and for the soonest `config.thresholds.max_contracts_detailed` the stored calendar and the notice, review and renewal clauses quoted word for word, plus the lists of auto-renewing contracts, contracts never read for clauses and contracts with no notice clause stored. Do not call search_contracts or obligation_tracker separately for the pipeline; `tool:build_spend_cube` by supplier for the period's spend, matched to the register's suppliers for coverage; `tool:calc_supplier_scorecard` and `tool:screening_summary` for the suppliers behind the largest or soonest contracts; `tool:savings_tracker` for savings recorded against renewals; and `tool:run_calculation` with `deal.pct_change` for shares and changes.
+Use `tool:contract_pipeline` ONCE with `expires_within_days` set to the horizon (and `supplier` or `status` to narrow): it returns the contracts falling due soonest first with their end dates, values, auto-renewal flags and renewal terms as stored, and for the soonest `config.thresholds.max_contracts_detailed` the stored calendar and the notice, review and renewal clauses quoted word for word, plus the lists of auto-renewing contracts, contracts never read for clauses and contracts with no notice clause stored. Do not call search_contracts or obligation_tracker separately for the pipeline; for coverage (step 6) call `tool:contract_pipeline` once more with a horizon long enough to hold every live contract, or `tool:search_contracts` by supplier; `tool:build_spend_cube` by supplier for the period's spend, matched to the register's suppliers for coverage; `tool:calc_supplier_scorecard` and `tool:screening_summary` for the suppliers behind the largest or soonest contracts; `tool:savings_tracker` for savings recorded against renewals; and `tool:run_calculation` with `deal.share_pct` for shares and `deal.pct_change` for changes.
 
 NOT AVAILABLE: build_xlsx. Give the pipeline as a text table.
 NOT AVAILABLE: render_chart. Give the expiry profile as a table by month.
@@ -32,9 +32,9 @@ NOT AVAILABLE: render_chart. Give the expiry profile as a table by month.
 3. Notice and decision dates. For each contract the pipeline call detailed (`config.thresholds.max_contracts_detailed` of the soonest; the rest as a list), from its calendar and clauses: expiry, auto-renewal, and the notice or review clauses quoted; the notice period is read from the clause, never computed from a period the records do not state; where no clause is stored the decision date is "unknown: clause not read" and the contract is flagged.
 4. Lead time. Working back from the notice deadline where known, or the expiry where not, with the buffer `config.thresholds.decision_buffer_days` days: a contract whose decision date is within `config.thresholds.urgent_days` days is urgent; one whose date has passed is overdue, said first.
 5. Suppliers. For the largest and soonest contracts, read the scorecard (dimensions with record counts) and the screening summary (not performed is not clear); a supplier with a flagged screening or many open findings is flagged in the pipeline.
-6. Coverage. From the spend cube by supplier for the period, list the suppliers with spend above `config.thresholds.uncovered_spend_min` in the reporting currency and no live contract on the register as "no contract on record" (not "no contract").
+6. Coverage. From the spend cube by supplier for the period, list the suppliers with spend above `config.thresholds.uncovered_spend_min` in the reporting currency and no live contract on the register (read with a horizon that covers every live contract, not only the ones falling due) as "no contract on record" (not "no contract").
 7. Pipeline. The table: contract, supplier, value, end date, auto-renewal, notice clause status, decision date, urgency, supplier flags, suggested route (renew, renegotiate, re-tender, exit: a question for renewal-and-exit-strategy per contract), owner to assign, and the rule or policy that applies.
-8. Expiry profile. Count and value of contracts ending per month over the horizon; share of portfolio value due within the horizon via `deal.pct_change` where both figures are read.
+8. Expiry profile. Count and value of contracts ending per month over the horizon; share of portfolio value due within the horizon via `deal.share_pct` where both figures are read.
 
 ## Frameworks and heuristics
 
@@ -60,7 +60,7 @@ Renewal rules, mandatory re-tender thresholds and who decides come from governed
 
 ## Quality bar
 
-- Every date, value and flag comes from the register, the tracker, the cube, the scorecard or the screening summary.
+- Every date, value and flag comes from the pipeline's register and clause data, the cube, the scorecard or the screening summary.
 - No notice deadline is computed from an unstated period; "clause not read" is a status.
 - Every auto-renewing contract within the horizon appears in the pipeline.
 - Spend without a contract on record is labelled as on record, not as uncovered in fact.
@@ -71,7 +71,7 @@ Escalate overdue items and auto-renewing contracts without a read notice clause 
 
 ## Worked example
 
-Asked for the renewal pipeline for the next six months, the skill reads the contracts expiring within the horizon (several, two auto-renewing), reads each tracker (notice clauses quoted for most; two contracts never read for clauses, flagged), works back with the buffer (one decision date already passed: overdue, stated first), reads the scorecard and screening summary for the three largest suppliers (one with many open findings, none screened), lists four suppliers with material spend and no contract on record, and hands each pipeline item to renewal-and-exit-strategy with a suggested owner.
+Asked for the renewal pipeline for the next six months, the skill reads the contracts expiring within the horizon (several, two auto-renewing), reads the pipeline's clause data (notice clauses quoted for most; two contracts never read for clauses, flagged), works back with the buffer (one decision date already passed: overdue, stated first), reads the scorecard and screening summary for the three largest suppliers (one with many open findings, none screened), lists four suppliers with material spend and no contract on record, and hands each pipeline item to renewal-and-exit-strategy with a suggested owner.
 
 ## Anti-patterns
 

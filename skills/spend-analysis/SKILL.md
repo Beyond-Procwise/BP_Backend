@@ -21,7 +21,7 @@ Not for a single figure ("how much did we spend with X", which the Ask box answe
 - Scope: the whole organisation, or a supplier, country, region, buyer or status to cut by.
 - Any extract the user brings for dimensions the invoices do not carry (business unit, category code, cost centre), labelled as user-supplied.
 
-Use `tool:build_spend_cube` for invoiced spend cut by supplier, month, currency, country, region, buyer, payment terms or status; its totals equal the dashboards and its note states the conversion rule and any currency left out. Invoices carry no category, no business unit and no price per item: say so. Use `tool:classify_spend` for classification coverage of item descriptions against the taxonomy, `tool:similar_items` to find a thing bought under different descriptions, `tool:supplier_lookup` and `tool:supplier_discovery` for who the suppliers are, `tool:savings_tracker` for what the value ledger says has been saved, `tool:get_corpus_facts` for corpus-wide counts (never for one item's spend), and `tool:run_calculation` with `deal.pct_change` for shares and changes between periods.
+Use `tool:build_spend_cube` for invoiced spend cut by supplier, month, currency, country, region, buyer, payment terms or status; its totals equal the dashboards and its note states the conversion rule and any currency left out. Invoices carry no category, no business unit and no price per item: say so. Use `tool:classify_spend` for classification coverage of item descriptions against the taxonomy, `tool:similar_items` to find a thing bought under different descriptions, `tool:supplier_lookup` and `tool:supplier_discovery` for who the suppliers are, `tool:savings_tracker` for what the value ledger says has been saved, `tool:get_corpus_facts` for corpus-wide counts (never for one item's spend), and `tool:run_calculation` with `deal.share_pct` for shares and `deal.pct_change` for changes between periods.
 
 NOT AVAILABLE: build_xlsx. Give the tables as text tables the user can paste.
 NOT AVAILABLE: render_chart. Describe the pareto and the trend as tables.
@@ -63,7 +63,7 @@ Spend analysis changes nothing and needs no approval. When a finding leads to an
 
 - Every figure traces to a tool result with period and currency; no total is summed across currencies without a rate.
 - No category, business-unit or item-price figure is stated unless the user supplied the dimension or a tool returned it.
-- Shares and changes come from `deal.pct_change` or the cube's own share field, never from the model's arithmetic across cuts.
+- Shares come from the cube's own share field or `deal.share_pct`, changes from `deal.pct_change`, never from the model's arithmetic across cuts.
 - Gaps are listed in their own section.
 
 ## Escalation and approval

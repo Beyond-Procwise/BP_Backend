@@ -6,7 +6,6 @@ unavailable_tools:
   - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
-    - "award*"
     - "winning bidder*"
     - "bidder*"
     - "tender result*"
@@ -22,6 +21,23 @@ routing:                         # how the orchestrator decides this skill cover
     - "decision paper"
     - "regret letter*"
     - "who should win"
+    - "award the contract"
+    - "award this contract"
+    - "award to"
+    - "award decision*"
+    - "award memo*"
+    - "recommend the award"
+    - "awarding"
+    - "make the award"
+    - "who gets the award"
+    - "the award"
+    - "award this tender"
+    - "award this"
+    - "award it"
+    - "should we award"
+    - "who should we award"
+    - "this award"
+    - "award need*"
   support:                       # 1 point each
     - "tender*"
     - "bid"

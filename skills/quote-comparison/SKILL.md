@@ -45,7 +45,7 @@ NOT AVAILABLE: build_xlsx. Give the comparison as a text table.
 
 ## Policy hooks (SC-007)
 
-The minimum number of quotes and the approval route for the value come from governed policy via `tool:get_policy` and `tool:check_policy`, quoted as replied. The comparison changes nothing; the order and any award carry their own approval.
+The minimum number of quotes comes from `tool:get_policy` (quoted, or 'not governed') and the approval route for the value from `tool:check_policy`, as replied. The comparison changes nothing; the order and any award carry their own approval.
 
 ## Output specification
 

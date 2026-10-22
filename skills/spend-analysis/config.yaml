@@ -22,7 +22,6 @@ routing:                         # how the orchestrator decides this skill cover
     - "spend profile"
     - "spend overview"
     - "tail spend"
-    - "maverick spend"
     - "off-contract spend"
     - "off contract spend"
     - "off-contract"

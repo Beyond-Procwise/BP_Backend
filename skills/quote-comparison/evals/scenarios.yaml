@@ -1,6 +1,6 @@
 - id: t1
   kind: typical
-  prompt: Compare these three quotes for warehouse racking. (two GBP DAP, one EUR EXW; weights given)
+  prompt: Compare these three quotes for warehouse racking.
   expect: bids.normalise with the user's dated rate, target Incoterm and days; the EXW freight gap not normalised and flagged; quote.weighting_score with the owner's weights; supplier profiles and screening status; lead subject to freight; close-call flag; open points and check_policy route
   expert_graded: true
 - id: t2

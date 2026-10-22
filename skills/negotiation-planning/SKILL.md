@@ -41,7 +41,7 @@ NOT AVAILABLE: build_docx. Give the plan as text.
 7. If the supplier asked for an increase: split it into the part an index justifies and the rest, using the index move from `tool:commodity_index_lookup` or, failing that, the user's. Without either, say the split cannot be made.
 8. Levers: list between `config.thresholds.min_concession_levers` and `config.thresholds.max_concession_levers` tradable variables (volume, term, payment terms, forecast commitment, Incoterm, consignment, specification, rebates, index-linked clause, exclusivity, early payment, warranty, service credits). For each, give value to us, cost to us and value to them where known, and build a concession ladder in which every give has a matching ask.
 9. Style and plan: from the Kraljic result choose collaborative, competitive or mixed. Add the opening position, agenda, five most likely supplier objections with data-based answers, red lines, roles, and the escalation path.
-10. Run `procurement-policy-compliance` on the intended award or term before the plan is used, and confirm the walk-away keeps the deal inside the approval limit.
+10. Run `procurement-policy-compliance` on the intended award or term before the plan is used, and state which approval the walk-away value needs as `tool:check_policy` replies (a limit is a route to an approver, not a ceiling on the deal).
 
 ## Frameworks and heuristics
 

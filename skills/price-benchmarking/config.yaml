@@ -9,7 +9,6 @@ unavailable_tools:
   - render_chart
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
-    - "benchmark*"
     - "fair price"
     - "good price"
     - "price check"
@@ -22,12 +21,20 @@ routing:                         # how the orchestrator decides this skill cover
     - "market rate"
     - "going rate"
     - "in line with the market"
-    - "what did we pay"
     - "what we paid before"
     - "paid last time"
     - "price history"
     - "reasonable price"
     - "price reasonable"
+    - "what did we pay for"
+    - "what did we pay per"
+    - "benchmark the price"
+    - "benchmark this price"
+    - "benchmark the quote"
+    - "price benchmark*"
+    - "benchmarked price"
+    - "benchmark against the market"
+    - "benchmark*"
   support:                       # 1 point each
     - "price*"
     - "quote*"

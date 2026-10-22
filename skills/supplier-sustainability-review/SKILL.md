@@ -21,7 +21,7 @@ Not for the risk clearance of one supplier before award or onboarding (supplier-
 - The organisation's sustainability policy and targets (minimum rating, required checks, reporting obligations) from `tool:get_policy`; where none is stated, the review reports coverage without a pass mark and says the target is not governed.
 - Any supplier questionnaire results or emission data the user holds, labelled user-supplied.
 
-Use `tool:build_spend_cube` by supplier for the spend in scope, `tool:supplier_lookup` for certifications on file (environmental, social, EcoVadis-type flags) and country, `tool:screening_summary` for each supplier's recorded ESG rating, forced-labour and conflict-minerals checks and risk events in one call, `tool:esg_rating_lookup`, `tool:forced_labour_screen` and `tool:conflict_minerals_check` when one check is asked about, `tool:classify_spend` with `query` for the taxonomy's recorded ESG impact of a category, and `tool:search_contracts` for sustainability or code-of-conduct clauses via `tool:extract_clauses` (containing "sustainab", "environment", "code of conduct", "modern slavery").
+Use `tool:build_spend_cube` by supplier for the spend in scope, `tool:supplier_lookup` for certifications on file (environmental, social, EcoVadis-type flags) and country, `tool:screening_summary` for each supplier's recorded ESG rating, forced-labour and conflict-minerals checks and risk events in one call, `tool:esg_rating_lookup`, `tool:forced_labour_screen` and `tool:conflict_minerals_check` when one check is asked about, `tool:classify_spend` with `query` for the taxonomy's recorded ESG impact of a category, and `tool:search_contracts` for sustainability or code-of-conduct clauses via `tool:extract_clauses` (one `containing` word per call, at most two: "sustainab" then "conduct").
 
 NOT AVAILABLE: send_esg_survey. The questionnaire to send is drafted as text; a person sends it.
 NOT AVAILABLE: build_xlsx. Give the coverage table as a text table.
@@ -72,7 +72,7 @@ Escalate to compliance any forced-labour or conflict-minerals check not performe
 
 ## Worked example
 
-Asked for a sustainability review of the packaging suppliers, the skill reads the taxonomy (packaging categories marked high impact), takes the top suppliers by spend from the cube, reads each screening summary (two have an in-date ESG rating, one has a stale one, five have none; forced-labour checks performed for none), the master record (three hold an environmental certification), and the live contracts (one stores a code-of-conduct clause). It reports coverage of spend with an in-date rating below the floor, ranks the two largest unrated suppliers first, drafts the evidence request, and sends compliance the list of forced-labour checks to perform.
+Asked for a sustainability review of the packaging suppliers, the skill reads the taxonomy (packaging categories marked high impact), takes the top suppliers by spend from the cube, reads each screening summary (two have an in-date ESG rating, one has a stale one, five have none; forced-labour checks performed for none), the master record (three hold an environmental certification), and the live contracts (one stores a code-of-conduct clause). It reports coverage of spend with an in-date rating below the floor, ranks the two largest unrated suppliers first, drafts the evidence request, and lists the forced-labour checks for compliance to perform (a person sends the request).
 
 ## Anti-patterns
 

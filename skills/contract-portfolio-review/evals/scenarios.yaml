@@ -1,7 +1,7 @@
 - id: t1
   kind: typical
   prompt: Give me the renewal pipeline for the next six months.
-  expect: Contracts within the horizon from search_contracts; tracker per contract with notice clauses quoted or "clause not read"; decision dates with buffer; overdue first; supplier flags for the largest; spend with no contract on record; hand-offs per contract
+  expect: Contracts within the horizon from one contract_pipeline call with notice clauses quoted or "clause not read"; decision dates with buffer; overdue first; supplier flags for the largest; spend with no contract on record; hand-offs per contract
   expert_graded: true
 - id: t2
   kind: typical

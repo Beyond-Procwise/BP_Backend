@@ -42,7 +42,8 @@ routing:                         # how the orchestrator decides this skill cover
     - "new sources"
     - "supplier selection"
     - "selection funnel"
-    - "funnel"
+    - "selection funnel"
+    - "supplier funnel"
   support:                       # 1 point each
     - "supplier"
     - "suppliers"

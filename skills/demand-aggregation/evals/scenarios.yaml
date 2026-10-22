@@ -6,7 +6,7 @@
 - id: t2
   kind: typical
   prompt: Which categories are fragmented across our business units?
-  expect: Asks for spend extract; HHI, supplier count, BU count against configured candidate rules; says get_corpus_facts cannot give a full cube
+  expect: Asks for spend extract; HHI, supplier count, BU count against configured candidate rules; reads build_spend_cube by supplier and buyer; says the cube has no category or business unit, so the category view is the user's extract
   expert_graded: false
 - id: t3
   kind: typical

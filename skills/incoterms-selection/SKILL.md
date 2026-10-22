@@ -34,11 +34,11 @@ NOT AVAILABLE: build_docx. Give the recommendation card as text.
 ## Workflow
 
 1. Gather the inputs above. If the mode is missing, stop and ask.
-2. Filter valid rules by mode using `config.rules_any_mode` and `config.rules_sea_and_inland_waterway_only`. The sea-only rules are not valid for air, road, rail, or containers that the seller does not load on board under its control; recommend FCA, CPT or CIP instead for containerised sea freight.
+2. Filter valid rules by mode using `config.rules_any_mode` and `config.rules_sea_and_inland_waterway_only`. The sea-only rules do not fit air, road or rail, and ICC guidance calls them inappropriate for containers the seller does not load on board under its control; recommend FCA, CPT or CIP instead for containerised sea freight, and say why if the user still wants a sea-only rule.
 3. State the transfer point for each remaining candidate: EXW at the seller's premises; FCA on handover to the carrier; FAS alongside the ship; FOB on board; CFR and CIF on board with the seller paying main carriage; CPT and CIP at handover to the first carrier with the seller paying carriage; DAP ready for unloading at destination; DPU unloaded at destination; DDP at destination cleared for import. The C-rules have two critical points, origin for risk and destination for cost.
 4. Check clearance. The seller exports in every rule except EXW; the buyer imports in every rule except DDP. If the buyer cannot export, EXW is wrong: recommend FCA. If the seller cannot be importer of record or recover import VAT, DDP is wrong.
 5. Check insurance using `config.insurance_obliged_to_seller` and `config.thresholds.insurance_minimum_pct`. Only CIF and CIP oblige the seller to insure. If our own cargo policy covers transit, prefer CPT or CFR over CIP or CIF to avoid double cover.
-6. Compare cost for two to four candidate rules on the same lane. First `tool:list_calculations` with name `landed_cost.total_cost` to read its inputs, then `tool:run_calculation` once per rule. Pass `incoterm` as the rule plus place, `cross_border`, the `components` the user gave (freight, insurance, origin and destination charges) with each marked included or stated, and `duty_rate` if the user gave one. Use only values the user supplied or a tool returned. A component the quote does not mention is reported as not stated, never as zero.
+6. Compare cost for two to four candidate rules on the same lane. First `tool:list_calculations` with name `landed_cost.total_cost` to read its inputs, then `tool:run_calculation` once per rule. Pass the price `lines` (unit_price, quantity, currency) and `buyer_currency`, `incoterm` as the rule plus place, `cross_border`, the `components` the user gave (freight, insurance, origin and destination charges) with each marked included or stated, and `duty_rate` if the user gave one. Use only values the user supplied or a tool returned. A component the quote does not mention is reported as not stated, never as zero.
 7. Recommend one rule with a named place specific enough to locate (building, street, city), the transfer point, who insures, who clears, and what would change the recommendation.
 8. Call `tool:get_policy` with `preferred incoterm` and report any governed preference. If none is found, say there is no governed Incoterm policy.
 
@@ -66,7 +66,7 @@ A recommendation card: rule and named place with "Incoterms 2020"; transfer-of-r
 
 ## Escalation and approval
 
-Advisory only; nothing is written anywhere. Refer sanctions or dual-use flags to Trade Compliance. If the user wants a rule that is invalid for the mode, explain why and give the valid alternative; do not draft it as requested.
+Advisory only; nothing is written anywhere. Refer sanctions or dual-use flags to Trade Compliance. If the user wants a rule that does not fit the mode, explain why and give the better alternative; draft what they ask for only with the risk stated beside it.
 
 ## Worked example
 
@@ -74,7 +74,7 @@ A buyer asks for FOB Shenzhen for 40-foot containers. FOB is a sea-only rule and
 
 ## Anti-patterns
 
-- Accepting FOB, CFR, CIF or FAS for air, road or container shipments.
+- Recommending FOB, CFR, CIF or FAS for air, road or container shipments without stating the risk-transfer gap.
 - Treating a missing duty or freight figure as zero.
 - Naming a country or port instead of a place.
 - Saying the Incoterm decides when the buyer owns the goods or when payment is due.

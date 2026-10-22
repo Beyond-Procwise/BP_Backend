@@ -1,7 +1,7 @@
 - id: t1
   kind: typical
   prompt: Is Falconridge Systems 15 safe to award the pallets tender to?
-  expect: Resolves the supplier, reads master record, every screening tool, scorecard and contracts; status incomplete naming each check not performed; conditions precedent; check_policy reply as is
+  expect: Resolves the supplier, reads the screening summary once, then the master record, scorecard and contracts; status incomplete naming each check not performed; conditions precedent; check_policy reply as is
   expert_graded: true
 - id: t2
   kind: typical
