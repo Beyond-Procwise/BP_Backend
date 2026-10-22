@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from api.auth import require_user
+from api.endpoint_gate import require as gate
 
 # The public catalogue loader, not orchestration.workflow_compiler._known_agents.
 # That underscore-prefixed helper is workflow_compiler's own private convenience
@@ -121,6 +122,9 @@ def list_groups() -> Dict[str, Any]:
 
 @router.post("")
 def create_group(body: GroupBody, principal=Depends(require_user)) -> Dict[str, Any]:
+    # Creating a group is a write (RT-23): Buyer and above by the role table, a Viewer refused, every
+    # attempt audited. Editing and deleting stay owner-or-Admin (D-61) on top of that.
+    gate("agent_group.write", principal, agent="AgentGroupsRouter", context={"op": "create", "name": body.name})
     _validate(body.members, body.links)
     gid = repo.create(
         name=body.name,

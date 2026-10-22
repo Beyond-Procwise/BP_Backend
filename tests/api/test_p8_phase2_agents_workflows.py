@@ -79,7 +79,7 @@ def _refusing_app(router, *, overrides=None):
 @pytest.fixture(autouse=True)
 def _no_gates(monkeypatch):
     """Authorization is not what these tests are about; attribution is."""
-    for name in ("agents", "agent_workflows", "workflows"):
+    for name in ("agents", "agent_workflows", "workflows", "agent_groups", "analysis"):   # the last two gate their creates (RT-23)
         module = __import__(f"api.routers.{name}", fromlist=["*"])
         if hasattr(module, "gate"):
             monkeypatch.setattr(module, "gate", lambda *a, **k: None)

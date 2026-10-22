@@ -1,7 +1,5 @@
 # Write handlers under src/api that never consult the gate. May only shrink. See tests/test_endpoint_gate_ratchet.py
-src/api/routers/agent_groups.py::POST router ::create_group
 src/api/routers/agents.py::POST router /execute::execute_agent
-src/api/routers/analysis.py::POST router ::post_analysis
 src/api/routers/decisions.py::POST router /email-reply/{decision_id}/action::act_on_email_reply
 src/api/routers/decisions.py::POST router /email-reply/{response_id}::decide_email_reply
 src/api/routers/decisions.py::POST router /finding/{finding_id}::decide_finding

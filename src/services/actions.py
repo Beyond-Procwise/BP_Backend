@@ -86,6 +86,10 @@ ACTIONS: Dict[str, str] = {
     # other. A move to "rejected" is asked as opportunity.reject, so one row governs every rejection.
     "opportunity.stage": "write",
     "document.upload": "write",
+    # Starting an analysis event for an upload session: the same bar as uploading the documents it reads.
+    "analysis.start": "write",
+    # Creating an agent group. Editing or deleting one is owner-or-Admin on top (D-61).
+    "agent_group.write": "write",
     "document.promote": "write",
     # Bulk-rewrites po_id across every final table. Its own action so who may do it is its own setting.
     "document.renumber": "write",

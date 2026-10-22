@@ -38,6 +38,13 @@ def _cleanup_test_rows():
     _sweep_namespace()
 
 
+@pytest.fixture(autouse=True)
+def _no_gate(monkeypatch):
+    """The write gate on create (RT-23) has its own suite; with sign-in off the full app has no principal."""
+    import api.routers.agent_groups as router_mod
+    monkeypatch.setattr(router_mod, "gate", lambda *a, **k: None)
+
+
 @pytest.fixture
 def client():
     from api.main import app

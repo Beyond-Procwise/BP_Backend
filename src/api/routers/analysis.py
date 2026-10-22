@@ -9,6 +9,7 @@ import logging
 from typing import Any, Optional
 
 from api.auth import require_user
+from api.endpoint_gate import require as gate
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
@@ -42,6 +43,10 @@ class AnalysisStartIn(BaseModel):
 
 @router.post("", summary="Start an analysis event for an upload session")
 def post_analysis(body: AnalysisStartIn, principal=Depends(require_user)) -> dict:
+    # Starting an analysis records an event against the upload session (RT-23): a write, so Buyer and
+    # above, the same bar as uploading the documents it analyses.
+    gate("analysis.start", principal, agent="AnalysisRouter",
+         context={"session_id": body.session_id, "mode": body.mode})
     try:
         # The token, never body.created_by -- which stays on the model because
         # clients send it, and is simply not read as identity any more.

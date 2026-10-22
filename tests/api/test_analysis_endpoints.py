@@ -7,9 +7,21 @@ from fastapi.testclient import TestClient
 mod = importlib.import_module("src.api.routers.analysis")
 
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _no_gate(monkeypatch):
+    """The gate on starting an analysis (RT-23) has its own suite; here every start is allowed."""
+    monkeypatch.setattr(mod, "gate", lambda *a, **k: None)
+
+
 def _client():
     app = FastAPI()
     app.include_router(mod.router)
+    # Pin the caller: the real require_user answers from whatever auth mode an earlier suite left
+    # configured (a 503 when none is), and these tests are about the analysis store, not sign-in.
+    app.dependency_overrides[mod.require_user] = lambda: None
     return TestClient(app)
 
 
