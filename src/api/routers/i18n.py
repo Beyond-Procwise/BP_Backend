@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 
 import api.auth as auth
 from api.auth import require_user
+from api.endpoint_gate import require as gate
 import src.services.i18n as i18n
 from services import output_safety as osafe
 from src.services import rbac
@@ -131,6 +132,7 @@ def strings(body: StringsIn, principal=Depends(require_user)) -> dict[str, Any]:
 
 @router.post("/translate", summary="Translate dynamic content on request")
 def translate(body: TranslateIn, principal=Depends(require_user)) -> dict[str, Any]:
+    gate("content.translate", principal, agent="i18n_api", context={"op": "translate"})
     if any(len(t) > _MAX_DYNAMIC_TEXT for t in body.texts):
         raise HTTPException(status_code=413, detail=f"each text must be at most {_MAX_DYNAMIC_TEXT} characters")
     language = _language(body.lang, body.lang_name)

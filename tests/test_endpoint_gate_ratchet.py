@@ -42,6 +42,11 @@ GUARDED_IN_SERVICE: dict = {
     "src/api/routers/value_summary.py::POST router /value-summary/findings/{finding_id}/query-send::post_query_send":
         "services.value_query_service.send_query runs email_dispatch_guard.check_recipient_and_sensitivity "
         "and guardrail.authorize('email.send', 'communicate', principal) before anything is sent",
+    "src/api/routers/reports.py::POST router /presentation-mode::presentation_set":
+        "services.report_data.mode.activate raises PermissionError (mapped to 403) for anyone who is not "
+        "an Admin, so a non-Admin can never be in presentation mode; deactivate only appends to the "
+        "caller's OWN session log (keyed by their subject and session), so nobody can end another "
+        "person's mode. The mode is per session and ends with the sign-in",
 }
 
 # Registration styles the scanner cannot see. None exists today; if one appears the scan must be taught it.
@@ -75,7 +80,15 @@ def _file_gate_names(tree):
     return names
 
 
-def _calls_a_gate(func, file_names):
+def _calls_a_gate(func, file_names, module_funcs=None, _depth=0):
+    """Does ``func`` consult the gate, directly or through ONE module-level helper it calls?
+
+    Routers wrap the gate in small local helpers (``_edit_gate``, ``_decide``, ``_authorize``) so
+    the action name lives in one place. Following one level of same-module helper keeps the scan
+    honest about those without growing a list of helper names; it does not follow into other
+    modules, so a gate inside a service still needs a GUARDED_IN_SERVICE entry with its evidence.
+    """
+    module_funcs = module_funcs or {}
     for node in ast.walk(func):
         if not isinstance(node, ast.Call):
             continue
@@ -83,6 +96,9 @@ def _calls_a_gate(func, file_names):
         if not name:
             continue
         if name in GATE_CALLS or name in file_names or GATE_HELPER.match(name.rsplit(".", 1)[-1]):
+            return True
+        helper = module_funcs.get(name)
+        if helper is not None and _depth == 0 and _calls_a_gate(helper, file_names, module_funcs, _depth + 1):
             return True
     return False
 
@@ -108,6 +124,7 @@ def _handlers():
         except SyntaxError:
             continue
         file_names = _file_gate_names(tree)
+        module_funcs = {n.name: n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
@@ -123,7 +140,7 @@ def _handlers():
                 # The router variable is part of the key: `router` and `orchestrator_router` can serve the same
                 # path and function name with different prefixes.
                 owner = _dotted(dec.func.value) or "?"
-                yield rel, method.upper(), f"{owner} {route}", node.name, _calls_a_gate(node, file_names)
+                yield rel, method.upper(), f"{owner} {route}", node.name, _calls_a_gate(node, file_names, module_funcs)
 
 
 def _ungated():
@@ -179,3 +196,22 @@ def test_a_handler_guarded_inside_its_service_still_exists_and_still_looks_ungat
     ungated = set(_ungated())
     assert handler in ungated, f"{handler} is gone or now calls the gate itself: remove it from GUARDED_IN_SERVICE"
     assert handler not in set(_baseline()), f"{handler} is in the baseline AND exempted: pick one"
+
+
+def test_the_scan_follows_one_level_of_local_helper_and_no_further():
+    """A handler that gates through a same-module helper counts as gated; a helper that only calls
+    another helper does not (the scan is deliberately shallow, so a gate cannot hide two hops away)."""
+    src = (
+        "from api.endpoint_gate import require as gate\n"
+        "def _edit_gate(p):\n    gate('report.generate', p)\n"
+        "def _twice(p):\n    _edit_gate(p)\n"
+        "def direct(p):\n    _edit_gate(p)\n"
+        "def indirect(p):\n    _twice(p)\n"
+        "def naked(p):\n    return 1\n"
+    )
+    tree = ast.parse(src)
+    names = _file_gate_names(tree)
+    funcs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    assert _calls_a_gate(funcs["direct"], names, funcs) is True
+    assert _calls_a_gate(funcs["indirect"], names, funcs) is False
+    assert _calls_a_gate(funcs["naked"], names, funcs) is False

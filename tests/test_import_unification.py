@@ -152,3 +152,25 @@ def test_a_handler_that_raises_does_not_stop_the_others_across_both_names():
         b.get_event_bus().subscribe("e", got.append)
         a.get_event_bus().publish("e", {"ok": True})
         print(got)""") == "[{'ok': True}]"
+
+
+@pytest.mark.parametrize("name", ["egress", "egress_log", "egress_policy"])
+def test_the_egress_modules_are_one_copy_whichever_name_asks_first(name):
+    """The audit's caller context, its queue and the rule cache live in these; a second copy would audit
+    under "unknown", keep a second queue and a second writer thread (1.20k)."""
+    assert run(f"""
+        import services.{name} as a
+        import src.services.{name} as b
+        print(a is b)""") == "True"
+    assert run(f"""
+        import src.services.{name} as b
+        import services.{name} as a
+        print(a is b)""") == "True"
+
+
+def test_the_caller_set_through_one_name_is_seen_through_the_other():
+    assert run("""
+        from services import egress as a
+        from src.services import egress as b
+        with a.calling("price_outliers"):
+            print(b.current_agent())""") == "price_outliers"

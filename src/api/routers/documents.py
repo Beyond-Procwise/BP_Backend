@@ -246,10 +246,6 @@ def _resolve_s3_path(s3_path: str, default_bucket: str) -> Tuple[str, str]:
     See docs/superpowers/specs/2026-08-07-email-attachment-ingestion-design.md §2.3.
     """
 
-    import posixpath
-
-    from src.services.mail_intake.store import QUARANTINE_PREFIX, RAW_MIME_PREFIX
-
     value = s3_path.strip()
     if not value:
         raise ValueError("s3_path must not be empty")
@@ -257,7 +253,12 @@ def _resolve_s3_path(s3_path: str, default_bucket: str) -> Tuple[str, str]:
     if value.startswith("s3://"):
         stripped = value[5:]
         bucket_part, _, key_part = stripped.partition("/")
-        bucket_name = bucket_part or default_bucket
+        # Only the configured bucket (1.3c). Any other name - including a different case, since
+        # bucket names are case-sensitive - would let a caller extract from whatever the service's
+        # AWS role can read into this company's tables. The name asked for is not echoed back.
+        if bucket_part and bucket_part != default_bucket:
+            raise ValueError("s3_path must name the configured bucket or no bucket at all")
+        bucket_name = default_bucket
         prefix = key_part
     else:
         bucket_name = default_bucket
@@ -267,47 +268,11 @@ def _resolve_s3_path(s3_path: str, default_bucket: str) -> Tuple[str, str]:
     if not prefix:
         raise ValueError("s3_path must include an object prefix")
 
-    # Normalise before comparing, so "artifacts/../quarantine/" cannot slip past.
-    normalised = posixpath.normpath(prefix).lstrip("/")
-    if normalised.startswith(".."):
-        raise ValueError("s3_path must not traverse outside its prefix")
-
-    # BOTH withheld stores, not just quarantine. `mail-intake/raw/` holds the
-    # complete raw MIME of every message — including every message whose
-    # attachment the gate rejected, and every malformed bundle. An earlier
-    # version guarded only the quarantine prefix, having created the raw store
-    # in the same change and never added it here. The endpoint writes what it
-    # downloads with an .eml suffix and the extractor reads any non-PDF as
-    # text, so an injection carried in the BODY of a quarantined message
-    # reached the model through the very endpoint this guard exists to
-    # harden.
-    for withheld in (QUARANTINE_PREFIX, RAW_MIME_PREFIX):
-        # Descendant: the caller named something inside a withheld store.
-        if (normalised + "/").startswith(withheld):
-            raise ValueError(
-                f"s3_path resolves under {withheld}, which holds content "
-                "withheld from extraction"
-            )
-
-    # ANCESTOR: the caller named something quarantine sits underneath. This is
-    # the case an earlier version missed entirely. The prefix is passed to
-    # list_objects_v2 as a literal byte prefix, so "mail-intake/" — or just
-    # "mail" — enumerates every quarantined object and the endpoint then
-    # downloads and extracts each one. Every hostile form the earlier tests
-    # covered was a descendant form, so the suite was green while the bypass
-    # stood open.
-    #
-    # Rejecting ancestors here gives a clear error, but note it CANNOT be
-    # complete on its own: "m" is a valid ancestor too. The durable control is
-    # the key-level filter in _list_s3_keys below, which drops quarantine keys
-    # whatever prefix produced them. This check exists so the common case
-    # fails loudly rather than silently returning nothing.
-    for withheld in (QUARANTINE_PREFIX, RAW_MIME_PREFIX):
-        if withheld.startswith(normalised.rstrip("/") + "/"):
-            raise ValueError(
-                f"s3_path is an ancestor of {withheld}; narrow it so withheld "
-                "content cannot be enumerated"
-            )
+    # One guard for every entry point that takes a key or prefix from a caller (1.3e): the withheld
+    # stores (quarantine, raw MIME), their contents and their ANCESTORS are refused here and in the
+    # extraction agent alike. See services.s3_scope for the reasoning the earlier inline version carried.
+    from src.services.s3_scope import refuse_withheld
+    refuse_withheld(prefix)
 
     return bucket_name, prefix
 

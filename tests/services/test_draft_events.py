@@ -269,6 +269,13 @@ def test_a_caller_the_policy_refuses_gets_a_403(api, monkeypatch):
     assert api.post("/drafts/U-1/assumptions/confirm", json={"confirmations": []}).status_code == 403
 
 
+def test_a_caller_the_policy_refuses_cannot_abandon_a_draft(api, monkeypatch):
+    """RT-16: abandon skipped the review gate that confirm runs, so any signed-in user could close any draft."""
+    monkeypatch.setattr(router_mod.guardrail, "authorize", lambda *a, **k: SimpleNamespace(allowed=False))
+    assert api.post("/drafts/U-1/abandon", json={"reason": "x"}).status_code == 403
+    assert api.db.outcomes == []          # nothing was written
+
+
 def test_abandon_over_http(api):
     assert api.post("/drafts/U-1/abandon", json={"reason": "wrong supplier"}).json() == {"ok": True}
     assert api.db.outcomes[0]["abandoned_by"] == "sub-nick"

@@ -426,14 +426,16 @@ def test_a_shipping_container_is_product_english_but_a_software_container_is_mec
 # The bell's `link` field is a path on purpose: the UI navigates to it. Live, 2026-10-22: every
 # message notification came back link="[withheld]" and the person was told it had nothing to open.
 
-@pytest.mark.parametrize("link", ["/messages/265", "/approvals/123", "/people", "/spendiq/deals/DL-2024-001"])
+@pytest.mark.parametrize("link", ["/messages/265", "/approvals/123", "/people", "/spendiq/deals/DL-2024-001",
+                                  "/actions/queue?finding=24718", "/spendiq?view=approvals&id=81775"])
 def test_a_notification_link_is_let_through(link):
     assert osafe.scrub_payload({"link": link, "title": "New message from Priya Sharma"})["link"] == link
 
 
 @pytest.mark.parametrize("value", [
     "http://16.61.116.180:8000/messages/265",     # absolute: not a product path
-    "/messages/265?token=abc",                   # a query string
+    "/messages/265?redirect=http://evil.example",  # a value that is not a plain token
+    "/messages/265?q=see proc.bp_message",       # a query string holding a table name
     "/proc/bp_message",                          # a table name inside the path
 ])
 def test_a_link_that_is_not_a_plain_product_path_is_still_withheld(value):

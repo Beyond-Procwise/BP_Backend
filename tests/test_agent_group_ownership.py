@@ -61,6 +61,8 @@ ROLES = {"admin-1": "Admin", "alice": "Buyer", "bob": "Buyer"}
 def env(monkeypatch):
     repo = FakeRepo()
     monkeypatch.setattr(router_mod, "repo", repo)
+    # The write gate on create (RT-23) has its own suite; these tests are about ownership of edits/deletes.
+    monkeypatch.setattr(router_mod, "gate", lambda *a, **k: None)
     monkeypatch.setattr(router_mod.rbac, "effective_role",
                         lambda p, policy_engine=None: ROLES.get(getattr(p, "subject", None), "Viewer"))
     app = FastAPI()
@@ -136,7 +138,9 @@ def test_list_is_shared_everyone_sees_everything(env):
     assert seen == {a, legacy}
 
 
-def test_any_signed_in_user_may_create_and_is_recorded_as_owner(env):
+def test_the_creator_is_recorded_as_the_tokens_subject(env):
+    """Who may create is the gate's decision (stubbed here, proved in tests/api/test_group_and_analysis_gate.py);
+    this proves the owner written is the token's subject."""
     repo, as_ = env
     body = {"name": "mine", "members": _MEMBERS, "links": []}
     r = as_("bob").post("/agent-groups", json=body)

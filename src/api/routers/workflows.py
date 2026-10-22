@@ -18,6 +18,7 @@ from pydantic import BaseModel, EmailStr, Field, field_validator, model_validato
 from orchestration.orchestrator import Orchestrator
 from api.auth import require_user
 from api.endpoint_gate import require as gate
+from src.services.s3_scope import refuse_withheld_any
 from services.model_selector import RAGPipeline
 from services import ask_flags, ask_trace
 from services.opportunity_service import record_opportunity_feedback
@@ -1221,6 +1222,11 @@ async def extract_documents(
     orchestrator: Orchestrator = Depends(get_orchestrator),
     principal=Depends(require_user),
 ):
+    # Refused before anything is logged or started (1.3e): see agents.process_document.
+    try:
+        refuse_withheld_any(req.s3_prefix, req.s3_object_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     prs = orchestrator.agent_nick.process_routing_service
     subject = getattr(principal, "subject", None) or None
     process_id = prs.log_process(

@@ -29,6 +29,7 @@ def client(monkeypatch):
     app.state.agent_nick = object()
     app.include_router(dr.router)
     app.dependency_overrides[dr.require_user] = lambda: _P()
+    monkeypatch.setattr(dr, "gate", lambda *a, **k: None)   # RT-17b: the extract route asks the gate first; its own tests cover it
     client = TestClient(app)
     client.seen = seen
     return client
@@ -62,6 +63,7 @@ def test_no_agent_nick_is_a_503_rather_than_a_500(client, monkeypatch):
     app = FastAPI()
     app.include_router(dr.router)
     app.dependency_overrides[dr.require_user] = lambda: _P()
+    monkeypatch.setattr(dr, "gate", lambda *a, **k: None)   # RT-17b: the extract route asks the gate first; its own tests cover it
     assert TestClient(app).post('/demand/intake/extract',
                                 json={'context': _CONTEXT}).status_code == 503
 

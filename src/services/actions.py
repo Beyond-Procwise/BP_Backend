@@ -40,6 +40,9 @@ ACTIONS: Dict[str, str] = {
     "deal.read": "read",
     "finding.read": "read",
     "report.read": "read",
+    # Translating UI strings or texts for the signed-in user: a read (every role keeps its translations),
+    # named so it is audited and an Admin can narrow it by policy.
+    "content.translate": "read",
     "policy.read": "read",
     # --- computing -------------------------------------------------------
     "quote.rank": "compute",
@@ -83,9 +86,16 @@ ACTIONS: Dict[str, str] = {
     # other. A move to "rejected" is asked as opportunity.reject, so one row governs every rejection.
     "opportunity.stage": "write",
     "document.upload": "write",
+    # Starting an analysis event for an upload session: the same bar as uploading the documents it reads.
+    "analysis.start": "write",
+    # Creating an agent group. Editing or deleting one is owner-or-Admin on top (D-61).
+    "agent_group.write": "write",
     "document.promote": "write",
     # Bulk-rewrites po_id across every final table. Its own action so who may do it is its own setting.
     "document.renumber": "write",
+    # Deleting one's own exported file record (the store scopes the delete to the creator). A write, not a share:
+    # nothing leaves the tenant.
+    "export.delete": "write",
     "email.draft": "write",
     # The queues the email-learning job leaves for people. Reading them is `read`; deciding one (resolving a data-quality
     # item, accepting a review item, approving YOUR OWN style rule, exporting a candidate) is `write`. Approving an

@@ -29,6 +29,14 @@ class Upper:
         return json.dumps({k: v.upper() for k, v in payload.items()})
 
 
+@pytest.fixture(autouse=True)
+def _no_gate(monkeypatch):
+    """The gate on /i18n/translate (RT-17b) has its own suite; here every call is allowed, whichever
+    test builds the app."""
+    from api.routers import i18n as router_mod
+    monkeypatch.setattr(router_mod, "gate", lambda *a, **k: None)
+
+
 @pytest.fixture
 def client(monkeypatch):
     svc = TranslationService(provider=Upper(), store=InMemoryTranslationStore(), memory=MemoryLayer(100),

@@ -129,6 +129,7 @@ def preflight(unique_id: str, principal=Depends(require_user)) -> Dict[str, Any]
 @router.post("/{unique_id}/abandon")
 def abandon(unique_id: str, body: AbandonRequest, principal=Depends(require_user)) -> Dict[str, Any]:
     by = _subject(principal)
+    _authorize(principal, unique_id)      # same review gate as confirm: closing a draft is reviewing it
     with _conn() as conn:
         outcome = capture.record_abandoned(conn, unique_id, by, body.reason)
     if outcome is None:

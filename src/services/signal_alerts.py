@@ -144,10 +144,19 @@ def run(*, fetch: Callable[[], Optional[dict]], send: Callable[[str, str], bool]
 # --- wiring for the timer ---------------------------------------------------
 
 def _fetch_health(url: str) -> Optional[dict]:
-    import urllib.request
+    """The health page, read through the egress chokepoint (1.20m) so the call is in the outbound audit
+    like every other. The page is this host's own, so a private address is allowed; a refusal or a
+    transport failure is "unreachable", as before."""
+    from src.services import egress
     try:
-        with urllib.request.urlopen(url, timeout=20) as resp:
-            return json.load(resp)
+        resp = egress.get(url, purpose=egress.Purpose.HEALTHCHECK, timeout=20, require_global=False,
+                          agent="health_alerts")
+        # urllib raised on any 4xx/5xx and that read as "api_down"; requests does not raise on status,
+        # so anything but a 200 is "unreachable" here too, not a page to parse.
+        if resp is None or getattr(resp, "status_code", 200) != 200:
+            log.warning("health alert: %s unreachable (%s)", url, "refused" if resp is None else resp.status_code)
+            return None
+        return resp.json()
     except Exception as exc:  # noqa: BLE001
         log.warning("health alert: %s unreachable: %s", url, exc)
         return None
@@ -179,6 +188,9 @@ def _send_email(subject: str, body: str) -> bool:
 
 
 def run_from_env() -> dict:
+    # A loopback address is a "local destination" for the outbound audit and always allowed. If this is
+    # ever pointed at the public hostname, the healthcheck purpose needs an allow rule for agent
+    # health_alerts before that purpose is enforced, or the probe would refuse itself and report api_down.
     url = os.environ.get("HEALTH_ALERT_URL", "http://127.0.0.1:8000/health")
     state = Path(os.path.expanduser(os.environ.get(
         "HEALTH_ALERT_STATE_FILE", "~/.local/state/procwise/health_alerts.json")))

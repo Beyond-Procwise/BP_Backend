@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import contextvars
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -156,9 +157,10 @@ def connection_settings() -> Optional[tuple]:
 # made to carry the two values of the code that started them -- once, here, for every current and
 # future call site, instead of editing each one.
 #
-#   * a thread/task started while a tenant (or system mode) is bound runs with the same;
-#   * a pool task ALWAYS sets both values explicitly (even to "none"), so a pooled thread can never run
-#     one caller's task under another caller's tenant;
+#   * a thread/task runs in a copy of the context of the code that started it (tenant, system mode, and
+#     every other ContextVar bound there, such as the agent name the outbound audit reads);
+#   * a pool task ALWAYS runs in its submitter's copied context, never the worker's own, so a pooled
+#     thread can never run one caller's task under another caller's tenant;
 #   * a pool's own worker threads are not given a tenant of their own.
 
 
@@ -174,11 +176,14 @@ def _rebind(tenant: Optional[str], system_on: bool) -> Iterator[None]:
 
 
 def _carry(fn):
-    tenant, system_on = _tenant.get(), _system.get()
+    """``fn`` wrapped to run in a COPY of the caller's whole context: the tenant and system mode as
+    before, and every other ContextVar the caller had bound, such as the agent name the outbound audit
+    reads (egress.calling). A copy, so the worker's own context is never used and nothing leaks from one
+    task to the next; each submission gets its own copy, so a copy is never entered twice."""
+    ctx = contextvars.copy_context()
 
     def run(*args, **kwargs):
-        with _rebind(tenant, system_on):
-            return fn(*args, **kwargs)
+        return ctx.run(fn, *args, **kwargs)
     return run
 
 
@@ -190,8 +195,10 @@ def install_propagation() -> None:
     original_submit = ThreadPoolExecutor.submit
 
     def start(self):
+        # Every thread but a pool's own workers runs in a copy of its starter's context (a pool worker
+        # gets each task's context at submit time instead, below).
         owner = getattr(self._target, "__module__", "") if getattr(self, "_target", None) else ""
-        if owner != "concurrent.futures.thread" and (_tenant.get() is not None or _system.get()):
+        if owner != "concurrent.futures.thread":
             self.run = _carry(self.run)
         return original_start(self)
 

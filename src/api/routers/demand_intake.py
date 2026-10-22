@@ -28,6 +28,7 @@ from starlette.concurrency import run_in_threadpool
 from src.agents.demand_intake_agent import DemandIntakeUnavailable, extract_fields
 
 from api.auth import require_user
+from api.endpoint_gate import require as gate
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,7 @@ def get_agent_nick(request: Request):
 @router.post("/intake/extract")
 async def post_extract(body: ExtractBody, principal=Depends(require_user),
                        agent_nick=Depends(get_agent_nick)) -> Dict[str, Any]:
+    gate("document.extract", principal, agent="demand_intake_api", context={"op": "intake_extract", "source": "text"})
     context = dict(body.context or {})
     text = str(context.get("text") or "")
     if not text.strip():

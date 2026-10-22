@@ -451,7 +451,10 @@ def scrub_payload(obj: Any, *, where: str = "") -> Any:
 # (no scheme, no host, no query), is excused from the route rule; a table name, a
 # credential or anything else found in it is still withheld.
 _PRODUCT_LINK_KEYS = {"link"}
-_PRODUCT_LINK = re.compile(r"^/[a-z][a-z0-9-]*(?:/[A-Za-z0-9_.-]+){0,4}$")
+# A short query string of plain keys and values is part of a product path too ("/actions/queue?finding=24718");
+# anything with a scheme, a host, or a value that is not a plain token is still withheld.
+_PRODUCT_LINK = re.compile(r"^/[a-z][a-z0-9-]*(?:/[A-Za-z0-9_.-]+){0,4}"
+                           r"(?:\?[a-z][a-z0-9_]*=[A-Za-z0-9_.-]{1,64}(?:&[a-z][a-z0-9_]*=[A-Za-z0-9_.-]{1,64}){0,3})?$")
 
 
 def _scrub_value(key: str, value: Any, where: str) -> Any:

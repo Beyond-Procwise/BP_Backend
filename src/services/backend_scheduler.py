@@ -13,6 +13,9 @@ from services.uicanvas_bridge import UicanvasBridge
 
 from services.model_training_endpoint import ModelTrainingEndpoint
 from utils.gpu import configure_gpu
+# The same module the model client and the tool loop use (src.services.egress), so the name set
+# here is the one request() reads; the bare `services` root would be a second copy with its own context.
+from src.services import egress as _egress
 
 logger = logging.getLogger(__name__)
 
@@ -2058,7 +2061,10 @@ class BackendScheduler:
     def _execute_job(self, job: _ScheduledJob) -> None:
         try:
             configure_gpu()
-            job.runner()
+            # Every outbound call the job makes is audited under the job's name (1.20k); an agent the
+            # job runs names itself inside and wins. Before this every scheduled call read "unknown".
+            with _egress.calling(f"job:{job.name}"):
+                job.runner()
         except Exception:
             logger.exception("Backend job %s failed", job.name)
         finally:

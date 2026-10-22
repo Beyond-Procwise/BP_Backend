@@ -7,7 +7,8 @@ background work yields to), queues requests, and remembers GPU layout refusals, 
 done through one is invisible through the other.
 
 ``_SHARED_STATE_MODULES`` lists the modules that must exist once (``event_bus`` holds the process-wide bus and
-the per-thread workflow context; ``ollama_client`` the foreground count and refusal memory). When the package is loaded as ``services``,
+the per-thread workflow context; ``ollama_client`` the foreground count and refusal memory; ``egress`` the caller
+context the outbound audit reads, ``egress_log`` its queue and writer thread, ``egress_policy`` its rule cache). When the package is loaded as ``services``,
 a small import hook answers ``services.<name>`` with the one real ``src.services.<name>`` instead of loading
 a second copy. Callers change nothing, and every other module loads as it always did. (These modules already
 import their own neighbours as ``src.services...``, so they have always needed ``src`` on the path.)
@@ -20,7 +21,9 @@ import importlib.abc
 import importlib.util
 import sys
 
-_SHARED_STATE_MODULES = ("ollama_client", "event_bus")
+# egress holds the caller context every outbound call is audited under; egress_log the audit queue, its writer
+# thread and the writer-failing flag; egress_policy the rule cache and its last-good anchor. One copy each (1.20k).
+_SHARED_STATE_MODULES = ("ollama_client", "event_bus", "egress", "egress_log", "egress_policy")
 _CANONICAL = "src.services."
 
 

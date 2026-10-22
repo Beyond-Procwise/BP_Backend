@@ -19,6 +19,7 @@ from repositories import agent_definition_repo
 from services import rbac
 from services.prompt_engine import agent_prompts
 from api.endpoint_gate import require as gate
+from src.services.s3_scope import refuse_withheld_any
 
 logger = logging.getLogger(__name__)
 
@@ -1381,6 +1382,12 @@ def process_document(
     """Convenience endpoint to run the document extraction workflow."""
     gate("workflow.run", principal, agent="AgentsRouter",
          context={"workflow": "document_extraction"})
+    # A withheld store (quarantine, raw MIME) or an ancestor of one is refused HERE as a 400 the caller
+    # sees (1.3e); the agent refuses it again inside, but a run that fails silently looks like nothing.
+    try:
+        refuse_withheld_any(req.s3_prefix, req.s3_object_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     payload = {"s3_prefix": req.s3_prefix, "s3_object_key": req.s3_object_key}
     return orchestrator.execute_workflow(
         "document_extraction", payload,
@@ -1394,6 +1401,17 @@ def execute_agent(
     principal=Depends(require_user),
 ):
     """Execute a specified agent workflow."""
+    # A document-extraction run names its sources in the free payload; a withheld store (quarantine,
+    # raw MIME) or an ancestor of one is refused here as a 400 (1.3e), as process-document does, rather
+    # than inside the agent where it comes back as a FAILED envelope under a 200. The agent checks again.
+    if req.agent_type == "document_extraction" and isinstance(req.payload, dict):
+        keys = req.payload.get("s3_object_keys")
+        listed = keys if isinstance(keys, (list, tuple)) else [keys]
+        try:
+            refuse_withheld_any(req.payload.get("s3_prefix"), req.payload.get("s3_object_key"),
+                                *[k for k in listed if isinstance(k, str)])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
     if orchestrator.agent_nick is None:
         raise HTTPException(status_code=503, detail="Agent system not initialized")
     prs = orchestrator.agent_nick.process_routing_service

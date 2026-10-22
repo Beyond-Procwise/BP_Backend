@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from api.auth import require_user
+from api.endpoint_gate import require as gate
 from src.services.formulas import ensure_registered, evaluate
 from services.benchmark.models import BenchmarkPoint, BenchmarkSettings, QuoteLine
 from services.benchmark_live import benchmark_deal
@@ -55,6 +56,7 @@ class BenchmarkPreviewRequest(BaseModel):
 @router.post("/preview", summary="Run the deterministic benchmark engine on a supplied payload")
 def benchmark_preview(body: BenchmarkPreviewRequest,
                       principal=Depends(require_user)) -> dict[str, Any]:
+    gate("quote.compare", principal, agent="benchmark_api", context={"op": "benchmark_preview"})
     ensure_registered()
     outcome = evaluate("benchmark.adjusted_price", {
         "quote": body.quote,

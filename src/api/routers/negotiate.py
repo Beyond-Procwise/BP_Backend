@@ -14,6 +14,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 
 from api.auth import require_user
+from api.endpoint_gate import require as gate
 from src.services.negotiate_dashboard import build_negotiate_dashboard
 from src.services.negotiation_advice import apply_turn, view_advice
 
@@ -59,6 +60,7 @@ def post_negotiate_advice_message(deal_id: str,
                                   body: dict[str, Any],
                                   explain: bool = False,
                                   principal=Depends(require_user)) -> dict[str, Any]:
+    gate("deal.write", principal, agent="negotiate_api", context={"deal_id": deal_id, "op": "advice_message"})
     # A stated fact changes the advice, and its stated_by was the literal
     # "buyer". Who stated it is the token, or nobody.
     try:
@@ -78,6 +80,7 @@ def post_negotiate_advice_message(deal_id: str,
 def delete_negotiate_advice_fact(deal_id: str, fact_key: str,
                                  explain: bool = False,
                                  principal=Depends(require_user)) -> dict[str, Any]:
+    gate("deal.write", principal, agent="negotiate_api", context={"deal_id": deal_id, "op": "withdraw_fact", "fact_key": fact_key})
     # Withdrawing can seed the advice row first, and that row has a created_by.
     try:
         result = apply_turn(deal_id, {"action": "withdraw_fact",
