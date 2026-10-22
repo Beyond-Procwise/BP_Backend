@@ -63,6 +63,10 @@ ACTIONS: Dict[str, str] = {
     "finding.resolve": "write",
     # A manual re-triage recomputes a deal's findings and writes them to the Action Centre.
     "finding.triage": "write",
+    # Warming the persona-summary cache for MANY deals is a fleet-wide model job (an explicit deal_ids
+    # list bypasses the scheduler's caps). A configure action: refused for everyone, Admin included,
+    # until the authority row allows it (deploy/sql/2026-10-22_summary_precompute_authority.sql, Admin).
+    "summary.precompute": "configure",
     # Rejecting an opportunity is permanent in the sense that matters: the reason is
     # written against it and the stage moves, and the opportunity card is where a person
     # does it. "Pursue", the card's other verb, gets NO name of its own -- it opens a

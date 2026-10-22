@@ -83,7 +83,10 @@ def get_history(persona: str, deal_id: Optional[str] = None) -> dict[str, Any]:
 
 @router.post("/precompute", summary="Warm the summary cache")
 def post_precompute(req: PrecomputeRequest, principal=Depends(require_user)) -> dict[str, Any]:
-    gate("report.generate", principal, agent="summary_api", context={"op": "precompute"})
+    # Not report.generate: an explicit deal_ids list is honoured in full, so this can start an
+    # unbounded model job over the whole fleet. Its own configure-class action, Admin by the authority row.
+    gate("summary.precompute", principal, agent="summary_api",
+         context={"op": "precompute", "deal_count": len(req.deal_ids or [])})
     try:
         return summary_agent.precompute_summaries(
             personas=req.personas, deal_ids=req.deal_ids
