@@ -62,7 +62,8 @@ import logging
 import socket
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Optional
+from contextlib import contextmanager
+from typing import Any, Iterator, Optional
 from urllib.parse import urljoin, urlsplit
 
 import requests
@@ -414,6 +415,41 @@ def request(
             outcome="refused", detail=f"more than {_MAX_REDIRECTS} redirects",
             payload_sha256=_sha, payload_bytes=_bytes, agent=agent, decision=decision, classification=tags)
     return None
+
+
+@contextmanager
+def observe(purpose: Purpose, destination: str, *, agent: Optional[str] = None,
+            payload: Any = None) -> Iterator[None]:
+    """Describe and record an outbound call made by a LIBRARY that owns its own HTTP client.
+
+    Some callers cannot route through :func:`request` because the library they use (the
+    ``ddgs`` search client) brings its own transport. Without this, such a call left the box
+    unseen: no event row, no shadow decision, nothing for enforcement to act on. Wrapping the
+    call here gives it the same decision and the same event row as a request, with method
+    ``LIBRARY`` and outcome ``library_call`` or ``library_error``. The SSRF destination check
+    does not apply: the destination is the library's fixed provider, not a model's choice.
+
+    Shadow: the decision is recorded, not applied. When enforcement arrives (step d) a denied
+    call raises ``EgressDenied`` here, before the library runs.
+    """
+    agent = agent or UNKNOWN_AGENT
+    from src.services.egress_log import payload_digest
+    _sha, _bytes = payload_digest(payload)
+    decision = _evaluate(purpose, destination, agent)
+    if not decision.permitted:
+        _record(purpose=purpose, destination=destination, method="LIBRARY", outcome="denied",
+                detail=decision.reason, payload_sha256=_sha, payload_bytes=_bytes,
+                agent=agent, decision=decision)
+        raise EgressDenied(reason=decision.reason, destination=destination, purpose=purpose.value)
+    try:
+        yield
+    except Exception as exc:  # noqa: BLE001 - recorded, then re-raised unchanged
+        _record(purpose=purpose, destination=destination, method="LIBRARY", outcome="library_error",
+                detail=type(exc).__name__, payload_sha256=_sha, payload_bytes=_bytes,
+                agent=agent, decision=decision)
+        raise
+    _record(purpose=purpose, destination=destination, method="LIBRARY", outcome="library_call",
+            payload_sha256=_sha, payload_bytes=_bytes, agent=agent, decision=decision)
 
 
 def get(url: str, *, purpose: Purpose, **kwargs: Any) -> Optional[requests.Response]:
