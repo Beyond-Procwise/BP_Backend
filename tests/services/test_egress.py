@@ -5,9 +5,9 @@ building: it cannot be pointed inward, it cannot be called without saying why,
 and nothing leaves without a line describing it.
 
 What is deliberately NOT asserted: that a policy engine approved the call.
-There isn't one. ``_evaluate`` returns True with a reason string saying so, and
-a test that asserted "the gate allowed it" would read as coverage of a decision
-that is not being made.
+There isn't one. ``_evaluate`` permits every call and only records what it WOULD
+decide (test_egress_shadow.py), and a test that asserted "the gate allowed it"
+would read as coverage of a decision that is not being applied.
 """
 from __future__ import annotations
 

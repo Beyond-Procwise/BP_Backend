@@ -27,9 +27,10 @@ WHAT THE ROWS DO NOT YET CARRY, and why the columns exist anyway
 
   tenant_id       the one company label (tenant_context.company_label), not
                   taken from a request: this writer serves every caller.
-  policy_version  always NULL. No policy model keyed on
-                  (destination, purpose, classification) exists to have a
-                  version. egress._evaluate is the seam that will supply it.
+  policy_version  the SHADOW rule set that judged the call (1.20 a), NULL where
+                  nothing judged it. agent / shadow_decision / shadow_reason say who
+                  called and what an egress policy WOULD have decided; nothing is
+                  enforced from them yet.
   classification  always empty. There is no data-classification registry.
 
 Those three being empty is the honest current state of the controls, not an
@@ -70,8 +71,17 @@ CREATE TABLE IF NOT EXISTS proc.bp_egress_event (
     payload_bytes   INTEGER,
     -- NULL until a destination policy model exists. See the module docstring.
     policy_version  TEXT,
-    classification  TEXT[] NOT NULL DEFAULT '{}'
+    classification  TEXT[] NOT NULL DEFAULT '{}',
+    -- 1.20 (a): who made the call, and what the gate WOULD have decided (shadow).
+    agent           TEXT,
+    shadow_decision TEXT,
+    shadow_reason   TEXT
 );
+
+-- Tables created before 1.20 (a) gain the three columns in place; nothing is dropped.
+ALTER TABLE proc.bp_egress_event ADD COLUMN IF NOT EXISTS agent TEXT;
+ALTER TABLE proc.bp_egress_event ADD COLUMN IF NOT EXISTS shadow_decision TEXT;
+ALTER TABLE proc.bp_egress_event ADD COLUMN IF NOT EXISTS shadow_reason TEXT;
 
 CREATE INDEX IF NOT EXISTS ix_bp_egress_event_occurred_at
     ON proc.bp_egress_event (occurred_at DESC);
@@ -86,8 +96,9 @@ CREATE INDEX IF NOT EXISTS ix_bp_egress_event_destination_occurred
 _INSERT = """
 INSERT INTO proc.bp_egress_event
     (occurred_at, tenant_id, purpose, destination, method, outcome, detail,
-     payload_sha256, payload_bytes, policy_version, classification)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+     payload_sha256, payload_bytes, policy_version, classification,
+     agent, shadow_decision, shadow_reason)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 """
 
 # Bounded so a writer that cannot keep up costs memory that is capped rather
@@ -128,7 +139,9 @@ def payload_digest(body: Any) -> tuple[Optional[str], Optional[int]]:
 
 def record(*, purpose: str, destination: str, method: str, outcome: str,
            detail: str = "", payload_sha256: Optional[str] = None,
-           payload_bytes: Optional[int] = None) -> None:
+           payload_bytes: Optional[int] = None,
+           agent: Optional[str] = None, shadow_decision: Optional[str] = None,
+           shadow_reason: Optional[str] = None, policy_version: Optional[str] = None) -> None:
     """Queue one egress event. Never blocks, never raises.
 
     Called from the request path, so it must cost close to nothing and must not
@@ -145,6 +158,10 @@ def record(*, purpose: str, destination: str, method: str, outcome: str,
         "detail": detail or None,
         "payload_sha256": payload_sha256,
         "payload_bytes": payload_bytes,
+        "agent": agent,
+        "shadow_decision": shadow_decision,
+        "shadow_reason": shadow_reason,
+        "policy_version": policy_version,
     }
     try:
         _queue.put_nowait(event)
@@ -208,8 +225,10 @@ def _row(event: dict) -> tuple:
         event["occurred_at"], _company_label(), event["purpose"], event["destination"],
         event["method"], event["outcome"], event["detail"],
         event["payload_sha256"], event["payload_bytes"],
-        None,      # policy_version — no policy model yet
+        # policy_version: the SHADOW rule set that decided (1.20 a); NULL when nothing did
+        event.get("policy_version"),
         [],        # classification — no registry yet
+        event.get("agent"), event.get("shadow_decision"), event.get("shadow_reason"),
     )
 
 
