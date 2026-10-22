@@ -69,12 +69,12 @@ def verify(answer: str, calls: Sequence[Any], task: str, *, skill_config: Option
     sources: List[Any] = [task, now.isoformat(), now.strftime("%d %b %Y"), now.strftime("%d %B %Y")]
     from .argument_check import NON_SOURCE_TOOLS
 
+    if config:
+        sources.append(json.dumps(config, default=str))
     for c in calls:
         if (getattr(c, "ok", False) and getattr(c, "result", None) is not None
                 and getattr(c, "name", None) not in NON_SOURCE_TOOLS):
-            sources.append(c.result)
-    if config:
-        sources.append(json.dumps(config, default=str))
+            sources.append(_without_echoes(c, sources))
     untraced = calculation_tools.untraced_figures(answer or "", sources)
     if not untraced:
         return Verdict("keep", answer)
@@ -86,3 +86,33 @@ def verify(answer: str, calls: Sequence[Any], task: str, *, skill_config: Option
             "figure yourself."))
     return Verdict("caution", f"{answer}\n\nNote: these figures are not from a tool result or from your "
                               f"request, so they are not verified: {listed}.", untraced)
+
+
+
+def _without_echoes(call: Any, sources: Sequence[Any]) -> str:
+    """A tool's result as a source, minus the figures the model itself put into the call.
+
+    Live, 2026-10-22: the model invented a contract value, passed it to check_policy, and the reply
+    repeated it, so the invented figure traced to "a tool result". A number that was in the call's
+    arguments but in nothing the run had been given before the call is the model's, and the tool
+    echoing it back does not make it a fact; such numbers are blanked from the result text."""
+    from services import calculation_tools as ct
+
+    result_text = json.dumps(call.result, default=str)
+    args = getattr(call, "arguments", None) or getattr(call, "args", None) or {}
+    try:
+        arg_numbers = ct._numbers(json.dumps(args, default=str))
+    except (TypeError, ValueError):
+        return result_text
+    if not arg_numbers:
+        return result_text
+    known = ct._numbers("\n".join(s if isinstance(s, str) else json.dumps(s, default=str) for s in sources))
+    invented = {n for n in arg_numbers if n not in known}
+    if not invented:
+        return result_text
+
+    def _blank(m):
+        value = ct._decimal(m.group(0).rstrip(","))
+        return " " if value is not None and value in invented else m.group(0)
+
+    return ct._NUMBER.sub(_blank, result_text)

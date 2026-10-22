@@ -134,3 +134,20 @@ def test_figures_in_a_catalogue_of_calculations_are_not_a_source_for_an_answer()
     catalogue = call("list_calculations", {"note": "the supplier floor is 12,500.50 in the catalogue example"})
     assert verify("The floor is 12,500.50 GBP.", [catalogue], task="x").action == "retry"
     assert verify("The floor is 12,500.50 GBP.", [call("get_corpus_facts", {"floor": 12500.50})], task="x").action == "keep"
+
+
+def test_a_figure_the_model_put_into_a_tool_call_is_not_a_source_when_the_tool_echoes_it():
+    """Live, 2026-10-22: an invented contract value went into check_policy and came back in its reply."""
+    echoed = SimpleNamespace(name="check_policy", ok=True, error=None,
+                             arguments={"annual_value": 20000, "total_commitment": 240000, "currency": "GBP"},
+                             result={"reply_text": "Total commitment 240,000.00 GBP needs the Approver role."})
+    v = vf.verify("The event is worth 240,000 GBP over the term.", [echoed], "Set up an RFQ for 2,000 pallets a month.")
+    assert v.action == "retry" and "240,000" in v.untraced
+
+
+def test_a_figure_from_the_request_passed_into_a_tool_and_echoed_still_traces():
+    echoed = SimpleNamespace(name="check_policy", ok=True, error=None,
+                             arguments={"annual_value": 49000, "currency": "GBP"},
+                             result={"reply_text": "49,000.00 GBP needs the Approver role; limit 10,000.00 GBP."})
+    v = vf.verify("49,000 GBP needs the Approver; the limit is 10,000 GBP.", [echoed], "A PO for 49,000 GBP")
+    assert v.action == "keep"

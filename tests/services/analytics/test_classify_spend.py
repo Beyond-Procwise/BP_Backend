@@ -3,7 +3,7 @@ from src.services.contract_tools import store
 
 TAX = [
     ("C-2000", "IT & Technology", "C-2100", "Hardware", "C-2110", "End-user devices", "C-2111", "Laptop computers",
-     "C-21111", "Business laptops", "43211503", "Active", "Alex Chen"),
+     "C-21111", "Business laptops", "43211503", "Active", "Alex Chen", "Moderate"),
     ("C-2000", "IT & Technology", "C-2100", "Hardware", "C-2110", "End-user devices", "C-2112", "Monitors",
      "C-21121", "Desktop monitors", "43211902", "Active", "Alex Chen"),
     ("C-3000", "Office & Administrative Supplies", "C-3100", "Stationery", "C-3110", "Writing Instruments", "C-3111", "Pens",
@@ -94,3 +94,9 @@ def test_empty_taxonomy_and_outage_are_told_apart():
 
 def test_a_single_string_is_one_item():
     assert len(CS.classify(items="Laptop computers", rows=_rows())["items"]) == 1
+
+
+def test_the_taxonomy_row_carries_the_recorded_esg_impact():
+    out = CS.classify(query="laptop", rows=_rows())
+    assert out["categories"][0]["esg_impact"] == "Moderate"
+    assert CS.classify(query="pens", rows=_rows())["categories"][0]["esg_impact"] is None

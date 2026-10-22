@@ -30,7 +30,7 @@ _MAP_SQL = """
 _TAXONOMY_SQL = """
     SELECT category_level_1_id, category_level_1, category_level_2_id, category_level_2, category_level_3_id,
            category_level_3, category_level_4_id, category_level_4, category_level_5_id, category_level_5,
-           unspsc_code, category_status, category_owner_name
+           unspsc_code, category_status, category_owner_name, esg_impact
       FROM proc.bp_category_master
 """
 _WORD = re.compile(r"[a-z0-9]+")
@@ -47,7 +47,8 @@ def _words(text: Any) -> set:
 def _row(r: tuple) -> Dict[str, Any]:
     return {"category_level_1_id": r[0], "category_level_1": r[1], "category_level_2_id": r[2], "category_level_2": r[3],
             "category_level_3_id": r[4], "category_level_3": r[5], "category_level_4_id": r[6], "category_level_4": r[7],
-            "category_level_5_id": r[8], "category_level_5": r[9], "unspsc_code": r[10], "status": r[11], "owner": r[12]}
+            "category_level_5_id": r[8], "category_level_5": r[9], "unspsc_code": r[10], "status": r[11], "owner": r[12],
+            "esg_impact": r[13] if len(r) > 13 else None}
 
 
 def _candidates(description: str, taxonomy: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
