@@ -1,0 +1,46 @@
+# Configurable defaults for the maverick spend review. They are starting points for review, not governed policy:
+# the approval limit, approver, preferred-supplier and contract-before-order rules come from policy when stated.
+thresholds:
+  default_period_months: 12      # trailing window when the user gives no period
+  max_suppliers_reconciled: 5    # top suppliers by spend whose invoice lines are reconciled for "no order on record"
+  uncovered_spend_min: 25000     # spend (reporting currency) above which a supplier with no contract on record is listed
+  split_window_days: 30          # orders from one buyer to one supplier within this window are tested as a possible split
+unavailable_tools:
+  - build_xlsx
+  - render_chart
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "maverick"
+    - "rogue spend"
+    - "rogue buying"
+    - "off-process"
+    - "off process"
+    - "outside the process"
+    - "outside of the process"
+    - "bypass*"
+    - "non-compliant spend"
+    - "non compliant spend"
+    - "unapproved spend"
+    - "unapproved purchase*"
+    - "without a po"
+    - "without a purchase order"
+    - "no po behind"
+    - "no purchase order behind"
+    - "invoices with no po"
+    - "invoices without po*"
+    - "outside preferred"
+    - "outside the preferred"
+    - "outside our preferred"
+    - "non-preferred supplier*"
+    - "split purchase*"
+    - "split order*"
+    - "splitting orders"
+    - "compliance to contract"
+    - "contract compliance"
+    - "buying outside"
+    - "bought outside"
+  support:                       # 1 point each
+    - "supplier*"
+    - "buyer*"
+    - "invoice*"
+    - "purchase*"

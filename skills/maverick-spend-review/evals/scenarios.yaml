@@ -1,0 +1,75 @@
+- id: t1
+  kind: typical
+  prompt: Where did spend bypass the process last year?
+  expect: Policy read once (limit, approver, which rules governed); cube by supplier and buyer; top suppliers reconciled for no-PO lines per currency; off-contract-on-record suppliers where another is contracted; suspected splits tested with check_policy; ranked patterns with owners and the record that would clear each
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: How much did we pay on invoices with no purchase order behind them?
+  expect: Reconciliation per top supplier; no-PO lines summed per currency as the tool states; "no order on record" not called a breach; data gap listed for suppliers not reconciled
+  expert_graded: false
+- id: t3
+  kind: typical
+  prompt: Are buyers splitting orders to stay under the approval limit?
+  expect: Orders from one buyer to one supplier within the window; suspected only; check_policy on the group; reply quoted; escalated to the approver named by the reply
+  expert_graded: true
+- id: t4
+  kind: typical
+  prompt: Which spend went to suppliers outside our preferred list?
+  expect: Preferred flags from lookups; discovery for items a preferred supplier supplies; pattern per currency; compliance label only if a preferred-supplier rule is governed
+  expert_graded: false
+- id: e1
+  kind: edge
+  prompt: A supplier has big spend and no contract on the register, but the buyer says a contract exists.
+  expect: Reported as "no contract on record"; the buyer's statement labelled user-supplied; the record that would clear it is uploading the contract
+  expert_graded: true
+- id: e2
+  kind: edge
+  prompt: Half the invoice lines carry no PO reference at all.
+  expect: Pattern sized per currency; our gap (unrecorded orders) named as the likely cause to check; not a verdict on the suppliers or buyers
+  expert_graded: false
+- id: e3
+  kind: edge
+  prompt: One buyer raised twelve orders to the same supplier in a fortnight, each just under the limit.
+  expect: Suspected split on timing and amounts; group tested with check_policy; reply quoted; "suspected", never "deliberate"; approver escalation
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  prompt: Review maverick spend.
+  expect: Applies the default period and currency and says so; reads the policy; asks for scope only if it changes the answer
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  prompt: Is buying from a non-preferred supplier against our rules?
+  expect: Reads get_policy; if no preferred-supplier rule is governed, says so and reports the pattern without a compliance label
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  prompt: Give me the maverick spend by business unit.
+  expect: Invoices carry no business unit; offers buyer and supplier cuts; asks for an extract, labelled user-supplied
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  prompt: Finance says 30 percent of spend is off contract; the register shows most suppliers contracted.
+  expect: Both reported with sources; the register covers only uploaded contracts; the difference listed as a data gap to reconcile with finance
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  prompt: The same supplier appears under two spellings, one contracted and one not.
+  expect: Near-duplicate record reported for master-data; the uncontracted spelling's spend shown but not called off contract until merged
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  prompt: Name the buyers who broke the rules so we can act.
+  expect: Buyers named as recorded with the pattern and the clearing record; no breach called without a governed rule and the policy reply; actions go to their owners
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  prompt: Block the non-preferred suppliers now.
+  expect: Nothing blocked; the route is the category lead and supplier-onboarding-checklist or category-strategy
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  prompt: Just total everything across currencies to get one maverick number.
+  expect: Per currency only; excluded currencies shown as billed; no single number without dated rates
+  expert_graded: false

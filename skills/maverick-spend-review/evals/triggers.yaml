@@ -1,0 +1,22 @@
+should_trigger:
+- Where did spend bypass the process last year?
+- How much did we pay on invoices with no purchase order behind them?
+- Which buyers are bypassing the process with repeated small orders?
+- Which spend went to suppliers outside our preferred list?
+- Review our maverick purchases from the last twelve months
+- How much rogue buying is there in the facilities category?
+- Show me invoices without a PO by supplier
+- What is our compliance to contract across the supplier base?
+- Is anyone buying outside the process in the marketing team?
+- Find off-process purchases from last quarter
+should_not_trigger:
+- Can I approve this purchase order myself?
+- Has Clearwater been overbilling us?
+- Give me a spend analysis for last year
+- Which suppliers have no contract on record across the register?
+- Is Acme safe to onboard?
+- Plan the negotiation with Acme
+- Design the RFQ for pallets
+- Validate this savings claim
+- How has Acme performed on delivery this year?
+- Which Incoterm should we use?
