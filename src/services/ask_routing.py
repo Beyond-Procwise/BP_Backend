@@ -42,10 +42,10 @@ READ_ONLY_TOOLS = frozenset({
     "screening_summary", "screen_sanctions", "financial_health_score", "esg_rating_lookup", "forced_labour_screen",
     "conflict_minerals_check", "monitor_risk_events", "commodity_index_lookup",
     "classify_spend", "similar_items", "compare_total_cost", "invoice_reconciliation", "contract_pipeline",
-    "supplier_items", "open_orders", "invoice_status",
+    "supplier_items", "open_orders", "invoice_status", "duplicate_invoices", "supplier_parents",
     # The export tools write one thing: a file in the asking person's own Exports list (never a business
     # record), so a skill that offers a Word note or a spreadsheet can still fire in the Ask box.
-    "build_docx", "build_xlsx", "build_pptx", "render_chart",
+    "build_docx", "build_xlsx", "build_pptx", "render_chart", "render_kpi_card",
 })
 
 #: Told to every answering agent, so one whose instructions say "send" or

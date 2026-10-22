@@ -319,3 +319,40 @@ def _donut_svg(points: Sequence[tuple], unit: str) -> str:
                      f'<text x="500" y="{92 + i * 24}" font-size="12">{html.escape(label[:28])}: {html.escape(_fmt(v, unit))} ({frac * 100:.1f}%)</text>')
         angle = a2
     return "".join(parts)
+
+
+# ----------------------------------------------------------------------------- KPI card (SVG)
+STATUS_COLOURS = {"green": "#38a169", "amber": "#d69e2e", "red": "#e53e3e", "grey": "#718096"}
+
+
+def kpi_card_svg(title: str, value: Any, *, unit: str = "", movement_pct: Any = None, target: Any = None,
+                 status: str = "grey", source: str = "") -> bytes:
+    """A single-figure card: title, the value with its unit, the movement, the target and a status colour. The
+    status is the caller's (from a stated rule), never judged here."""
+    colour = STATUS_COLOURS.get(_text(status).strip().lower() or "grey")
+    if colour is None:
+        raise ExportRefused(f"status must be one of {', '.join(STATUS_COLOURS)}")
+    if value is None or _text(value).strip() == "":
+        raise ExportRefused("a KPI card needs a value")
+    try:
+        shown = _fmt(float(value), unit) if _text(value).replace(",", "").replace(".", "", 1).lstrip("-").isdigit() else f"{_text(value)} {unit}".strip()
+    except (TypeError, ValueError):
+        shown = f"{_text(value)} {unit}".strip()
+    lines = []
+    if movement_pct is not None:
+        try:
+            m = float(movement_pct)
+            lines.append(f"{'+' if m >= 0 else ''}{m:.1f}% versus prior period")
+        except (TypeError, ValueError):
+            raise ExportRefused("movement_pct must be a number") from None
+    if target is not None and _text(target).strip():
+        lines.append(f"Target {_text(target)}")
+    body = (f'<rect x="12" y="12" width="376" height="176" rx="12" fill="#ffffff" stroke="{colour}" stroke-width="4"/>'
+            f'<text x="32" y="52" font-size="16" fill="#4a5568">{html.escape(_text(title))}</text>'
+            f'<text x="32" y="110" font-size="40" font-weight="bold" fill="#1a202c">{html.escape(shown)}</text>')
+    for i, line in enumerate(lines):
+        body += f'<text x="32" y="{140 + i * 20}" font-size="13" fill="#4a5568">{html.escape(line)}</text>'
+    if source:
+        body += f'<text x="32" y="182" font-size="10" fill="#718096">Source: {html.escape(_text(source))}</text>'
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200" viewBox="0 0 400 200" '
+            f'font-family="Helvetica, Arial, sans-serif">{body}</svg>').encode("utf-8")

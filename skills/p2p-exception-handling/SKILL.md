@@ -28,7 +28,6 @@ Not for investigating an overcharge (overbilling-investigation), for a status an
 - Use `tool:extract_clauses` for the price, tolerance and invoicing clauses, quoted
 - Use `tool:get_policy` for the tolerance and exception rules (who clears which kind, within what limits)
 - Use `tool:check_policy` where the resolution commits or releases spend
-NOT AVAILABLE: duplicate_invoices. not built yet; until then duplicate suspicion comes from invoice_status by scanning the supplier's invoices for the same amount and date, labelled a suspicion
 NOT AVAILABLE: release_hold. finance releases a hold; the skill says what must be true first
 
 Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.pattern_window_days`.

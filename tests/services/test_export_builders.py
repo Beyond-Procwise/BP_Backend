@@ -76,3 +76,20 @@ def test_a_short_row_is_padded_and_a_long_row_is_cut_to_the_columns():
     doc = Document(io.BytesIO(EB.docx_bytes("t", [{"table": {"columns": ["a", "b"], "rows": [[1], [1, 2, 3]]}}])))
     rows = doc.tables[0].rows
     assert [c.text for c in rows[1].cells] == ["1", ""] and [c.text for c in rows[2].cells] == ["1", "2"]
+
+
+def test_kpi_card_shows_value_movement_target_source_and_the_stated_status_colour():
+    svg = EB.kpi_card_svg("On-time delivery", 92.4, unit="%", movement_pct=-1.5, target="95%", status="amber", source="scorecard, FY to date").decode()
+    assert svg.startswith("<svg") and "On-time delivery" in svg and "92.40 %" in svg and "-1.5% versus prior period" in svg
+    assert "Target 95%" in svg and "Source: scorecard, FY to date" in svg and EB.STATUS_COLOURS["amber"] in svg
+
+
+@pytest.mark.parametrize("kwargs, needle", [
+    ({"value": None}, "needs a value"),
+    ({"value": 1, "status": "blue"}, "status must be one of"),
+    ({"value": 1, "movement_pct": "up"}, "movement_pct must be a number"),
+])
+def test_kpi_card_refuses_bad_input_by_name(kwargs, needle):
+    with pytest.raises(EB.ExportRefused) as exc:
+        EB.kpi_card_svg("t", **kwargs)
+    assert needle in str(exc.value)

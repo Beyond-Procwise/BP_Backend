@@ -1099,6 +1099,26 @@ def _supplier_record_tools() -> List[Tool]:
                         "required": ["supplier"]},
             handler=SR.invoices,
         ),
+        Tool(
+            name="duplicate_invoices",
+            description=(
+                "Pairs of one supplier's invoices with the same amount and currency within a window of days (default "
+                "14), in a period (default three years): suspected duplicates for finance to check against the delivery "
+                "notes, never a verdict. A pair on the same order is the stronger signal. It blocks and marks nothing."
+            ),
+            parameters={"type": "object", "properties": {**sup, "window_days": {"type": "integer"}, **period}, "required": ["supplier"]},
+            handler=SR.duplicate_invoices,
+        ),
+        Tool(
+            name="supplier_parents",
+            description=(
+                "The parent company and the subsidiaries recorded on the supplier master for one supplier: one level, as "
+                "recorded. Sub-tier suppliers and deeper ownership are not held and are said so. Two bidders sharing a "
+                "parent here are not independent. If several suppliers match it asks which."
+            ),
+            parameters={"type": "object", "properties": {**sup}, "required": ["supplier"]},
+            handler=SR.supplier_parents,
+        ),
     ]
 
 
@@ -1198,6 +1218,22 @@ def _export_tools(user_id: Optional[str]) -> List[Tool]:
                 "required": ["title", "chart_type", "data"]},
             handler=lambda title=None, chart_type=None, data=None, unit="", **_: _save(
                 "svg", title, lambda: EB.chart_svg(chart_type, title, data, unit=unit or "")),
+        ),
+        Tool(
+            name="render_kpi_card",
+            description=(
+                "Draw a single-figure KPI card (SVG): title, value with unit, movement against the prior period, target, "
+                "and a status colour (green, amber, red, grey) that YOU state from a rule the policy or the user gave; the "
+                "card judges nothing. Use only with a value a tool returned. Returns the export id and filename."
+            ),
+            parameters={"type": "object", "properties": {
+                "title": {"type": "string"}, "value": {"type": "number"}, "unit": {"type": "string"},
+                "movement_pct": {"type": "number"}, "target": {"type": "string"},
+                "status": {"type": "string", "enum": list(EB.STATUS_COLOURS)}, "source": {"type": "string"}},
+                "required": ["title", "value"]},
+            handler=lambda title=None, value=None, unit="", movement_pct=None, target=None, status="grey", source="", **_: _save(
+                "svg", title, lambda: EB.kpi_card_svg(title, value, unit=unit or "", movement_pct=movement_pct, target=target,
+                                                    status=status or "grey", source=source or "")),
         ),
     ]
 

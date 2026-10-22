@@ -257,3 +257,93 @@ def invoices(supplier: Any = None, invoice_id: Any = None, start: Any = None, en
                     "is not 'unpaid' and not 'paid'. Overdue is judged only from a stored due date with no paid "
                     "date, never computed from payment terms. An invoice's hold reason, if any, is in its open "
                     "findings (invoice_reconciliation shows them in full)."}
+
+
+_DUPLICATES_SQL = """
+SELECT a.invoice_id, a.invoice_date, a.po_id, b.invoice_id, b.invoice_date, b.po_id, a.currency, a.invoice_amount
+  FROM proc.bp_invoice_trgt a
+  JOIN proc.bp_invoice_trgt b
+    ON b.supplier_id = a.supplier_id AND b.invoice_id > a.invoice_id
+   AND b.currency IS NOT DISTINCT FROM a.currency AND b.invoice_amount = a.invoice_amount
+   AND b.invoice_date BETWEEN a.invoice_date - %s AND a.invoice_date + %s
+ WHERE a.supplier_id = %s AND a.invoice_date BETWEEN %s AND %s AND a.invoice_amount IS NOT NULL AND a.invoice_amount <> 0
+ ORDER BY a.invoice_date DESC, a.invoice_id
+ LIMIT %s
+"""
+
+DEFAULT_DUPLICATE_WINDOW_DAYS = 14
+
+
+def duplicate_invoices(supplier: Any = None, start: Any = None, end: Any = None, window_days: Any = None, *,
+                       rows: Optional[Rows] = None, today: Optional[date] = None) -> Dict[str, Any]:
+    """Pairs of one supplier's invoices with the same amount and currency within a window of days: suspected
+    duplicates for a person to check, never a verdict (library row 045)."""
+    frame, reply = _frame(supplier, start, end, rows, today)
+    if reply is not None:
+        return reply
+    read, (sid, sname), period, _ = frame
+    try:
+        window = max(0, int(window_days)) if window_days not in (None, "") else DEFAULT_DUPLICATE_WINDOW_DAYS
+    except (TypeError, ValueError):
+        window = DEFAULT_DUPLICATE_WINDOW_DAYS
+    try:
+        raw = read(_DUPLICATES_SQL, [window, window, sid, period.start, period.end, MAX_ROWS])
+    except store.StoreUnavailable:
+        return dict(OUTAGE)
+    pairs = []
+    for a_id, a_date, a_po, b_id, b_date, b_po, ccy, amount in raw:
+        days = abs((b_date - a_date).days) if a_date and b_date else None
+        pairs.append({"invoice_a": a_id, "date_a": _plain(a_date), "po_a": a_po or NOT_RECORDED,
+                      "invoice_b": b_id, "date_b": _plain(b_date), "po_b": b_po or NOT_RECORDED,
+                      "currency": ccy, "amount": _money(amount), "days_apart": days,
+                      "same_po": bool(a_po and b_po and a_po == b_po)})
+    summary = (f"{sname}: {len(pairs)} pair(s) of invoices with the same amount within {window} days in the period; "
+               "each is a suspicion for a person to check, not a duplicate." if pairs
+               else f"{sname}: no two invoices share an amount within {window} days in the period.")
+    return {"found": True, "supplier_id": sid, "supplier": sname, "period": _period(period), "window_days": window,
+            "summary": summary, "pairs": pairs, "written": False,
+            "note": "A pair is the same supplier, currency and amount within the window. Two genuine invoices can match "
+                    "(a repeat order at a fixed price); a pair on the same order is the stronger signal. Nothing is "
+                    "blocked or marked here; finance confirms with the delivery notes."}
+
+
+_PARENT_SQL = """
+SELECT s.supplier_id, s.supplier_name, s.parent_company_id, p.supplier_name, s.registered_country
+  FROM proc.bp_supplier s
+  LEFT JOIN proc.bp_supplier p ON p.supplier_id = s.parent_company_id
+ WHERE s.supplier_id = %s
+"""
+_CHILDREN_SQL = """
+SELECT c.supplier_id, c.supplier_name, c.registered_country
+  FROM proc.bp_supplier c
+ WHERE c.parent_company_id = %s
+ ORDER BY c.supplier_name
+ LIMIT %s
+"""
+
+
+def supplier_parents(supplier: Any = None, *, rows: Optional[Rows] = None) -> Dict[str, Any]:
+    """The parent and the subsidiaries recorded on the supplier master for one supplier (library row 056). The
+    master holds one level: a parent id per record. Anything beyond that is not held and is said so."""
+    read = rows or store.rows
+    resolved, reply = supplier_resolve.resolve(supplier, rows=read)
+    if reply is not None:
+        return reply
+    sid, sname = resolved
+    try:
+        head = read(_PARENT_SQL, [sid])
+        kids = read(_CHILDREN_SQL, [sid, MAX_ROWS])
+    except store.StoreUnavailable:
+        return {"found": False, "available": False, "note": "The supplier master could not be read just now."}
+    if not head:
+        return {"found": False, "note": f"{sname} has no master record to read a parent from."}
+    _, _, parent_id, parent_name, country = head[0]
+    parent = {"supplier_id": parent_id, "supplier": parent_name or NOT_RECORDED} if parent_id else None
+    children = [{"supplier_id": c_id, "supplier": c_name, "country": c_country or NOT_RECORDED} for c_id, c_name, c_country in kids]
+    summary = (f"{sname}: " + (f"parent on record is {parent['supplier']}" if parent else "no parent on record")
+               + f"; {len(children)} subsidiar{'y' if len(children) == 1 else 'ies'} on record.")
+    return {"found": True, "supplier_id": sid, "supplier": sname, "country": country or NOT_RECORDED, "parent": parent,
+            "subsidiaries": children, "summary": summary, "written": False,
+            "note": "One level only, as the supplier master records it: a parent id per supplier. Sub-tier suppliers "
+                    "(who supplies our supplier) and deeper ownership are not held; ask the supplier or a provider. "
+                    "Two bidders sharing a parent here are not independent for a minimum-bidder rule."}

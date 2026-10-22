@@ -3,7 +3,6 @@ status: dormant                # drafted, checked, not routed, listed or usable 
 thresholds:
   pattern_window_days: 90    # days within which repeated exceptions of one kind for one supplier or buyer are a pattern
 unavailable_tools:
-  - duplicate_invoices
   - release_hold
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending

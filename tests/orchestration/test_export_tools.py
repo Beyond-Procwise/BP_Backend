@@ -52,3 +52,14 @@ def test_the_export_tools_are_on_the_ask_path_and_in_the_registry():
     from scripts.agent_policy import seed_registry
     for name in ("build_docx", "build_xlsx", "build_pptx", "render_chart"):
         assert name in ask_routing.READ_ONLY_TOOLS and name in seed_registry.FIXED_TOOLS
+
+
+def test_the_kpi_card_and_the_two_record_tools_are_offered_and_registered(tools):
+    t, saved = tools
+    assert {"render_kpi_card", "duplicate_invoices", "supplier_parents"} <= set(t)
+    out = t["render_kpi_card"].handler(title="OTIF", value=92.4, unit="%", status="amber")
+    assert out["found"] and saved[-1][0] == "svg"
+    from services import ask_routing
+    from scripts.agent_policy import seed_registry
+    for name in ("render_kpi_card", "duplicate_invoices", "supplier_parents"):
+        assert name in ask_routing.READ_ONLY_TOOLS and name in seed_registry.FIXED_TOOLS

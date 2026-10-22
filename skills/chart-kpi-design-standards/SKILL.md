@@ -25,14 +25,15 @@ Not for drawing (render_chart), for the report's content (procurement-reporting,
 - Use `tool:render_chart` to draw the chosen chart when the user asks
 - Use `tool:calc_supplier_scorecard` as the source of the delivery and price-variance measures a supplier KPI rests on
 - Use `tool:savings_tracker` as the source of value measures
-NOT AVAILABLE: render_kpi_card. not built yet; a KPI card is described (value, movement, target, status) and a chart drawn instead where useful
+- Use `tool:render_kpi_card` to draw a KPI card (value, movement, target, status colour from the stated rule) when the user asks
+
 
 Settings this skill reads from its own configuration, named by key and never restated as numbers: `config.thresholds.max_donut_slices`.
 
 ## Workflow
 
 1. Message first: what the reader should take away in one sentence; that sentence is the chart title.
-2. Chart choice by data shape: parts of a whole with at most `config.thresholds.max_donut_slices` slices as a donut; a trend over time as a line; comparison across categories as bars; one number against a target as a KPI card; avoid pies for more than a few slices and dual axes.
+2. Chart choice by data shape: parts of a whole with at most `config.thresholds.max_donut_slices` slices as a donut; a trend over time as a line; comparison across categories as bars; one number against a target as a KPI card drawn with `tool:render_kpi_card`; avoid pies for more than a few slices and dual axes.
 3. Layout rules: one unit, axis from zero for bars, no truncated axes, a source line, colour only for meaning (status, highlight), at most two highlights.
 4. KPI definition sheet: name, what it measures, the registered calculation or the tool that computes it, data source, period, owner, target and its basis (policy, contract, baseline), thresholds and their basis; a KPI with no registered calculation or tool is defined as not computable yet.
 5. Thresholds: red, amber, green with the rule and its basis; a threshold without a basis is a default and is named as one.

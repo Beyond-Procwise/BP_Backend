@@ -111,3 +111,55 @@ def test_no_rows_is_an_honest_empty_result_not_an_error():
     out = SR.open_orders("S1", rows=_rows(orders=[]), today=TODAY)
     assert out["found"] and out["orders"] == [] and out["summary"].startswith("Kestrel Supplies 8: no purchase orders recorded in the period")
     assert "not that none were placed" in out["note"]
+
+
+# invoice_a, date_a, po_a, invoice_b, date_b, po_b, currency, amount
+PAIRS = [("INV1", dt.date(2026, 3, 1), "PO1", "INV7", dt.date(2026, 3, 9), "PO1", "GBP", Decimal("600")),
+         ("INV2", dt.date(2026, 3, 1), None, "INV9", dt.date(2026, 3, 12), "PO4", "GBP", Decimal("500"))]
+PARENT = [("S1", "Kestrel Supplies 8", "P1", "Kestrel Group", "GB")]
+CHILDREN = [("S2", "Kestrel Supplies 9", "IE"), ("S3", "Kestrel Supplies 10", None)]
+
+
+def _rows2(pairs=PAIRS, parent=PARENT, children=CHILDREN, suppliers=SUPPLIERS):
+    seen = []
+
+    def rows(sql, params):
+        seen.append((sql, list(params)))
+        if "bp_supplier s" in sql and "parent_company_id" not in sql:
+            return list(suppliers)
+        if "b.invoice_id > a.invoice_id" in sql:
+            return list(pairs)
+        if "LEFT JOIN proc.bp_supplier p" in sql:
+            return list(parent)
+        if "c.parent_company_id = %s" in sql:
+            return list(children)
+        raise AssertionError(sql)
+    rows.seen = seen
+    return rows
+
+
+def test_duplicate_invoices_lists_same_amount_pairs_within_the_window_as_suspicions():
+    rows = _rows2()
+    out = SR.duplicate_invoices("S1", window_days=10, rows=rows, today=TODAY)
+    assert out["found"] and out["window_days"] == 10 and rows.seen[-1][1][:2] == [10, 10]
+    a, b = out["pairs"]
+    assert a == {"invoice_a": "INV1", "date_a": "2026-03-01", "po_a": "PO1", "invoice_b": "INV7", "date_b": "2026-03-09", "po_b": "PO1",
+                 "currency": "GBP", "amount": 600.0, "days_apart": 8, "same_po": True}
+    assert b["po_a"] == "not recorded" and b["same_po"] is False
+    assert "2 pair(s)" in out["summary"] and "not a duplicate" in out["summary"] and "finance confirms" in out["note"]
+
+
+def test_duplicate_window_defaults_and_a_bad_window_falls_back():
+    rows = _rows2(pairs=[])
+    out = SR.duplicate_invoices("S1", window_days="soon", rows=rows, today=TODAY)
+    assert out["window_days"] == SR.DEFAULT_DUPLICATE_WINDOW_DAYS and out["pairs"] == [] and "no two invoices" in out["summary"]
+
+
+def test_supplier_parents_reads_one_level_and_says_deeper_tiers_are_not_held():
+    out = SR.supplier_parents("kestrel", rows=_rows2())
+    assert out["found"] and out["parent"] == {"supplier_id": "P1", "supplier": "Kestrel Group"}
+    assert [c["supplier"] for c in out["subsidiaries"]] == ["Kestrel Supplies 9", "Kestrel Supplies 10"] and out["subsidiaries"][1]["country"] == "not recorded"
+    assert out["summary"] == "Kestrel Supplies 8: parent on record is Kestrel Group; 2 subsidiaries on record."
+    assert "not held" in out["note"] and "not independent" in out["note"]
+    no_parent = SR.supplier_parents("S1", rows=_rows2(parent=[("S1", "Kestrel Supplies 8", None, None, "GB")], children=[]))
+    assert no_parent["parent"] is None and "no parent on record; 0 subsidiaries" in no_parent["summary"]

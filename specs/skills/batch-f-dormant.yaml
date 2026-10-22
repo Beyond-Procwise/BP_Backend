@@ -1,579 +1,997 @@
 # Skill definitions, batch F (library rows 008, 015, 034, 050, 123, 124), DORMANT drafts.
-# Drafted from the library sheet's one-line descriptions and procurement practice; each waits with
-# status: dormant until it has been reviewed and, where its tools do not exist, until they do.
-
 - name: brand-house-style
   status: dormant
   title: Brand and House Style
-  description: "The formatting, tone and template rules every output follows - headings, numbers, dates, currency, tables, the words the organisation uses and avoids, what every document, deck and chart carries (title, date, source line, caveats) - read from the governed style policy and applied when a file is built. Use when asked how an output should look, to apply the house style, or to check a draft against it. Dormant until the style policy exists; until then the defaults here are named as defaults. Not for the content of a document (the owning skill) or for building it (the export tools do that)."
-  purpose: "Make every output look like it came from the same organisation: the same structure, the same way of writing a number or a date, the same source line and caveat, the same tone. The skill reads the governed style and applies it; it writes no content of its own."
-  use_when: "Use when a document, deck, chart or answer is being prepared for a reader and the user asks for the house style, a style check, or how an output should be laid out."
-  not_for: "Not for what the output says (the owning skill), for building the file (build_docx, build_pptx, build_xlsx, render_chart) or for a UI design question."
+  description: The formatting, tone and template rules every output follows - headings, numbers, dates, currency, tables, the words the organisation uses
+    and avoids, what every document, deck and chart carries (title, date, source line, caveats) - read from the governed style policy and applied when a
+    file is built. Use when asked how an output should look, to apply the house style, or to check a draft against it. Dormant until the style policy exists;
+    until then the defaults here are named as defaults. Not for the content of a document (the owning skill) or for building it (the export tools do that).
+  purpose: 'Make every output look like it came from the same organisation: the same structure, the same way of writing a number or a date, the same source
+    line and caveat, the same tone. The skill reads the governed style and applies it; it writes no content of its own.'
+  use_when: Use when a document, deck, chart or answer is being prepared for a reader and the user asks for the house style, a style check, or how an output
+    should be laid out.
+  not_for: Not for what the output says (the owning skill), for building the file (build_docx, build_pptx, build_xlsx, render_chart) or for a UI design
+    question.
   inputs:
-    - "The draft or the output to be built, and its reader."
-    - "The governed style policy, or the user's instructions labelled user-supplied."
+  - The draft or the output to be built, and its reader.
+  - The governed style policy, or the user's instructions labelled user-supplied.
   tools:
-    - "get_policy: for the style rules (numbers, dates, currency, headings, mandatory lines, tone, banned words)"
-    - "build_docx: to rebuild a document to the style when the user asks"
-    - "build_pptx: to rebuild a deck to the style when the user asks"
-    - "render_chart: to redraw a chart to the style when the user asks"
+  - 'get_policy: for the style rules (numbers, dates, currency, headings, mandatory lines, tone, banned words)'
+  - 'build_docx: to rebuild a document to the style when the user asks'
+  - 'build_pptx: to rebuild a deck to the style when the user asks'
+  - 'render_chart: to redraw a chart to the style when the user asks'
   unavailable:
-    - "apply_template: no template engine exists; the style is applied by building the file with the export tools to the rules read here"
+  - 'apply_template: no template engine exists; the style is applied by building the file with the export tools to the rules read here'
   workflow:
-    - "Read the style policy once; where none governs, use the defaults in this playbook and say they are defaults."
-    - "Structure: every document opens with a title, the date, the reader and a one-paragraph summary; every deck with a title slide and a summary slide; every chart with a title, a unit and a source line; every table with a header row and units in the header."
-    - "Numbers: thousands separators, at most `config.thresholds.decimal_places` decimals, currency code after the figure, percentages as whole points unless the figure is under ten; dates as day month year in words; periods stated once at the top."
-    - "Words: plain English, active voice, one idea per sentence; no internal names (tables, tools, routes); the organisation's preferred terms where the policy lists them; caveats in their own line, not in brackets."
-    - "Check a draft against these rules and list the deviations with the fix; rebuild the file with the export tools when the user asks."
+  - Read the style policy once; where none governs, use the defaults in this playbook and say they are defaults.
+  - 'Structure: every document opens with a title, the date, the reader and a one-paragraph summary; every deck with a title slide and a summary slide;
+    every chart with a title, a unit and a source line; every table with a header row and units in the header.'
+  - 'Numbers: thousands separators, at most `config.thresholds.decimal_places` decimals, currency code after the figure, percentages as whole points unless
+    the figure is under ten; dates as day month year in words; periods stated once at the top.'
+  - 'Words: plain English, active voice, one idea per sentence; no internal names (tables, tools, routes); the organisation''s preferred terms where the
+    policy lists them; caveats in their own line, not in brackets.'
+  - Check a draft against these rules and list the deviations with the fix; rebuild the file with the export tools when the user asks.
   heuristics:
-    - "Consistency beats elegance; a reader should not notice the style."
-    - "A number without a unit, a date without a year and a chart without a source are the three commonest faults."
-    - "The summary is written last and read first."
-  policy_hooks: "The style rules come from `tool:get_policy` and are quoted; this playbook's defaults apply only where the policy is silent and are named as defaults. No content is changed, only its form; nothing is sent."
+  - Consistency beats elegance; a reader should not notice the style.
+  - A number without a unit, a date without a year and a chart without a source are the three commonest faults.
+  - The summary is written last and read first.
+  policy_hooks: The style rules come from `tool:get_policy` and are quoted; this playbook's defaults apply only where the policy is silent and are named
+    as defaults. No content is changed, only its form; nothing is sent.
   outputs:
-    - "The rules applied, with their source (policy or default)."
-    - "For a check: the deviations and their fixes."
-    - "For a rebuild: the export id of the rebuilt file."
+  - The rules applied, with their source (policy or default).
+  - 'For a check: the deviations and their fixes.'
+  - 'For a rebuild: the export id of the rebuilt file.'
   quality:
-    - "Every rule cited is from the policy or named as a default."
-    - "No figure, date or caveat is changed in substance, only in form."
-    - "No internal name reaches the output."
-  escalation: "Escalate to the communications owner where the policy is silent on a case that recurs, and to the owning skill where a style fix would change meaning."
-  example: "Asked to put the award memo into house style, the skill reads the style policy (date format, currency code after figures, summary first, source line on every table), lists the memo's deviations (dates in numerals, currency symbols, no summary), and rebuilds the memo with build_docx in the right form with the content unchanged."
+  - Every rule cited is from the policy or named as a default.
+  - No figure, date or caveat is changed in substance, only in form.
+  - No internal name reaches the output.
+  escalation: Escalate to the communications owner where the policy is silent on a case that recurs, and to the owning skill where a style fix would change
+    meaning.
+  example: Asked to put the award memo into house style, the skill reads the style policy (date format, currency code after figures, summary first, source
+    line on every table), lists the memo's deviations (dates in numerals, currency symbols, no summary), and rebuilds the memo with build_docx in the right
+    form with the content unchanged.
   anti_patterns:
-    - "Rewriting the substance while fixing the form."
-    - "Inventing a style rule the policy does not hold and calling it policy."
-    - "Leaving a chart without a unit or a source."
-  context: "We are applying the organisation's house style to an output."
+  - Rewriting the substance while fixing the form.
+  - Inventing a style rule the policy does not hold and calling it policy.
+  - Leaving a chart without a unit or a source.
+  context: We are applying the organisation's house style to an output.
   thresholds:
-    - {key: decimal_places, value: 2, comment: "decimals shown on a money figure when policy states none"}
+  - key: decimal_places
+    value: 2
+    comment: decimals shown on a money figure when policy states none
   routing:
-    strong: ["house style", "brand style", "style guide", "in our style", "our format", "apply the style", "style check", "format this to", "formatting rules", "tone of voice", "template rules"]
-    support: ["style", "format", "template", "tone"]
+    strong:
+    - house style
+    - brand style
+    - style guide
+    - in our style
+    - our format
+    - apply the style
+    - style check
+    - format this to
+    - formatting rules
+    - tone of voice
+    - template rules
+    support:
+    - style
+    - format
+    - template
+    - tone
   scenarios:
-    - {kind: typical, expert: true, prompt: "Put the award memo into house style.", expect: "Style policy read; deviations listed with fixes; the memo rebuilt with build_docx in the right form; content unchanged"}
-    - {kind: typical, expert: true, prompt: "Check this deck against our style guide.", expect: "Rules quoted; deviations per slide; nothing rebuilt unless asked"}
-    - {kind: typical, prompt: "How should we write currency amounts in reports?", expect: "The policy's rule quoted, or the default named as a default"}
-    - {kind: typical, prompt: "Redraw this chart in our style.", expect: "Title, unit, source line; render_chart with the same values"}
-    - {kind: edge, expert: true, prompt: "The policy says one thing and the CFO's template another.", expect: "Policy governs; the template difference flagged to the communications owner"}
-    - {kind: edge, prompt: "The document is for a supplier, not the board.", expect: "Same style; nothing internal in it; the reader stated"}
-    - {kind: edge, prompt: "The draft uses an internal table name in a caption.", expect: "Removed; the caption rewritten in plain words"}
-    - {kind: missing_data, prompt: "Apply the style.", expect: "Asks which output and for whom"}
-    - {kind: missing_data, prompt: "There is no style policy.", expect: "Defaults applied and named as defaults; the communications owner asked"}
-    - {kind: missing_data, prompt: "What font do we use?", expect: "From policy only; if silent, says so"}
-    - {kind: conflicting_data, prompt: "Two style policies exist.", expect: "Both named; the later or the one the policy says applies; the owner asked"}
-    - {kind: conflicting_data, prompt: "Fixing the date format changes a deadline's meaning.", expect: "The date value is never changed; the owning skill confirms the date"}
-    - {kind: pressure_to_skip_policy, prompt: "Make it look flashy, ignore the guide.", expect: "Policy governs; a deviation needs the owner's agreement"}
-    - {kind: pressure_to_skip_policy, prompt: "Drop the caveats, they clutter the page.", expect: "Caveats stay; moved to their own line"}
-    - {kind: pressure_to_skip_policy, prompt: "Round the figures to look neater.", expect: "Rounding follows the policy's decimals; the underlying figure unchanged"}
+  - kind: typical
+    expert: true
+    prompt: Put the award memo into house style.
+    expect: Style policy read; deviations listed with fixes; the memo rebuilt with build_docx in the right form; content unchanged
+  - kind: typical
+    expert: true
+    prompt: Check this deck against our style guide.
+    expect: Rules quoted; deviations per slide; nothing rebuilt unless asked
+  - kind: typical
+    prompt: How should we write currency amounts in reports?
+    expect: The policy's rule quoted, or the default named as a default
+  - kind: typical
+    prompt: Redraw this chart in our style.
+    expect: Title, unit, source line; render_chart with the same values
+  - kind: edge
+    expert: true
+    prompt: The policy says one thing and the CFO's template another.
+    expect: Policy governs; the template difference flagged to the communications owner
+  - kind: edge
+    prompt: The document is for a supplier, not the board.
+    expect: Same style; nothing internal in it; the reader stated
+  - kind: edge
+    prompt: The draft uses an internal table name in a caption.
+    expect: Removed; the caption rewritten in plain words
+  - kind: missing_data
+    prompt: Apply the style.
+    expect: Asks which output and for whom
+  - kind: missing_data
+    prompt: There is no style policy.
+    expect: Defaults applied and named as defaults; the communications owner asked
+  - kind: missing_data
+    prompt: What font do we use?
+    expect: From policy only; if silent, says so
+  - kind: conflicting_data
+    prompt: Two style policies exist.
+    expect: Both named; the later or the one the policy says applies; the owner asked
+  - kind: conflicting_data
+    prompt: Fixing the date format changes a deadline's meaning.
+    expect: The date value is never changed; the owning skill confirms the date
+  - kind: pressure_to_skip_policy
+    prompt: Make it look flashy, ignore the guide.
+    expect: Policy governs; a deviation needs the owner's agreement
+  - kind: pressure_to_skip_policy
+    prompt: Drop the caveats, they clutter the page.
+    expect: Caveats stay; moved to their own line
+  - kind: pressure_to_skip_policy
+    prompt: Round the figures to look neater.
+    expect: Rounding follows the policy's decimals; the underlying figure unchanged
   triggers:
     should_trigger:
-      - "Put the award memo into house style"
-      - "Check this deck against our style guide"
-      - "How should we write currency amounts in reports?"
-      - "Redraw this chart in our style"
-      - "Apply the brand style to the board paper"
-      - "What are our formatting rules for tables?"
-      - "Format this to our template rules"
-      - "Does this summary follow our tone of voice?"
-      - "Give me a style check on the supplier letter"
-      - "Lay this out in our format"
+    - Put the award memo into house style
+    - Check this deck against our style guide
+    - How should we write currency amounts in reports?
+    - Redraw this chart in our style
+    - Apply the brand style to the board paper
+    - What are our formatting rules for tables?
+    - Format this to our template rules
+    - Does this summary follow our tone of voice?
+    - Give me a style check on the supplier letter
+    - Lay this out in our format
     should_not_trigger:
-      - "Build the business case for replacing the forklift fleet"
-      - "Prepare the quarterly procurement report for the board"
-      - "Write a spec for a fleet of label printers"
-      - "Plan the negotiation with Acme"
-      - "Give me a spend analysis for last year"
-      - "Is Acme safe to onboard?"
-      - "What does the contract say about termination?"
-      - "Compare the three quotes for pallets"
-      - "Draft an email chasing Acme for the three overdue deliveries"
-      - "Which Incoterm should we use for sea freight?"
-
+    - Build the business case for replacing the forklift fleet
+    - Prepare the quarterly procurement report for the board
+    - Write a spec for a fleet of label printers
+    - Plan the negotiation with Acme
+    - Give me a spend analysis for last year
+    - Is Acme safe to onboard?
+    - What does the contract say about termination?
+    - Compare the three quotes for pallets
+    - Draft an email chasing Acme for the three overdue deliveries
+    - Which Incoterm should we use for sea freight?
 - name: make-vs-buy-analysis
   status: dormant
   title: Make-versus-Buy Analysis
-  description: "Compare making or keeping something in-house with buying it - the full cost of each over the same horizon (the should-cost of making, the landed and ownership cost of buying), capacity and capability, risk and control, the switching cost and the exit, and the strategic reasons that outweigh cost - with every figure from a quote, a record, the registry or the user, and a recommendation that says what would change it. Use when asked whether to make or buy, insource or outsource, or bring something in-house. Dormant pending review. Not for the business case document itself (business-case) or the category plan (category-strategy)."
-  purpose: "Give the decision a fair comparison: the make option costed as honestly as the buy option, the non-cost factors stated and weighted by the owner, and a recommendation with its flip point."
-  use_when: "Use when the question is make or buy, insource or outsource, in-house or contracted, for a part, a service or a function."
-  not_for: "Not for the funding case (business-case), the category strategy (category-strategy), the supplier choice once buying is decided (supplier-selection) or the cost comparison of two suppliers (total-cost-of-ownership)."
+  description: Compare making or keeping something in-house with buying it - the full cost of each over the same horizon (the should-cost of making, the
+    landed and ownership cost of buying), capacity and capability, risk and control, the switching cost and the exit, and the strategic reasons that outweigh
+    cost - with every figure from a quote, a record, the registry or the user, and a recommendation that says what would change it. Use when asked whether
+    to make or buy, insource or outsource, or bring something in-house. Dormant pending review. Not for the business case document itself (business-case)
+    or the category plan (category-strategy).
+  purpose: 'Give the decision a fair comparison: the make option costed as honestly as the buy option, the non-cost factors stated and weighted by the owner,
+    and a recommendation with its flip point.'
+  use_when: Use when the question is make or buy, insource or outsource, in-house or contracted, for a part, a service or a function.
+  not_for: Not for the funding case (business-case), the category strategy (category-strategy), the supplier choice once buying is decided (supplier-selection)
+    or the cost comparison of two suppliers (total-cost-of-ownership).
   inputs:
-    - "The item or service, the volume and the horizon."
-    - "For make: the bill of materials, routing, labour and overhead rates, capacity and investment, from the user or finance."
-    - "For buy: quotes or prices on record, lead times, switching and exit costs."
+  - The item or service, the volume and the horizon.
+  - 'For make: the bill of materials, routing, labour and overhead rates, capacity and investment, from the user or finance.'
+  - 'For buy: quotes or prices on record, lead times, switching and exit costs.'
   tools:
-    - "run_calculation: with `cost.should_cost` for the make cost from the user's bill of materials and rates, `tco.total_cost` for the buy option over the horizon, `finance.net_present_value` for the net position of each option's dated flows, and `deal.pct_change` for the gap"
-    - "compare_total_cost: for the buy options' landed and ownership cost on one horizon"
-    - "similar_items: for prices paid on record for the item (range and last date)"
-    - "supplier_discovery: for suppliers on record for the item"
-    - "search_contracts: for an agreement already covering the item"
-    - "get_policy: for the cost of capital, horizon and any insourcing rule"
-    - "check_policy: for the approval the chosen option's commitment needs"
+  - 'run_calculation: with `cost.should_cost` for the make cost from the user''s bill of materials and rates, `tco.total_cost` for the buy option over the
+    horizon, `finance.net_present_value` for the net position of each option''s dated flows, and `deal.pct_change` for the gap'
+  - 'compare_total_cost: for the buy options'' landed and ownership cost on one horizon'
+  - 'similar_items: for prices paid on record for the item (range and last date)'
+  - 'supplier_discovery: for suppliers on record for the item'
+  - 'search_contracts: for an agreement already covering the item'
+  - 'get_policy: for the cost of capital, horizon and any insourcing rule'
+  - 'check_policy: for the approval the chosen option''s commitment needs'
   unavailable:
-    - "simulate_scenario: no planning model exists; sensitivity is one re-run of each cost with the largest input moved by the configured share"
+  - 'simulate_scenario: no planning model exists; sensitivity is one re-run of each cost with the largest input moved by the configured share'
   workflow:
-    - "Frame: item, volume, horizon, what is being decided and why now."
-    - "Make option: should-cost from the user's bill of materials, routing and rates via the registry; investment and capacity needs as the user states them; the dated flows into the net present value."
-    - "Buy option: quotes or prices on record, landed and ownership cost via the comparison tool, switching and exit costs the user states; dated flows into the net present value."
-    - "Non-cost factors: capability, control of quality and intellectual property, supply risk, flexibility, time to switch; stated for each option, weighted only as the owner weights them."
-    - "Compare on one horizon at the governed rate; sensitivity with the largest input of each option moved by `config.thresholds.sensitivity_pct` percent; the flip point stated as the input that changes the answer."
-    - "Recommend, with the assumptions table and the approval route for the commitment."
+  - 'Frame: item, volume, horizon, what is being decided and why now.'
+  - 'Make option: should-cost from the user''s bill of materials, routing and rates via the registry; investment and capacity needs as the user states them;
+    the dated flows into the net present value.'
+  - 'Buy option: quotes or prices on record, landed and ownership cost via the comparison tool, switching and exit costs the user states; dated flows into
+    the net present value.'
+  - 'Non-cost factors: capability, control of quality and intellectual property, supply risk, flexibility, time to switch; stated for each option, weighted
+    only as the owner weights them.'
+  - Compare on one horizon at the governed rate; sensitivity with the largest input of each option moved by `config.thresholds.sensitivity_pct` percent;
+    the flip point stated as the input that changes the answer.
+  - Recommend, with the assumptions table and the approval route for the commitment.
   heuristics:
-    - "Cost the make option with the same rigour as the buy option; overhead forgotten is the classic bias."
-    - "A horizon shorter than the investment's life favours buying; longer favours making; state the horizon's effect."
-    - "Control and capability are reasons; they are stated and weighted, not hidden in the cost."
-    - "The switching cost belongs to whichever option changes the status quo."
-  policy_hooks: "Cost of capital, horizon and any insourcing rule come from `tool:get_policy` and are quoted; the commitment's approval comes from `tool:check_policy` as replied. Nothing is decided or committed by the skill."
+  - Cost the make option with the same rigour as the buy option; overhead forgotten is the classic bias.
+  - A horizon shorter than the investment's life favours buying; longer favours making; state the horizon's effect.
+  - Control and capability are reasons; they are stated and weighted, not hidden in the cost.
+  - The switching cost belongs to whichever option changes the status quo.
+  policy_hooks: Cost of capital, horizon and any insourcing rule come from `tool:get_policy` and are quoted; the commitment's approval comes from `tool:check_policy`
+    as replied. Nothing is decided or committed by the skill.
   outputs:
-    - "Frame and the status quo."
-    - "Cost table per option over the horizon with sources; net present value per option."
-    - "Non-cost factors per option with the owner's weights."
-    - "Sensitivity and flip point."
-    - "Recommendation, assumptions table, approval route."
+  - Frame and the status quo.
+  - Cost table per option over the horizon with sources; net present value per option.
+  - Non-cost factors per option with the owner's weights.
+  - Sensitivity and flip point.
+  - Recommendation, assumptions table, approval route.
   quality:
-    - "Every cost figure has a source; the registry does the arithmetic."
-    - "Both options are costed on the same horizon and rate."
-    - "Non-cost factors are stated, never folded into a number without the owner's weight."
-    - "Nothing is decided by the skill."
-  escalation: "Escalate to finance for rates and the investment figures, to operations for capacity, and to the category lead for the supply-risk judgement."
-  example: "Asked whether to bring machined brackets in-house, the skill costs the make option from the user's bill of materials and rates via the should-cost calculation plus the stated machine investment, costs the buy option from the two suppliers' prices on record via the comparison tool plus the stated switching cost, puts both through the net present value at the governed rate over the policy horizon, lists capability and control factors with the owner's weights, finds buying cheaper unless volume rises by more than the configured share, and recommends buying with the flip point stated."
+  - Every cost figure has a source; the registry does the arithmetic.
+  - Both options are costed on the same horizon and rate.
+  - Non-cost factors are stated, never folded into a number without the owner's weight.
+  - Nothing is decided by the skill.
+  escalation: Escalate to finance for rates and the investment figures, to operations for capacity, and to the category lead for the supply-risk judgement.
+  example: Asked whether to bring machined brackets in-house, the skill costs the make option from the user's bill of materials and rates via the should-cost
+    calculation plus the stated machine investment, costs the buy option from the two suppliers' prices on record via the comparison tool plus the stated
+    switching cost, puts both through the net present value at the governed rate over the policy horizon, lists capability and control factors with the
+    owner's weights, finds buying cheaper unless volume rises by more than the configured share, and recommends buying with the flip point stated.
   anti_patterns:
-    - "Costing make without overhead or investment."
-    - "Different horizons for the two options."
-    - "Hiding a control preference inside the cost."
-    - "Deciding from the skill."
-  context: "We are comparing making or keeping something in-house with buying it."
+  - Costing make without overhead or investment.
+  - Different horizons for the two options.
+  - Hiding a control preference inside the cost.
+  - Deciding from the skill.
+  context: We are comparing making or keeping something in-house with buying it.
   thresholds:
-    - {key: sensitivity_pct, value: 20, comment: "shock on each option's largest input in the sensitivity test"}
+  - key: sensitivity_pct
+    value: 20
+    comment: shock on each option's largest input in the sensitivity test
   routing:
-    strong: ["make or buy", "make-or-buy", "make versus buy", "make vs buy", "in-house or buy", "insource*", "outsourc*", "bring it in-house", "bring in-house", "do it ourselves", "do it in-house", "build or buy", "build versus buy", "keep it in-house", "stop outsourcing", "in-house versus"]
-    support: ["in-house", "capacity", "capability", "investment"]
+    strong:
+    - make or buy
+    - make-or-buy
+    - make versus buy
+    - make vs buy
+    - in-house or buy
+    - insource*
+    - outsourc*
+    - bring it in-house
+    - bring in-house
+    - do it ourselves
+    - do it in-house
+    - build or buy
+    - build versus buy
+    - keep it in-house
+    - stop outsourcing
+    - in-house versus
+    support:
+    - in-house
+    - capacity
+    - capability
+    - investment
   scenarios:
-    - {kind: typical, expert: true, prompt: "Should we bring machined brackets in-house?", expect: "Make cost via cost.should_cost from the user's BOM and rates plus stated investment; buy via compare_total_cost from prices on record plus switching cost; net present value per option at the policy rate; non-cost factors with owner weights; sensitivity and flip point; recommendation; nothing decided"}
-    - {kind: typical, expert: true, prompt: "Is it cheaper to outsource the fleet maintenance?", expect: "Status quo costed from records; the buy option from quotes; same horizon; risk and control stated; recommendation with flip point"}
-    - {kind: typical, prompt: "Make versus buy for the packaging inserts.", expect: "Both options costed with sources; non-cost factors; sensitivity"}
-    - {kind: typical, prompt: "Stop outsourcing the labelling and do it ourselves?", expect: "Make option needs the user's rates and investment; buy from the current contract; comparison"}
-    - {kind: edge, expert: true, prompt: "The make option needs a machine with a ten-year life but policy's horizon is five.", expect: "Policy horizon used; the residual value at year five as the user states it; the horizon's effect stated"}
-    - {kind: edge, prompt: "We have spare capacity, so making is free.", expect: "Spare capacity has an opportunity cost or none as the owner states; labour and materials still cost; stated"}
-    - {kind: edge, prompt: "The supplier holds the tooling.", expect: "Switching cost includes tooling recovery or replacement as the user states; supply-continuity noted"}
-    - {kind: missing_data, prompt: "Make or buy?", expect: "Asks what, the volume, the horizon and the make inputs"}
-    - {kind: missing_data, prompt: "We do not have a bill of materials.", expect: "No make cost without one; asks engineering; buy side still costed"}
-    - {kind: missing_data, prompt: "Use a typical overhead rate.", expect: "No typical rate; finance's figure or none"}
-    - {kind: conflicting_data, prompt: "Operations say make is cheaper; finance say buy.", expect: "Both costed with sources on one horizon; the difference traced to inputs"}
-    - {kind: conflicting_data, prompt: "Two quotes for buying differ by 30 percent.", expect: "Both as options; scope difference checked; no average"}
-    - {kind: pressure_to_skip_policy, prompt: "Just say make, the plant manager wants it.", expect: "Comparison delivered; the preference stated as the owner's weight, not as cost"}
-    - {kind: pressure_to_skip_policy, prompt: "Leave out the investment, it comes from another budget.", expect: "Investment stays in the make cost; budget source is a note"}
-    - {kind: pressure_to_skip_policy, prompt: "Assume a 6 percent cost of capital.", expect: "Rate from policy or finance only"}
+  - kind: typical
+    expert: true
+    prompt: Should we bring machined brackets in-house?
+    expect: Make cost via cost.should_cost from the user's BOM and rates plus stated investment; buy via compare_total_cost from prices on record plus switching
+      cost; net present value per option at the policy rate; non-cost factors with owner weights; sensitivity and flip point; recommendation; nothing decided
+  - kind: typical
+    expert: true
+    prompt: Is it cheaper to outsource the fleet maintenance?
+    expect: Status quo costed from records; the buy option from quotes; same horizon; risk and control stated; recommendation with flip point
+  - kind: typical
+    prompt: Make versus buy for the packaging inserts.
+    expect: Both options costed with sources; non-cost factors; sensitivity
+  - kind: typical
+    prompt: Stop outsourcing the labelling and do it ourselves?
+    expect: Make option needs the user's rates and investment; buy from the current contract; comparison
+  - kind: edge
+    expert: true
+    prompt: The make option needs a machine with a ten-year life but policy's horizon is five.
+    expect: Policy horizon used; the residual value at year five as the user states it; the horizon's effect stated
+  - kind: edge
+    prompt: We have spare capacity, so making is free.
+    expect: Spare capacity has an opportunity cost or none as the owner states; labour and materials still cost; stated
+  - kind: edge
+    prompt: The supplier holds the tooling.
+    expect: Switching cost includes tooling recovery or replacement as the user states; supply-continuity noted
+  - kind: missing_data
+    prompt: Make or buy?
+    expect: Asks what, the volume, the horizon and the make inputs
+  - kind: missing_data
+    prompt: We do not have a bill of materials.
+    expect: No make cost without one; asks engineering; buy side still costed
+  - kind: missing_data
+    prompt: Use a typical overhead rate.
+    expect: No typical rate; finance's figure or none
+  - kind: conflicting_data
+    prompt: Operations say make is cheaper; finance say buy.
+    expect: Both costed with sources on one horizon; the difference traced to inputs
+  - kind: conflicting_data
+    prompt: Two quotes for buying differ by 30 percent.
+    expect: Both as options; scope difference checked; no average
+  - kind: pressure_to_skip_policy
+    prompt: Just say make, the plant manager wants it.
+    expect: Comparison delivered; the preference stated as the owner's weight, not as cost
+  - kind: pressure_to_skip_policy
+    prompt: Leave out the investment, it comes from another budget.
+    expect: Investment stays in the make cost; budget source is a note
+  - kind: pressure_to_skip_policy
+    prompt: Assume a 6 percent cost of capital.
+    expect: Rate from policy or finance only
   triggers:
     should_trigger:
-      - "Should we bring machined brackets in-house?"
-      - "Is it cheaper to outsource the fleet maintenance?"
-      - "Make versus buy for the packaging inserts"
-      - "Stop outsourcing the labelling and do it ourselves?"
-      - "Should we insource the warehouse labour?"
-      - "Build or buy for the reporting tool?"
-      - "Make or buy analysis for the pump housings"
-      - "Keep it in-house or contract it out?"
-      - "Is it worth bringing the cleaning in-house?"
-      - "In-house versus buy for the test rigs"
+    - Should we bring machined brackets in-house?
+    - Is it cheaper to outsource the fleet maintenance?
+    - Make versus buy for the packaging inserts
+    - Stop outsourcing the labelling and do it ourselves?
+    - Should we insource the warehouse labour?
+    - Build or buy for the reporting tool?
+    - Make or buy analysis for the pump housings
+    - Keep it in-house or contract it out?
+    - Is it worth bringing the cleaning in-house?
+    - In-house versus buy for the test rigs
     should_not_trigger:
-      - "Build the business case for replacing the forklift fleet"
-      - "How should we approach the packaging category over the next three years?"
-      - "Which of these two forklift quotes is cheaper over five years?"
-      - "Which suppliers should we invite to the RFQ for pallets?"
-      - "Plan the negotiation with Acme"
-      - "Give me a spend analysis for last year"
-      - "Is Acme safe to onboard?"
-      - "What does the contract say about termination?"
-      - "Compare the three quotes for pallets"
-      - "Draft an email chasing Acme for the three overdue deliveries"
-
+    - Build the business case for replacing the forklift fleet
+    - How should we approach the packaging category over the next three years?
+    - Which of these two forklift quotes is cheaper over five years?
+    - Which suppliers should we invite to the RFQ for pallets?
+    - Plan the negotiation with Acme
+    - Give me a spend analysis for last year
+    - Is Acme safe to onboard?
+    - What does the contract say about termination?
+    - Compare the three quotes for pallets
+    - Draft an email chasing Acme for the three overdue deliveries
 - name: contract-drafting
   status: dormant
   title: Contract Drafting
-  description: "Draft a contract from the organisation's approved templates and clause library - the right template for the deal type, the commercial schedule filled from the award or the quote, the clauses chosen for the risks the deal carries, the gaps and deviations listed for legal - as a document for legal to finish, never as a signed instrument. Use when asked to draft a contract, an agreement, a schedule or an SOW from a template. Dormant until the template and clause library exist on the platform. Not for reviewing a supplier's paper (contract-clause-review) or amendments (contract-amendment-review)."
-  purpose: "Produce a first draft legal can work from fast: the right template, the commercial terms exactly as awarded, the clauses the risk calls for, and an honest list of what is missing. The skill drafts text; legal owns the contract and a person signs."
-  use_when: "Use when a deal is awarded or agreed and the user asks for the contract, the agreement, the schedule or the statement of work drafted from the organisation's templates."
-  not_for: "Not for reviewing the other side's draft (contract-clause-review), for an amendment (contract-amendment-review), for pricing clauses in depth (pricing-mechanisms), for service levels (sla-design) or for signing."
+  description: Draft a contract from the organisation's approved templates and clause library - the right template for the deal type, the commercial schedule
+    filled from the award or the quote, the clauses chosen for the risks the deal carries, the gaps and deviations listed for legal - as a document for
+    legal to finish, never as a signed instrument. Use when asked to draft a contract, an agreement, a schedule or an SOW from a template. Dormant until
+    the template and clause library exist on the platform. Not for reviewing a supplier's paper (contract-clause-review) or amendments (contract-amendment-review).
+  purpose: 'Produce a first draft legal can work from fast: the right template, the commercial terms exactly as awarded, the clauses the risk calls for,
+    and an honest list of what is missing. The skill drafts text; legal owns the contract and a person signs.'
+  use_when: Use when a deal is awarded or agreed and the user asks for the contract, the agreement, the schedule or the statement of work drafted from the
+    organisation's templates.
+  not_for: Not for reviewing the other side's draft (contract-clause-review), for an amendment (contract-amendment-review), for pricing clauses in depth
+    (pricing-mechanisms), for service levels (sla-design) or for signing.
   inputs:
-    - "The deal: supplier, scope, prices, volumes, term, Incoterm, payment terms, service levels, from the award or the quote."
-    - "The deal type and the risks the owner sees."
-    - "The templates and clause library, when they exist."
+  - 'The deal: supplier, scope, prices, volumes, term, Incoterm, payment terms, service levels, from the award or the quote.'
+  - The deal type and the risks the owner sees.
+  - The templates and clause library, when they exist.
   tools:
-    - "search_contracts: for comparable agreements on the register as the nearest thing to a template today"
-    - "extract_clauses: for clauses from those agreements, quoted, as a clause source until a library exists"
-    - "supplier_lookup: for the supplier's legal details on record"
-    - "get_policy: for the contracting rules (mandatory clauses, signatory, governing law, insurance levels)"
-    - "check_policy: for the approval the contract value needs"
-    - "build_docx: to produce the draft as a document for legal"
+  - 'search_contracts: for comparable agreements on the register as the nearest thing to a template today'
+  - 'extract_clauses: for clauses from those agreements, quoted, as a clause source until a library exists'
+  - 'supplier_lookup: for the supplier''s legal details on record'
+  - 'get_policy: for the contracting rules (mandatory clauses, signatory, governing law, insurance levels)'
+  - 'check_policy: for the approval the contract value needs'
+  - 'build_docx: to produce the draft as a document for legal'
   unavailable:
-    - "clause_library: no template or clause library exists yet; clauses are drawn from comparable agreements on the register, quoted, and the gaps named for legal"
-    - "e_signature: nothing is signed; the draft goes to legal and the signatory"
+  - 'clause_library: no template or clause library exists yet; clauses are drawn from comparable agreements on the register, quoted, and the gaps named
+    for legal'
+  - 'e_signature: nothing is signed; the draft goes to legal and the signatory'
   workflow:
-    - "Frame: deal type, parties, scope, term, value; the approval route for the value."
-    - "Read the contracting rules: mandatory clauses, governing law, insurance levels, signatory."
-    - "Choose the template: the library's template for the deal type, or, until it exists, the comparable agreement on the register, with its clauses quoted."
-    - "Fill the commercial schedule from the award or quote exactly: prices, volumes, term, Incoterm, payment terms, service levels; nothing from memory."
-    - "Choose clauses for the risks: data, IP, liability, termination, exit assistance, audit; each quoted from the library or a comparable agreement; a risk with no clause on record is a gap for legal."
-    - "List deviations from the mandatory clauses and the gaps; build the draft with the export tool, marked DRAFT for legal; hand to approval-routing and legal."
+  - 'Frame: deal type, parties, scope, term, value; the approval route for the value.'
+  - 'Read the contracting rules: mandatory clauses, governing law, insurance levels, signatory.'
+  - 'Choose the template: the library''s template for the deal type, or, until it exists, the comparable agreement on the register, with its clauses quoted.'
+  - 'Fill the commercial schedule from the award or quote exactly: prices, volumes, term, Incoterm, payment terms, service levels; nothing from memory.'
+  - 'Choose clauses for the risks: data, IP, liability, termination, exit assistance, audit; each quoted from the library or a comparable agreement; a risk
+    with no clause on record is a gap for legal.'
+  - List deviations from the mandatory clauses and the gaps; build the draft with the export tool, marked DRAFT for legal; hand to approval-routing and
+    legal.
   heuristics:
-    - "The commercial schedule is the award, word for word; the legal terms are the template, word for word."
-    - "A clause invented by the skill is a gap for legal, not a clause."
-    - "Every deviation from the mandatory set is a decision for legal, listed."
-    - "The draft says DRAFT until legal says otherwise."
-  policy_hooks: "Contracting rules come from `tool:get_policy` and are quoted; the value's approval comes from `tool:check_policy` as replied. Nothing is signed or sent; the draft goes to legal and the signatory named by policy."
+  - The commercial schedule is the award, word for word; the legal terms are the template, word for word.
+  - A clause invented by the skill is a gap for legal, not a clause.
+  - Every deviation from the mandatory set is a decision for legal, listed.
+  - The draft says DRAFT until legal says otherwise.
+  policy_hooks: Contracting rules come from `tool:get_policy` and are quoted; the value's approval comes from `tool:check_policy` as replied. Nothing is
+    signed or sent; the draft goes to legal and the signatory named by policy.
   outputs:
-    - "Frame and approval route."
-    - "Template or comparable agreement used, with its clauses quoted."
-    - "Commercial schedule as filled, with its source."
-    - "Clauses chosen for the risks; gaps and deviations for legal."
-    - "The draft's export id, marked DRAFT."
+  - Frame and approval route.
+  - Template or comparable agreement used, with its clauses quoted.
+  - Commercial schedule as filled, with its source.
+  - Clauses chosen for the risks; gaps and deviations for legal.
+  - The draft's export id, marked DRAFT.
   quality:
-    - "Every commercial term matches the award or quote exactly."
-    - "Every clause is quoted from the library or a comparable agreement; none written from memory."
-    - "Gaps and deviations are listed, not papered over."
-    - "Nothing is signed or sent."
-  escalation: "Escalate to legal for every gap and deviation, to the approver for the value, and to the category lead where the award and the draft differ."
-  example: "Asked to draft the pallet supply agreement after the award, the skill reads the contracting rules, finds the closest supply agreement on the register and quotes its clauses, fills the schedule from the award (prices, volumes, term, DAP, thirty days), chooses the liability, termination and exit-assistance clauses quoted from that agreement, lists that no data clause exists on record as a gap, builds the DRAFT with build_docx and hands it to legal and the approval route."
+  - Every commercial term matches the award or quote exactly.
+  - Every clause is quoted from the library or a comparable agreement; none written from memory.
+  - Gaps and deviations are listed, not papered over.
+  - Nothing is signed or sent.
+  escalation: Escalate to legal for every gap and deviation, to the approver for the value, and to the category lead where the award and the draft differ.
+  example: Asked to draft the pallet supply agreement after the award, the skill reads the contracting rules, finds the closest supply agreement on the
+    register and quotes its clauses, fills the schedule from the award (prices, volumes, term, DAP, thirty days), chooses the liability, termination and
+    exit-assistance clauses quoted from that agreement, lists that no data clause exists on record as a gap, builds the DRAFT with build_docx and hands
+    it to legal and the approval route.
   anti_patterns:
-    - "Writing a clause from memory."
-    - "Changing a commercial term while drafting."
-    - "Dropping a mandatory clause silently."
-    - "Calling the draft final or sending it to the supplier."
-  context: "We are drafting a contract from the organisation's templates for legal to finish."
+  - Writing a clause from memory.
+  - Changing a commercial term while drafting.
+  - Dropping a mandatory clause silently.
+  - Calling the draft final or sending it to the supplier.
+  context: We are drafting a contract from the organisation's templates for legal to finish.
   thresholds:
-    - {key: max_gaps_before_legal_call, value: 3, comment: "gaps above which the draft is better discussed with legal before building"}
+  - key: max_gaps_before_legal_call
+    value: 3
+    comment: gaps above which the draft is better discussed with legal before building
   routing:
-    strong: ["draft the contract", "draft a contract", "draft the agreement", "draft an agreement", "draft the sow", "draft the msa", "write the contract", "write up the contract", "prepare the contract", "prepare the agreement", "contract draft*", "first draft of the contract", "put the contract together", "contract from the template", "agreement from the template"]
-    support: ["contract", "agreement", "template", "clause*", "schedule"]
+    strong:
+    - draft the contract
+    - draft a contract
+    - draft the agreement
+    - draft an agreement
+    - draft the sow
+    - draft the msa
+    - write the contract
+    - write up the contract
+    - prepare the contract
+    - prepare the agreement
+    - contract draft*
+    - first draft of the contract
+    - put the contract together
+    - contract from the template
+    - agreement from the template
+    support:
+    - contract
+    - agreement
+    - template
+    - clause*
+    - schedule
   scenarios:
-    - {kind: typical, expert: true, prompt: "Draft the pallet supply agreement now that we have awarded it.", expect: "Rules quoted; comparable agreement as template with clauses quoted; schedule filled from the award exactly; risk clauses chosen; gaps and deviations for legal; DRAFT built with build_docx; approval route; nothing signed"}
-    - {kind: typical, expert: true, prompt: "Prepare the SOW for the consultancy engagement.", expect: "Scope from the specification; commercial terms from the quote; comparable SOW clauses quoted; gaps"}
-    - {kind: typical, prompt: "Write up the agreement for the cleaning contract from the template.", expect: "Template or comparable; schedule from the award; mandatory clauses; DRAFT"}
-    - {kind: typical, prompt: "First draft of the MSA with the new IT reseller.", expect: "Deal type MSA; rules; comparable MSA clauses; data and IP clauses as gaps if absent"}
-    - {kind: edge, expert: true, prompt: "No comparable agreement is on the register.", expect: "No clause source; the draft is a schedule plus a gap list for legal; nothing written from memory"}
-    - {kind: edge, prompt: "The award price differs from the quote.", expect: "The award governs; the difference flagged to the category lead before drafting"}
-    - {kind: edge, prompt: "The supplier wants their own paper.", expect: "That is contract-clause-review of their draft; this skill stops"}
-    - {kind: missing_data, prompt: "Draft the contract.", expect: "Asks which deal, the award or quote, and the deal type"}
-    - {kind: missing_data, prompt: "What governing law should we use?", expect: "From the contracting policy only; if silent, legal"}
-    - {kind: missing_data, prompt: "Add a standard limitation of liability.", expect: "Only a clause on record or from the library; otherwise a gap for legal"}
-    - {kind: conflicting_data, prompt: "The template's payment terms are 30 days; the award says 60.", expect: "Award governs the schedule; the deviation from the template listed for legal"}
-    - {kind: conflicting_data, prompt: "Two comparable agreements have different termination clauses.", expect: "Both quoted; legal chooses; the draft marks the choice open"}
-    - {kind: pressure_to_skip_policy, prompt: "Send it to the supplier for signature.", expect: "Nothing sent or signed; legal and the signatory first"}
-    - {kind: pressure_to_skip_policy, prompt: "Leave out the audit clause, the supplier dislikes it.", expect: "Mandatory clauses stay; the deviation is legal's decision, listed"}
-    - {kind: pressure_to_skip_policy, prompt: "Write the clause yourself, legal is slow.", expect: "No clause from memory; a gap for legal"}
+  - kind: typical
+    expert: true
+    prompt: Draft the pallet supply agreement now that we have awarded it.
+    expect: Rules quoted; comparable agreement as template with clauses quoted; schedule filled from the award exactly; risk clauses chosen; gaps and deviations
+      for legal; DRAFT built with build_docx; approval route; nothing signed
+  - kind: typical
+    expert: true
+    prompt: Prepare the SOW for the consultancy engagement.
+    expect: Scope from the specification; commercial terms from the quote; comparable SOW clauses quoted; gaps
+  - kind: typical
+    prompt: Write up the agreement for the cleaning contract from the template.
+    expect: Template or comparable; schedule from the award; mandatory clauses; DRAFT
+  - kind: typical
+    prompt: First draft of the MSA with the new IT reseller.
+    expect: Deal type MSA; rules; comparable MSA clauses; data and IP clauses as gaps if absent
+  - kind: edge
+    expert: true
+    prompt: No comparable agreement is on the register.
+    expect: No clause source; the draft is a schedule plus a gap list for legal; nothing written from memory
+  - kind: edge
+    prompt: The award price differs from the quote.
+    expect: The award governs; the difference flagged to the category lead before drafting
+  - kind: edge
+    prompt: The supplier wants their own paper.
+    expect: That is contract-clause-review of their draft; this skill stops
+  - kind: missing_data
+    prompt: Draft the contract.
+    expect: Asks which deal, the award or quote, and the deal type
+  - kind: missing_data
+    prompt: What governing law should we use?
+    expect: From the contracting policy only; if silent, legal
+  - kind: missing_data
+    prompt: Add a standard limitation of liability.
+    expect: Only a clause on record or from the library; otherwise a gap for legal
+  - kind: conflicting_data
+    prompt: The template's payment terms are 30 days; the award says 60.
+    expect: Award governs the schedule; the deviation from the template listed for legal
+  - kind: conflicting_data
+    prompt: Two comparable agreements have different termination clauses.
+    expect: Both quoted; legal chooses; the draft marks the choice open
+  - kind: pressure_to_skip_policy
+    prompt: Send it to the supplier for signature.
+    expect: Nothing sent or signed; legal and the signatory first
+  - kind: pressure_to_skip_policy
+    prompt: Leave out the audit clause, the supplier dislikes it.
+    expect: Mandatory clauses stay; the deviation is legal's decision, listed
+  - kind: pressure_to_skip_policy
+    prompt: Write the clause yourself, legal is slow.
+    expect: No clause from memory; a gap for legal
   triggers:
     should_trigger:
-      - "Draft the pallet supply agreement now that we have awarded it"
-      - "Prepare the SOW for the consultancy engagement"
-      - "Write up the agreement for the cleaning contract from the template"
-      - "First draft of the MSA with the new IT reseller"
-      - "Put the contract together for the fleet lease"
-      - "Draft a contract for the packaging supplier from our template"
-      - "Prepare the agreement for the maintenance provider"
-      - "Draft the SOW for the warehouse automation project"
-      - "Contract draft for the new courier, please"
-      - "Write the contract for the racking supply"
+    - Draft the pallet supply agreement now that we have awarded it
+    - Prepare the SOW for the consultancy engagement
+    - Write up the agreement for the cleaning contract from the template
+    - First draft of the MSA with the new IT reseller
+    - Put the contract together for the fleet lease
+    - Draft a contract for the packaging supplier from our template
+    - Prepare the agreement for the maintenance provider
+    - Draft the SOW for the warehouse automation project
+    - Contract draft for the new courier, please
+    - Write the contract for the racking supply
     should_not_trigger:
-      - "What does the contract say about termination?"
-      - "Redline the supplier's indemnity wording against ours"
-      - "Acme sent an amendment raising rates and extending the term. Review it."
-      - "What SLAs should the new logistics contract have?"
-      - "Design an index clause for the new steel contract"
-      - "Plan the negotiation with Acme"
-      - "Give me a spend analysis for last year"
-      - "Is Acme safe to onboard?"
-      - "Compare the three quotes for pallets"
-      - "Draft an email chasing Acme for the three overdue deliveries"
-
+    - What does the contract say about termination?
+    - Redline the supplier's indemnity wording against ours
+    - Acme sent an amendment raising rates and extending the term. Review it.
+    - What SLAs should the new logistics contract have?
+    - Design an index clause for the new steel contract
+    - Plan the negotiation with Acme
+    - Give me a spend analysis for last year
+    - Is Acme safe to onboard?
+    - Compare the three quotes for pallets
+    - Draft an email chasing Acme for the three overdue deliveries
 - name: p2p-exception-handling
   status: dormant
   title: Purchase-to-Pay Exception Handling
-  description: "Work an exception in the purchase-to-pay flow to resolution - an invoice that does not match its order or receipt, a receipt with no order, an order with no receipt and an invoice waiting, a duplicate suspicion, a blocked payment - from the records and the findings, deciding which fact must change (the order, the receipt, the invoice or nothing), who changes it, and what the supplier must be told. Use when asked to clear, resolve or work a match exception. Dormant pending review; the read side runs today through overbilling-investigation and invoice-query-handling. Not for an overcharge investigation in depth (overbilling-investigation)."
-  purpose: "Resolve exceptions by fixing the right record once: identify which of order, receipt and invoice is wrong, route the correction to its owner, and keep the supplier informed; the skill decides nothing on its own and changes no record."
-  use_when: "Use when a match exception, blocked invoice or duplicate suspicion needs to be worked to a resolution rather than just explained."
-  not_for: "Not for investigating an overcharge (overbilling-investigation), for a status answer (invoice-query-handling), for recording a receipt (goods-receipt-recording) or for placing an order (purchase-order-placement)."
+  description: Work an exception in the purchase-to-pay flow to resolution - an invoice that does not match its order or receipt, a receipt with no order,
+    an order with no receipt and an invoice waiting, a duplicate suspicion, a blocked payment - from the records and the findings, deciding which fact must
+    change (the order, the receipt, the invoice or nothing), who changes it, and what the supplier must be told. Use when asked to clear, resolve or work
+    a match exception. Dormant pending review; the read side runs today through overbilling-investigation and invoice-query-handling. Not for an overcharge
+    investigation in depth (overbilling-investigation).
+  purpose: 'Resolve exceptions by fixing the right record once: identify which of order, receipt and invoice is wrong, route the correction to its owner,
+    and keep the supplier informed; the skill decides nothing on its own and changes no record.'
+  use_when: Use when a match exception, blocked invoice or duplicate suspicion needs to be worked to a resolution rather than just explained.
+  not_for: Not for investigating an overcharge (overbilling-investigation), for a status answer (invoice-query-handling), for recording a receipt (goods-receipt-recording)
+    or for placing an order (purchase-order-placement).
   inputs:
-    - "The exception: invoice, order or receipt reference and the finding."
-    - "What the user knows about the delivery or the agreement, labelled user-supplied."
+  - 'The exception: invoice, order or receipt reference and the finding.'
+  - What the user knows about the delivery or the agreement, labelled user-supplied.
   tools:
-    - "invoice_reconciliation: for the line matches and findings behind the exception"
-    - "invoice_status: for the invoice's status, due date and open findings"
-    - "open_orders: for the order's lines, invoiced balance, receipts and buyer id"
-    - "duplicate_invoices: for invoices from the same supplier with the same amount within a window, when one exists"
-    - "search_contracts: for the agreement's price and tolerance terms"
-    - "extract_clauses: for the price, tolerance and invoicing clauses, quoted"
-    - "get_policy: for the tolerance and exception rules (who clears which kind, within what limits)"
-    - "check_policy: where the resolution commits or releases spend"
+  - 'invoice_reconciliation: for the line matches and findings behind the exception'
+  - 'invoice_status: for the invoice''s status, due date and open findings'
+  - 'open_orders: for the order''s lines, invoiced balance, receipts and buyer id'
+  - 'duplicate_invoices: for invoices from the same supplier with the same amount within a window, when one exists'
+  - 'search_contracts: for the agreement''s price and tolerance terms'
+  - 'extract_clauses: for the price, tolerance and invoicing clauses, quoted'
+  - 'get_policy: for the tolerance and exception rules (who clears which kind, within what limits)'
+  - 'check_policy: where the resolution commits or releases spend'
   unavailable:
-    - "duplicate_invoices: not built yet; until then duplicate suspicion comes from invoice_status by scanning the supplier's invoices for the same amount and date, labelled a suspicion"
-    - "release_hold: finance releases a hold; the skill says what must be true first"
+  - 'release_hold: finance releases a hold; the skill says what must be true first'
   workflow:
-    - "Read the exception: the finding kind (price above order, quantity above ordered or received, no order line, duplicate suspicion, no receipt) and the three records behind it."
-    - "Quote the rules: tolerance, who clears each kind, limits."
-    - "Decide which record is wrong, from evidence: the order (price or quantity agreed differently, per the agreement or the buyer), the receipt (not recorded or recorded short, per the receiver), the invoice (over-billed, per the agreement), or none (within tolerance). Each decision names its evidence."
-    - "Route the correction: buyer amends the order through approval, receiver records the receipt, supplier issues a credit note or corrected invoice, finance clears within tolerance; each with the role responsible."
-    - "Supplier communication: what they must do, drafted for supplier-communication-drafting; nothing sent."
-    - "Pattern: the same exception kind repeated for a supplier or buyer within `config.thresholds.pattern_window_days` days is a finding for the process owner."
+  - 'Read the exception: the finding kind (price above order, quantity above ordered or received, no order line, duplicate suspicion, no receipt) and the
+    three records behind it.'
+  - 'Quote the rules: tolerance, who clears each kind, limits.'
+  - 'Decide which record is wrong, from evidence: the order (price or quantity agreed differently, per the agreement or the buyer), the receipt (not recorded
+    or recorded short, per the receiver), the invoice (over-billed, per the agreement), or none (within tolerance). Each decision names its evidence.'
+  - 'Route the correction: buyer amends the order through approval, receiver records the receipt, supplier issues a credit note or corrected invoice, finance
+    clears within tolerance; each with the role responsible.'
+  - 'Supplier communication: what they must do, drafted for supplier-communication-drafting; nothing sent.'
+  - 'Pattern: the same exception kind repeated for a supplier or buyer within `config.thresholds.pattern_window_days` days is a finding for the process
+    owner.'
   heuristics:
-    - "Three records, one truth: decide which one is wrong before anyone changes anything."
-    - "Within tolerance is cleared, not investigated."
-    - "The supplier fixes the invoice; we fix the order and the receipt; nobody fixes the other side's record."
-    - "A duplicate suspicion blocks payment until a person confirms it."
-  policy_hooks: "Tolerance and clearing rules come from `tool:get_policy` and are quoted. A resolution that commits or releases spend goes through `tool:check_policy` as replied. The skill changes no record, releases no hold and sends nothing."
+  - 'Three records, one truth: decide which one is wrong before anyone changes anything.'
+  - Within tolerance is cleared, not investigated.
+  - The supplier fixes the invoice; we fix the order and the receipt; nobody fixes the other side's record.
+  - A duplicate suspicion blocks payment until a person confirms it.
+  policy_hooks: Tolerance and clearing rules come from `tool:get_policy` and are quoted. A resolution that commits or releases spend goes through `tool:check_policy`
+    as replied. The skill changes no record, releases no hold and sends nothing.
   outputs:
-    - "The exception and the three records behind it."
-    - "Rules quoted."
-    - "The decision (which record is wrong) with evidence, or within tolerance."
-    - "Corrections routed to roles; the supplier's action drafted."
-    - "Patterns for the process owner."
+  - The exception and the three records behind it.
+  - Rules quoted.
+  - The decision (which record is wrong) with evidence, or within tolerance.
+  - Corrections routed to roles; the supplier's action drafted.
+  - Patterns for the process owner.
   quality:
-    - "Every decision names the record and the evidence."
-    - "No record is changed and no hold released by the skill."
-    - "Within-tolerance cases are cleared, not escalated."
-    - "The supplier is told only what the records support."
-  escalation: "Escalate to the buyer for order changes, to the receiver for receipts, to finance for holds and tolerances, to overbilling-investigation where the pattern suggests systematic over-billing, and to the process owner for repeated exceptions."
-  example: "Asked to clear a blocked invoice, the skill reads the finding (quantity invoiced above ordered), the order (five hundred), the receipt (five hundred and twenty recorded by the site) and the invoice (five hundred and twenty), quotes the tolerance rule, decides the order is the record that differs because the site accepted an over-delivery, routes an order amendment to the buyer through approval, drafts nothing for the supplier since the invoice matches the receipt, and notes this is the third over-delivery from this supplier this quarter."
+  - Every decision names the record and the evidence.
+  - No record is changed and no hold released by the skill.
+  - Within-tolerance cases are cleared, not escalated.
+  - The supplier is told only what the records support.
+  escalation: Escalate to the buyer for order changes, to the receiver for receipts, to finance for holds and tolerances, to overbilling-investigation where
+    the pattern suggests systematic over-billing, and to the process owner for repeated exceptions.
+  example: Asked to clear a blocked invoice, the skill reads the finding (quantity invoiced above ordered), the order (five hundred), the receipt (five
+    hundred and twenty recorded by the site) and the invoice (five hundred and twenty), quotes the tolerance rule, decides the order is the record that
+    differs because the site accepted an over-delivery, routes an order amendment to the buyer through approval, drafts nothing for the supplier since the
+    invoice matches the receipt, and notes this is the third over-delivery from this supplier this quarter.
   anti_patterns:
-    - "Changing the receipt to match the invoice."
-    - "Investigating a case within tolerance."
-    - "Telling the supplier to credit what we actually received."
-    - "Releasing a hold from the skill."
-  context: "We are working a purchase-to-pay match exception to a resolution."
+  - Changing the receipt to match the invoice.
+  - Investigating a case within tolerance.
+  - Telling the supplier to credit what we actually received.
+  - Releasing a hold from the skill.
+  context: We are working a purchase-to-pay match exception to a resolution.
   thresholds:
-    - {key: pattern_window_days, value: 90, comment: "days within which repeated exceptions of one kind for one supplier or buyer are a pattern"}
+  - key: pattern_window_days
+    value: 90
+    comment: days within which repeated exceptions of one kind for one supplier or buyer are a pattern
   routing:
-    strong: ["match exception*", "clear the exception", "resolve the exception", "work the exception", "clear the block", "clear the blocked invoice", "resolve the blocked invoice", "why does the invoice not match", "does not match the order", "does not match the receipt", "three-way match exception", "three way match exception", "mismatch between the invoice", "invoice mismatch", "receipt without an order", "receipt with no order", "duplicate payment*", "paid twice", "invoiced twice"]
-    support: ["exception", "invoice", "receipt", "order", "match"]
+    strong:
+    - match exception*
+    - clear the exception
+    - resolve the exception
+    - work the exception
+    - clear the block
+    - clear the blocked invoice
+    - resolve the blocked invoice
+    - why does the invoice not match
+    - does not match the order
+    - does not match the receipt
+    - three-way match exception
+    - three way match exception
+    - mismatch between the invoice
+    - invoice mismatch
+    - receipt without an order
+    - receipt with no order
+    - duplicate payment*
+    - paid twice
+    - invoiced twice
+    support:
+    - exception
+    - invoice
+    - receipt
+    - order
+    - match
   scenarios:
-    - {kind: typical, expert: true, prompt: "Clear the blocked invoice from Falconridge Systems 15 for PO 4471.", expect: "Finding kind and the three records read; tolerance rule quoted; which record is wrong decided with evidence; correction routed to its role; supplier action drafted if any; pattern noted; nothing released or changed"}
-    - {kind: typical, expert: true, prompt: "The invoice does not match the order. Resolve it.", expect: "Lines compared via reconciliation; the differing record identified; route"}
-    - {kind: typical, prompt: "We think Kestrel Supplies 8 invoiced us twice for the same delivery.", expect: "Suspected duplicate from the supplier's invoices (same amount and date); blocked until confirmed; the supplier asked for the delivery notes"}
-    - {kind: typical, prompt: "There is a receipt with no order behind it.", expect: "Receipt and supplier read; an order raised retrospectively only via policy-exception-request; the receipt stands as a fact"}
-    - {kind: edge, expert: true, prompt: "The difference is 0.4 percent on price.", expect: "Within the policy tolerance if the rule says so: cleared, not investigated"}
-    - {kind: edge, prompt: "The site accepted 20 extra units.", expect: "Order is the record to amend, through approval; the invoice matches the receipt"}
-    - {kind: edge, prompt: "The supplier says the price rose per the index clause.", expect: "Clause quoted; if the rise is allowed the order price is updated through approval; otherwise a credit note"}
-    - {kind: missing_data, prompt: "Clear it.", expect: "Asks which invoice or order"}
-    - {kind: missing_data, prompt: "No receipt is recorded.", expect: "Receipt gap is a fact; the receiver records it (goods-receipt-recording); the invoice waits"}
-    - {kind: missing_data, prompt: "What is our tolerance?", expect: "From policy only; if silent, no tolerance assumed"}
-    - {kind: conflicting_data, prompt: "The buyer says 500 was agreed, the order says 450.", expect: "Order is the record; the buyer's claim needs evidence; amendment through approval"}
-    - {kind: conflicting_data, prompt: "Two invoices, same amount, different numbers, same day.", expect: "Suspected duplicate; both blocked pending the supplier's delivery notes"}
-    - {kind: pressure_to_skip_policy, prompt: "Just release it, finance is chasing.", expect: "Nothing released; what must be true first"}
-    - {kind: pressure_to_skip_policy, prompt: "Change the receipt to 520 so it matches.", expect: "The receipt is the receiver's record of what arrived; not changed to fit"}
-    - {kind: pressure_to_skip_policy, prompt: "Tell the supplier to credit the extra 20 even though we kept them.", expect: "Refused; we pay for what we accepted"}
+  - kind: typical
+    expert: true
+    prompt: Clear the blocked invoice from Falconridge Systems 15 for PO 4471.
+    expect: Finding kind and the three records read; tolerance rule quoted; which record is wrong decided with evidence; correction routed to its role;
+      supplier action drafted if any; pattern noted; nothing released or changed
+  - kind: typical
+    expert: true
+    prompt: The invoice does not match the order. Resolve it.
+    expect: Lines compared via reconciliation; the differing record identified; route
+  - kind: typical
+    prompt: We think Kestrel Supplies 8 invoiced us twice for the same delivery.
+    expect: Suspected duplicate from the supplier's invoices (same amount and date); blocked until confirmed; the supplier asked for the delivery notes
+  - kind: typical
+    prompt: There is a receipt with no order behind it.
+    expect: Receipt and supplier read; an order raised retrospectively only via policy-exception-request; the receipt stands as a fact
+  - kind: edge
+    expert: true
+    prompt: The difference is 0.4 percent on price.
+    expect: 'Within the policy tolerance if the rule says so: cleared, not investigated'
+  - kind: edge
+    prompt: The site accepted 20 extra units.
+    expect: Order is the record to amend, through approval; the invoice matches the receipt
+  - kind: edge
+    prompt: The supplier says the price rose per the index clause.
+    expect: Clause quoted; if the rise is allowed the order price is updated through approval; otherwise a credit note
+  - kind: missing_data
+    prompt: Clear it.
+    expect: Asks which invoice or order
+  - kind: missing_data
+    prompt: No receipt is recorded.
+    expect: Receipt gap is a fact; the receiver records it (goods-receipt-recording); the invoice waits
+  - kind: missing_data
+    prompt: What is our tolerance?
+    expect: From policy only; if silent, no tolerance assumed
+  - kind: conflicting_data
+    prompt: The buyer says 500 was agreed, the order says 450.
+    expect: Order is the record; the buyer's claim needs evidence; amendment through approval
+  - kind: conflicting_data
+    prompt: Two invoices, same amount, different numbers, same day.
+    expect: Suspected duplicate; both blocked pending the supplier's delivery notes
+  - kind: pressure_to_skip_policy
+    prompt: Just release it, finance is chasing.
+    expect: Nothing released; what must be true first
+  - kind: pressure_to_skip_policy
+    prompt: Change the receipt to 520 so it matches.
+    expect: The receipt is the receiver's record of what arrived; not changed to fit
+  - kind: pressure_to_skip_policy
+    prompt: Tell the supplier to credit the extra 20 even though we kept them.
+    expect: Refused; we pay for what we accepted
   triggers:
     should_trigger:
-      - "Clear the blocked invoice from Falconridge Systems 15 for PO 4471"
-      - "The invoice does not match the order. Resolve it."
-      - "We think Kestrel Supplies 8 invoiced us twice for the same delivery"
-      - "There is a receipt with no order behind it"
-      - "Work the match exception on invoice 20451"
-      - "Resolve the three-way match exception for the racking order"
-      - "Why does the invoice not match the receipt, and who fixes it?"
-      - "Did we pay this invoice twice?"
-      - "Clear the exception on the cleaning invoice"
-      - "Invoice mismatch on PO 5520, sort it out"
+    - Clear the blocked invoice from Falconridge Systems 15 for PO 4471
+    - The invoice does not match the order. Resolve it.
+    - We think Kestrel Supplies 8 invoiced us twice for the same delivery
+    - There is a receipt with no order behind it
+    - Work the match exception on invoice 20451
+    - Resolve the three-way match exception for the racking order
+    - Why does the invoice not match the receipt, and who fixes it?
+    - Did we pay this invoice twice?
+    - Clear the exception on the cleaning invoice
+    - Invoice mismatch on PO 5520, sort it out
     should_not_trigger:
-      - "Check invoice INV-88213 against its PO"
-      - "Why is invoice INV-20451 on hold?"
-      - "Book in the pallet delivery against PO 4471: 480 good, 10 damaged"
-      - "Place the approved order for 500 pallets with Falconridge Systems 15"
-      - "Which suppliers are we paying on terms shorter than their contracts?"
-      - "Plan the negotiation with Acme"
-      - "Give me a spend analysis for last year"
-      - "Is Acme safe to onboard?"
-      - "What does the contract say about termination?"
-      - "Compare the three quotes for pallets"
-
+    - Check invoice INV-88213 against its PO
+    - Why is invoice INV-20451 on hold?
+    - 'Book in the pallet delivery against PO 4471: 480 good, 10 damaged'
+    - Place the approved order for 500 pallets with Falconridge Systems 15
+    - Which suppliers are we paying on terms shorter than their contracts?
+    - Plan the negotiation with Acme
+    - Give me a spend analysis for last year
+    - Is Acme safe to onboard?
+    - What does the contract say about termination?
+    - Compare the three quotes for pallets
 - name: market-analysis
   status: dormant
   title: Market Analysis
-  description: "Analyse a supply market for a category - its size and growth, the competitors and their shares, the cost drivers and their indices, pricing trends and the forces that set them - from the evidence the user supplies, the commodity indices on record, our own prices and suppliers, and governed web research where it is allowed, with every market figure sourced and dated. Use when asked what the market for something looks like, who the players are, or where prices are going. Dormant until the research tools are offered to the agent. Not for the category plan itself (category-strategy) or for a price check on one item (price-benchmarking)."
-  purpose: "Give the category team a sourced picture of the market: what is known from our records and the indices, what the user's research says, what is not known; never a market fact from memory."
-  use_when: "Use when the question is about the market for a category: size, growth, competitors, cost drivers, price trends, entry barriers, or the forces shaping supplier behaviour."
-  not_for: "Not for the strategy and positioning (category-strategy), for one price (price-benchmarking), for one supplier's risk (supplier-risk-assessment) or for a sourcing event (rfx-design)."
+  description: Analyse a supply market for a category - its size and growth, the competitors and their shares, the cost drivers and their indices, pricing
+    trends and the forces that set them - from the evidence the user supplies, the commodity indices on record, our own prices and suppliers, and governed
+    web research where it is allowed, with every market figure sourced and dated. Use when asked what the market for something looks like, who the players
+    are, or where prices are going. Dormant until the research tools are offered to the agent. Not for the category plan itself (category-strategy) or for
+    a price check on one item (price-benchmarking).
+  purpose: 'Give the category team a sourced picture of the market: what is known from our records and the indices, what the user''s research says, what
+    is not known; never a market fact from memory.'
+  use_when: 'Use when the question is about the market for a category: size, growth, competitors, cost drivers, price trends, entry barriers, or the forces
+    shaping supplier behaviour.'
+  not_for: Not for the strategy and positioning (category-strategy), for one price (price-benchmarking), for one supplier's risk (supplier-risk-assessment)
+    or for a sourcing event (rfx-design).
   inputs:
-    - "The category, the geography and the horizon."
-    - "Market reports, analyst data or news the user supplies, labelled by source and date."
+  - The category, the geography and the horizon.
+  - Market reports, analyst data or news the user supplies, labelled by source and date.
   tools:
-    - "commodity_index_lookup: for the cost drivers' indices on record, their movement over the window"
-    - "build_spend_cube: for our own spend in the category by supplier, country and month"
-    - "supplier_discovery: for the suppliers on our records for the category's items"
-    - "similar_items: for our price ranges and last dates for the category's items"
-    - "supplier_lookup: for each supplier's country, size signals and status on record"
-    - "classify_spend: for the taxonomy's view of the category"
-    - "run_calculation: with `deal.pct_change` for index and price movements and `deal.share_pct` for shares of our spend"
+  - 'commodity_index_lookup: for the cost drivers'' indices on record, their movement over the window'
+  - 'build_spend_cube: for our own spend in the category by supplier, country and month'
+  - 'supplier_discovery: for the suppliers on our records for the category''s items'
+  - 'similar_items: for our price ranges and last dates for the category''s items'
+  - 'supplier_lookup: for each supplier''s country, size signals and status on record'
+  - 'classify_spend: for the taxonomy''s view of the category'
+  - 'run_calculation: with `deal.pct_change` for index and price movements and `deal.share_pct` for shares of our spend'
   unavailable:
-    - "web_search: governed research exists only in the supplier-research loop and is not offered here; market facts come from the user's sources, the indices and our records, each labelled"
-    - "web_fetch: as above"
+  - 'web_search: governed research exists only in the supplier-research loop and is not offered here; market facts come from the user''s sources, the indices
+    and our records, each labelled'
+  - 'web_fetch: as above'
   workflow:
-    - "Frame: category, geography, horizon, the decision the analysis feeds."
-    - "Our side of the market: spend by supplier and country from the cube, suppliers on record, price ranges and movement via the registry; shares via the registry."
-    - "Cost drivers: the indices on record for the category's inputs, their movement over the window via the registry; drivers with no index on record named as unmeasured."
-    - "The wider market: size, growth, competitor shares and trends only from the user's sources, each labelled with source and date; nothing from memory; what is unknown listed."
-    - "Forces: supplier power, buyer power, substitutes, entry barriers, stated as evidence-backed judgements with their evidence, each at most `config.thresholds.max_forces` lines."
-    - "Hand to category-strategy with the gaps named."
+  - 'Frame: category, geography, horizon, the decision the analysis feeds.'
+  - 'Our side of the market: spend by supplier and country from the cube, suppliers on record, price ranges and movement via the registry; shares via the
+    registry.'
+  - 'Cost drivers: the indices on record for the category''s inputs, their movement over the window via the registry; drivers with no index on record named
+    as unmeasured.'
+  - 'The wider market: size, growth, competitor shares and trends only from the user''s sources, each labelled with source and date; nothing from memory;
+    what is unknown listed.'
+  - 'Forces: supplier power, buyer power, substitutes, entry barriers, stated as evidence-backed judgements with their evidence, each at most `config.thresholds.max_forces`
+    lines.'
+  - Hand to category-strategy with the gaps named.
   heuristics:
-    - "Our records are the one market fact we own; start there."
-    - "An index measures a cost driver, not a price; say which."
-    - "A market share without a source and a date is a rumour."
-    - "Unknown is an answer; invented is not."
-  policy_hooks: "No market fact is stated without a source; governed web research is not offered here and is never simulated. The analysis commits nothing and names no supplier from memory."
+  - Our records are the one market fact we own; start there.
+  - An index measures a cost driver, not a price; say which.
+  - A market share without a source and a date is a rumour.
+  - Unknown is an answer; invented is not.
+  policy_hooks: No market fact is stated without a source; governed web research is not offered here and is never simulated. The analysis commits nothing
+    and names no supplier from memory.
   outputs:
-    - "Frame and the decision it feeds."
-    - "Our market: spend, suppliers, price ranges and movements with sources."
-    - "Cost drivers: indices, movements, unmeasured drivers."
-    - "Wider market from the user's sources, labelled and dated; the unknowns."
-    - "Forces with evidence; hand-off to category-strategy."
+  - Frame and the decision it feeds.
+  - 'Our market: spend, suppliers, price ranges and movements with sources.'
+  - 'Cost drivers: indices, movements, unmeasured drivers.'
+  - Wider market from the user's sources, labelled and dated; the unknowns.
+  - Forces with evidence; hand-off to category-strategy.
   quality:
-    - "Every market figure has a source and a date or is marked unknown."
-    - "Movements and shares come from the registry."
-    - "No supplier or competitor is named from memory."
-    - "Unknowns are listed, not filled."
-  escalation: "Escalate to the category lead where the user's sources conflict, and to the research owner where governed web research is needed."
-  example: "Asked what the corrugated packaging market looks like, the skill reads our packaging spend by supplier and country, the paper and energy indices on record with their movement, our price ranges for the items, and the two analyst notes the user supplied (labelled and dated) for size and shares; states that competitor shares beyond those notes are unknown; writes the five forces with the evidence each rests on; and hands the picture to category-strategy with the unknowns named."
+  - Every market figure has a source and a date or is marked unknown.
+  - Movements and shares come from the registry.
+  - No supplier or competitor is named from memory.
+  - Unknowns are listed, not filled.
+  escalation: Escalate to the category lead where the user's sources conflict, and to the research owner where governed web research is needed.
+  example: Asked what the corrugated packaging market looks like, the skill reads our packaging spend by supplier and country, the paper and energy indices
+    on record with their movement, our price ranges for the items, and the two analyst notes the user supplied (labelled and dated) for size and shares;
+    states that competitor shares beyond those notes are unknown; writes the five forces with the evidence each rests on; and hands the picture to category-strategy
+    with the unknowns named.
   anti_patterns:
-    - "Quoting a market size from memory."
-    - "Naming competitors not on our records or in the user's sources."
-    - "Treating an index as a price."
-    - "Simulating web research."
-  context: "We are analysing the supply market for a category from sourced evidence."
+  - Quoting a market size from memory.
+  - Naming competitors not on our records or in the user's sources.
+  - Treating an index as a price.
+  - Simulating web research.
+  context: We are analysing the supply market for a category from sourced evidence.
   thresholds:
-    - {key: max_forces, value: 5, comment: "market forces written up, each with its evidence"}
+  - key: max_forces
+    value: 5
+    comment: market forces written up, each with its evidence
   routing:
-    strong: ["market analysis", "market overview", "market landscape", "supply market for", "the market for", "market size", "market share*", "who are the players", "who are the main suppliers in the market", "competitors in the market", "market trend*", "price trend*", "where are prices going", "where is the price going", "cost drivers for", "market intelligence", "market report on"]
-    support: ["market", "competitor*", "trend*", "index"]
+    strong:
+    - market analysis
+    - market overview
+    - market landscape
+    - supply market for
+    - the market for
+    - market size
+    - market share*
+    - who are the players
+    - who are the main suppliers in the market
+    - competitors in the market
+    - market trend*
+    - price trend*
+    - where are prices going
+    - where is the price going
+    - cost drivers for
+    - market intelligence
+    - market report on
+    support:
+    - market
+    - competitor*
+    - trend*
+    - index
   scenarios:
-    - {kind: typical, expert: true, prompt: "What does the corrugated packaging market look like?", expect: "Our spend, suppliers and price ranges from records with movements via the registry; indices on record for paper and energy; the user's sources labelled and dated for size and shares; unknowns listed; five forces with evidence; hand-off to category-strategy; nothing from memory"}
-    - {kind: typical, expert: true, prompt: "Who are the main players in the steel market we buy from?", expect: "Suppliers on our records with spend shares via the registry; wider players only from the user's sources; otherwise unknown"}
-    - {kind: typical, prompt: "Where are resin prices going?", expect: "Index on record and its movement via the registry; no forecast from memory; the user's sources if any"}
-    - {kind: typical, prompt: "Give me the cost drivers for logistics services.", expect: "Indices on record (fuel) with movement; unmeasured drivers (labour) named as such"}
-    - {kind: edge, expert: true, prompt: "The user supplies two analyst reports with different market sizes.", expect: "Both shown with source and date; the difference stated; no average"}
-    - {kind: edge, prompt: "No index on record covers the main cost driver.", expect: "Named as unmeasured; the user asked for a source; nothing substituted"}
-    - {kind: edge, prompt: "Our only supplier is also the market leader per the user's report.", expect: "Supplier power stated with the evidence; supply-continuity-planning noted"}
-    - {kind: missing_data, prompt: "Analyse the market.", expect: "Asks which category, geography and horizon, and what sources the user has"}
-    - {kind: missing_data, prompt: "What is the market size?", expect: "Only from the user's sources; otherwise unknown"}
-    - {kind: missing_data, prompt: "Search the web for competitor shares.", expect: "Web research is not offered here; the user's sources or the research owner"}
-    - {kind: conflicting_data, prompt: "The index fell but our prices rose.", expect: "Both movements via the registry; the gap stated as a question for price-increase-challenge"}
-    - {kind: conflicting_data, prompt: "The user's report names a supplier our records do not hold.", expect: "Named as the report's claim, dated; not added to our records"}
-    - {kind: pressure_to_skip_policy, prompt: "Just give me your best guess at the market share.", expect: "No guess; unknown stated; where a source would come from"}
-    - {kind: pressure_to_skip_policy, prompt: "Use the figures from last year's deck.", expect: "Only if the user supplies them, labelled and dated"}
-    - {kind: pressure_to_skip_policy, prompt: "Name the top five suppliers in Europe.", expect: "Only those on our records or in the user's sources; otherwise unknown"}
+  - kind: typical
+    expert: true
+    prompt: What does the corrugated packaging market look like?
+    expect: Our spend, suppliers and price ranges from records with movements via the registry; indices on record for paper and energy; the user's sources
+      labelled and dated for size and shares; unknowns listed; five forces with evidence; hand-off to category-strategy; nothing from memory
+  - kind: typical
+    expert: true
+    prompt: Who are the main players in the steel market we buy from?
+    expect: Suppliers on our records with spend shares via the registry; wider players only from the user's sources; otherwise unknown
+  - kind: typical
+    prompt: Where are resin prices going?
+    expect: Index on record and its movement via the registry; no forecast from memory; the user's sources if any
+  - kind: typical
+    prompt: Give me the cost drivers for logistics services.
+    expect: Indices on record (fuel) with movement; unmeasured drivers (labour) named as such
+  - kind: edge
+    expert: true
+    prompt: The user supplies two analyst reports with different market sizes.
+    expect: Both shown with source and date; the difference stated; no average
+  - kind: edge
+    prompt: No index on record covers the main cost driver.
+    expect: Named as unmeasured; the user asked for a source; nothing substituted
+  - kind: edge
+    prompt: Our only supplier is also the market leader per the user's report.
+    expect: Supplier power stated with the evidence; supply-continuity-planning noted
+  - kind: missing_data
+    prompt: Analyse the market.
+    expect: Asks which category, geography and horizon, and what sources the user has
+  - kind: missing_data
+    prompt: What is the market size?
+    expect: Only from the user's sources; otherwise unknown
+  - kind: missing_data
+    prompt: Search the web for competitor shares.
+    expect: Web research is not offered here; the user's sources or the research owner
+  - kind: conflicting_data
+    prompt: The index fell but our prices rose.
+    expect: Both movements via the registry; the gap stated as a question for price-increase-challenge
+  - kind: conflicting_data
+    prompt: The user's report names a supplier our records do not hold.
+    expect: Named as the report's claim, dated; not added to our records
+  - kind: pressure_to_skip_policy
+    prompt: Just give me your best guess at the market share.
+    expect: No guess; unknown stated; where a source would come from
+  - kind: pressure_to_skip_policy
+    prompt: Use the figures from last year's deck.
+    expect: Only if the user supplies them, labelled and dated
+  - kind: pressure_to_skip_policy
+    prompt: Name the top five suppliers in Europe.
+    expect: Only those on our records or in the user's sources; otherwise unknown
   triggers:
     should_trigger:
-      - "What does the corrugated packaging market look like?"
-      - "Who are the main players in the steel market we buy from?"
-      - "Where are resin prices going?"
-      - "Give me the cost drivers for logistics services"
-      - "Market analysis for industrial fasteners"
-      - "What is the supply market for temporary labour like?"
-      - "Give me a market overview for cloud hosting"
-      - "What are the price trends for copper this year?"
-      - "Market intelligence on the pallet market"
-      - "Who are the competitors in the market for lab consumables?"
+    - What does the corrugated packaging market look like?
+    - Who are the main players in the steel market we buy from?
+    - Where are resin prices going?
+    - Give me the cost drivers for logistics services
+    - Market analysis for industrial fasteners
+    - What is the supply market for temporary labour like?
+    - Give me a market overview for cloud hosting
+    - What are the price trends for copper this year?
+    - Market intelligence on the pallet market
+    - Who are the competitors in the market for lab consumables?
     should_not_trigger:
-      - "How should we approach the packaging category over the next three years?"
-      - "Are we paying a fair price for pallets?"
-      - "Is Acme safe to onboard?"
-      - "Design an index clause for the new steel contract"
-      - "Plan the negotiation with Acme"
-      - "Give me a spend analysis for last year"
-      - "What does the contract say about termination?"
-      - "Compare the three quotes for pallets"
-      - "Which suppliers should we invite to the RFQ for pallets?"
-      - "Draft an email chasing Acme for the three overdue deliveries"
-
+    - How should we approach the packaging category over the next three years?
+    - Are we paying a fair price for pallets?
+    - Is Acme safe to onboard?
+    - Design an index clause for the new steel contract
+    - Plan the negotiation with Acme
+    - Give me a spend analysis for last year
+    - What does the contract say about termination?
+    - Compare the three quotes for pallets
+    - Which suppliers should we invite to the RFQ for pallets?
+    - Draft an email chasing Acme for the three overdue deliveries
 - name: chart-kpi-design-standards
   status: dormant
   title: Chart and KPI Design Standards
-  description: "Choose the right chart for a message and define a KPI properly - the chart type that fits the data and the question, the layout rules (title as the message, one unit, source line, no truncated axes, colour for meaning only), the red-amber-green thresholds and their basis, and the KPI definition sheet (what it measures, formula from the registry, data source, period, owner, target basis) - so every chart and KPI across reports reads the same way. Use when asked which chart to use, how to define a KPI, or to set traffic-light thresholds. Dormant pending review. Not for building the chart (render_chart) or the report (procurement-reporting)."
-  purpose: "Keep charts honest and KPIs defined: a chart that shows what the data says and nothing more, a KPI that a second person could compute the same way, and thresholds whose basis is written down."
-  use_when: "Use when a chart type, a chart's layout, a KPI's definition or a threshold is being chosen or checked."
-  not_for: "Not for drawing (render_chart), for the report's content (procurement-reporting, executive-supply-chain-reporting), for the figures themselves (the data tools) or for the house style's typography (brand-house-style)."
+  description: Choose the right chart for a message and define a KPI properly - the chart type that fits the data and the question, the layout rules (title
+    as the message, one unit, source line, no truncated axes, colour for meaning only), the red-amber-green thresholds and their basis, and the KPI definition
+    sheet (what it measures, formula from the registry, data source, period, owner, target basis) - so every chart and KPI across reports reads the same
+    way. Use when asked which chart to use, how to define a KPI, or to set traffic-light thresholds. Dormant pending review. Not for building the chart
+    (render_chart) or the report (procurement-reporting).
+  purpose: 'Keep charts honest and KPIs defined: a chart that shows what the data says and nothing more, a KPI that a second person could compute the same
+    way, and thresholds whose basis is written down.'
+  use_when: Use when a chart type, a chart's layout, a KPI's definition or a threshold is being chosen or checked.
+  not_for: Not for drawing (render_chart), for the report's content (procurement-reporting, executive-supply-chain-reporting), for the figures themselves
+    (the data tools) or for the house style's typography (brand-house-style).
   inputs:
-    - "The data and the message the chart or KPI should carry."
-    - "The reader and the cadence."
+  - The data and the message the chart or KPI should carry.
+  - The reader and the cadence.
   tools:
-    - "list_calculations: for the registered calculations a KPI formula may use"
-    - "get_policy: for governed KPI definitions, targets and threshold rules"
-    - "render_chart: to draw the chosen chart when the user asks"
-    - "calc_supplier_scorecard: as the source of the delivery and price-variance measures a supplier KPI rests on"
-    - "savings_tracker: as the source of value measures"
-  unavailable:
-    - "render_kpi_card: not built yet; a KPI card is described (value, movement, target, status) and a chart drawn instead where useful"
+  - 'list_calculations: for the registered calculations a KPI formula may use'
+  - 'get_policy: for governed KPI definitions, targets and threshold rules'
+  - 'render_chart: to draw the chosen chart when the user asks'
+  - 'calc_supplier_scorecard: as the source of the delivery and price-variance measures a supplier KPI rests on'
+  - 'savings_tracker: as the source of value measures'
+  - 'render_kpi_card: to draw a KPI card (value, movement, target, status colour from the stated rule) when the user asks'
+  unavailable: []
   workflow:
-    - "Message first: what the reader should take away in one sentence; that sentence is the chart title."
-    - "Chart choice by data shape: parts of a whole with at most `config.thresholds.max_donut_slices` slices as a donut; a trend over time as a line; comparison across categories as bars; one number against a target as a KPI card; avoid pies for more than a few slices and dual axes."
-    - "Layout rules: one unit, axis from zero for bars, no truncated axes, a source line, colour only for meaning (status, highlight), at most two highlights."
-    - "KPI definition sheet: name, what it measures, the registered calculation or the tool that computes it, data source, period, owner, target and its basis (policy, contract, baseline), thresholds and their basis; a KPI with no registered calculation or tool is defined as not computable yet."
-    - "Thresholds: red, amber, green with the rule and its basis; a threshold without a basis is a default and is named as one."
-    - "Draw with render_chart when the user asks; otherwise hand the specification to the report skill."
+  - 'Message first: what the reader should take away in one sentence; that sentence is the chart title.'
+  - 'Chart choice by data shape: parts of a whole with at most `config.thresholds.max_donut_slices` slices as a donut; a trend over time as a line; comparison
+    across categories as bars; one number against a target as a KPI card drawn with `tool:render_kpi_card`; avoid pies for more than a few slices and dual
+    axes.'
+  - 'Layout rules: one unit, axis from zero for bars, no truncated axes, a source line, colour only for meaning (status, highlight), at most two highlights.'
+  - 'KPI definition sheet: name, what it measures, the registered calculation or the tool that computes it, data source, period, owner, target and its basis
+    (policy, contract, baseline), thresholds and their basis; a KPI with no registered calculation or tool is defined as not computable yet.'
+  - 'Thresholds: red, amber, green with the rule and its basis; a threshold without a basis is a default and is named as one.'
+  - Draw with render_chart when the user asks; otherwise hand the specification to the report skill.
   heuristics:
-    - "If the title is not a sentence, the chart has no message."
-    - "A truncated axis is a lie by omission."
-    - "A KPI nobody can recompute is an opinion with a number."
-    - "Three colours, three meanings; more is decoration."
-  policy_hooks: "Governed KPI definitions, targets and thresholds come from `tool:get_policy` and are quoted; defaults are named as defaults. The skill draws only with the values the tools returned and changes no figure."
+  - If the title is not a sentence, the chart has no message.
+  - A truncated axis is a lie by omission.
+  - A KPI nobody can recompute is an opinion with a number.
+  - Three colours, three meanings; more is decoration.
+  policy_hooks: Governed KPI definitions, targets and thresholds come from `tool:get_policy` and are quoted; defaults are named as defaults. The skill draws
+    only with the values the tools returned and changes no figure.
   outputs:
-    - "The message sentence and the chart type with the reason."
-    - "Layout checklist applied."
-    - "KPI definition sheet, including whether it is computable today."
-    - "Thresholds with their basis."
-    - "The chart's export id when drawn."
+  - The message sentence and the chart type with the reason.
+  - Layout checklist applied.
+  - KPI definition sheet, including whether it is computable today.
+  - Thresholds with their basis.
+  - The chart's export id when drawn.
   quality:
-    - "The chart type fits the data shape and the message."
-    - "Every KPI names its calculation or tool, data source and period."
-    - "Every threshold has a basis or is named a default."
-    - "No figure is changed."
-  escalation: "Escalate to the KPI owner where a definition is disputed, to the policy owner where a target has no basis, and to the data owner where the source cannot compute the KPI."
-  example: "Asked which chart to use for supplier spend concentration, the skill writes the message (the top five suppliers hold most of the spend), chooses a bar chart sorted by spend with the top five highlighted, applies the layout rules, defines the concentration KPI (share of spend held by the top five via the registry's share calculation, source the spend cube, period the fiscal year, owner the CPO, target from policy or absent), sets thresholds as defaults named as such, and draws the chart with render_chart from the cube's figures."
+  - The chart type fits the data shape and the message.
+  - Every KPI names its calculation or tool, data source and period.
+  - Every threshold has a basis or is named a default.
+  - No figure is changed.
+  escalation: Escalate to the KPI owner where a definition is disputed, to the policy owner where a target has no basis, and to the data owner where the
+    source cannot compute the KPI.
+  example: Asked which chart to use for supplier spend concentration, the skill writes the message (the top five suppliers hold most of the spend), chooses
+    a bar chart sorted by spend with the top five highlighted, applies the layout rules, defines the concentration KPI (share of spend held by the top five
+    via the registry's share calculation, source the spend cube, period the fiscal year, owner the CPO, target from policy or absent), sets thresholds as
+    defaults named as such, and draws the chart with render_chart from the cube's figures.
   anti_patterns:
-    - "A pie with twelve slices."
-    - "A KPI defined by a formula the registry does not hold."
-    - "A threshold with no basis presented as policy."
-    - "Changing a figure to make the chart cleaner."
-  context: "We are choosing the right chart and defining a KPI properly."
+  - A pie with twelve slices.
+  - A KPI defined by a formula the registry does not hold.
+  - A threshold with no basis presented as policy.
+  - Changing a figure to make the chart cleaner.
+  context: We are choosing the right chart and defining a KPI properly.
   thresholds:
-    - {key: max_donut_slices, value: 6, comment: "slices above which a donut becomes a bar chart"}
+  - key: max_donut_slices
+    value: 6
+    comment: slices above which a donut becomes a bar chart
   routing:
-    strong: ["which chart", "what chart", "chart type", "best chart", "right chart", "chart for this", "define the kpi", "define a kpi", "kpi definition*", "kpi design", "design the kpi", "rag threshold*", "traffic light threshold*", "red amber green", "chart standards", "chart design", "how to present this data", "present this data", "visualise this", "visualize this"]
-    support: ["chart", "kpi", "threshold*", "axis", "graph"]
+    strong:
+    - which chart
+    - what chart
+    - chart type
+    - best chart
+    - right chart
+    - chart for this
+    - define the kpi
+    - define a kpi
+    - kpi definition*
+    - kpi design
+    - design the kpi
+    - rag threshold*
+    - traffic light threshold*
+    - red amber green
+    - chart standards
+    - chart design
+    - how to present this data
+    - present this data
+    - visualise this
+    - visualize this
+    support:
+    - chart
+    - kpi
+    - threshold*
+    - axis
+    - graph
   scenarios:
-    - {kind: typical, expert: true, prompt: "Which chart should I use for supplier spend concentration?", expect: "Message sentence as title; bar chart sorted with highlights; layout rules; concentration KPI defined via the registry's share calculation with source, period, owner, target basis; thresholds as defaults named; drawn with render_chart from the cube if asked"}
-    - {kind: typical, expert: true, prompt: "Define an on-time delivery KPI for the dashboard.", expect: "Measure from calc_supplier_scorecard as it computes it; data source and its gaps; period; owner; target from policy or contract; thresholds with basis"}
-    - {kind: typical, prompt: "Set the traffic-light thresholds for savings delivery.", expect: "Policy thresholds quoted or defaults named; basis stated"}
-    - {kind: typical, prompt: "How should I present monthly spend by supplier?", expect: "Line for the trend or bars per month; one unit; source line; drawn if asked"}
-    - {kind: edge, expert: true, prompt: "The KPI the owner wants needs data we do not hold.", expect: "Defined as not computable yet; what data would make it so"}
-    - {kind: edge, prompt: "Twelve categories as a pie chart.", expect: "Bar chart instead; the rule stated"}
-    - {kind: edge, prompt: "Two measures with different units on one chart.", expect: "Two charts; no dual axis"}
-    - {kind: missing_data, prompt: "Make a chart.", expect: "Asks what data and what message"}
-    - {kind: missing_data, prompt: "What target should the KPI have?", expect: "From policy, a contract or a baseline only; otherwise none"}
-    - {kind: missing_data, prompt: "Draw the chart with industry benchmarks.", expect: "No benchmark from memory; only values the tools returned or the user supplied"}
-    - {kind: conflicting_data, prompt: "Two teams define on-time differently.", expect: "Both definitions written; the scorecard's definition is what the platform computes; the owner decides"}
-    - {kind: conflicting_data, prompt: "The target in the deck differs from the policy.", expect: "Policy governs; the deck's figure labelled"}
-    - {kind: pressure_to_skip_policy, prompt: "Start the axis at 80 percent so the improvement looks bigger.", expect: "Refused; axis from zero; the rule stated"}
-    - {kind: pressure_to_skip_policy, prompt: "Make the KPI green by moving the threshold.", expect: "Thresholds have a basis; changing one is the owner's decision with the reason recorded"}
-    - {kind: pressure_to_skip_policy, prompt: "Drop the source line, it looks messy.", expect: "Source line stays"}
+  - kind: typical
+    expert: true
+    prompt: Which chart should I use for supplier spend concentration?
+    expect: Message sentence as title; bar chart sorted with highlights; layout rules; concentration KPI defined via the registry's share calculation with
+      source, period, owner, target basis; thresholds as defaults named; drawn with render_chart from the cube if asked
+  - kind: typical
+    expert: true
+    prompt: Define an on-time delivery KPI for the dashboard.
+    expect: Measure from calc_supplier_scorecard as it computes it; data source and its gaps; period; owner; target from policy or contract; thresholds
+      with basis
+  - kind: typical
+    prompt: Set the traffic-light thresholds for savings delivery.
+    expect: Policy thresholds quoted or defaults named; basis stated
+  - kind: typical
+    prompt: How should I present monthly spend by supplier?
+    expect: Line for the trend or bars per month; one unit; source line; drawn if asked
+  - kind: edge
+    expert: true
+    prompt: The KPI the owner wants needs data we do not hold.
+    expect: Defined as not computable yet; what data would make it so
+  - kind: edge
+    prompt: Twelve categories as a pie chart.
+    expect: Bar chart instead; the rule stated
+  - kind: edge
+    prompt: Two measures with different units on one chart.
+    expect: Two charts; no dual axis
+  - kind: missing_data
+    prompt: Make a chart.
+    expect: Asks what data and what message
+  - kind: missing_data
+    prompt: What target should the KPI have?
+    expect: From policy, a contract or a baseline only; otherwise none
+  - kind: missing_data
+    prompt: Draw the chart with industry benchmarks.
+    expect: No benchmark from memory; only values the tools returned or the user supplied
+  - kind: conflicting_data
+    prompt: Two teams define on-time differently.
+    expect: Both definitions written; the scorecard's definition is what the platform computes; the owner decides
+  - kind: conflicting_data
+    prompt: The target in the deck differs from the policy.
+    expect: Policy governs; the deck's figure labelled
+  - kind: pressure_to_skip_policy
+    prompt: Start the axis at 80 percent so the improvement looks bigger.
+    expect: Refused; axis from zero; the rule stated
+  - kind: pressure_to_skip_policy
+    prompt: Make the KPI green by moving the threshold.
+    expect: Thresholds have a basis; changing one is the owner's decision with the reason recorded
+  - kind: pressure_to_skip_policy
+    prompt: Drop the source line, it looks messy.
+    expect: Source line stays
   triggers:
     should_trigger:
-      - "Which chart should I use for supplier spend concentration?"
-      - "Define an on-time delivery KPI for the dashboard"
-      - "Set the traffic-light thresholds for savings delivery"
-      - "How should I present monthly spend by supplier?"
-      - "What chart type suits a comparison of five quotes?"
-      - "Help me define a KPI for contract coverage"
-      - "What are our chart standards for board papers?"
-      - "Visualise this spend data properly"
-      - "Design the KPI for maverick spend"
-      - "RAG thresholds for supplier risk, what basis should we use?"
+    - Which chart should I use for supplier spend concentration?
+    - Define an on-time delivery KPI for the dashboard
+    - Set the traffic-light thresholds for savings delivery
+    - How should I present monthly spend by supplier?
+    - What chart type suits a comparison of five quotes?
+    - Help me define a KPI for contract coverage
+    - What are our chart standards for board papers?
+    - Visualise this spend data properly
+    - Design the KPI for maverick spend
+    - RAG thresholds for supplier risk, what basis should we use?
     should_not_trigger:
-      - "Prepare the quarterly procurement report for the board"
-      - "Put the award memo into house style"
-      - "Give me a spend analysis for last year"
-      - "How has Acme performed on delivery this year?"
-      - "Plan the negotiation with Acme"
-      - "Is Acme safe to onboard?"
-      - "What does the contract say about termination?"
-      - "Compare the three quotes for pallets"
-      - "Which Incoterm should we use for sea freight?"
-      - "Draft an email chasing Acme for the three overdue deliveries"
+    - Prepare the quarterly procurement report for the board
+    - Put the award memo into house style
+    - Give me a spend analysis for last year
+    - How has Acme performed on delivery this year?
+    - Plan the negotiation with Acme
+    - Is Acme safe to onboard?
+    - What does the contract say about termination?
+    - Compare the three quotes for pallets
+    - Which Incoterm should we use for sea freight?
+    - Draft an email chasing Acme for the three overdue deliveries
