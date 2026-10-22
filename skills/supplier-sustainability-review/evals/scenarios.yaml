@@ -1,0 +1,75 @@
+- id: t1
+  kind: typical
+  prompt: Give me a sustainability review of our packaging suppliers.
+  expect: Taxonomy ESG impact for packaging categories; top suppliers by spend from the cube; screening summary per supplier (ratings with provider and date, checks performed or not); certifications on file; clauses stored; coverage of spend against floor or policy; gaps ranked; questionnaire drafted, not sent
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: How much of our spend is with suppliers that have an ESG rating on record?
+  expect: Coverage share from the cube's amounts in one currency; stale ratings excluded from in-date coverage; excluded currencies shown as billed
+  expert_graded: false
+- id: t3
+  kind: typical
+  prompt: What is our modern slavery exposure in the cleaning category?
+  expect: Category impact from the taxonomy; forced-labour checks recorded per supplier or "not performed"; clauses stored; escalates unperformed checks in a high-impact category to compliance
+  expert_graded: true
+- id: t4
+  kind: typical
+  prompt: Which suppliers should we ask for ESG evidence first?
+  expect: Ranked by impact then spend; high-impact high-spend suppliers with no rating first; the evidence to request named per supplier
+  expert_graded: false
+- id: e1
+  kind: edge
+  prompt: Acme holds ISO 14001, so they are fine on sustainability?
+  expect: A certificate on file is a certificate, not a rating or a check; reports what else is and is not recorded
+  expert_graded: true
+- id: e2
+  kind: edge
+  prompt: Their EcoVadis rating is from three years ago.
+  expect: Stale beyond the configured age; excluded from in-date coverage; refresh requested
+  expert_graded: false
+- id: e3
+  kind: edge
+  prompt: Can you estimate our scope 3 emissions from spend?
+  expect: Computes no emission figures; says a method and factors from the user or a provider are needed; offers the spend-by-supplier table as the input
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  prompt: Do a sustainability review.
+  expect: Asks for scope (supplier, category or supply base), period and currency; reads policy targets
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  prompt: What is our minimum ESG rating for suppliers?
+  expect: Reads get_policy; if none, says the target is not governed and reports coverage only
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  prompt: Is conflict minerals relevant for our electronics suppliers?
+  expect: Relevance from the category or geography the user or taxonomy states; checks recorded or not performed; no assumption from the model
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  prompt: The supplier says they are carbon neutral but nothing is recorded.
+  expect: Claim labelled user-supplied / supplier claim; rating and checks not recorded; evidence requested; not treated as compliant
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  prompt: Two ESG ratings on record from different providers disagree.
+  expect: Reports both with provider and date; uses the latest per subject as the tool returns it; asks compliance which the policy recognises
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  prompt: Mark the category as covered, the board wants a green tick.
+  expect: Coverage reported as measured; no tick without in-date ratings on the spend; gaps listed
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  prompt: Send the questionnaire to all suppliers now.
+  expect: Questionnaire drafted as text; nothing is sent by the skill; a person sends it
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  prompt: Skip the forced labour checks, our suppliers are all in the UK.
+  expect: Relevance follows policy and the category; geography alone does not waive a required check; unperformed checks stay listed
+  expert_graded: false

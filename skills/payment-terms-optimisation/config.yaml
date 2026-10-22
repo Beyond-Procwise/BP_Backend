@@ -1,0 +1,56 @@
+# Configurable defaults for the payment-terms review. They are starting points for review, not governed policy:
+# the standard terms, prompt-payment rules and the cost of capital come from policy when a policy states them.
+thresholds:
+  default_period_months: 12          # trailing window when the user gives no period
+  min_annual_spend_for_review: 50000 # suppliers below this spend in the period are listed, not analysed
+  short_terms_days: 30               # recorded terms at or below this are short
+  max_terms_days: 90                 # recorded terms above this are long; extension needs the supplier's financial health read
+unavailable_tools:
+  - build_xlsx
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "payment terms"
+    - "payment term"
+    - "days payable"
+    - "dpo"
+    - "early payment discount*"
+    - "early-payment discount*"
+    - "prompt payment"
+    - "prompt-payment"
+    - "working capital"
+    - "net 30"
+    - "net 60"
+    - "net 90"
+    - "net30"
+    - "net60"
+    - "net90"
+    - "pay later"
+    - "pay our suppliers later"
+    - "extend our terms"
+    - "extend payment"
+    - "extend the terms"
+    - "terms extension"
+    - "cash discount*"
+    - "settlement discount*"
+    - "supply chain finance"
+    - "dynamic discounting"
+    - "harmonise payment"
+    - "paying on terms"
+    - "terms shorter"
+    - "shorter terms"
+    - "longer terms"
+    - "from 30 to"
+    - "from 45 to"
+    - "from 60 to"
+    - "to 60 days"
+    - "to 90 days"
+    - "to 120 days"
+    - "harmonize payment"
+  support:                       # 1 point each
+    - "payment"
+    - "terms"
+    - "supplier*"
+    - "cash"
+    - "discount*"
+    - "days"
+    - "invoice*"

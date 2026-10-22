@@ -1,0 +1,45 @@
+# Configurable defaults for the sustainability review. They are starting points for review, not governed policy:
+# minimum ratings, required checks and reporting obligations come from policy when a policy states them.
+thresholds:
+  top_n_suppliers: 20          # suppliers reviewed when the scope is "the supply base" (by spend)
+  rating_max_age_days: 365     # an ESG rating older than this is stale
+  coverage_floor_pct: 80       # share of spend with an in-date rating below which coverage is a gap, when policy states no floor
+unavailable_tools:
+  - send_esg_survey
+  - build_xlsx
+  - render_chart
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "sustainab*"
+    - "esg review"
+    - "esg assessment"
+    - "esg performance"
+    - "esg risk*"
+    - "esg coverage"
+    - "esg position"
+    - "carbon"
+    - "emission*"
+    - "scope 3"
+    - "net zero"
+    - "net-zero"
+    - "ecovadis"
+    - "iso 14001"
+    - "modern slavery"
+    - "environmental impact"
+    - "environmental credential*"
+    - "ethical sourcing"
+    - "responsible sourcing"
+    - "supplier diversity"
+    - "code of conduct"
+    - "esg evidence"
+    - "esg questionnaire"
+    - "esg data"
+  support:                       # 1 point each
+    - "esg"
+    - "supplier*"
+    - "category"
+    - "certif*"
+    - "audit"
+    - "green"
+    - "environment*"
+    - "social"

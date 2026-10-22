@@ -1,0 +1,22 @@
+should_trigger:
+- What would moving all suppliers to our standard payment terms be worth?
+- Should we take the 2 percent early payment discount?
+- Which suppliers are we paying on terms shorter than their contracts?
+- Where are our payment terms shortest?
+- Can we push Acme from 30 to 90 days?
+- How much working capital could we free from payables?
+- What are our days payable by supplier?
+- Harmonise payment terms for the packaging suppliers
+- Is the supplier's settlement discount worth taking?
+- Value extending our terms to net 60 across the top suppliers
+should_not_trigger:
+- Plan the negotiation with Acme about the price increase
+- What does the contract say about liability?
+- Is Acme safe to onboard?
+- Can I approve this purchase order myself?
+- Which of these two forklift quotes is cheaper over five years?
+- Give me a spend analysis for last year
+- How has Acme performed on delivery this year?
+- Design the RFQ for pallets
+- Which Incoterm should we use for sea freight?
+- Validate this savings claim

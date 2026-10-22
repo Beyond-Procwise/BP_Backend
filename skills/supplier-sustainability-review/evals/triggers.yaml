@@ -1,0 +1,22 @@
+should_trigger:
+- Give me a sustainability review of our packaging suppliers
+- How much of our spend is with suppliers that have a sustainability rating?
+- What is our modern slavery exposure in the cleaning category?
+- Which suppliers should we ask for ESG evidence first?
+- Review the environmental credentials of our logistics providers
+- Are we ready for scope 3 reporting on our supply base?
+- ESG assessment of the top twenty suppliers please
+- Is our electronics category covered on ethical sourcing checks?
+- Which of our suppliers hold ISO 14001 or an EcoVadis rating?
+- Draft the sustainability questionnaire for our suppliers
+should_not_trigger:
+- Is Acme safe to onboard?
+- What is Acme's ESG rating on file?
+- Build a category strategy for packaging
+- Design the RFQ for pallets
+- Give me a spend analysis for last year
+- How has Acme performed on delivery this year?
+- Can I approve this purchase order?
+- Which Incoterm should we use for sea freight?
+- Validate this savings claim
+- Plan the negotiation with our steel supplier

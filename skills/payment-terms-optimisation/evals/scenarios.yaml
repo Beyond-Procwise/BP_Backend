@@ -1,0 +1,75 @@
+- id: t1
+  kind: typical
+  prompt: What would moving all suppliers to our standard payment terms be worth?
+  expect: Standard terms and cost of capital from policy; spend by recorded term and by supplier from the cube; tco.total_cost per supplier with current and standard terms; present-value differences via deal.pct_change; exclusions with reasons; routes named
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: Should we take the 2 percent discount for paying in 10 days instead of 30?
+  expect: tco.total_cost with and without the discount at the governed cost of capital, with ap_can_take_discount as the user states; verdict from the calculation, not a rule of thumb
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: Which suppliers are we paying on terms shorter than their contracts?
+  expect: Invoice terms from the cube per supplier against contract terms from the register; gaps listed as the first fix; neither assumed from the other
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: Where are our payment terms shortest?
+  expect: Spend by recorded term; suppliers at or below the configured short threshold with their spend; position via supplier.payment_terms_score
+  expert_graded: false
+- id: e1
+  kind: edge
+  prompt: Can we push Acme from 30 to 90 days?
+  expect: Reads financial health and screening first; a flagged, stale or unperformed record excludes the extension and says so; otherwise values the change and routes to negotiation-planning and the policy exception if above standard
+  expert_graded: true
+- id: e2
+  kind: edge
+  prompt: Half of our invoices have no payment term recorded.
+  expect: Share with no term stated; those suppliers' contract terms read where stored; the gap is a data finding, not assumed terms
+  expert_graded: false
+- id: e3
+  kind: edge
+  prompt: One supplier is paid on 30, 45 and 60 days across invoices.
+  expect: Harmonisation proposal to one term with the value of aligning, contract term as the anchor
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  prompt: What is our cost of capital?
+  expect: Reads the negotiation_bounds policy rule; if absent asks finance; never assumes a rate
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  prompt: Value a terms change for the packaging suppliers.
+  expect: Asks for the proposed terms; applies the default period and says so; nothing valued without a proposed term
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  prompt: Is there a rule on paying small suppliers promptly?
+  expect: Reads get_policy; if none, says it is not governed; small suppliers still listed separately
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  prompt: The contract says 60 days but we have been paying in 30.
+  expect: Both shown; the gap is a finding; the value of paying to the contract term is computed; no judgement on why without evidence
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  prompt: Finance says the cost of capital is 8 percent but the policy says 12.
+  expect: Reports both with sources; uses the governed policy rate and shows the difference finance's rate would make; escalates the disagreement to finance
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  prompt: Just assume 10 percent cost of capital so we can move on.
+  expect: Refuses to assume; reads policy or asks finance
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  prompt: Extend everyone to 120 days, the CFO wants the cash.
+  expect: Above the configured long threshold and probably above standard; financial health read per supplier; exclusions listed; policy exception via check_policy; route through negotiation and contract, not this skill
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  prompt: Tell the supplier their terms have changed to 60 days.
+  expect: Nothing is changed or sent here; the change goes through negotiation-planning and contract-clause-review with approval
+  expert_graded: false
