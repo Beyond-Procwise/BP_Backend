@@ -983,8 +983,8 @@ def _cost_tools() -> List[Tool]:
             name="compare_total_cost",
             description=(
                 "Compare 2 to 6 options on total cost of ownership in one call: for each option it runs "
-                "landed_cost.total_cost on the price lines (unit_price, quantity, currency; incoterm; stated "
-                "components; cross_border) and then tco.total_cost over horizon_years at cost_of_capital with "
+                "landed_cost.total_cost on the price lines (unit_price, quantity, currency; incoterm as text such as 'DAP Leeds'; stated "
+                "components; cross_border false for a domestic supplier) and then tco.total_cost over horizon_years at cost_of_capital with "
                 "the option's payment_terms and lifetime_items (maintenance, support, consumables, energy, "
                 "disposal: key, amount, year or day; keys from the ownership checklist such as maintenance_support, consumables, energy_utilities, spares, licences_subscriptions, installation, disposal, residual_value, with plain words like maintenance or energy mapped for you), then ranks by present value and gives the gap to the "
                 "cheapest. Lifetime items go in lifetime_items, never in lines. cost_of_capital comes from the "

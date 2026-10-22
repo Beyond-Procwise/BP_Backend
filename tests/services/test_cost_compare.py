@@ -102,3 +102,25 @@ def test_plain_lifetime_words_are_mapped_and_unknown_ones_are_reported_not_dropp
     out = C.compare([opt, B], 5, 0.12, run=run)
     assert seen["keys"][0] == ["maintenance_support", "energy_utilities", "gold_plating"]
     assert out["options"][0]["unrecognised_lifetime_items"] and "NOT counted" in out["note"] and "gold_plating" in out["note"]
+
+
+def test_an_incoterm_given_as_an_object_reaches_the_calculation_as_text():
+    assert C._incoterm_text({"rule": "dap", "place": "Leeds"}) == "DAP Leeds"
+    assert C._incoterm_text("FOB Shanghai") == "FOB Shanghai" and C._incoterm_text({"place": "Leeds"}) is None
+    seen = {}
+
+    def run(name, inputs):
+        if name == "landed_cost.total_cost":
+            seen.setdefault("incoterms", []).append(inputs.get("incoterm"))
+            return {"assessed": True, "value": {"landed_total": 1.0, "landed_status": "complete", "missing": [], "not_stated": [], "estimated": []}}
+        if name == "tco.total_cost":
+            return {"assessed": True, "value": {"tco": 2.0, "tco_status": "complete"}}
+        return {"assessed": True, "value": 0.0}
+    C.compare([{**A, "incoterm": {"rule": "DAP", "place": "Leeds"}}, B], 5, 0.12, run=run)
+    assert seen["incoterms"] == ["DAP Leeds", "DAP Leeds"]
+
+
+def test_a_delivered_domestic_quote_owes_no_delivery_components():
+    out = C.compare([{**A, "incoterm": {"rule": "DAP", "place": "Leeds"}}, B], 5, 0.12)
+    by = {o["name"]: o for o in out["options"]}
+    assert "freight" not in by["A"]["missing"] and "freight" not in by["B"]["missing"], (by["A"]["missing"], by["B"]["missing"])
