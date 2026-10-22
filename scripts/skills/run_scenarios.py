@@ -51,7 +51,10 @@ def main(argv=None) -> int:
     ap.add_argument("--kinds", default="typical")
     ap.add_argument("--per-skill", type=int, default=1)
     ap.add_argument("--include-expert", action="store_true")
+    ap.add_argument("--replace", action="append", default=[],
+                    help="OLD=NEW: substitute a fixture name in prompts with one the corpus holds, e.g. 'Acme=Falconridge Systems 15'")
     args = ap.parse_args(argv)
+    swaps = [tuple(r.split("=", 1)) for r in args.replace if "=" in r]
     out_dir = Path(args.out); out_dir.mkdir(parents=True, exist_ok=True)
     kinds = [k.strip() for k in args.kinds.split(",") if k.strip()]
 
@@ -62,6 +65,8 @@ def main(argv=None) -> int:
     results = []
     for folder in folders:
         for sc in _scenarios(folder, kinds, args.per_skill, args.include_expert):
+            for old_name, new_name in swaps:
+                sc = {**sc, "prompt": sc["prompt"].replace(old_name, new_name)}
             t0 = time.time()
             try:
                 res = control.reason(nick, sc["prompt"], user_id="scenario-runner")
