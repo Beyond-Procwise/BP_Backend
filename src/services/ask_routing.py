@@ -34,6 +34,10 @@ READ_ONLY_TOOLS = frozenset({
     "get_corpus_facts",
     "list_opportunity_levers", "get_opportunity_bucket",
     "list_calculations", "run_calculation",
+    # Read-only tools the skills call (checked: none writes a record). Without them a skill that
+    # needs one is never injected into the Ask box.
+    "check_policy", "search_contracts", "extract_clauses", "redline_compare",
+    "savings_tracker", "build_spend_cube", "supplier_discovery", "supplier_lookup",
 })
 
 #: Told to every answering agent, so one whose instructions say "send" or

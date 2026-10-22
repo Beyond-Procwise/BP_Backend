@@ -52,6 +52,9 @@ routing:                         # how the orchestrator decides this skill cover
     - "avoid approval"
     - "what approval"
     - "need approval"
+    - "can i approve"
+    - "may i approve"
+    - "can i sign off"
     - "needs approval"
   support:                       # 1 point each
     - "policy"

@@ -203,3 +203,23 @@ def test_on_fresh_unrelated_requests_it_stays_silent(router):
 def test_two_supporting_words_alone_are_not_enough_to_inject_a_skill(router):
     assert router.scores("The vendor meeting")["negotiation-planning"][0] == 2 * sr.SUPPORT
     assert router.route("The vendor meeting") is None
+
+
+# Phrasings met in live runs that the router missed. Each is a regression: a miss costs nothing but the
+# skill's structure, yet these are ordinary ways to ask.
+LIVE_MISSES = {
+    "procurement-policy-compliance": [
+        "Can I approve a GBP 35,000 purchase order for IT consultancy on my own?",
+        "May I approve this requisition for 12,000 pounds of furniture?",
+    ],
+}
+
+
+def test_phrasings_missed_in_live_runs_now_route(router):
+    missed = [(sk, p) for sk, ps in LIVE_MISSES.items() for p in ps
+              if (router.route(p) or sr.NO_MATCH).skill != sk]
+    assert missed == []
+
+
+def test_the_new_approval_terms_do_not_take_an_award_question_from_the_award_skill(router):
+    assert router.route("Can I approve the award to the winning bidder?").skill == "award-recommendation"

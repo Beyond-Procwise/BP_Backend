@@ -253,3 +253,15 @@ def test_the_reading_tools_are_real_tool_names_and_no_writer_survives():
         nick, only=sorted(ask_routing.READ_ONLY_TOOLS))}
     assert given == set(ask_routing.READ_ONLY_TOOLS)
     assert not given & WRITING_TOOLS
+
+
+def test_every_skill_can_be_injected_on_the_ask_path():
+    """A skill is injected only when the agent holds every tool it calls. The Ask box offers the
+    reading tools only, so a skill needing a tool missing from that list silently never fires there."""
+    from src.orchestration import context_builder
+    from src.services import skills
+
+    for summary in skills.list_skills():
+        need = context_builder.tools_needed(skills.load_skill(summary.name).body)
+        missing = sorted(need - ask_routing.READ_ONLY_TOOLS)
+        assert not missing, f"{summary.name} cannot be injected in the Ask box; add read-only tools {missing}"
