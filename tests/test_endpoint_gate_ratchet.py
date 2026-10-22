@@ -43,8 +43,10 @@ GUARDED_IN_SERVICE: dict = {
         "services.value_query_service.send_query runs email_dispatch_guard.check_recipient_and_sensitivity "
         "and guardrail.authorize('email.send', 'communicate', principal) before anything is sent",
     "src/api/routers/reports.py::POST router /presentation-mode::presentation_set":
-        "services.report_data.mode.activate/deactivate raise PermissionError (mapped to 403) for anyone "
-        "who is not an Admin; the mode is per session and ends with the sign-in",
+        "services.report_data.mode.activate raises PermissionError (mapped to 403) for anyone who is not "
+        "an Admin, so a non-Admin can never be in presentation mode; deactivate only appends to the "
+        "caller's OWN session log (keyed by their subject and session), so nobody can end another "
+        "person's mode. The mode is per session and ends with the sign-in",
 }
 
 # Registration styles the scanner cannot see. None exists today; if one appears the scan must be taught it.
