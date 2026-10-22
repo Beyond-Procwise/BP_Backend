@@ -49,7 +49,8 @@ def test_runs_landed_then_tco_per_option_and_ranks_by_present_value():
     assert names == ["landed_cost.total_cost", "tco.total_cost", "landed_cost.total_cost", "tco.total_cost", "deal.pct_change"]
     tco_call = run.calls[1][1]
     assert tco_call["landed"]["landed_total"] == 32000.0 and tco_call["cost_of_capital"] == 0.12 and tco_call["horizon_years"] == 5.0
-    assert tco_call["lifetime_items"] == A["lifetime_items"] and tco_call["payment_terms"] == {"net_days": 30}
+    assert [i["key"] for i in tco_call["lifetime_items"]] == ["maintenance_support"] * 5  # plain "maintenance" mapped
+    assert tco_call["payment_terms"] == {"net_days": 30}
     assert "nothing is estimated" in out["note"]
 
 
@@ -93,11 +94,11 @@ def test_plain_lifetime_words_are_mapped_and_unknown_ones_are_reported_not_dropp
         if name == "landed_cost.total_cost":
             return {"assessed": True, "value": {"landed_total": 1.0, "landed_status": "complete", "missing": [], "not_stated": [], "estimated": []}}
         if name == "tco.total_cost":
-            seen["keys"] = [i["key"] for i in inputs["lifetime_items"]]
+            seen.setdefault("keys", []).append([i["key"] for i in inputs["lifetime_items"]])
             return {"assessed": True, "value": {"tco": 2.0, "tco_status": "complete", "unrecognised_lifetime_items": ["gold_plating (not on the ownership checklist)"]}}
         return {"assessed": True, "value": 0.0}
     opt = {**A, "lifetime_items": [{"key": "Maintenance", "amount": 1, "year": 1}, {"key": "energy", "amount": 1, "year": 1},
                                    {"key": "gold plating", "amount": 1, "year": 1}]}
     out = C.compare([opt, B], 5, 0.12, run=run)
-    assert seen["keys"] == ["maintenance_support", "energy_utilities", "gold_plating"]
+    assert seen["keys"][0] == ["maintenance_support", "energy_utilities", "gold_plating"]
     assert out["options"][0]["unrecognised_lifetime_items"] and "NOT counted" in out["note"] and "gold_plating" in out["note"]
