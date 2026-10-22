@@ -244,7 +244,10 @@ LIVE_MISSES = {
     "procurement-policy-compliance": [
         "Can I approve a GBP 35,000 purchase order for IT consultancy on my own?",
         "May I approve this requisition for 12,000 pounds of furniture?",
+        # run 6, 2026-10-22: lost to the invoice-query skill's support words "supplier" and "po"
+        "Can I raise a PO for 8,000 GBP to a supplier for office chairs?",
     ],
+    "dispute-and-claims": ["How do we claim the service credits for last month's outages?"],
 }
 
 

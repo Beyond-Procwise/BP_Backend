@@ -68,6 +68,4 @@ routing:                         # how the orchestrator decides this skill cover
     - "invoice*"
     - "payment"
     - "paid"
-    - "supplier"
-    - "po"
     - "hold"
