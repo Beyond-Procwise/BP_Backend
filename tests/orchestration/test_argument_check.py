@@ -126,3 +126,58 @@ def test_a_catalogue_or_playbook_describes_inputs_it_does_not_supply_values(tool
 def test_a_governed_policy_a_calculation_and_the_corpus_do_supply_values():
     for tool in ("get_policy", "run_calculation", "get_corpus_facts", "check_policy"):
         assert found({"inputs": {"cost_of_capital": 0.12}}, calls=[call(tool, {"v": {"cost_of_capital": 0.12}})]) == []
+
+
+# ---- identifiers ---------------------------------------------------------------------------------
+def ids(args, task="Look at supplier SUP-Acme and item ITM003969 please.", calls=(), config=None):
+    return ac.untraced_identifiers(args, task=task, calls=list(calls), skill_config=config)
+
+
+def test_an_id_the_model_made_up_is_found_with_its_path():
+    assert ids({"supplier_id": "SUP-Acme", "item_id": "STEEL-PLATE-3MM"}) == [("item_id", "STEEL-PLATE-3MM")]
+
+
+def test_an_id_in_the_request_or_an_earlier_result_is_a_source_whatever_its_case():
+    assert ids({"supplier_id": "sup-acme", "item_id": "itm003969"}) == []
+    got = [call("search_contracts", {"contracts": [{"contract_id": "C01076"}]})]
+    assert ids({"document_id": "C01076"}, calls=got) == []
+    assert ids({"document_id": "C01076"}) == [("document_id", "C01076")]
+
+
+def test_a_failed_call_and_a_catalogue_are_not_sources_for_ids():
+    assert ids({"document_id": "C01076"}, calls=[call("search_contracts", {"contracts": [{"contract_id": "C01076"}]}, ok=False)])
+    assert ids({"document_id": "C01076"}, calls=[call("list_skills", {"skills": ["C01076"]})])
+
+
+def test_ids_are_checked_wherever_they_sit_and_short_or_non_string_values_are_ignored():
+    args = {"inputs": {"rows": [{"supplier_id": "SUP-Acme"}, {"supplier_id": "SUP-Nobody"}]}, "item_id": 7, "po_id": "x"}
+    assert ids(args) == [("inputs.rows[1].supplier_id", "SUP-Nobody")]
+
+
+def test_the_identifier_refusal_tells_the_model_to_look_it_up_not_invent_it():
+    r = ac.identifier_refusal("get_opportunity_bucket", [("item_id", "STEEL-PLATE-3MM")])
+    assert r["result"] == "blocked" and r["reasonCode"] == "identifier_not_sourced"
+    assert "STEEL-PLATE-3MM" in r["reason"] and "Never invent an id" in r["reason"]
+
+
+def test_the_checker_refuses_an_invented_id_and_passes_one_a_lookup_returned():
+    check = ac.make_checker("our steel supplier wants 6 percent more", None, today=date(2026, 10, 22))
+    empty = SimpleNamespace(calls=[])
+    r = check("get_opportunity_bucket", {"supplier_id": "SUP-Steelcore", "item_id": "STEEL-PLATE-3MM"}, empty)
+    assert r and r["reasonCode"] == "identifier_not_sourced"
+    looked = SimpleNamespace(calls=[call("supplier_lookup", {"suppliers": [{"supplier_id": "SUP-Steelcore"}]}),
+                                    call("get_corpus_facts", {"items": [{"item_id": "STEEL-PLATE-3MM"}]})])
+    assert check("get_opportunity_bucket", {"supplier_id": "SUP-Steelcore", "item_id": "STEEL-PLATE-3MM"}, looked) is None
+
+
+def test_every_name_on_the_identifier_list_is_a_real_input_somewhere():
+    from types import SimpleNamespace as NS
+    from orchestration import agentnick_control as control
+    from services import calculation_tools
+    names = set()
+    for t in control.build_tools(NS(agents={"opportunity_miner": NS()})):
+        names |= set(((t.parameters or {}).get("properties") or {}).keys())
+    described = " ".join(f"{term.name} {term.description}" for spec in calculation_tools._formulas().REGISTRY.values()
+                         for term in spec.contract.inputs)
+    stale = sorted(n for n in ac.IDENTIFIER_ARGS if n not in names and n not in described)
+    assert stale == [], f"on the list but not an input of any tool or calculation: {stale}"

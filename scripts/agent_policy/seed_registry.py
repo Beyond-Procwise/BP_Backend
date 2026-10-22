@@ -42,6 +42,7 @@ FIXED_TOOLS = {
     "conflict_minerals_check": ["supplier"],
     "monitor_risk_events": ["supplier"],
     "commodity_index_lookup": ["series", "start", "end"],
+    "classify_spend": ["items", "query"],
 }
 
 # Tools the two older tool loops offer (services/governance_tools/governed_reasoning.py and

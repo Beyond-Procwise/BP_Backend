@@ -289,3 +289,10 @@ def test_a_standard_number_is_a_name_not_a_figure():
 
 def test_a_figure_next_to_the_word_iso_is_still_checked():
     assert CT.untraced_figures("The ISO audit cost 12,500 GBP.", ["nothing"]) == ["12,500"]
+
+
+def test_digits_inside_an_identifier_are_a_code_not_a_figure():
+    from services.calculation_tools import untraced_figures
+    answer = "Item I67890 on PO520561 for supplier SUP-7 (category C-2000) cost 1,250.00 GBP."
+    assert untraced_figures(answer, []) == ["1,250.00"]
+    assert untraced_figures("Policy version 2024-03-15.", []) == ["2024"]
