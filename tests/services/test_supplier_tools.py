@@ -92,7 +92,8 @@ def test_lookup_matches_part_of_a_name_and_an_exact_id():
 
 
 def test_lookup_says_how_it_matched_and_a_lone_partial_match_must_be_confirmed():
-    assert ST.lookup("7", rows=lambda s, p: [_L], today=TODAY)["suppliers"][0]["match"] == "exact id"
+    by_id = ("S7",) + _L[1:]
+    assert ST.lookup("s7", rows=lambda s, p: [by_id], today=TODAY)["suppliers"][0]["match"] == "exact id"
     full = ST.lookup("Acme Ltd", rows=lambda s, p: [_L], today=TODAY)
     assert full["suppliers"][0]["match"] == "exact name" and "confirm with the user" not in full["note"]
     part = ST.lookup("acm", rows=lambda s, p: [_L], today=TODAY)
