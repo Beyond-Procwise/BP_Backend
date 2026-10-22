@@ -19,7 +19,7 @@ import json
 import re
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
-from services.agent_policy import approvals, conditions, conflict_payload, deciders, people
+from services.agent_policy import delegation, approvals, conditions, conflict_payload, deciders, people
 from services.agent_policy.enforcement import MASK
 from services.agent_policy.replay import mask_text
 
@@ -140,7 +140,7 @@ def can_decide(principal, case: Dict[str, Any], mapping: deciders.Mapping) -> bo
     name = _level_name(case)
     if not name or approvals._same_person(principal, case["facts"].get("requestedBy")):
         return False
-    return deciders.eligible(principal, name, mapping)
+    return deciders.eligible(principal, name, mapping) or delegation.is_delegate(principal, case["facts"])
 
 
 def _linked_to_any_level(principal, case: Dict[str, Any], mapping: deciders.Mapping) -> bool:
@@ -150,6 +150,7 @@ def _linked_to_any_level(principal, case: Dict[str, Any], mapping: deciders.Mapp
 
 def may_read(principal, case: Dict[str, Any], mapping: deciders.Mapping, *, is_admin: bool) -> bool:
     return (is_admin or _linked_to_any_level(principal, case, mapping)
+            or delegation.is_delegate(principal, case["facts"])
             or approvals._same_person(principal, case["facts"].get("requestedBy")))
 
 
@@ -339,6 +340,8 @@ def case_view(case: Dict[str, Any], *, unmasked: bool, sensitive: Set[str],
         "reasonRequiredOn": ["reject"],
         "unroutable": list(facts.get("unroutable") or []),
         "requestedBy": facts.get("requestedBy"),
+        # D-73 A: who the case was handed to (subject, name, by, byName, at, note), or None
+        "delegatedTo": delegation.current(facts),
         "createdAt": _iso(case.get("created_at")),
         "canDecide": bool(decidable and case["status"] == "open"),
     }

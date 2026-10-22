@@ -441,3 +441,85 @@ def test_a_refused_caller_never_takes_group_locks(conn, world, monkeypatch):
         A.act(conn, did, principal=_P("sub-l1", world.l1_email), verb="approve", reason=None, now=NOW,
               replay=_NO_REPLAY)
     assert e.value.code == "not_open" and locked.count(True) == n
+
+
+# ------------------------------------------------------------------ hand-off (D-73 A)
+@pytest.fixture
+def chart(conn, world):
+    """Two org-chart people made for the test: a receiver whose limit covers 900, and one whose does not."""
+    from services.agent_policy import delegation as D
+    tag = world.tag
+    big, small = f"tst-big-{tag}", f"tst-small-{tag}"
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO proc.bp_person (tenant_id, subject, display_name, email, approval_limit, is_active, "
+                    "roles, last_modified_by) VALUES ('default', %s, %s, %s, 1000, true, '{}', 'test'), "
+                    "('default', %s, %s, %s, 500, true, '{}', 'test')",
+                    (big, f"Big {tag}", f"big-{tag}@example.test", small, f"Small {tag}", f"small-{tag}@example.test"))
+    yield SimpleNamespace(big=big, small=small)
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM proc.bp_notification WHERE event_id LIKE %s", (f"{D.EVENT_TYPE}:%",))
+        cur.execute("DELETE FROM proc.bp_domain_event WHERE actor_id = ANY(%s) OR event_id IN "
+                    "(SELECT event_id FROM proc.bp_domain_event WHERE event_type = %s AND entity_id IN "
+                    "(SELECT decision_id::text FROM proc.bp_decision WHERE subject_type = %s AND subject_id LIKE %s))",
+                    ([big, small], D.EVENT_TYPE, A.SUBJECT_TYPE, f"TST-{tag}:%"))
+        cur.execute("DELETE FROM proc.bp_person WHERE tenant_id = 'default' AND subject = ANY(%s)", ([big, small],))
+
+
+@live
+def test_a_handed_on_approval_can_be_decided_by_the_receiver(conn, world, chart):
+    from services.agent_policy import approval_views as V
+    from services.agent_policy import delegation as D
+    did, _ = _open(conn, world)
+    admin = _P("admin-sub", "admin@example.test")
+    stranger = _P("stranger", "nobody@example.test")
+
+    # a stranger (not a decider, not an admin) may not hand it on
+    with pytest.raises(A.ApprovalRefused) as e:
+        D.delegate(conn, did, principal=stranger, to_subject=chart.big, note=None, now=NOW, is_admin=False)
+    assert e.value.code == "not_eligible" and e.value.status == 403
+
+    # the L1 decider may, but not to someone whose limit does not cover 900
+    l1 = _P("l1-sub", world.l1_email)
+    with pytest.raises(A.ApprovalRefused) as e:
+        D.delegate(conn, did, principal=l1, to_subject=chart.small, note=None, now=NOW, is_admin=False)
+    assert e.value.code == "cannot_decide" and "does not cover" in e.value.message
+
+    out = D.delegate(conn, did, principal=l1, to_subject=chart.big, note="Your area, your call.", now=NOW,
+                     is_admin=False)
+    assert out["delegatedTo"]["subject"] == chart.big and out["hops"] == 1 and out["level"] == 0
+    facts = _row(conn, "bp_decision", "decision_id", did)["facts"]
+    assert facts["delegatedTo"]["note"] == "Your area, your call." and len(facts["delegations"]) == 1
+    # the receiver sees it, can decide it, and the view says who handed it on
+    big = _P(chart.big, f"big-{world.tag}@example.test")
+    mapping = {world.l1: {"groups": [], "emails": [world.l1_email]}, world.l2: {"groups": [world.l2_group], "emails": []}}
+    case = V.load_case(conn.cursor(), did)
+    assert V.can_decide(big, case, mapping) and V.may_read(big, case, mapping, is_admin=False)
+    assert not V.can_decide(stranger, case, mapping)
+    view = V.case_view(case, unmasked=True, sensitive=set(), doc=None, decidable=True)
+    assert view["delegatedTo"]["subject"] == chart.big and view["delegatedTo"]["by"] == "l1-sub"
+    # the receiver was told, by a mandatory event naming them
+    with conn.cursor() as cur:
+        cur.execute("SELECT summary, data FROM proc.bp_domain_event WHERE event_id = %s", (f"{D.EVENT_TYPE}:{did}:1",))
+        summary, data = cur.fetchone()
+    assert data["explicit"] == [chart.big] and data["body"] == "Your area, your call." and "asked you to decide" in summary
+    # and can approve it as if linked to the level
+    res = A.act(conn, did, principal=big, verb="approve", reason=None, now=NOW, replay=_NO_REPLAY)
+    assert res["result"] == "approved" and res["decidedBy"] == chart.big
+    # a decided case cannot be handed on
+    with pytest.raises(A.ApprovalRefused) as e:
+        D.delegate(conn, did, principal=admin, to_subject=chart.big, note=None, now=NOW, is_admin=True)
+    assert e.value.code == "not_open" and e.value.status == 409
+
+
+@live
+def test_an_admin_may_hand_on_but_never_to_the_requester_or_themselves(conn, world, chart):
+    from services.agent_policy import delegation as D
+    did, _ = _open(conn, world, requested_by=f"big-{world.tag}@example.test")
+    admin = _P("admin-sub", "admin@example.test")
+    with pytest.raises(A.ApprovalRefused) as e:
+        D.delegate(conn, did, principal=admin, to_subject=chart.big, note=None, now=NOW, is_admin=True)
+    assert e.value.code == "cannot_decide" and "cannot decide on it" in e.value.message
+    me = _P(chart.small, None)
+    with pytest.raises(A.ApprovalRefused) as e:
+        D.delegate(conn, did, principal=me, to_subject=chart.small, note=None, now=NOW, is_admin=True)
+    assert e.value.message == "You cannot hand an approval to yourself."

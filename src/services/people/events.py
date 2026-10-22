@@ -12,7 +12,8 @@ from typing import Any, Dict, Optional
 CATALOGUE: Dict[str, tuple] = {
     "requisition.created": ("low", False), "requisition.submitted": ("normal", False),
     "approval.requested": ("high", True), "approval.approved": ("normal", False),
-    "approval.rejected": ("normal", False), "po.issued": ("normal", False),
+    "approval.rejected": ("normal", False), "approval.delegated": ("high", True),
+    "po.issued": ("normal", False),
     "po.changed": ("normal", False), "invoice.received": ("low", False),
     "invoice.mismatch": ("high", False), "supplier.onboarded": ("normal", False),
     "supplier.risk_flagged": ("high", False), "contract.expiring": ("high", False),
