@@ -49,6 +49,14 @@ _DIRECTIONS = {"lower_better": "lower_better", "lower_is_better": "lower_better"
 _CRITERION_TYPES = ("scored", "price", "numeric_metric", _GATE, _GROUP)
 
 
+def _named(row: Any) -> bool:
+    """True if a scores row says which evaluator gave it. Blank counts as not saying."""
+    return isinstance(row, Mapping) and row.get("evaluator_id") is not None and str(row["evaluator_id"]).strip() != ""
+
+
+_UNNAMED = "scorer"  # the one scorer behind scores that name no evaluator
+
+
 def _shape_problems(criteria, scores, metrics, consensus) -> List[str]:
     """Every problem with the shape of the rows, once each, so a caller can fix them in one go."""
     out: List[str] = []
@@ -78,13 +86,17 @@ def _shape_problems(criteria, scores, metrics, consensus) -> List[str]:
                 out.append(f"criterion {c['criterion_id']} has direction {d!r}; expected lower_better or higher_better")
             types[str(c["criterion_id"])] = str(c["type"])
     for r in scores:
-        if need(r, ("supplier_id", "criterion_id", "evaluator_id", "score"), "a scores row",
+        if need(r, ("supplier_id", "criterion_id", "score"), "a scores row",
                 '{"supplier_id": "A", "criterion_id": "quality", "evaluator_id": "e1", "score": 4}'):
             if types.get(str(r["criterion_id"])) in _METRIC_TYPES and ("metric", r["criterion_id"]) not in seen:
                 seen.add(("metric", r["criterion_id"]))
                 out.append(f"criterion {r['criterion_id']} is a {types[str(r['criterion_id'])]} criterion: give its "
                            'values under metrics as {"supplier_id": "A", "criterion_id": "' + str(r["criterion_id"])
                            + '", "value": 100}, not under scores')
+    named = sum(1 for r in scores if _named(r))
+    if 0 < named < len(scores):
+        out.append("some scores name an evaluator_id and some do not; name the evaluator on every score, "
+                   "or on none when one person did all the scoring")
     for r in metrics:
         need(r, ("supplier_id", "criterion_id", "value"), "a metrics row",
              '{"supplier_id": "A", "criterion_id": "price", "value": 100}')
@@ -241,8 +253,13 @@ def weighted_scoring(
             raise ScoringError(f"criterion {c} has type {byid[c].get('type')}; leaves must be scored, price or numeric_metric")
 
     by_sc: Dict[Tuple[str, str], Dict[str, float]] = {}
+    one_unnamed_scorer = bool(scores) and not any(_named(r) for r in scores)
     for r in scores:
-        s, c, e = str(r.get("supplier_id")), str(r.get("criterion_id")), str(r.get("evaluator_id"))
+        s, c = str(r.get("supplier_id")), str(r.get("criterion_id"))
+        e = _UNNAMED if one_unnamed_scorer else str(r.get("evaluator_id"))
+        if one_unnamed_scorer and (s, c) in by_sc:
+            raise ScoringError(f"two scores for {s} on {c} and no evaluator is named; "
+                               "name each evaluator, or give one score")
         if c not in byid:
             raise ScoringError(f"a score names criterion {c}, which is not in the criteria")
         v = _num(r.get("score") if not isinstance(r.get("score"), str) else (1 if r.get("score").lower() == "pass" else 0), f"score for {s} on {c}")
@@ -279,6 +296,9 @@ def weighted_scoring(
             alive.append(s)
 
     warnings: List[str] = []
+    if one_unnamed_scorer:
+        warnings.append("No evaluator was named, so the scores are treated as one scorer's; agreement "
+                        "between evaluators could not be assessed")
     aggregated: Dict[str, Dict[str, Dict[str, Optional[float]]]] = {}
     norm: Dict[str, Dict[str, float]] = {s: {} for s in alive}
     for c in scored:

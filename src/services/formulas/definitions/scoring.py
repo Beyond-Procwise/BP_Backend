@@ -46,7 +46,7 @@ _CASE = dict(criteria=_CRITERIA, scale_min=0, scale_max=5, scores=_SCORES, metri
              "type: scored | price | numeric_metric | gate_pass_fail | group, direction: lower_better | higher_better}"),
         Term("scale_min", FACTOR, "lowest score an evaluator may give"),
         Term("scale_max", FACTOR, "highest score an evaluator may give"),
-        Term("scores", ROWS, "rows like {supplier_id, criterion_id, evaluator_id, score}; gates: 1 pass, 0 fail"),
+        Term("scores", ROWS, "rows like {supplier_id, criterion_id, evaluator_id, score}; evaluator_id may be left out on every row when one person scored; gates: 1 pass, 0 fail"),
         Term("metrics", ROWS, "rows like {supplier_id, criterion_id, value} for price and numeric criteria",
              required=False),
         Term("consensus_scores", ROWS, "rows like {supplier_id, criterion_id, score} agreed by the panel",

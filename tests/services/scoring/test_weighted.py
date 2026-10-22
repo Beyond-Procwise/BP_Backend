@@ -236,7 +236,7 @@ def test_every_shape_problem_is_reported_in_one_go():
             scores=[{"supplier": "A", "criterion": "quality", "score": 4}],
             metrics=[{"supplier_id": "A", "criterion_id": "price", "price": 100}])
     msg = str(e.value)
-    assert "criterion_id" in msg and "supplier_id" in msg and "evaluator_id" in msg and "value" in msg
+    assert "criterion_id" in msg and "supplier_id" in msg and "value" in msg
 
 
 def test_a_price_given_as_a_score_is_pointed_at_metrics():
@@ -265,3 +265,38 @@ def test_a_price_with_no_direction_is_lower_is_better():
 def test_a_numeric_metric_with_no_direction_is_higher_is_better():
     crit = [CRITERIA[0], {"criterion_id": "price", "parent_id": None, "weight": "0.4", "type": "numeric_metric"}, CRITERIA[2]]
     assert total(run(criteria=crit), "B") == pytest.approx(0.6 * 0.6 + 0.4 * 1.0)
+
+
+# --- a single scorer need not be named ------------------------------------------------------------
+
+def _unnamed(rows):
+    return [{k: v for k, v in r.items() if k != "evaluator_id"} for r in rows]
+
+
+def test_scores_with_no_evaluator_named_give_the_same_totals_as_one_named_evaluator():
+    named, unnamed = run(), run(scores=_unnamed(SCORES))
+    assert [(r["supplier_id"], r["total"], r["rank"]) for r in unnamed["ranking"]] == \
+           [(r["supplier_id"], r["total"], r["rank"]) for r in named["ranking"]]
+
+
+def test_unnamed_scores_say_so_and_that_agreement_could_not_be_assessed():
+    out = run(scores=_unnamed(SCORES))
+    assert any("no evaluator" in m.lower() and "agreement" in m.lower() for m in out["warnings"])
+    assert not any("no evaluator" in m.lower() for m in run()["warnings"])
+
+
+def test_a_blank_evaluator_counts_as_not_named():
+    blank = [dict(r, evaluator_id="  ") for r in SCORES]
+    assert total(run(scores=blank), "A") == total(run(scores=_unnamed(SCORES)), "A")
+
+
+def test_some_scores_named_and_some_not_is_refused():
+    mixed = [dict(SCORES[0]), {k: v for k, v in SCORES[1].items() if k != "evaluator_id"}] + SCORES[2:]
+    with pytest.raises(w.ScoringError, match="evaluator_id"):
+        run(scores=mixed)
+
+
+def test_two_unnamed_scores_for_one_bid_and_criterion_are_refused_not_overwritten():
+    twice = _unnamed(SCORES) + [{"supplier_id": "A", "criterion_id": "quality", "score": 1}]
+    with pytest.raises(w.ScoringError, match="A.*quality"):
+        run(scores=twice)
