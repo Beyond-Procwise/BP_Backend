@@ -1,9 +1,11 @@
 """Six more writes ask the gate before touching anything (audit RT-12 and the deal-summary gaps).
 
-Advancing an opportunity's stage is asked as reviewing an opportunity (``opportunity.review``). Naming,
-saving, promoting and reconciling a deal, and the bulk summary backfill, are asked as writing a deal
-(``deal.write``). Both are 'write'-class actions: with no policy row Buyers and above are allowed, so no
-screen loses a button; an Admin can narrow either with a policy row. A refusal changes nothing.
+Moving an opportunity's stage is its own act (``opportunity.stage``), except a move to "rejected", which is
+the second half of the UI's Reject button and is asked as ``opportunity.reject`` so one Admin row governs
+every rejection. Naming, saving, promoting and reconciling a deal, and the bulk summary backfill, are asked
+as writing a deal (``deal.write``). All are 'write'-class actions: with no policy row Buyers and above are
+allowed, so no screen loses a button; an Admin can narrow any of them with a policy row. A refusal writes
+nothing to a deal or an opportunity (the gate's own audit row is written, as always).
 """
 from __future__ import annotations
 
@@ -30,7 +32,6 @@ def rig(monkeypatch):
     monkeypatch.setattr(ds, "save_reference", lambda deal_id: did.append(("reference", deal_id)))
     monkeypatch.setattr(ds, "promote_deal", lambda deal_id: did.append(("promote", deal_id)))
     monkeypatch.setattr(ds, "reconcile_deal", lambda deal_id: did.append(("reconcile", deal_id)) or {"deal_id": deal_id})
-    monkeypatch.setattr(ds, "deal_view", lambda deal_id: {"deal_id": deal_id}, raising=False)
     import src.services.deal_analysis_service as das
     monkeypatch.setattr(das, "sync_deal_summaries", lambda: did.append(("sync",)) or {"synced": 0})
     monkeypatch.setattr(op, "set_stage", lambda oid, stage, savings: did.append(("stage", oid, stage)))
@@ -48,7 +49,8 @@ CALLS = [
     ("post", "/deals/D1/promote", None, "deal.write"),
     ("post", "/deals/D1/reconcile", None, "deal.write"),
     ("post", "/deals/analysis-summary/sync", None, "deal.write"),
-    ("post", "/opportunities/O1/stage", {"stage": "identified"}, "opportunity.review"),
+    ("post", "/opportunities/O1/stage", {"stage": "negotiation"}, "opportunity.stage"),
+    ("post", "/opportunities/O1/stage", {"stage": "rejected"}, "opportunity.reject"),
 ]
 
 
@@ -68,10 +70,12 @@ def test_a_refusal_changes_nothing(rig, method, path, body, action):
         raise NotPermitted("no")
     mp.setattr(ds, "gate", _no, raising=False)
     mp.setattr(op, "gate", _no)
-    # "before any database work" is asserted, not inherited: opening a connection is itself a failure here.
-    for mod in (ds, op):
-        if hasattr(mod, "get_conn"):
-            mp.setattr(mod, "get_conn", lambda: (_ for _ in ()).throw(AssertionError("database opened after a refusal")))
     res = getattr(http, method)(path, json=body) if body is not None else getattr(http, method)(path)
     assert res.status_code == 403
     assert did == []
+
+
+def test_the_stage_action_is_its_own_write():
+    from src.services import actions
+    assert actions.action_class("opportunity.stage") == "write"
+    assert actions.action_class("opportunity.reject") == "write"

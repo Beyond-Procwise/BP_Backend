@@ -131,7 +131,11 @@ def post_link_deals(principal=Depends(require_user)) -> dict[str, Any]:
 @router.post("/{opportunity_id}/stage", summary="Advance an opportunity's lifecycle stage")
 def post_stage(opportunity_id: str, body: StageUpdate,
                principal=Depends(require_user)) -> dict[str, Any]:
-    gate("opportunity.review", principal, agent="opportunities_api",
+    # The UI's Reject button sends its second half here (stage: rejected): asked as opportunity.reject,
+    # the same action as the first half, so an Admin's row on rejections governs both. Every other move
+    # is its own act, opportunity.stage.
+    action = "opportunity.reject" if str(body.stage).strip().lower() == "rejected" else "opportunity.stage"
+    gate(action, principal, agent="opportunities_api",
          context={"opportunity_id": opportunity_id, "stage": body.stage})
     try:
         set_stage(opportunity_id, body.stage, body.realised_savings)

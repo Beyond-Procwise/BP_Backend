@@ -70,6 +70,10 @@ ACTIONS: Dict[str, str] = {
     # Answering "new information has arrived on something you rejected": re-open it or
     # keep it rejected. The same weight as the rejection it revisits.
     "opportunity.review": "write",
+    # Moving an opportunity's lifecycle stage (identified -> negotiation -> agreed -> realised -> closed).
+    # Its own name, not a second name for review: a condition an Admin writes for one must not stop the
+    # other. A move to "rejected" is asked as opportunity.reject, so one row governs every rejection.
+    "opportunity.stage": "write",
     "document.upload": "write",
     "document.promote": "write",
     # Bulk-rewrites po_id across every final table. Its own action so who may do it is its own setting.
