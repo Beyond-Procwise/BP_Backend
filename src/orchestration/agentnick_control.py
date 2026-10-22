@@ -1033,6 +1033,30 @@ def _reconciliation_tools() -> List[Tool]:
     ]
 
 
+def _pipeline_tools() -> List[Tool]:
+    """The contracts falling due, each with its stored calendar and notice clauses, in one call. Read-only."""
+    from src.services.contract_tools import pipeline as PL
+
+    return [
+        Tool(
+            name="contract_pipeline",
+            description=(
+                "The contracts on the register ending within a horizon (default 180 days), soonest first, each with "
+                "its end date, value, auto-renewal flag and renewal term, and for the soonest ones (default 10) the "
+                "stored calendar and the clauses that mention notice, termination, renewal or review quoted word for "
+                "word, plus whether the contract was ever read for clauses. Lists the auto-renewing ones, those never "
+                "read and those with no notice clause stored. One call replaces search_contracts plus one "
+                "obligation_tracker call per contract. It schedules and changes nothing and computes no notice "
+                "deadline. Narrow with supplier or status."
+            ),
+            parameters={"type": "object", "properties": {
+                "expires_within_days": {"type": "integer"}, "supplier": {"type": "string"}, "status": {"type": "string"},
+                "detail": {"type": "integer", "description": "how many of the soonest contracts carry clauses (max 15)"}}},
+            handler=PL.build,
+        ),
+    ]
+
+
 def build_tools(
     agent_nick: Any,
     *,
@@ -1071,6 +1095,7 @@ def build_tools(
         + _similarity_tools()
         + _cost_tools()
         + _reconciliation_tools()
+        + _pipeline_tools()
     )
     if exclude:
         blocked = set(exclude)

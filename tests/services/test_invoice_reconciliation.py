@@ -83,7 +83,7 @@ def test_invoice_and_po_filters_reach_the_queries():
 
 def test_period_defaults_and_bad_dates():
     out = IR.reconcile("S1", rows=_rows(), today=TODAY)
-    assert out["period"]["label"] != "custom"
+    assert out["period"]["label"] == "last 1095 days" and out["period"]["start"] == "2023-10-23"
     assert "date like" in IR.reconcile("S1", start="soon", rows=_rows(), today=TODAY)["note"]
     assert IR.reconcile("S1", start="2026-06-01", end="2026-01-01", rows=_rows(), today=TODAY)["note"] == "start is after end."
 

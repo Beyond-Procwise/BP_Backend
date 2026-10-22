@@ -13,17 +13,18 @@ same arithmetic the triage checks do); nothing is estimated, and a missing recei
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from src.services import supplier_resolve
-from src.services.analytics.period import Period, fiscal_year_to_date
+from src.services.analytics.period import Period
 from src.services.contract_tools import store
 
 log = logging.getLogger(__name__)
 
 MAX_LINES = 60
+DEFAULT_WINDOW_DAYS = 1095  # three years back when no period is given: a dispute is rarely about this quarter
 MAX_FINDINGS = 40
 KINDS = ("price_above_po", "price_below_po", "quantity_above_ordered", "quantity_below_ordered", "matched")
 
@@ -145,7 +146,8 @@ def reconcile(supplier: Any = None, invoice_id: Any = None, po_id: Any = None, s
             reply["note"] += " Nothing could be reconciled, which says nothing about whether the invoices are correct or incorrect."
         return reply
     sid, sname = resolved
-    default = fiscal_year_to_date(today or date.today())
+    now = today or date.today()
+    default = Period(now - timedelta(days=DEFAULT_WINDOW_DAYS), now, f"last {DEFAULT_WINDOW_DAYS} days")
     try:
         period = Period(_day(start, default.start, "start"), _day(end, default.end, "end"),
                         default.label if start is None and end is None else "custom")
