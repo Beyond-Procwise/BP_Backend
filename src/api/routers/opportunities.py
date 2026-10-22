@@ -131,6 +131,8 @@ def post_link_deals(principal=Depends(require_user)) -> dict[str, Any]:
 @router.post("/{opportunity_id}/stage", summary="Advance an opportunity's lifecycle stage")
 def post_stage(opportunity_id: str, body: StageUpdate,
                principal=Depends(require_user)) -> dict[str, Any]:
+    gate("opportunity.review", principal, agent="opportunities_api",
+         context={"opportunity_id": opportunity_id, "stage": body.stage})
     try:
         set_stage(opportunity_id, body.stage, body.realised_savings)
     except IllegalTransition as exc:
