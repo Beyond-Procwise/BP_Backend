@@ -776,7 +776,8 @@ def _spend_tools() -> List[Tool]:
                 "Invoiced spend cut by ONE dimension for a period: by = supplier, month, currency, country, "
                 "region, buyer, payment_terms or status. Defaults to the fiscal year to date and GBP. Returns the "
                 "total, invoice count, and the top cells with share and as-billed amounts; the total equals the "
-                "dashboard. There is no category or business unit. A currency with no rate is left out and "
+                "dashboard. order=bottom lists the smallest cells first (the tail); top_n up to 50. "
+                "There is no category or business unit. A currency with no rate is left out and "
                 "named; quote that. If spend cannot be read, say so rather than reporting zero."
             ),
             parameters={"type": "object", "properties": {
@@ -784,7 +785,9 @@ def _spend_tools() -> List[Tool]:
                 "start": {"type": "string", "description": "YYYY-MM-DD, optional."},
                 "end": {"type": "string", "description": "YYYY-MM-DD, optional."},
                 "currency": {"type": "string", "description": "ISO code, default GBP."},
-                "top_n": {"type": "integer"}}, "required": ["by"]},
+                "top_n": {"type": "integer"},
+                "order": {"type": "string", "enum": list(SC.ORDERS), "description": "top (default) or bottom."}},
+                "required": ["by"]},
             handler=SC.build,
         ),
     ]

@@ -44,6 +44,18 @@ def _scenarios(folder: Path, kinds, per_skill: int, include_expert: bool):
     return chosen
 
 
+def _swap(text: str, swaps) -> str:
+    """Apply every OLD=NEW swap in one pass, longest OLD first, so a NEW is never swapped again.
+    Live, 2026-10-22: 'Borealis=Kestrel Supplies 8' then 'Kestrel=Kestrel Supplies 8' produced
+    'Kestrel Supplies 8 Supplies 8'."""
+    import re
+    if not swaps:
+        return text
+    table = dict(swaps)
+    pattern = re.compile("|".join(re.escape(old) for old in sorted(table, key=len, reverse=True)))
+    return pattern.sub(lambda m: table[m.group(0)], text)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
@@ -69,8 +81,7 @@ def main(argv=None) -> int:
             # clauses."); an optional `context:` line in the scenario gives the router and the model the setting.
             if sc.get("context"):
                 sc = {**sc, "prompt": f"{sc['context'].strip()} {sc['prompt']}"}
-            for old_name, new_name in swaps:
-                sc = {**sc, "prompt": sc["prompt"].replace(old_name, new_name)}
+            sc = {**sc, "prompt": _swap(sc["prompt"], swaps)}
             t0 = time.time()
             try:
                 res = control.reason(nick, sc["prompt"], user_id="scenario-runner")

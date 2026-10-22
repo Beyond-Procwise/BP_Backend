@@ -63,7 +63,11 @@ def _day(value: Any, default: date, name: str) -> date:
         raise ValueError(f"{name} must be a date like 2026-01-31.") from None
 
 
-def build(by: Any = None, start: Any = None, end: Any = None, currency: Any = None, top_n: Any = None, *,
+ORDERS = ("top", "bottom")
+
+
+def build(by: Any = None, start: Any = None, end: Any = None, currency: Any = None, top_n: Any = None,
+          order: Any = None, *,
           fetch: Optional[Callable[[str, Period], Sequence[tuple]]] = None,
           display: Optional[DisplayCurrency] = None, today: Optional[date] = None) -> Dict[str, Any]:
     if by not in DIMENSIONS:
@@ -77,6 +81,9 @@ def build(by: Any = None, start: Any = None, end: Any = None, currency: Any = No
         return {"found": False, "note": str(exc)}
     if period.start > period.end:
         return {"found": False, "note": "start is after end."}
+    order = "top" if order in (None, "") else str(order).lower()
+    if order not in ORDERS:
+        return {"found": False, "note": f"order must be one of: {', '.join(ORDERS)}."}
     try:
         limit = max(1, min(int(top_n), MAX_TOP_N)) if top_n is not None else DEFAULT_TOP_N
     except (TypeError, ValueError):
@@ -118,14 +125,18 @@ def build(by: Any = None, start: Any = None, end: Any = None, currency: Any = No
     out_cells.sort(key=lambda c: (c["amount"] is None, -(c["amount"] or 0), str(c[by])))
     for c in out_cells:
         c["share_pct"] = None if c["amount"] is None or total == 0 else float(round(Decimal(str(c["amount"])) / total * 100, 1))
+    # Live, 2026-10-22: a tail review could not see the small suppliers because only the top 15 of 987 came
+    # back. order=bottom lists the smallest cells first (unconverted cells last either way).
+    if order == "bottom":
+        out_cells.sort(key=lambda c: (c["amount"] is None, c["amount"] or 0, str(c[by])))
     shown = out_cells[:limit]
     note = f"Invoiced amounts as stored, converted once per currency at {display.rate_note()}."
     if excluded:
         note += (f" No rate for {', '.join(excluded)}: those amounts are left out of the converted figures and "
                  "shown as billed.")
     if len(out_cells) > limit:
-        note += f" Showing the top {limit} of {len(out_cells)}; the total covers all."
+        note += f" Showing the {order} {limit} of {len(out_cells)}; the total covers all."
     return {"found": True, "by": by, "currency": display.target,
             "period": {"label": period.label, "start": str(period.start), "end": str(period.end)},
-            "total": float(round(total, 2)), "invoices": invoices, "cell_count": len(out_cells),
+            "total": float(round(total, 2)), "invoices": invoices, "cell_count": len(out_cells), "order": order,
             "cells": shown, "excluded_currencies": excluded, "note": note}

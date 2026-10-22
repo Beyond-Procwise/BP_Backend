@@ -60,7 +60,9 @@ def _skill_text(skill: Any) -> str:
     return (
         f"Skill loaded for this request: {skill.name}\n"
         "Follow it. It is already here in full, so do not call list_skills or use_skill for it. "
-        "Use its settings as given and no others.\n\n"
+        "Use its settings as given and no others. Where it says to read a policy, call get_policy once for "
+        "that topic; when nothing governs the case, say so and carry on with the playbook's own defaults "
+        "rather than trying other slugs. 'SC-007' is the name of the policy-hooks section, not a policy.\n\n"
         f"Settings:\n{json.dumps(settings, indent=2, default=str)}\n\n"
         f"{skill.body.strip()}"
     )

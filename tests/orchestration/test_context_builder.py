@@ -84,3 +84,11 @@ def test_today_is_stated_only_when_given_and_sits_right_after_the_base():
     assert ctx.layers[1].text.startswith("Today is Thursday 2026-10-22.") and "never guess the year" in ctx.layers[1].text
     assert ctx.system == "BASE\n\n" + ctx.layers[1].text + "\n\nEXTRA"
     assert [l.name for l in cb.build(base="BASE").layers] == ["base"]
+
+
+def test_the_skill_layer_says_a_policy_is_read_once_and_that_sc_007_is_a_heading(make_skill_obj=None):
+    from types import SimpleNamespace
+    skill = SimpleNamespace(name="demo", config={"thresholds": {}}, body="## Policy hooks (SC-007)\n\nRead the policy.")
+    text = cb._skill_text(skill)
+    assert "call get_policy once for that topic" in text
+    assert "'SC-007' is the name of the policy-hooks section, not a policy" in text

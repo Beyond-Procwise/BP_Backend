@@ -41,6 +41,14 @@ IDENTIFIER_ARGS = frozenset({
 })
 MIN_IDENTIFIER_CHARS = 3
 
+#: Names a model passes to a lookup. Live, 2026-10-22: given only "the supplier we are leaving", the model
+#: called search_contracts with "Acme Logistics", supplier_lookup with "large_commodity_supplier" and
+#: calc_supplier_scorecard with "ABC Corp": names from nowhere, each costing a round. A name is sourced
+#: when every word of it (three letters or more) appears in the request, an earlier result or the settings;
+#: "Kestrel" in the request sources "Kestrel", and a lookup that returned "Kestrel Supplies 8" sources that.
+NAME_ARGS = frozenset({"supplier", "supplier_name"})
+_NAME_WORD = re.compile(r"[a-z]{3,}")
+
 # Tools whose results describe what exists (inputs, ranges, playbooks), not what a value is. Their numbers
 # are never a source: "range [0, 1]" in a catalogue must not make a duty rate of 0 look supplied.
 NON_SOURCE_TOOLS = frozenset({"list_calculations", "list_governance", "list_skills", "use_skill", "get_prompt",
@@ -144,6 +152,42 @@ def _source_texts(task: str, calls: Sequence[Any], skill_config: Optional[Mappin
     return texts
 
 
+def _name_values(node: Any, path: str = "") -> Iterable[Tuple[str, str]]:
+    """Every name string sitting under a name argument, anywhere in the arguments."""
+    if isinstance(node, Mapping):
+        for k, v in node.items():
+            p = f"{path}.{k}" if path else str(k)
+            if k in NAME_ARGS:
+                for leaf_path, leaf in _leaves(v, p):
+                    if isinstance(leaf, str) and _NAME_WORD.search(leaf.lower()):
+                        yield leaf_path, leaf.strip()
+            else:
+                yield from _name_values(v, p)
+    elif isinstance(node, (list, tuple)):
+        for i, v in enumerate(node):
+            yield from _name_values(v, f"{path}[{i}]")
+
+
+def untraced_names(args: Mapping[str, Any], *, task: str, calls: Sequence[Any],
+                   skill_config: Optional[Mapping[str, Any]] = None) -> List[Tuple[str, str]]:
+    """The names in ``args`` with a word that appears in none of the request, a successful earlier tool
+    result or the skill's settings. Words are compared case-insensitively; short words are ignored."""
+    haystack = set(_NAME_WORD.findall("\n".join(_source_texts(task, calls, skill_config)).lower()))
+    return [(path, value) for path, value in _name_values(args)
+            if not set(_NAME_WORD.findall(value.lower())) <= haystack]
+
+
+def name_refusal(tool: str, found: Sequence[Tuple[str, str]]) -> Dict[str, Any]:
+    listed = "; ".join(f"{p} = {v}" for p, v in found)
+    return {
+        "result": "blocked",
+        "reasonCode": "name_not_sourced",
+        "reason": (f"{tool} was not run: {listed} is a name that appears in neither the request nor any earlier "
+                   "tool result. Never invent a supplier. Use the name the request gives, find it with "
+                   "supplier_lookup or supplier_discovery, or ask the user which supplier they mean."),
+    }
+
+
 def untraced_identifiers(args: Mapping[str, Any], *, task: str, calls: Sequence[Any],
                          skill_config: Optional[Mapping[str, Any]] = None) -> List[Tuple[str, str]]:
     """The identifiers in ``args`` that appear in neither the request nor any successful earlier tool
@@ -205,6 +249,9 @@ def make_checker(task: str, skill_config: Optional[Mapping[str, Any]], *,
         if found:
             return refusal(name, found)
         ids = untraced_identifiers(args, task=task, calls=calls, skill_config=skill_config)
-        return identifier_refusal(name, ids) if ids else None
+        if ids:
+            return identifier_refusal(name, ids)
+        names = untraced_names(args, task=task, calls=calls, skill_config=skill_config)
+        return name_refusal(name, names) if names else None
 
     return check

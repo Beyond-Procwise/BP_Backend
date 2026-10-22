@@ -187,3 +187,32 @@ def test_the_two_figures_of_a_percentage_change_must_come_from_the_run():
     assert found({"name": "deal.pct_change", "inputs": {"new": 123456, "base": 98765}}) == [("inputs.new", 123456), ("inputs.base", 98765)]
     got = [call("invoice_reconciliation", {"differences_by_currency": {"GBP": {"price_above_po": 25.0}}, "invoiced_total": 1325.0})]
     assert found({"name": "deal.pct_change", "inputs": {"new": 25.0, "base": 1325.0}}, calls=got) == []
+
+
+def names(args, task="what do we owe Kestrel on the way out?", calls=()):
+    return ac.untraced_names(args, task=task, calls=list(calls))
+
+
+def test_a_supplier_name_from_nowhere_is_refused_and_one_the_request_holds_passes():
+    assert names({"supplier": "Acme Logistics"}) == [("supplier", "Acme Logistics")]
+    assert names({"supplier": "kestrel"}) == []
+    assert names({"supplier": "Kestrel Supplies 8"}) == [("supplier", "Kestrel Supplies 8")]
+
+
+def test_a_name_a_lookup_returned_is_a_source_but_a_failed_call_is_not():
+    found = call("supplier_lookup", {"suppliers": [{"name": "Kestrel Supplies 8"}]})
+    assert names({"supplier": "Kestrel Supplies 8"}, calls=[found]) == []
+    assert names({"supplier": "Kestrel Supplies 8"}, calls=[call("supplier_lookup", {"name": "Kestrel Supplies 8"}, ok=False)])
+
+
+def test_names_are_checked_wherever_they_sit_and_words_under_three_letters_are_ignored():
+    assert names({"filters": {"supplier_name": "ABC Corp"}}) == [("filters.supplier_name", "ABC Corp")]
+    assert names({"supplier": "Kestrel & Co"}) == []
+
+
+def test_the_checker_refuses_an_invented_supplier_and_tells_the_model_to_ask_or_look_it_up():
+    check = ac.make_checker("We are leaving the supplier. Just send the notice.", None, today=date(2026, 10, 22))
+    r = check("search_contracts", {"supplier": "Acme Logistics"}, SimpleNamespace(calls=[]))
+    assert r and r["reasonCode"] == "name_not_sourced"
+    assert "Acme Logistics" in r["reason"] and "ask the user which supplier" in r["reason"]
+    assert check("search_contracts", {"query": "termination"}, SimpleNamespace(calls=[])) is None

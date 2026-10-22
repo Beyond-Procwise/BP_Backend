@@ -72,3 +72,18 @@ def test_default_period_is_the_fiscal_year_to_date():
     seen = {}
     SC.build("month", fetch=lambda by, p: seen.setdefault("p", p) and [], display=GBP, today=TODAY)
     assert (seen["p"].start, seen["p"].end) == (date(2026, 4, 1), TODAY)
+
+
+def test_order_bottom_lists_the_smallest_cells_first_and_says_so():
+    rows = [("Acme", "GBP", Decimal("600"), 3), ("Beta", "GBP", Decimal("400"), 2), ("Tiny", "GBP", Decimal("5"), 1)]
+    out = SC.build("supplier", fetch=_fetch(rows), display=GBP, top_n=2, order="bottom", today=TODAY)
+    assert [c["supplier"] for c in out["cells"]] == ["Tiny", "Beta"]
+    assert out["order"] == "bottom" and out["total"] == 1005.0 and out["cell_count"] == 3
+    assert "Showing the bottom 2 of 3" in out["note"]
+
+
+def test_order_defaults_to_top_and_an_unknown_order_is_refused_by_name():
+    rows = [("Acme", "GBP", Decimal("600"), 3), ("Tiny", "GBP", Decimal("5"), 1)]
+    assert SC.build("supplier", fetch=_fetch(rows), display=GBP, today=TODAY)["order"] == "top"
+    out = SC.build("supplier", fetch=_fetch(rows), display=GBP, order="sideways", today=TODAY)
+    assert out["found"] is False and "order must be one of" in out["note"]
