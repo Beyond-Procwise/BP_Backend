@@ -28,6 +28,8 @@ routing:                         # how the orchestrator decides this skill cover
     - "second source"
     - "single source risk"
     - "approach the category"
+    - "should we approach"
+    - "how should we approach"
     - "approach this category"
     - "over the next three years"
     - "over the next few years"

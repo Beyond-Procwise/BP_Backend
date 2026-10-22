@@ -47,6 +47,8 @@ routing:                         # how the orchestrator decides this skill cover
     - "go to market"
     - "go-to-market"
     - "tender timeline"
+    - "timeline for a new"
+    - "timeline for the new"
     - "bid timeline"
     - "weights for the evaluation"
     - "evaluation weights"

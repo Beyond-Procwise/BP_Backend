@@ -9,6 +9,14 @@ unavailable_tools:
   - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
+    - "price cut*"
+    - "price reduction*"
+    - "log the saving*"
+    - "log a saving"
+    - "book the saving*"
+    - "book a saving"
+    - "record the saving*"
+    - "record a saving"
     - "saving*"
     - "saved"
     - "cost avoidance"

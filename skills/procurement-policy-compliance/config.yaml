@@ -23,6 +23,13 @@ rule_policy_keywords:            # a rule counts as governed when an active poli
   waiver_rules: [waiver]
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
   strong:                        # 3 points each; a trailing * matches any ending
+    - "can i raise"
+    - "can we raise"
+    - "raise a po"
+    - "raise a purchase order"
+    - "allowed to raise"
+    - "allowed to order"
+    - "allowed to buy"
     - "approval limit*"
     - "approval threshold*"
     - "delegated authority"

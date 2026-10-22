@@ -46,7 +46,6 @@ routing:                         # how the orchestrator decides this skill cover
     - "three way match"
     - "invoice*"
     - "supplier"
-    - "po"
     - "purchase order"
     - "quantity"
     - "price"

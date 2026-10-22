@@ -5,7 +5,7 @@
   expert_graded: true
 - id: t2
   kind: typical
-  prompt: How much of our spend is with suppliers that have an ESG rating on record?
+  prompt: How much of our spend is with suppliers that have a sustainability rating on record?
   expect: Coverage share from the cube's amounts in one currency; stale ratings excluded from in-date coverage; excluded currencies shown as billed
   expert_graded: false
 - id: t3
