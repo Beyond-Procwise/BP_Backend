@@ -40,7 +40,7 @@ def _rows(suppliers=(("S1", "Acme Ltd"),), spend=(("GBP", Decimal("1200.50"), 3)
             return list(suppliers)
         if "bp_invoice_trgt i" in sql:
             return list(spend)
-        if "WITH pol" in sql:
+        if "bp_invoice_line_items_trgt" in sql:
             return list(prices)
         if "bp_goods_receipt_trgt" in sql:
             return list(deliveries)

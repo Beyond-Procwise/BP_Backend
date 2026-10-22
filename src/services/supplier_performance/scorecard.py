@@ -47,22 +47,29 @@ _SPEND_SQL = """
 """
 # Invoice lines matched to exactly one PO line on (po_id, item_id), billed in the period, with both
 # header currencies so a pair priced in different currencies is left unassessed, never taken 1:1.
+# The supplier's invoice lines are taken first and only their POs' lines are grouped: the QBR's shape
+# of this query grouped every PO line in the database and ran for over a minute per supplier.
 _PRICE_LINES_SQL = """
-WITH pol AS (
+WITH inv AS (
+    SELECT il.po_id, il.item_id, il.unit_price, il.quantity, h.currency
+      FROM proc.bp_invoice_trgt h
+      JOIN proc.bp_invoice_line_items_trgt il ON il.invoice_id = h.invoice_id
+     WHERE h.supplier_id = %s
+       AND h.invoice_date BETWEEN %s AND %s
+       AND il.po_id IS NOT NULL AND il.item_id IS NOT NULL
+       AND il.unit_price IS NOT NULL AND il.quantity IS NOT NULL
+), pol AS (
     SELECT l.po_id, l.item_id, MIN(l.unit_price) AS up, MIN(h.currency) AS cur, COUNT(*) AS n
       FROM proc.bp_po_line_items_trgt l
       JOIN proc.bp_purchase_order_trgt h USING (po_id)
-     WHERE l.item_id IS NOT NULL AND l.unit_price IS NOT NULL
+     WHERE l.po_id IN (SELECT DISTINCT po_id FROM inv)
+       AND l.item_id IS NOT NULL AND l.unit_price IS NOT NULL
      GROUP BY l.po_id, l.item_id
 )
-SELECT pol.up, il.unit_price, il.quantity, h.currency, pol.cur
-  FROM proc.bp_invoice_line_items_trgt il
-  JOIN proc.bp_invoice_trgt h ON h.invoice_id = il.invoice_id
-  JOIN pol ON pol.po_id = il.po_id AND pol.item_id = il.item_id
+SELECT pol.up, inv.unit_price, inv.quantity, inv.currency, pol.cur
+  FROM inv
+  JOIN pol ON pol.po_id = inv.po_id AND pol.item_id = inv.item_id
  WHERE pol.n = 1
-   AND h.supplier_id = %s
-   AND h.invoice_date BETWEEN %s AND %s
-   AND il.unit_price IS NOT NULL AND il.quantity IS NOT NULL
 """
 # One row per PO: the promised date and the date of the LAST receipt against it (a delivery is
 # complete when its last receipt lands). A PO with no receipt row is unassessed, not late: an
