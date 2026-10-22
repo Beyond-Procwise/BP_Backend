@@ -682,6 +682,7 @@ def _contract_tools() -> List[Tool]:
     from src.services.contract_tools import clauses as CL
     from src.services.contract_tools import redline as RL
     from src.services.contract_tools import search as SE
+    from src.services.contract_tools import tracker as TK
 
     return [
         Tool(
@@ -710,6 +711,23 @@ def _contract_tools() -> List[Tool]:
                 "document_id": {"type": "string"}, "clause_type": {"type": "string"},
                 "containing": {"type": "string"}}, "required": ["document_id"]},
             handler=CL.extract,
+        ),
+        Tool(
+            name="obligation_tracker",
+            description=(
+                "One contract's administration calendar from what is stored: dates, status, auto-renewal flag "
+                "and renewal term from the register, plus the stored clauses that mention a notice, termination, "
+                "renewal, review, adjustment or deadline, quoted word for word. Pass contract_id, document_id or "
+                "words from the title (and the supplier to narrow). It registers and schedules nothing. The "
+                "notice period is not a stored field, so it never computes a notice deadline: read the period "
+                "from the quoted clause with the user. If it says the register could not be read, say so."
+            ),
+            parameters={"type": "object", "properties": {
+                "contract": {"type": "string", "description": "contract_id, document_id or words from the title"},
+                "supplier": {"type": "string"},
+                "horizon_days": {"type": "integer", "description": "how far ahead counts as 'within horizon' (default 180)"}},
+                "required": ["contract"]},
+            handler=TK.track,
         ),
         Tool(
             name="redline_compare",
@@ -805,6 +823,33 @@ def _supplier_tools() -> List[Tool]:
     ]
 
 
+def _performance_tools() -> List[Tool]:
+    """A supplier's performance from the organisation's own records. Read-only; nothing is scored by opinion."""
+    from src.services.supplier_performance import scorecard as SC
+
+    return [
+        Tool(
+            name="calc_supplier_scorecard",
+            description=(
+                "One supplier's scorecard measured from this organisation's own records for a period (default: "
+                "fiscal year to date): invoiced spend, purchase price variance against PO prices on matched lines, "
+                "on-time delivery from PO expected dates against goods receipts (tolerances from the governed "
+                "supplier_scorecard policy), and open findings. Each dimension states how many records it rests "
+                "on, or why it is not assessed. In-full delivery, quality, responsiveness, ESG and SLA credits "
+                "are not recorded here: say so and ask. It forms no composite; the category owner's weights can "
+                "go into supplier.composite_score. If several suppliers match it asks which."
+            ),
+            parameters={"type": "object", "properties": {
+                "supplier": {"type": "string", "description": "supplier name or supplier_id"},
+                "start": {"type": "string", "description": "YYYY-MM-DD"},
+                "end": {"type": "string", "description": "YYYY-MM-DD"},
+                "currency": {"type": "string", "description": "display currency, e.g. GBP"}},
+                "required": ["supplier"]},
+            handler=SC.build,
+        ),
+    ]
+
+
 def build_tools(
     agent_nick: Any,
     *,
@@ -836,6 +881,7 @@ def build_tools(
         + _ledger_tools()
         + _spend_tools()
         + _supplier_tools()
+        + _performance_tools()
     )
     if exclude:
         blocked = set(exclude)

@@ -34,7 +34,7 @@ NOT AVAILABLE: conflict_minerals_check. Ask for the result and date where tin, t
 NOT AVAILABLE: financial_health_score. Ask for the probability of default, the score and its 12-month change with their date; if none, record "not performed".
 NOT AVAILABLE: esg_rating_lookup. Ask for the rating, the provider and the date; if none, record "not available" and request it by questionnaire.
 NOT AVAILABLE: monitor_risk_events. Ask the user or compliance for current country and event risk, with the index version and date; if none, record "not performed".
-NOT AVAILABLE: calc_supplier_scorecard. For incumbents, ask for the scorecard result and period; if none, record quality track record as "not available".
+For incumbents, use `tool:calc_supplier_scorecard` with the supplier and period for spend, purchase price variance, on-time delivery and open findings measured from this organisation's own records, and report each with its record count or its not-assessed reason. Quality is not recorded: record quality track record as "not available" unless the user supplies it with its period.
 NOT AVAILABLE: build_xlsx. Give the funnel and the registers as text tables.
 NOT AVAILABLE: build_docx. Give the memo as text using templates/memo.md.
 

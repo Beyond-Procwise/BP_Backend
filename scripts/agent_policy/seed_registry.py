@@ -33,6 +33,8 @@ FIXED_TOOLS = {
     "supplier_discovery": ["item", "country", "preferred_only", "limit"],
     "supplier_lookup": ["supplier"],
     "build_spend_cube": ["by", "start", "end", "currency", "top_n"],
+    "obligation_tracker": ["contract", "supplier", "horizon_days"],
+    "calc_supplier_scorecard": ["supplier", "start", "end", "currency"],
 }
 
 # Tools the two older tool loops offer (services/governance_tools/governed_reasoning.py and

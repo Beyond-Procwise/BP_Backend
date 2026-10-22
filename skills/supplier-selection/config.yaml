@@ -24,7 +24,6 @@ unavailable_tools:
   - financial_health_score
   - esg_rating_lookup
   - monitor_risk_events
-  - calc_supplier_scorecard
   - build_xlsx
   - build_docx
 routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)

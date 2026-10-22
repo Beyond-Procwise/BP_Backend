@@ -33,7 +33,7 @@ Use `tool:build_spend_cube` to cut invoiced spend by supplier, month, currency, 
 NOT AVAILABLE: build_docx. Give the recommendation and clause text as plain text.
 NOT AVAILABLE: build_xlsx. Give the sensitivity table as a text table.
 NOT AVAILABLE: render_chart. Describe the price paths in a table; do not claim a chart was made.
-NOT AVAILABLE: obligation_tracker. Give the administration calendar as a table; nothing is registered or scheduled.
+Use `tool:obligation_tracker` to read the contract's stored dates and the clauses that mention review, adjustment, index or notice, quoted word for word, and build the administration calendar from them as a table. It registers and schedules nothing: say the calendar is a proposal for the contract owner to put in their diary.
 
 ## Workflow
 

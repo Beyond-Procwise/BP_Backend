@@ -56,7 +56,7 @@
 - id: m3
   kind: missing_data
   prompt: Check whether obligation tracker has the notice date for this contract.
-  expect: 'obligation_tracker NOT AVAILABLE: asks the user for the dates and labels them unverified'
+  expect: 'Calls obligation_tracker; reports the stored expiry and auto-renewal flag; quotes the notice clause and reads the period from it with the user; computes no notice deadline without a quoted period'
   expert_graded: false
 - id: m4
   kind: missing_data

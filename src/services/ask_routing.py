@@ -38,6 +38,7 @@ READ_ONLY_TOOLS = frozenset({
     # needs one is never injected into the Ask box.
     "check_policy", "search_contracts", "extract_clauses", "redline_compare",
     "savings_tracker", "build_spend_cube", "supplier_discovery", "supplier_lookup",
+    "obligation_tracker", "calc_supplier_scorecard",
 })
 
 #: Told to every answering agent, so one whose instructions say "send" or
