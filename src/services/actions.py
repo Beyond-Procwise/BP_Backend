@@ -61,6 +61,8 @@ ACTIONS: Dict[str, str] = {
     "contract.write": "write",
     "deal.write": "write",
     "finding.resolve": "write",
+    # A manual re-triage recomputes a deal's findings and writes them to the Action Centre.
+    "finding.triage": "write",
     # Rejecting an opportunity is permanent in the sense that matters: the reason is
     # written against it and the stage moves, and the opportunity card is where a person
     # does it. "Pursue", the card's other verb, gets NO name of its own -- it opens a

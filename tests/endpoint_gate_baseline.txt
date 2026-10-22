@@ -29,12 +29,9 @@ src/api/routers/reports.py::POST router /presentation-mode::presentation_set
 src/api/routers/requirements.py::POST router /message::post_message
 src/api/routers/requirements.py::POST router /run-workflow::post_run_workflow
 src/api/routers/stream.py::POST router /plan::stream_plan
-src/api/routers/summary.py::POST router /precompute::post_precompute
-src/api/routers/summary.py::POST router ::post_summary
 src/api/routers/support.py::POST router /contact/stream::contact_support_stream
 src/api/routers/support.py::POST router /contact::contact_support
 src/api/routers/support.py::POST router /{reference}/confirm::confirm_support
-src/api/routers/triage.py::POST router /deals/{deal_id}/run::run_deal_triage
 src/api/routers/value_ledger.py::POST router /findings/{discrepancy_id}/outcome::post_outcome
 src/api/routers/value_ledger.py::POST router /findings/{discrepancy_id}/settle::post_settle
 src/api/routers/value_ledger.py::POST router /opportunities/{opportunity_id}/realise::post_realise
