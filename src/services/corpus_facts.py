@@ -433,7 +433,25 @@ def fetch_facts(agent_nick, query: str) -> Optional[Dict[str, Any]]:
 
     if not any(facts.values()):
         return None
-    return {"intent": intent or "graph", **facts}
+    out = {"intent": intent or "graph", **facts}
+    note = scope_note(intent)
+    if note:
+        out["scope"] = note
+    return out
+
+
+#: Intents whose figures are counted over the whole corpus: the words in the query choose the subject
+#: (suppliers, spend, purchase orders ...) but are NOT applied as a filter. Live, 2026-10-22: asked about
+#: laptop computers, the model read the corpus-wide 5,042 purchase orders as laptop purchase orders.
+CORPUS_WIDE_INTENTS = frozenset({"deals", "suppliers", "spend", "findings", "invoices", "quotes", "purchase_orders"})
+
+
+def scope_note(intent: Optional[str]) -> Optional[str]:
+    if intent in CORPUS_WIDE_INTENTS:
+        return ("whole corpus: these counts, rankings and amounts cover every record on file; the item, category or "
+                "supplier words in the question were NOT applied as a filter. Do not present them as figures for "
+                "that item or supplier; use a tool that takes the item or supplier as a parameter for that.")
+    return None
 
 
 def render_facts(facts: Dict[str, Any]) -> str:
