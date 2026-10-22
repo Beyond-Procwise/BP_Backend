@@ -527,3 +527,15 @@ def test_when_the_rewrite_narrates_again_the_narrating_sentences_are_cut_out(mod
     fn = ex.run if mode == "whole" else ex.run_stream
     res = fn(s.wiring(), "task", [tool("a")], "system", model="m", max_rounds=4, timeout_s=5)
     assert res.answer == "DDP places the risk on the seller." and res.error is None
+
+
+@pytest.mark.parametrize("mode", ["whole", "stream"])
+def test_narration_introduced_by_the_safety_gates_retry_is_scrubbed(mode):
+    """Runs 5 to 11, 2026-10-22: the gate's re-frame instruction produced 'You are on the X screen'."""
+    s = Script([{"role": "assistant", "content": "", "tool_calls": [tc("a")]},
+                {"role": "assistant", "content": "The lane is covered by two carriers on record."}])
+    w = s.wiring()
+    w = ex.Wiring(**{**w.__dict__, "safety_gate": lambda content, *a, **k: "You are on the Incoterms screen. The lane is covered by two carriers on record."})
+    fn = ex.run if mode == "whole" else ex.run_stream
+    res = fn(w, "task", [tool("a")], "system", model="m", max_rounds=4, timeout_s=5)
+    assert res.answer == "The lane is covered by two carriers on record."

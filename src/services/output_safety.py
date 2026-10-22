@@ -60,13 +60,15 @@ DEFAULT_FIELD = "default"
 
 # Handed back to the model when its draft was mechanism-level. It already has the facts — it
 # framed them wrong — so this is a re-frame, not a refusal.
+# Live, 2026-10-22 (runs 5 to 11): the old wording asked for "the screen they are on, the button they press", and
+# every answer that went through this retry came back as "You are on the X screen. The system shows...".
+# The retry asks for the same facts in plain words, not for a tour of the product.
 RETRY_INSTRUCTION = (
     "Your previous answer described how the system works internally. Never do that. "
-    "Answer again in terms of what the USER sees and does: the screen they are on, the "
-    "button they press, the status they will see, what it means for their document or "
-    "their deal. Do not mention databases, tables, files, code, endpoints, environment "
-    "variables, pipelines, stages, triggers, queues, workers or models. Same facts, "
-    "explained as the product — not as the architecture."
+    "Answer again as yourself, in plain text, with the same facts and figures: what was found, what "
+    "it means for the user's document or deal, and what they can do next. Do not mention databases, "
+    "tables, files, code, endpoints, environment variables, pipelines, stages, triggers, queues, "
+    "workers or models, and do not describe screens, pages, buttons or what 'the system' did."
 )
 
 

@@ -88,15 +88,15 @@ def main(argv=None) -> int:
     # The gate replaces a leaking answer with a stock sentence and logs why; the log did not reach the report
     # (runs 7 and 9), so the reason is captured here and written beside the answer.
     withheld: list = []
-    _enforce = OS.enforce
+    _inspect = OS.inspect
 
     def _spy(text, **kw):
-        out = _enforce(text, **kw)
-        if out == OS.SAFE_REPLY and text != OS.SAFE_REPLY:
-            withheld.append({"matched": [v.match for v in OS.inspect(text, prose=kw.get("prose", True))][:6], "head": text[:300]})
-        return out
+        found = _inspect(text, **kw)
+        if found:
+            withheld.append({"kinds": sorted({v.kind for v in found}), "matched": [v.match for v in found][:6], "head": (text or "")[:300]})
+        return found
     for _m in _modules:
-        _m.enforce = _spy
+        _m.inspect = _spy
     nick = _nick()
     skills_dir = ROOT / "skills"
     folders = sorted(p for p in skills_dir.iterdir() if p.is_dir() and (not args.skill or p.name in args.skill))

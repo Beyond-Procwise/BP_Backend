@@ -188,6 +188,7 @@ def _closing_turn(w: Wiring, messages: List[Dict[str, Any]], model: str, timeout
         return result
     messages.append({"role": "assistant", "content": content})
     answer = w.safety_gate(content, messages, [], model, timeout_s, result)
+    answer = scrub_screen_talk(answer) if narrates_a_screen(answer) else answer
     answer, again = _release(w, answer, result, retried)
     if again is not None:
         messages.append({"role": "user", "content": again})
@@ -198,6 +199,7 @@ def _closing_turn(w: Wiring, messages: List[Dict[str, Any]], model: str, timeout
             w.log.warning("closing retry failed: %s", exc)
         content = _unnarrated(w, content, messages, model, timeout_s, result)
         answer = w.safety_gate(content, messages, [], model, timeout_s, result)
+        answer = scrub_screen_talk(answer) if narrates_a_screen(answer) else answer
         answer, _ = _release(w, answer, result, True)
     result.answer = answer
     result.closed_without_tools = True
@@ -239,6 +241,7 @@ def run_stream(w: Wiring, task: str, tools: Sequence[Any], system: str, *, model
             # tool stages tick over live, so nothing looks frozen.
             content = _unnarrated(w, content, messages, model, timeout_s, result)
             answer = w.safety_gate(content, messages, schemas, model, timeout_s, result)
+            answer = scrub_screen_talk(answer) if narrates_a_screen(answer) else answer
             answer, again = _release(w, answer, result, retried)
             if again is not None:
                 retried = True
@@ -308,6 +311,7 @@ def run(w: Wiring, task: str, tools: Sequence[Any], system: str, *, model: str, 
                 continue
             content = _unnarrated(w, content, messages, model, timeout_s, result)
             answer = w.safety_gate(content, messages, schemas, model, timeout_s, result)
+            answer = scrub_screen_talk(answer) if narrates_a_screen(answer) else answer
             answer, again = _release(w, answer, result, retried)
             if again is not None:
                 retried = True

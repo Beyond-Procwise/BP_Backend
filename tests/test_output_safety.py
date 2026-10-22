@@ -402,3 +402,11 @@ def test_a_procurement_pipeline_is_product_english_but_a_processing_pipeline_is_
     for bad in ("Your document goes through the extraction pipeline first.", "The pipeline stages run nightly.",
                 "It sits in the data pipeline until promoted."):
         assert [v for v in osafe.inspect(bad) if v.kind == "mechanism"], bad
+
+
+
+def test_the_retry_instruction_asks_for_plain_facts_not_a_tour_of_the_screen():
+    from services import output_safety as OS
+    low = OS.RETRY_INSTRUCTION.lower()
+    assert "the screen they are on" not in low and "button they press" not in low
+    assert "do not describe screens" in low and "same facts" in low
