@@ -1,0 +1,22 @@
+should_trigger:
+- Give me a spend analysis for last year
+- Who are our biggest suppliers by spend?
+- Show me the tail spend
+- Spend breakdown by country please
+- Spend concentration and pareto across our suppliers
+- Where does our money go each month?
+- Analyse our spend on facilities
+- What share of our spend is off-contract?
+- Pareto of suppliers by invoiced amount
+- Spend profile for the EMEA region
+should_not_trigger:
+- How much did we spend with Acme Ltd last year?
+- Where can we pool demand for laptops across business units?
+- Validate the 120k savings claim on cables
+- Can I approve this purchase order?
+- Which Incoterm should we use?
+- Is Acme safe to onboard?
+- How did Acme perform on delivery this quarter?
+- Should we renew the cleaning contract?
+- What does the contract say about liability?
+- Plan the negotiation with our steel supplier

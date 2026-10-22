@@ -1,0 +1,22 @@
+should_trigger:
+- How has Clearwater Logistics performed this year?
+- Prepare the QBR pack for Falconridge Systems
+- What is Acme's on-time delivery rate?
+- Give me the supplier scorecard for our packaging vendor
+- Is our steel supplier billing above PO prices? Show the price variance
+- How is Greenhollow Technologies performing against the contract?
+- Build the performance review pack for the logistics provider
+- What is the OTIF for supplier SUP-AcmeLtd this quarter?
+- What is Acme's delivery track record with us?
+- Quarterly business review inputs for Kestrel Supplies
+should_not_trigger:
+- Should we renew the Acme contract or exit?
+- Is Acme safe to onboard?
+- Which suppliers should we invite to the RFQ?
+- Can we award the tender to the lowest bidder?
+- How much did we spend on packaging last year?
+- Plan the negotiation for the price increase
+- What does the contract say about liability?
+- Validate this savings claim
+- Which Incoterm should we use for sea freight?
+- Can I approve this purchase order myself?

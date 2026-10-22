@@ -1,0 +1,48 @@
+# Configurable defaults for the spend analysis. They are starting points for review, not governed policy.
+thresholds:
+  default_period_months: 12        # trailing window when the user gives no period
+  top_n_suppliers: 15              # suppliers listed with their shares
+  pareto_share_pct: 80             # share of spend the "few" suppliers are counted up to
+  tail_spend_pct: 20               # bottom share of spend whose suppliers form the tail
+  single_supplier_alert_pct: 30    # one supplier above this share of spend is a dependence alert
+  coverage_floor_pct: 90           # recorded classification coverage below this is a gap to state
+  similarity_min: 0.6              # name similarity at or above which a description is a duplication candidate
+unavailable_tools:
+  - build_xlsx
+  - render_chart
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "spend analysis"
+    - "spend analytics"
+    - "analyse our spend"
+    - "analyze our spend"
+    - "analyse the spend"
+    - "analyze the spend"
+    - "spend breakdown"
+    - "spend profile"
+    - "spend overview"
+    - "tail spend"
+    - "maverick spend"
+    - "off-contract spend"
+    - "off contract spend"
+    - "off-contract"
+    - "off contract"
+    - "top suppliers by spend"
+    - "biggest suppliers"
+    - "largest suppliers"
+    - "spend by category"
+    - "spend by country"
+    - "spend by region"
+    - "spend by month"
+    - "pareto"
+    - "where does our money go"
+    - "concentration of spend"
+    - "spend concentration"
+  support:                       # 1 point each
+    - "spend"
+    - "supplier"
+    - "invoice*"
+    - "category"
+    - "total"
+    - "breakdown"
+    - "trend"

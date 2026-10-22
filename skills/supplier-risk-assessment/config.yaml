@@ -1,0 +1,41 @@
+# Configurable defaults for the risk assessment. They are starting points for review, not governed policy:
+# the required checks and their maximum ages come from policy when a policy states them.
+thresholds:
+  sanctions_max_age_days: 365      # a sanctions result older than this is stale
+  financial_max_age_days: 180      # a financial health assessment older than this is stale
+  esg_max_age_days: 365            # an ESG rating older than this is stale
+  risk_event_lookback_days: 90     # window for recorded risk events and platform risk signals
+  min_checks_for_clearance: 4      # performed, in-date, unflagged checks needed before the status can be clear
+unavailable_tools:
+  - build_docx
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "sanction*"
+    - "due diligence"
+    - "financial health"
+    - "esg rating*"
+    - "forced labour"
+    - "forced labor"
+    - "conflict mineral*"
+    - "risk assessment"
+    - "third-party risk"
+    - "third party risk"
+    - "screen the supplier"
+    - "screen this supplier"
+    - "screening"
+    - "kyc"
+    - "safe to use"
+    - "safe to onboard"
+    - "adverse media"
+    - "risk status"
+    - "risk profile"
+  support:                       # 1 point each
+    - "supplier"
+    - "vendor"
+    - "risk"
+    - "compliance"
+    - "esg"
+    - "onboard*"
+    - "check*"
+    - "insurance"
+    - "certif*"

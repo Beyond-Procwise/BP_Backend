@@ -1,0 +1,22 @@
+should_trigger:
+- Is Acme Ltd safe to use as a supplier?
+- Run due diligence on the new packaging vendor
+- Has this supplier been sanctions screened?
+- What is the risk status of Clearwater Logistics?
+- Give me a KYC summary for SUP-AcmeLtd
+- Do we have a financial health check on our steel supplier?
+- Screen this supplier before we onboard them
+- Is there any adverse media or risk event recorded for Falconridge?
+- What is this vendor's ESG rating on file?
+- Third-party risk assessment for the cloud provider please
+should_not_trigger:
+- Which suppliers should we invite to the RFQ for pallets?
+- Can we recommend the award to the lowest bidder?
+- How did Acme perform on delivery this year?
+- Should we renew the Acme contract?
+- Can I approve this purchase order myself?
+- What does the contract say about termination?
+- How much did we spend on packaging last year?
+- Plan the negotiation for the price increase
+- Which Incoterm should we use from Vietnam?
+- Validate this savings claim

@@ -63,7 +63,6 @@ SHOULD_STAY_SILENT = [
     "Draft a polite reminder to the supplier about the late delivery.",
     "How many invoices are overdue?",
     "Extract the line items from this invoice.",
-    "Screen this company against the sanctions lists.",
     "Write a termination clause for a services contract.",
     "hello",
     "Explain what a purchase order is.",
@@ -170,6 +169,22 @@ FRESH = {
         "Draft a strategy for the annual price review meeting with our main steel supplier.",
         "The supplier wants an 8% increase citing steel; how should we respond?",
         "Borealis has requested an increase of 5 percent from April. What do we say back?"],
+    "supplier-risk-assessment": [
+        "Screen this company against the sanctions lists.",
+        "Before we onboard Borealis, what due diligence do we have on file?",
+        "Is there a financial health check recorded for our steel supplier?"],
+    "contract-clause-review": [
+        "What does our agreement with Acme say about who owns the data?",
+        "Redline the supplier's indemnity wording against ours.",
+        "What are we obliged to do under the cloud MSA if we want to leave?"],
+    "spend-analysis": [
+        "Give me a spend breakdown by country for last year.",
+        "How big is our tail spend and how many suppliers are in it?",
+        "Who are our largest suppliers and what share do they hold?"],
+    "supplier-performance-review": [
+        "How has Kestrel Supplies performed for us this year?",
+        "Put together the QBR pack for the logistics provider.",
+        "What is Acme's on-time delivery rate this quarter?"],
     "renewal-and-exit-strategy": [
         "When does the Cloud MSA expire and what notice do we need to give?",
         "Our facilities contract rolls over in March unless we act. What are the options?",

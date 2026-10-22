@@ -1,0 +1,44 @@
+# Configurable defaults for the performance review. They are starting points for review, not governed policy:
+# the on-time tolerances come from the governed supplier_scorecard policy through the scorecard tool.
+thresholds:
+  window_months: 12           # trailing review window when the user gives no period
+  on_time_target_pct: 95      # on-time rate at or above this is on target
+  ppv_tolerance_pct: 2        # price variance within plus or minus this share of standard spend is within tolerance
+  findings_escalate: 5        # open findings at or above this count escalate to the category lead
+  score_strong_min: 80        # composite (with the owner's weights) at or above this is strong
+  score_weak_max: 60          # composite below this is weak
+unavailable_tools:
+  - build_docx
+  - render_chart
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "scorecard*"
+    - "performance review"
+    - "performance pack"
+    - "review pack"
+    - "qbr"
+    - "quarterly business review"
+    - "business review"
+    - "supplier performance"
+    - "vendor performance"
+    - "delivery performance"
+    - "on-time delivery"
+    - "on time delivery"
+    - "otif"
+    - "price variance"
+    - "how is * performing"
+    - "performing"
+    - "performed on"
+    - "performed this"
+    - "performed last"
+    - "performed over"
+    - "performed for us"
+    - "performed against"
+    - "performance of"
+  support:                       # 1 point each
+    - "supplier"
+    - "vendor"
+    - "performance"
+    - "quality"
+    - "findings"
+    - "review"

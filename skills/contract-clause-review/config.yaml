@@ -1,0 +1,49 @@
+# Configurable defaults for the clause review. They are this skill's starting points, not governed policy.
+thresholds:
+  max_clauses_per_pass: 40          # stored clauses read in one pass; a longer contract is narrowed first
+  redline_max_chars: 20000          # two wordings longer than this are compared clause by clause
+  escalate_liability_multiple: 2    # exposure above this multiple of annual contract value escalates
+  notice_buffer_days: 10            # business days of buffer kept before any notice deadline a plan depends on
+unavailable_tools:
+  - build_docx
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "redline*"
+    - "red-line*"
+    - "mark-up"
+    - "markup"
+    - "mark up the"
+    - "indemnit*"
+    - "liability cap*"
+    - "limitation of liability"
+    - "governing law"
+    - "compare the wording"
+    - "compare two versions"
+    - "compare their wording"
+    - "what changed in the contract"
+    - "what does the contract say"
+    - "does the contract say"
+    - "contract say*"
+    - "review the contract"
+    - "review this contract"
+    - "review the clause*"
+    - "review this clause"
+    - "clause review"
+    - "clauses say"
+    - "obligations under"
+    - "obliged to"
+    - "what are we obliged"
+    - "exit assistance"
+    - "confidentiality clause*"
+    - "data protection clause*"
+  support:                       # 1 point each
+    - "contract"
+    - "clause*"
+    - "supplier"
+    - "wording"
+    - "terms"
+    - "agreement"
+    - "liability"
+    - "termination"
+    - "schedule"
+    - "version"

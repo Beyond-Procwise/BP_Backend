@@ -1,0 +1,22 @@
+should_trigger:
+- What does the contract say about termination?
+- Redline the supplier's liability clause against ours
+- Mark up this confidentiality clause for me
+- Compare the wording of the two versions of the MSA
+- What are we obliged to do under the logistics agreement?
+- Is the indemnity clause acceptable for us?
+- Does the contract say who pays for exit assistance?
+- Review the clauses on data protection in the cloud contract
+- What is the governing law in our Acme agreement?
+- Review this contract's payment terms clause
+should_not_trigger:
+- Should we renew the Acme contract or re-tender?
+- Design an index-linked price formula for the copper contract
+- Plan the negotiation for the price review meeting
+- Can I approve this purchase order myself?
+- Which Incoterm should we use for sea freight?
+- Which suppliers should we invite to the RFQ?
+- Validate this savings claim
+- How much did we spend with Acme last year?
+- Extract the invoice lines from this PDF
+- Rank the bids for the laptop tender
