@@ -451,3 +451,17 @@ def test_the_contract_expiry_job_calls_the_detector_and_survives_its_failure(mon
     scheduler._run_contract_expiry()          # must not raise: the loop keeps running
     scheduler.stop()
     backend_scheduler.BackendScheduler._instance = None
+
+
+def test_the_notification_drain_does_not_share_the_default_lane(monkeypatch):
+    """A slow job on the shared lane (contract expiry against an unreachable database) once held it for
+    minutes and left notifications undelivered, though the drain runs every 15 s."""
+    scheduler = _job_scheduler(monkeypatch)
+    scheduler._register_domain_event_drain_job()
+
+    drain = scheduler._jobs[scheduler.DOMAIN_EVENT_DRAIN_JOB_NAME]
+    scheduler.register_job("anything", lambda: None, interval=timedelta(minutes=15))
+
+    assert drain.lane != scheduler._jobs["anything"].lane
+    scheduler.stop()
+    backend_scheduler.BackendScheduler._instance = None
