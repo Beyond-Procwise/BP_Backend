@@ -4,6 +4,9 @@ Admin (gated by policy.read / policy.write, i.e. the 'configure' class):
   GET    /admin/people                        list;  GET /admin/people/{subject}
   PUT    /admin/people/{subject}              create or update (only the fields sent change)
   GET    /admin/people/{subject}/approver     who would approve ?amount= for this person (dry run)
+  GET    /admin/people/starter-chart          small-company template to edit (onboarding)
+  POST   /admin/people/import                 whole chart in one go, all-or-nothing (?dry_run=true to check)
+  POST   /integrations/events                 a connected ERP/requisition tool announces an event
   GET    /admin/routing-rules                 effective rule per event type
   PUT    /admin/routing-rules/{event_type}    set targets for this tenant
   DELETE /admin/routing-rules/{event_type}    go back to the built-in default
@@ -62,6 +65,22 @@ class PersonBody(BaseModel):
     delegate_until: Optional[str] = None
 
 
+class ImportBody(BaseModel):
+    people: List[dict]
+    dry_run: bool = False
+    deactivate_missing: bool = False
+
+
+class ExternalEventBody(BaseModel):
+    event_type: str
+    external_id: str
+    source: str = "external"
+    requester_subject: Optional[str] = None
+    amount: Optional[float] = None
+    version: str = ""
+    link: Optional[str] = None
+
+
 class DelegateBody(BaseModel):
     delegate_subject: Optional[str] = None     # null clears
     delegate_until: Optional[str] = None
@@ -79,6 +98,40 @@ def list_people(department: Optional[str] = None, include_inactive: bool = False
     gate("policy.read", principal, agent="people_api")
     with get_conn() as conn:
         return {"people": svc.list_people(conn, department, include_inactive)}
+
+
+@router.get("/admin/people/starter-chart", summary="A small-company starter org chart to edit and import")
+def starter_chart(principal=Depends(require_user)) -> dict[str, Any]:
+    gate("policy.read", principal, agent="people_api")
+    from services.people import orgchart
+    return {"people": orgchart.starter_chart(_who(principal), getattr(principal, "email", None))}
+
+
+@router.post("/admin/people/import", summary="Import the whole org chart; all-or-nothing")
+def import_people(body: ImportBody, principal=Depends(require_user)) -> dict[str, Any]:
+    gate("policy.write", principal, agent="people_api", context={"person": "import"})
+    from services.people import orgchart
+    try:
+        with get_conn() as conn:
+            return orgchart.import_people(conn, body.people, _who(principal), dry_run=body.dry_run,
+                                          deactivate_missing=body.deactivate_missing)
+    except svc.PeopleError as exc:
+        _problem(exc)
+
+
+@router.post("/integrations/events", summary="A connected system announces a requisition, PO or invoice event")
+def external_event(body: ExternalEventBody, principal=Depends(require_user)) -> dict[str, Any]:
+    gate("policy.write", principal, agent="people_api", context={"event": body.event_type})
+    from services.people import intake
+    from services.people.events import emit
+    try:
+        ev = intake.build_event(body.source, body.event_type, body.external_id, body.requester_subject,
+                                amount=body.amount, version=body.version, link=body.link)
+    except intake.IntakeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    with get_conn() as conn:
+        fresh = emit(conn, ev)
+    return {"accepted": True, "duplicate": not fresh, "event_id": ev.event_id}
 
 
 @router.get("/admin/people/{subject}", summary="One person")

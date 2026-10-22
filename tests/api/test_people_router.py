@@ -126,3 +126,32 @@ def test_my_delegate_can_only_change_my_own_row(rig):
     assert r_.status_code == 200
     up = [x for x in calls if x[0] == "upsert_person"][0]
     assert up[1][0] == "alice" and set(up[1][1]) == {"delegate_subject", "delegate_until"} and up[1][2] == "alice"
+
+
+def test_import_and_connected_events_are_admin_writes_and_starter_is_a_read(rig):
+    c, asked, calls, user, mp = rig
+    from services.people import orgchart
+    mp.setattr(orgchart, "import_people", lambda *a, **k: {"created": [], "updated": [], "deactivated": [], "dry_run": True})
+    from services.people import events
+    mp.setattr(events, "emit", lambda conn, ev: True)
+    assert c.get("/admin/people/starter-chart").status_code == 200
+    assert c.post("/admin/people/import", json={"people": [], "dry_run": True}).status_code == 200
+    ok = c.post("/integrations/events", json={"event_type": "requisition.submitted", "external_id": "PR-1"})
+    assert ok.status_code == 200 and ok.json()["accepted"] is True
+    assert asked == ["policy.read", "policy.write", "policy.write"]
+
+
+def test_connected_events_refuse_types_that_are_ours(rig):
+    c, *_ = rig
+    r_ = c.post("/integrations/events", json={"event_type": "approval.approved", "external_id": "1"})
+    assert r_.status_code == 422
+
+
+def test_refused_import_and_event_write_nothing(rig):
+    c, asked, calls, user, mp = rig
+    from services.people import orgchart, events
+    mp.setattr(r, "gate", refuse)
+    mp.setattr(orgchart, "import_people", lambda *a, **k: pytest.fail("must not run"))
+    mp.setattr(events, "emit", lambda *a, **k: pytest.fail("must not run"))
+    assert c.post("/admin/people/import", json={"people": []}).status_code in (401, 403)
+    assert c.post("/integrations/events", json={"event_type": "po.issued", "external_id": "1"}).status_code in (401, 403)
