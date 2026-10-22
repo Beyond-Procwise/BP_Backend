@@ -138,6 +138,18 @@ def payload_digest(body: Any) -> tuple[Optional[str], Optional[int]]:
     return hashlib.sha256(raw).hexdigest(), len(raw)
 
 
+def has_capacity() -> bool:
+    """Can the next event be queued? False when the writer is switched off or its queue is full.
+
+    The gate asks this BEFORE an ENFORCED call leaves (1.20h): an outbound call that enforcement
+    permits but that cannot be recorded would be exactly the unrecorded call enforcement exists
+    to prevent, so it is refused instead. Shadow calls never ask."""
+    try:
+        return bool(_enabled) and not _queue.full()
+    except Exception:  # noqa: BLE001 - if even this fails, there is no capacity to speak of
+        return False
+
+
 def record(*, purpose: str, destination: str, method: str, outcome: str,
            detail: str = "", payload_sha256: Optional[str] = None,
            payload_bytes: Optional[int] = None,

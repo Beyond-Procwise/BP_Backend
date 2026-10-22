@@ -233,6 +233,7 @@ class Decision:
     shadow: str              # what the gate WOULD do: "allow" | "deny"
     shadow_reason: str
     version: str = SHADOW_RULES_VERSION   # which rule set judged it (the policy row's, when one exists)
+    enforced: bool = False               # the decision was APPLIED (the purpose is in the row's enforce list)
 
 
 def _is_local_destination(host: str) -> bool:
@@ -275,7 +276,20 @@ def _evaluate(purpose: Purpose, destination: str, agent: str = UNKNOWN_AGENT,
     # Enforced (step d): the policy's answer is applied. A local destination never reaches here.
     permitted = verdict.effect == "allow"
     return Decision(permitted, verdict.reason if not permitted else f"enforced: {verdict.reason}",
-                    verdict.effect, verdict.reason, verdict.version)
+                    verdict.effect, verdict.reason, verdict.version, enforced=True)
+
+
+def _audit_can_record(decision: Decision, purpose: Purpose, destination: str) -> bool:
+    """An ENFORCED call must be recordable before it leaves (1.20h). Logged at ERROR when not:
+    the refusal cannot be recorded either, and the log line is the only trace."""
+    if not decision.enforced:
+        return True
+    from src.services import egress_log
+    if egress_log.has_capacity():
+        return True
+    logger.error("egress audit writer has no capacity: enforced %s call to %s refused, unrecorded",
+                 purpose.value, destination)
+    return False
 
 
 def _record(*, purpose: Purpose, destination: str, method: str,
@@ -383,6 +397,8 @@ def request(
                 outcome="denied", detail=decision.reason,
                 payload_sha256=_sha, payload_bytes=_bytes, agent=agent, decision=decision, classification=tags)
         return None
+    if not _audit_can_record(decision, purpose, destination):
+        return None
 
     current = url
     for _ in range(_MAX_REDIRECTS + 1):
@@ -452,6 +468,9 @@ def observe(purpose: Purpose, destination: str, *, agent: Optional[str] = None,
                 detail=decision.reason, payload_sha256=_sha, payload_bytes=_bytes,
                 agent=agent, decision=decision, classification=tags)
         raise EgressDenied(reason=decision.reason, destination=destination, purpose=purpose.value)
+    if not _audit_can_record(decision, purpose, destination):
+        raise EgressDenied(reason="the egress audit writer has no capacity", destination=destination,
+                           purpose=purpose.value)
     try:
         yield
     except Exception as exc:  # noqa: BLE001 - recorded, then re-raised unchanged (as request() does)
