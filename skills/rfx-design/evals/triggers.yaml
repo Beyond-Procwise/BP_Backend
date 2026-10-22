@@ -1,0 +1,22 @@
+should_trigger:
+- Set up an RFQ for pallets delivered to Leeds
+- Design the RFP for the cleaning services contract
+- Draft the evaluation criteria and weights for the fleet tender
+- What should the tender timeline look like for an April start?
+- Should this requirement go out as an RFI, RFQ or RFP?
+- Design the tender for the new security contract
+- Build the scoring model for the IT hardware RFQ
+- Plan the go to market for our packaging requirement
+- Draft the RFP document for professional services
+- What evaluation weights should we use for the logistics tender?
+should_not_trigger:
+- Which suppliers should we invite to the RFQ for pallets?
+- Can we recommend the award to the lowest bidder?
+- Plan the negotiation after the bids come in
+- Build a category strategy for temporary labour
+- Is Acme safe to onboard?
+- Can I approve this purchase order?
+- Which Incoterm should we use for sea freight?
+- Validate this savings claim
+- How has Acme performed this year?
+- What does the contract say about termination?

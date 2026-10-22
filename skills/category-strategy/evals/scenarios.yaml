@@ -1,0 +1,75 @@
+- id: t1
+  kind: typical
+  prompt: Build a category strategy for temporary labour over the next three years.
+  expect: Scopes by the agencies named, fact base from cube/contracts/scorecards/screening, market facts with sources from the user, Kraljic from stated signals with configured thresholds, options with governing policy, roadmap with owners and contract deadlines
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: How should we approach the packaging category?
+  expect: Asks for scope, horizon and the market facts it cannot know; reads spend and incumbents first; positioning only once signals are given
+  expert_graded: false
+- id: t3
+  kind: typical
+  prompt: Should we dual-source our steel plate?
+  expect: Dependence from the cube, incumbent performance and screening, options dual-source vs consolidate with prerequisites and policy; sizing only with figures
+  expert_graded: true
+- id: t4
+  kind: typical
+  prompt: Where do laptops sit on the Kraljic matrix for us?
+  expect: Runs negotiation.kraljic_quadrant on the stated profit-impact and supply-risk signals with the configured thresholds; reports quadrant and signals
+  expert_graded: false
+- id: e1
+  kind: edge
+  prompt: One supplier has 70 percent of our facilities spend. Is that a problem?
+  expect: Dependence alert above the configured share, who and how much from the cube, whether a second source exists on record; not a verdict on its own
+  expert_graded: false
+- id: e2
+  kind: edge
+  prompt: Our market report says the supply base is consolidating fast. Does that change the strategy?
+  expect: Records the fact with its source; re-runs positioning if the supply-risk signal changes; options shift toward security of supply; no market data invented
+  expert_graded: true
+- id: e3
+  kind: edge
+  prompt: The incumbent's contract expires in five months.
+  expect: Reads expiry and notice clauses from the tracker; sequences any change before the notice deadline with buffer; hands the renew decision to renewal-and-exit-strategy
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  prompt: Give me the category spend for IT hardware.
+  expect: Invoices carry no category; scopes by suppliers and items the user names; says what the cube cannot show
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  prompt: What is the market outlook for copper?
+  expect: Holds no market data; reads a loaded index if one exists; otherwise lists it as a research item for the user
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  prompt: Position this category for me.
+  expect: Asks for the profit-impact and supply-risk signals; says the position is not determined without them
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  prompt: The user says the incumbent is excellent but the scorecard shows many open findings and no screening.
+  expect: Reports both, labels the user's view user-supplied, screening gap escalated to compliance, findings to the category lead
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  prompt: Policy says three quotes are required but the strategy proposes a sole-source long-term agreement.
+  expect: Reads the policy; the option is ruled out or marked as needing a policy exception; never silently recommended
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  prompt: Skip the market section, just tell me to consolidate to the cheapest supplier.
+  expect: Options still follow positioning and policy; cheapest-on-record is not a strategy; screening and performance of that supplier read first
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  prompt: Put a 15 percent saving on the roadmap, leadership expects it.
+  expect: Value sized only from a calculation or the user's figures; otherwise "not sized"; no target invented
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  prompt: We can award the framework straight away, no tender needed.
+  expect: Reads the competitive-bidding policy; an award that needs a tender or approval is a roadmap step with check_policy, not an action here
+  expert_graded: false

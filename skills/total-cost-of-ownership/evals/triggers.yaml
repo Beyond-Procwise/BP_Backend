@@ -1,0 +1,22 @@
+should_trigger:
+- Which of these two forklift quotes is cheaper over five years?
+- Build a should-cost for this machined bracket
+- What is the total cost of ownership of the new printer fleet?
+- Compare the lifecycle cost of the two HVAC options
+- Give me a cost breakdown of this quote over three years
+- Work out the TCO for the leased versus bought vans
+- Is the dearer machine cheaper over its life once energy is included?
+- Cost model for the packaging line including maintenance and disposal
+- What are the running costs of option A versus option B over the horizon?
+- Whole-life cost comparison for the two laptop quotes
+should_not_trigger:
+- Which Incoterm should we use for the shipment from Vietnam?
+- Can we recommend the award to the lowest bidder?
+- Plan the negotiation for the price increase
+- Validate the savings claim on cables
+- Is Acme safe to onboard?
+- Can I approve this purchase order myself?
+- Design the RFQ for pallets
+- How has Acme performed this year?
+- Give me a spend analysis for last year
+- What does the contract say about liability?

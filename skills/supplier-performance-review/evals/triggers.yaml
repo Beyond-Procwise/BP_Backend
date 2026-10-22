@@ -7,7 +7,7 @@ should_trigger:
 - How is Greenhollow Technologies performing against the contract?
 - Build the performance review pack for the logistics provider
 - What is the OTIF for supplier SUP-AcmeLtd this quarter?
-- What is Acme's delivery track record with us?
+- What is Acme's delivery performance with us?
 - Quarterly business review inputs for Kestrel Supplies
 should_not_trigger:
 - Should we renew the Acme contract or exit?

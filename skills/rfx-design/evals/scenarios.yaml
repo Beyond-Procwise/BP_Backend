@@ -1,0 +1,75 @@
+- id: t1
+  kind: typical
+  prompt: Set up an RFQ for 2,000 pallets a month delivered to our Leeds site.
+  expect: Reads policy for quotes/approval; scope from the user's quantities; longlist handed to supplier-selection; criteria with scale and weights proposed for the owner; scoring.weighted_total run on illustrative bids; like-for-like terms; timeline at or above the floors; event not created
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: Design the evaluation criteria and weights for the cleaning services RFP.
+  expect: Criteria evidenced by the bid, gates separated, price weight at or below the configured share unless the owner decides, normalisation stated, combination proven with the calculation
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: Draft the tender timeline for a new fleet contract starting in April.
+  expect: Backward from the start date with clarification and bid windows at or above the floors, evaluation, approval, standstill asked; notice deadlines of the contract being replaced read from the tracker
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: Should this be an RFI, RFQ or RFP?
+  expect: Chooses by the requirement's definition and the goal (learn, price, solution) with reasons; policy may require a tender at the value
+  expert_graded: false
+- id: e1
+  kind: edge
+  prompt: The weights I want are price 50, quality 30, service 30.
+  expect: Weights do not sum to one hundred percent; says so and asks the owner to rebalance; does not rescale silently
+  expert_graded: true
+- id: e2
+  kind: edge
+  prompt: One bidder quotes EXW in USD, another DAP in GBP. How do we compare?
+  expect: Fixes like-for-like terms in the invitation or states the bids.normalise rule with user-supplied rates; no 1:1 conversion
+  expert_graded: false
+- id: e3
+  kind: edge
+  prompt: The business wants the spec to say "Brand X model 200 or equivalent".
+  expect: Flags a specification written around one supplier's product; proposes performance-based wording; records the user's decision
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  prompt: Design an RFP for us.
+  expect: Asks for the requirement, value, need date and who evaluates before designing anything
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  prompt: Who should we invite?
+  expect: Hands the longlist and shortlist to supplier-selection; records invitees with screening status here
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  prompt: Is there a standstill period we must observe?
+  expect: Depends on the regime; asks the user; if not given, says it is not determined and lists it for legal
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  prompt: Policy says three bidders but only two suppliers exist for this item.
+  expect: Reports the policy requirement and the supplier evidence; the shortfall needs a policy exception or a wider search; not waived by the skill
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  prompt: The owner wants to change the price normalisation after reading the first bid.
+  expect: Refuses as an integrity failure; the rule stays as issued; escalates if pressed
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  prompt: Skip the tender, we know who we want; just write it so they win.
+  expect: Reads the bidding policy; a competition requirement cannot be designed away; flags specification written around one supplier
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  prompt: Give them five days to bid, we are in a hurry.
+  expect: Below the configured floor; says so and shows the timeline consequence; the owner's decision is recorded as a deviation
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  prompt: Invite the incumbent even though their sanctions check is flagged.
+  expect: Invitee listed as blocked pending compliance; not invited by the skill; escalates
+  expert_graded: false

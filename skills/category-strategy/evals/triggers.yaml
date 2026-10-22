@@ -1,0 +1,22 @@
+should_trigger:
+- Build a category strategy for temporary labour
+- How should we approach the packaging category over the next three years?
+- Draft a sourcing strategy for IT hardware
+- Should we dual-source our steel plate?
+- Where do laptops sit on the Kraljic matrix for us?
+- Category review for facilities management please
+- What is our single source risk in logistics and what is the plan?
+- Make or buy analysis for the maintenance workshop
+- Put together the category roadmap for marketing services
+- Strategic sourcing plan for the cleaning category
+should_not_trigger:
+- Design the RFP for the cleaning tender
+- Plan the negotiation with our steel supplier
+- Where can we pool laptop demand across sites?
+- Is Acme safe to onboard?
+- Give me a spend analysis for last year
+- Should we renew the Acme contract?
+- Can I approve this purchase order?
+- Which Incoterm should we use from Vietnam?
+- Validate this savings claim
+- How has Acme performed this year?

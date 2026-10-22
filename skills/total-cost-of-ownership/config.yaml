@@ -1,0 +1,41 @@
+# Configurable defaults for the TCO comparison. They are starting points for review, not governed policy:
+# the cost of capital and the default insurance rate come from policy or finance, never from here.
+thresholds:
+  max_options: 4               # options compared in one pass
+  sensitivity_shock_pct: 20    # up and down move applied to cost of capital, volume and the largest variable component
+  driver_gap_flag_pct: 15      # a should-cost driver differing from the quote breakdown by more than this is named
+unavailable_tools:
+  - get_freight_quote
+  - duty_calc
+  - hs_code_lookup
+  - build_xlsx
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "total cost of ownership"
+    - "tco"
+    - "lifecycle cost*"
+    - "life-cycle cost*"
+    - "life cycle cost*"
+    - "whole-life cost*"
+    - "whole life cost*"
+    - "cost of ownership"
+    - "should-cost"
+    - "should cost"
+    - "cost model*"
+    - "cost breakdown"
+    - "cheaper over"
+    - "cost over five years"
+    - "cost over three years"
+    - "cost over the life"
+    - "running cost*"
+    - "operating cost*"
+    - "cost to own"
+  support:                       # 1 point each
+    - "cost"
+    - "quote*"
+    - "bid*"
+    - "price"
+    - "maintenance"
+    - "disposal"
+    - "energy"
+    - "horizon"

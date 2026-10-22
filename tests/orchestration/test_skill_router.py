@@ -169,6 +169,18 @@ FRESH = {
         "Draft a strategy for the annual price review meeting with our main steel supplier.",
         "The supplier wants an 8% increase citing steel; how should we respond?",
         "Borealis has requested an increase of 5 percent from April. What do we say back?"],
+    "rfx-design": [
+        "Draft an RFQ for office furniture.",
+        "What evaluation criteria and weights should the cleaning tender use?",
+        "Lay out the tender timeline for a contract that must start in April."],
+    "category-strategy": [
+        "How should we approach the packaging category over the next three years?",
+        "Should we dual-source our steel plate or stay with one supplier?",
+        "Where do laptops sit on the Kraljic matrix for us?"],
+    "total-cost-of-ownership": [
+        "Which of these two forklift quotes is cheaper over five years?",
+        "Build a should-cost for this machined bracket from the BOM.",
+        "What is the total cost of ownership of the printer fleet?"],
     "supplier-risk-assessment": [
         "Screen this company against the sanctions lists.",
         "Before we onboard Borealis, what due diligence do we have on file?",
@@ -205,8 +217,7 @@ FRESH_SILENT = [
     "How much did we spend on packaging in 2025?", "Please book a meeting room for Thursday.",
     "Show me all invoices from Acme Ltd.", "What is the status of purchase order 4500123?",
     "Summarise the key terms of this contract.", "Which supplier has the best delivery record?",
-    "Convert 500 euros to pounds.", "Send the supplier a reminder about the delayed shipment.",
-    "Draft an RFQ for office furniture.", "How do I reset my password?",
+    "Convert 500 euros to pounds.", "Send the supplier a reminder about the delayed shipment.", "How do I reset my password?",
     "List the contracts expiring this year.", "Describe how the three way match works."]
 
 

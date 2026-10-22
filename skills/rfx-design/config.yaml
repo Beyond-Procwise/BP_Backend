@@ -1,0 +1,64 @@
+# Configurable defaults for the RFx design. They are starting points for review, not governed policy:
+# bidding thresholds, minimum quotes and approval routes come from policy when a policy states them.
+thresholds:
+  min_bidders: 3              # invitees when no policy states a minimum
+  min_bid_days: 10            # calendar days between issue and bid deadline, at least
+  clarification_days: 5       # calendar days of the clarification window, at least
+  price_weight_max_pct: 60    # price weight above this share needs the owner's explicit decision
+  scoring_scale_max: 5        # points on the criterion scale by default
+unavailable_tools:
+  - create_rfx
+  - build_docx
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "design the rfp"
+    - "design the rfq"
+    - "design the rfx"
+    - "design the rfi"
+    - "design the tender"
+    - "design an rfp"
+    - "design an rfq"
+    - "draft the rfp"
+    - "draft the rfq"
+    - "draft an rfp"
+    - "draft an rfq"
+    - "draft the tender"
+    - "set up the rfq"
+    - "set up the rfp"
+    - "set up a tender"
+    - "set up an rfq"
+    - "set up an rfp"
+    - "rfp document"
+    - "rfq document"
+    - "tender document*"
+    - "tender design"
+    - "invitation to tender"
+    - "evaluation criteria"
+    - "scoring criteria"
+    - "scoring model"
+    - "evaluation model"
+    - "run a tender"
+    - "criteria and weights"
+    - "rfi, rfq or rfp"
+    - "rfq or rfp"
+    - "rfi or rfq"
+    - "go out as an"
+    - "go out as a"
+    - "go to market"
+    - "go-to-market"
+    - "tender timeline"
+    - "bid timeline"
+    - "weights for the evaluation"
+    - "evaluation weights"
+  support:                       # 1 point each
+    - "tender"
+    - "sourcing event"
+    - "rfp"
+    - "rfq"
+    - "rfx"
+    - "rfi"
+    - "criteria"
+    - "weights"
+    - "bid*"
+    - "supplier*"
+    - "specification"

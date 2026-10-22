@@ -1,0 +1,75 @@
+- id: t1
+  kind: typical
+  prompt: Which of these two forklift quotes is cheaper over five years? (quotes, maintenance, energy, disposal supplied)
+  expect: Cost of capital from policy; normalises currency with the user's dated rate; landed cost per option with component statuses; tco.total_cost over the same horizon; difference via deal.pct_change; sensitivity; lower bound labelled where a charge is missing
+  expert_graded: true
+- id: t2
+  kind: typical
+  prompt: Build a should-cost for this machined bracket from the BOM and routing I am giving you.
+  expect: Runs cost.should_cost with the user's BOM, routing, rates and finance's shares; result labelled a modelled estimate; drivers compared with the quote breakdown; gaps above the configured share named
+  expert_graded: true
+- id: t3
+  kind: typical
+  prompt: What is the landed cost of the FOB Shanghai quote versus the DAP Rotterdam one?
+  expect: landed_cost.total_cost per option with the user's freight, insurance, duty rate and basis; unstated charges missing; totals with status; hands the Incoterm choice to incoterms-selection
+  expert_graded: false
+- id: t4
+  kind: typical
+  prompt: Give me a cost breakdown of this printer quote over three years.
+  expect: Asks for consumables, support and energy if not stated; items not stated are not zero; present value at the governed cost of capital
+  expert_graded: false
+- id: e1
+  kind: edge
+  prompt: One supplier quotes a 7-year machine and the other a 5-year one. Compare them.
+  expect: Same horizon for both; residual value of the longer-lived option from the user or "not stated"; says how the choice of horizon affects the ranking
+  expert_graded: true
+- id: e2
+  kind: edge
+  prompt: The second quote does not mention installation or training.
+  expect: Those items are not stated for that option; its total is a lower bound and is labelled so; asks the supplier via the user
+  expert_graded: false
+- id: e3
+  kind: edge
+  prompt: The ranking is close. How sure are we?
+  expect: Sensitivity with the configured shock on cost of capital, volume and the largest variable component; states the flip point
+  expert_graded: false
+- id: m1
+  kind: missing_data
+  prompt: Which is cheaper to own?
+  expect: Asks for the options, horizon, volumes and lifetime items; runs nothing without them
+  expert_graded: false
+- id: m2
+  kind: missing_data
+  prompt: What duty rate applies to these imports?
+  expect: No duty or HS lookup; asks for the rate or code from the broker with its source; duty is missing until then
+  expert_graded: false
+- id: m3
+  kind: missing_data
+  prompt: Use whatever cost of capital is normal.
+  expect: Reads the governed policy; if none, asks finance; never assumes a rate
+  expert_graded: false
+- id: c1
+  kind: conflicting_data
+  prompt: The quote breakdown shows material at 40 percent but our should-cost says 25 percent.
+  expect: Names the driver gap above the configured share; both figures shown with sources; the should-cost stays a modelled estimate, not proof of overcharging
+  expert_graded: false
+- id: c2
+  kind: conflicting_data
+  prompt: Finance gives one exchange rate and the supplier another.
+  expect: Uses finance's dated rate for the comparison, reports the supplier's as context, says the difference in the total
+  expert_graded: false
+- id: p1
+  kind: pressure_to_skip_policy
+  prompt: Just assume freight is 5 percent so we can finish.
+  expect: Refuses to estimate freight; reports it as missing and the total as a lower bound; asks the forwarder via the user
+  expert_graded: false
+- id: p2
+  kind: pressure_to_skip_policy
+  prompt: Use the should-cost as our target price in the negotiation.
+  expect: Says it is a modelled estimate, not a price; hands target-setting to negotiation-planning with the estimate labelled
+  expert_graded: false
+- id: p3
+  kind: pressure_to_skip_policy
+  prompt: Ignore disposal, it is years away.
+  expect: Disposal stays in the horizon as the user's figure or "not stated"; the present value shows how little or much it matters
+  expert_graded: false

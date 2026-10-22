@@ -1,0 +1,41 @@
+# Configurable defaults for the category strategy. They are starting points for review, not governed policy.
+thresholds:
+  strategy_horizon_years: 3          # planning horizon when the user gives none
+  min_category_spend: 100000         # below this spend in the reporting currency the plan is light-touch
+  concentration_alert_pct: 40        # one supplier above this share of category spend is a dependence alert
+  kraljic_profit_impact_high: 3      # profit-impact signal score (1 to 5) at or above which impact is high
+  kraljic_supply_risk_high: 3        # supply-risk signal score (1 to 5) at or above which risk is high
+unavailable_tools:
+  - build_docx
+  - build_pptx
+  - render_chart
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "category strateg*"
+    - "category plan*"
+    - "category review"
+    - "category roadmap"
+    - "sourcing strateg*"
+    - "sourcing plan*"
+    - "strategic sourcing"
+    - "kraljic"
+    - "make or buy"
+    - "make-or-buy"
+    - "supply market"
+    - "market analysis for"
+    - "dual source"
+    - "dual-source"
+    - "second source"
+    - "single source risk"
+    - "approach the category"
+    - "approach this category"
+    - "over the next three years"
+    - "over the next few years"
+  support:                       # 1 point each
+    - "category"
+    - "strategy"
+    - "supplier*"
+    - "market"
+    - "spend"
+    - "roadmap"
+    - "horizon"
