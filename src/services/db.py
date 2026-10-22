@@ -1072,6 +1072,10 @@ def _pg_dsn() -> Optional[str]:
     pwd = os.environ.get("PGPASSWORD")
     port = os.environ.get("PGPORT")
     sslmode = os.environ.get("PGSSLMODE")
+    # Production: PGSSLMODE=verify-full with PGSSLROOTCERT pointing at the AWS RDS CA bundle, so the
+    # server is AUTHENTICATED, not just encrypted (libpq's default 'prefer' accepts any certificate).
+    # verify-full checks the host NAME: connect by the RDS DNS name, never by IP.
+    sslrootcert = os.environ.get("PGSSLROOTCERT")
 
     if settings is not None:
         host = host or getattr(settings, "db_host", None)
@@ -1093,6 +1097,8 @@ def _pg_dsn() -> Optional[str]:
         parts.append(f"password={pwd}")
     if sslmode:
         parts.append(f"sslmode={sslmode}")
+    if sslrootcert:
+        parts.append(f"sslrootcert={sslrootcert}")
     return " ".join(parts)
 
 

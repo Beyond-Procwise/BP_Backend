@@ -104,6 +104,9 @@ def test_with_capacity_an_enforced_allowed_call_goes_out(world, monkeypatch):
 
 def _conn_that(fails: bool):
     class _Cur:
+        def execute(self, *a, **k):
+            pass          # the DDL the writer runs first (1.20i)
+
         def executemany(self, sql, rows):
             if fails:
                 raise RuntimeError("relation does not exist")
@@ -148,6 +151,9 @@ def test_refused_unaudited_calls_become_their_own_row_when_the_writer_recovers(m
     written = {}
 
     class _Cur:
+        def execute(self, *a, **k):
+            pass          # the DDL the writer runs first (1.20i)
+
         def executemany(self, sql, rows):
             written["rows"] = rows
 
