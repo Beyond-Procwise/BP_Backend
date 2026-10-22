@@ -74,3 +74,13 @@ def test_the_context_builder_imports_no_model_wire_data_store_or_policy_engine()
     mods = {n.module or "" for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)} | \
            {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
     assert not [m for m in mods if re.search(r"tool_runtime|agentnick_driver|egress|ollama|agent_policy|db\b|psycopg", m)]
+
+
+def test_today_is_stated_only_when_given_and_sits_right_after_the_base():
+    import datetime as dt
+    from orchestration import context_builder as cb
+    ctx = cb.build(base="BASE", extra="EXTRA", today=dt.date(2026, 10, 22))
+    assert [l.name for l in ctx.layers] == ["base", "today", "extra"]
+    assert ctx.layers[1].text.startswith("Today is Thursday 2026-10-22.") and "never guess the year" in ctx.layers[1].text
+    assert ctx.system == "BASE\n\n" + ctx.layers[1].text + "\n\nEXTRA"
+    assert [l.name for l in cb.build(base="BASE").layers] == ["base"]

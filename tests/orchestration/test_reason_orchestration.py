@@ -24,6 +24,13 @@ def captured(monkeypatch):
     return got
 
 
+def PLAIN_SYSTEM():
+    """The standing rules plus today's date: all a plain request is given (the date is the one fact no tool returns)."""
+    import datetime as dt
+    from orchestration import context_builder as cb
+    return control._SYSTEM + "\n\n" + cb.today_line(dt.date.today())
+
+
 def nick():
     return SimpleNamespace(agents={"opportunity_miner": SimpleNamespace()})
 
@@ -33,14 +40,14 @@ def test_a_request_a_skill_covers_gets_its_playbook_in_the_prompt_and_not_the_re
     assert "Skill loaded for this request: procurement-policy-compliance" in captured["system"]
     assert "list_skills" not in captured["tools"] and "use_skill" not in captured["tools"]
     assert "check_policy" in captured["tools"]
-    assert [l["layer"] for l in res.context] == ["base", "skill"]
+    assert [l["layer"] for l in res.context] == ["base", "today", "skill"]
 
 
 def test_a_request_no_skill_covers_is_exactly_what_it_was_before(captured):
     res = control.reason(nick(), PLAIN_ASK)
-    assert captured["system"] == control._SYSTEM
+    assert captured["system"] == PLAIN_SYSTEM()
     assert "list_skills" in captured["tools"] and "use_skill" in captured["tools"]
-    assert [l["layer"] for l in res.context] == ["base"]
+    assert [l["layer"] for l in res.context] == ["base", "today"]
 
 
 def test_extra_instructions_are_kept_with_a_skill(captured):
@@ -51,7 +58,7 @@ def test_extra_instructions_are_kept_with_a_skill(captured):
 
 def test_a_skill_whose_tools_the_agent_was_not_given_is_not_injected(captured):
     res = control.reason(nick(), POLICY_ASK, only=["get_policy", "list_governance"])
-    assert "Skill loaded" not in captured["system"] and captured["system"] == control._SYSTEM
+    assert "Skill loaded" not in captured["system"] and captured["system"] == PLAIN_SYSTEM()
     assert res.context[0]["layer"] == "base"
 
 
@@ -65,7 +72,7 @@ def test_a_router_failure_never_breaks_the_run(captured, monkeypatch):
     from orchestration import skill_router
     monkeypatch.setattr(skill_router, "load_entries", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
     res = control.reason(nick(), POLICY_ASK)
-    assert captured["system"] == control._SYSTEM and res.answer == "ok"
+    assert captured["system"] == PLAIN_SYSTEM() and res.answer == "ok"
 
 
 def test_the_verify_step_is_handed_to_the_loop_and_can_be_switched_off(captured, monkeypatch):

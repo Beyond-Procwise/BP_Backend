@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import date
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -65,16 +66,26 @@ def _skill_text(skill: Any) -> str:
     )
 
 
+def today_line(today: date) -> str:
+    """The one fact the model cannot get from a tool. Live, 2026-10-22: asked for 'the last two years' it
+    chose 2022-04-01 to 2024-03-31, because nothing had told it the date."""
+    return (f"Today is {today.strftime('%A')} {today.isoformat()}. Work any period a person names ('this year', "
+            "'the last two years', 'since January') out from this date and pass it to tools as start and end "
+            "dates; never guess the year.")
+
+
 def build(*, base: str, extra: Optional[str] = None, skill: Any = None, memory: Optional[str] = None,
-          max_chars: int = MAX_SYSTEM_CHARS) -> Context:
+          today: Optional[date] = None, max_chars: int = MAX_SYSTEM_CHARS) -> Context:
     layers: List[Layer] = [Layer("base", base, "orchestrator")]
+    if today is not None:
+        layers.append(Layer("today", today_line(today), "orchestrator"))
     if extra:
         layers.append(Layer("extra", extra, "caller"))
     skipped: Optional[str] = None
     chosen: Optional[str] = None
     if skill is not None:
         text = _skill_text(skill)
-        fixed = len(base) + len(extra or "") + len(memory or "")
+        fixed = sum(len(l.text) for l in layers) + len(memory or "")
         if fixed + len(text) > max_chars:
             skipped = f"the skill is too long for the prompt budget ({fixed + len(text)} of {max_chars} characters)"
         else:

@@ -984,7 +984,9 @@ def _plan_context(task: str, tools: Sequence[Tool], extra_system: Optional[str])
                     log.info("skill %s not injected: %s", match.skill, why)
         except Exception:  # noqa: BLE001
             log.exception("skill routing failed; carrying on without a skill")
-    ctx = context_builder.build(base=_SYSTEM, extra=extra_system, skill=skill)
+    from datetime import date as _date
+
+    ctx = context_builder.build(base=_SYSTEM, extra=extra_system, skill=skill, today=_date.today())
     if ctx.skipped:
         log.info("skill not injected: %s", ctx.skipped)
     return ctx, (dict(skill.config) if ctx.skill and skill is not None else None)
