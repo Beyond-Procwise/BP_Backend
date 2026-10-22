@@ -2,10 +2,12 @@
 
 demand-intake extract runs the model on supplied text (``document.extract``, compute: Buyer and above);
 the benchmark preview runs the pricing engine on a supplied payload (``quote.compare``, compute);
-the three translation routes (resolve a language name, UI strings, translate texts) are asked as the new
-``content.translate`` action, a READ-class action so every signed-in role keeps its translations and an
-Admin can still narrow or audit them by policy. Saving one's own language preference stays ungated:
-it is the caller's own setting. A refusal runs nothing.
+the on-demand translation route is asked as the new ``content.translate`` action, a READ-class action so
+every signed-in role keeps its translations and an Admin can still narrow or audit them by policy.
+Resolving a language name and the UI-strings route stay ungated: the strings route is polled every two
+seconds while a language fills, a read-class gate there would add two audit rows per poll and protect
+nothing (every role may read), and a failed audit insert would turn translations into a 500. Saving one's
+own language preference stays ungated: it is the caller's own setting. A refusal runs nothing.
 """
 from __future__ import annotations
 
@@ -38,13 +40,16 @@ def rig(monkeypatch):
     monkeypatch.setattr(di, "extract_fields", lambda nick, context: did.append("extract") or {"fields": {}})
     monkeypatch.setattr(bm, "ensure_registered", lambda: None)
     monkeypatch.setattr(bm, "evaluate", lambda name, inputs: did.append("benchmark") or SimpleNamespace(
-        unassessed=False, value={"adjusted_price": 1}, trace=[], assessed=True))
+        unassessed=False, value=SimpleNamespace(model_dump=lambda: {"adjusted_price": 1}), trace=[], assessed=True))
     reg = SimpleNamespace(resolve=lambda text: did.append("resolve") or SimpleNamespace(to_dict=lambda: {"code": "fr"}))
     svc = SimpleNamespace(status=lambda code, strings: did.append("strings") or ({}, [], []),
-                          translate=lambda code, keys, lang_name=None: did.append("translate") or SimpleNamespace(translations={k: "x" for k in keys}, failed=[]))
+                          translate=lambda code, keys, lang_name=None: did.append("translate") or SimpleNamespace(translations={k: "x" for k in keys}, failed=[], supported=True, confidence=1.0),
+                          quality=lambda code, name=None: {"experimental": False},
+                          provider=SimpleNamespace(model="stub"), prompt_version="v0")
+    monkeypatch.setattr(i1.audit, "record_served", lambda **kw: None)
     monkeypatch.setattr(i1.i18n, "get_registry", lambda: reg)
     monkeypatch.setattr(i1.i18n, "get_service", lambda: svc)
-    monkeypatch.setattr(i1, "_language", lambda code, name: SimpleNamespace(code="fr"), raising=False)
+    monkeypatch.setattr(i1, "_language", lambda code, name: SimpleNamespace(code="fr", dir="ltr", custom=False, label=lambda: "French"), raising=False)
     app = FastAPI()
     for mod in (bm, di, i1):
         app.include_router(mod.router)
@@ -70,8 +75,6 @@ def _minimal_quote_line() -> dict:
 CALLS = [
     ("post", "/demand/intake/extract", {"context": {"text": "need 10 laptops"}}, "document.extract", "extract"),
     ("post", "/benchmark/preview", {"quote": _minimal_quote_line(), "points": []}, "quote.compare", "benchmark"),
-    ("post", "/i18n/languages/resolve", {"text": "French"}, "content.translate", "resolve"),
-    ("post", "/i18n/strings", {"lang": "fr", "strings": {"k": "Save"}}, "content.translate", "strings"),
     ("post", "/i18n/translate", {"lang": "fr", "texts": ["hello"]}, "content.translate", "translate"),
 ]
 
@@ -80,7 +83,7 @@ CALLS = [
 def test_each_route_asks_the_gate_first(rig, method, path, body, action, work):
     http, asked, did, _ = rig
     res = getattr(http, method)(path, json=body)
-    assert res.status_code not in (401, 403, 404, 422), (path, res.status_code, res.text[:200])
+    assert res.status_code == 200, (path, res.status_code, res.text[:200])
     assert asked[:1] == [action], (path, asked)
     assert work in did, (path, did)
 
@@ -95,3 +98,14 @@ def test_a_refusal_runs_nothing(rig, method, path, body, action, work):
         mp.setattr(mod, "gate", _no, raising=False)
     assert getattr(http, method)(path, json=body).status_code == 403
     assert did == []
+
+
+@pytest.mark.parametrize("path,body,work", [
+    ("/i18n/languages/resolve", {"text": "French"}, "resolve"),
+    ("/i18n/strings", {"lang": "fr", "strings": {"k": "Save"}}, "strings"),
+])
+def test_the_polled_translation_reads_do_not_ask_the_gate(rig, path, body, work):
+    """Two audit rows per two-second poll, for a read every role may make, is noise not protection."""
+    http, asked, did, _ = rig
+    assert http.post(path, json=body).status_code == 200
+    assert asked == [] and work in did

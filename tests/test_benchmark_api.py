@@ -1,5 +1,7 @@
 """Benchmark endpoints: pure preview route + live-loader normalisation."""
 import json
+
+import pytest
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -20,6 +22,12 @@ def _client() -> TestClient:
     # the engine, not authentication, so the principal is pinned: nobody.
     app.dependency_overrides[require_user] = lambda: None
     return TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _no_gate(monkeypatch):
+    # These tests are about the engine; the gate on /benchmark/preview (RT-17b) has its own suite.
+    monkeypatch.setattr(benchmark_router, "gate", lambda *a, **k: None)
 
 
 def test_preview_reproduces_golden_d001_over_http():

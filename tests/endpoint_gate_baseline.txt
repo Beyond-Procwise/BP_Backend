@@ -8,6 +8,8 @@ src/api/routers/decisions.py::POST router /finding/{finding_id}::decide_finding
 src/api/routers/draft_assurance.py::POST router /{unique_id}/abandon::abandon
 src/api/routers/email.py::POST router /emailwatcher::trigger_email_watcher
 src/api/routers/governance.py::POST router /govern::govern
+src/api/routers/i18n.py::POST router /languages/resolve::resolve
+src/api/routers/i18n.py::POST router /strings::strings
 src/api/routers/i18n.py::PUT router /preference::put_preference
 src/api/routers/negotiate.py::DELETE router /{deal_id}/advice/fact/{fact_key}::delete_negotiate_advice_fact
 src/api/routers/negotiate.py::POST router /{deal_id}/advice/message::post_negotiate_advice_message

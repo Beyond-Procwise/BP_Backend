@@ -97,7 +97,6 @@ def _with_quality(language, verdict: Optional[dict]) -> dict:
 
 @router.post("/languages/resolve", summary="Turn a typed language name into a code")
 def resolve(body: ResolveIn, principal=Depends(require_user)) -> dict[str, Any]:
-    gate("content.translate", principal, agent="i18n_api", context={"op": "resolve"})
     try:
         return i18n.get_registry().resolve(body.text).to_dict()
     except ValueError as exc:
@@ -106,7 +105,6 @@ def resolve(body: ResolveIn, principal=Depends(require_user)) -> dict[str, Any]:
 
 @router.post("/strings", summary="UI strings in a language: cached ones now, the rest queued")
 def strings(body: StringsIn, principal=Depends(require_user)) -> dict[str, Any]:
-    gate("content.translate", principal, agent="i18n_api", context={"op": "strings"})
     if (len(body.strings) > _MAX_KEYS or any(len(k) > _MAX_KEY_LEN for k in body.strings)
             or any(len(v) > _MAX_UI_TEXT for v in body.strings.values())):
         raise HTTPException(status_code=413, detail=f"at most {_MAX_KEYS} strings, keys of {_MAX_KEY_LEN} "
