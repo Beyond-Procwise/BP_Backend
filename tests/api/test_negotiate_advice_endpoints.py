@@ -24,9 +24,13 @@ _ADVICE = {"advice_id": "A-1", "deal_id": "D-1", "quadrant": "Leverage",
 
 
 @pytest.fixture
-def client():
+def client(monkeypatch):
+    monkeypatch.setattr(rt, "gate", lambda *a, **k: None)   # RT-16b: the advice writes ask the gate first; its own tests cover it
     app = FastAPI()
     app.include_router(rt.router)
+    # This suite is about the advice routes with an anonymous caller; it must not depend on which
+    # test file ran before it (the auth-off fixture is process state).
+    app.dependency_overrides[rt.require_user] = lambda: None
     return TestClient(app)
 
 

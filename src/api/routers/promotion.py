@@ -192,6 +192,8 @@ def post_reject_link(
     It suppresses one pairing. The document may be proposed a different order next
     pass — "not this one" is not "this belongs nowhere".
     """
+    gate("document.promote", principal, agent="promotion_api",
+         context={"doc_type": doc_type, "doc_pk": doc_pk, "op": "reject_link"})
     if doc_type not in ("invoice", "quote"):
         raise HTTPException(status_code=400, detail="doc_type must be 'invoice' or 'quote'")
     po_id = (body.get("po_id") or "").strip()
@@ -217,6 +219,8 @@ def post_confirm_link(
     """Accept one of the orders proposed for this document, and write the
     reference on the reviewer's authority. Only an order this engine proposed —
     the winner or one of the alternatives shown with it — can be confirmed."""
+    gate("document.promote", principal, agent="promotion_api",
+         context={"doc_type": doc_type, "doc_pk": doc_pk, "op": "confirm_link"})
     if doc_type not in ("invoice", "quote"):
         raise HTTPException(status_code=400, detail="doc_type must be 'invoice' or 'quote'")
     po_id = (body.get("po_id") or "").strip()
