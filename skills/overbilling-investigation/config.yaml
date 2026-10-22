@@ -1,0 +1,54 @@
+# Configurable defaults for the overbilling investigation. They are starting points for review, not governed policy:
+# who may hold or dispute payment comes from policy.
+thresholds:
+  materiality_min: 50          # amount in question (invoice currency) below which the difference is reported as immaterial by default
+  duplicate_score_min: 0.8     # duplicate_invoice.pair_score at or above which two invoices are called duplicate candidates
+unavailable_tools:
+  - build_xlsx
+  - build_docx
+routing:                         # how the orchestrator decides this skill covers a request (see orchestration/skill_router.py)
+  strong:                        # 3 points each; a trailing * matches any ending
+    - "overbill*"
+    - "over-bill*"
+    - "overcharg*"
+    - "over-charg*"
+    - "invoiced more"
+    - "invoiced above"
+    - "invoice above"
+    - "billed more"
+    - "billed above"
+    - "charged more"
+    - "credit note*"
+    - "invoice discrepanc*"
+    - "match exception*"
+    - "check invoice"
+    - "against its po"
+    - "against the po"
+    - "against the purchase order"
+    - "exceed the purchase order"
+    - "exceeds the purchase order"
+    - "exceed the po"
+    - "exceeds the po"
+    - "po says"
+    - "but we ordered"
+    - "per unit but"
+    - "price mismatch"
+    - "quantity mismatch"
+    - "duplicate invoice*"
+    - "invoice against the po"
+    - "invoice against its po"
+    - "check this invoice"
+    - "check the invoice"
+    - "dispute the invoice"
+    - "invoice dispute"
+  support:                       # 1 point each
+    - "three-way match"
+    - "three way match"
+    - "invoice*"
+    - "supplier"
+    - "po"
+    - "purchase order"
+    - "quantity"
+    - "price"
+    - "receipt"
+    - "delivered"

@@ -1,0 +1,22 @@
+should_trigger:
+- Has Clearwater Logistics been overbilling us?
+- Check invoice INV-88213 against its PO
+- The supplier invoiced 540 per unit but the PO says 500
+- Chase a credit note for the double-charged installation
+- Are we being overcharged on the cleaning invoices?
+- Why does this invoice exceed the purchase order total?
+- Investigate the three-way match exceptions for Acme
+- They billed 120 units but we ordered 100
+- Is this a duplicate invoice from the same supplier?
+- Draft the query to the supplier about the price mismatch on invoice 4471
+should_not_trigger:
+- Is 612 GBP per laptop a fair price?
+- How has Acme performed on delivery this year?
+- What does the contract say about liability?
+- Can I approve this purchase order?
+- Give me a spend analysis for last year
+- Plan the negotiation with Acme on the price increase
+- Validate this savings claim
+- Which of the two quotes is cheapest on like-for-like terms?
+- Is Acme safe to onboard?
+- Design the RFQ for pallets
