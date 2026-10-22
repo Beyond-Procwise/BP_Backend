@@ -986,7 +986,7 @@ def _cost_tools() -> List[Tool]:
                 "landed_cost.total_cost on the price lines (unit_price, quantity, currency; incoterm; stated "
                 "components; cross_border) and then tco.total_cost over horizon_years at cost_of_capital with "
                 "the option's payment_terms and lifetime_items (maintenance, support, consumables, energy, "
-                "disposal: key, amount, year or day), then ranks by present value and gives the gap to the "
+                "disposal: key, amount, year or day; keys from the ownership checklist such as maintenance_support, consumables, energy_utilities, spares, licences_subscriptions, installation, disposal, residual_value, with plain words like maintenance or energy mapped for you), then ranks by present value and gives the gap to the "
                 "cheapest. Lifetime items go in lifetime_items, never in lines. cost_of_capital comes from the "
                 "negotiation_bounds policy (cost_of_capital_apr) or finance, never assumed. A total marked "
                 "incomplete is a lower bound; a component missing for every option alike does not change the "

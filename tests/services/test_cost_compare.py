@@ -79,7 +79,25 @@ def test_the_real_calculations_cost_two_domestic_delivered_quotes():
     assert out["found"] and out["unassessed"] == [], out
     by = {o["name"]: o for o in out["options"]}
     assert by["A"]["landed_total"] == 32000.0 and by["B"]["landed_total"] == 28000.0
-    assert by["A"]["tco"] > 32000 and by["B"]["tco"] > 28000
+    assert by["A"]["tco"] > 32000 and by["B"]["tco"] > 28000  # maintenance (mapped to maintenance_support) counted
+    assert by["A"]["unrecognised_lifetime_items"] == [] and "maintenance_support" not in by["A"]["excluded_lifetime"]
     assert by["A"]["tco"] < by["B"]["tco"], (by["A"]["tco"], by["B"]["tco"])
     assert out["ranking"] == ["A", "B"] and out["gaps_pct"]["B"] > 0
     assert by["A"]["calculations"] == ["landed_cost.total_cost", "tco.total_cost"]
+
+
+def test_plain_lifetime_words_are_mapped_and_unknown_ones_are_reported_not_dropped_silently():
+    seen = {}
+
+    def run(name, inputs):
+        if name == "landed_cost.total_cost":
+            return {"assessed": True, "value": {"landed_total": 1.0, "landed_status": "complete", "missing": [], "not_stated": [], "estimated": []}}
+        if name == "tco.total_cost":
+            seen["keys"] = [i["key"] for i in inputs["lifetime_items"]]
+            return {"assessed": True, "value": {"tco": 2.0, "tco_status": "complete", "unrecognised_lifetime_items": ["gold_plating (not on the ownership checklist)"]}}
+        return {"assessed": True, "value": 0.0}
+    opt = {**A, "lifetime_items": [{"key": "Maintenance", "amount": 1, "year": 1}, {"key": "energy", "amount": 1, "year": 1},
+                                   {"key": "gold plating", "amount": 1, "year": 1}]}
+    out = C.compare([opt, B], 5, 0.12, run=run)
+    assert seen["keys"] == ["maintenance_support", "energy_utilities", "gold_plating"]
+    assert out["options"][0]["unrecognised_lifetime_items"] and "NOT counted" in out["note"] and "gold_plating" in out["note"]

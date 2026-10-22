@@ -18,6 +18,25 @@ log = logging.getLogger(__name__)
 MAX_OPTIONS = 6
 MIN_OPTIONS = 2
 LIFETIME_KEYS = ("key", "amount")
+# Plain words a person uses for an ownership item -> the key on tco.total_cost's ownership checklist.
+# A key not on the checklist is passed through and reported back as unrecognised, never dropped silently.
+LIFETIME_ALIASES = {
+    "maintenance": "maintenance_support", "servicing": "maintenance_support", "service": "maintenance_support",
+    "support": "maintenance_support", "service_contract": "maintenance_support", "maintenance_contract": "maintenance_support",
+    "energy": "energy_utilities", "electricity": "energy_utilities", "power": "energy_utilities", "fuel": "energy_utilities",
+    "utilities": "energy_utilities", "training": "ongoing_training", "install": "installation",
+    "licence": "licences_subscriptions", "license": "licences_subscriptions", "licences": "licences_subscriptions",
+    "licenses": "licences_subscriptions", "subscription": "licences_subscriptions", "subscriptions": "licences_subscriptions",
+    "consumable": "consumables", "parts": "spares", "spare_parts": "spares", "warranty": "warranty_extension",
+    "resale": "residual_value", "residual": "residual_value", "resale_value": "residual_value",
+    "end_of_life": "disposal", "scrappage": "disposal", "switching": "switching_cost", "exit": "switching_cost",
+    "inspection": "receiving_inspection", "storage_cost": "storage",
+}
+
+
+def _lifetime_key(key: Any) -> str:
+    k = str(key or "").strip().lower().replace(" ", "_").replace("-", "_")
+    return LIFETIME_ALIASES.get(k, k)
 
 
 def _run_default(name: str, inputs: Mapping[str, Any]) -> Dict[str, Any]:
@@ -100,9 +119,11 @@ def compare(options: Any = None, horizon_years: Any = None, cost_of_capital: Any
         lv = landed.get("value") or {}
         tco_inputs: Dict[str, Any] = {"landed": lv, "cost_of_capital": float(cost_of_capital),
                                       "horizon_years": float(horizon_years)}
-        for key in ("payment_terms", "ap_can_take_discount", "lifetime_items"):
+        for key in ("payment_terms", "ap_can_take_discount"):
             if o.get(key) is not None:
                 tco_inputs[key] = o[key]
+        if o.get("lifetime_items"):
+            tco_inputs["lifetime_items"] = [{**dict(item), "key": _lifetime_key(item.get("key"))} for item in o["lifetime_items"]]
         tco = runner("tco.total_cost", tco_inputs)
         if not tco.get("assessed"):
             results.append({"name": name, "assessed": False, "stage": "tco", "landed_total": lv.get("landed_total"),
@@ -119,6 +140,7 @@ def compare(options: Any = None, horizon_years: Any = None, cost_of_capital: Any
             "tco": tv.get("tco"), "tco_status": tv.get("tco_status"),
             "discount_choice": tv.get("discount_choice"),
             "excluded_lifetime": list(tv.get("excluded_lifetime") or []),
+            "unrecognised_lifetime_items": list(tv.get("unrecognised_lifetime_items") or []),
             "warnings": list(tv.get("warnings") or []),
             "calculations": [landed.get("calculation"), tco.get("calculation")],
         })
@@ -150,6 +172,11 @@ def compare(options: Any = None, horizon_years: Any = None, cost_of_capital: Any
                      + ("The components missing for every option alike do not change the ranking. "
                         if out.get("missing_for_all") else "")
                      + "Quote the totals as lower bounds and ask for the missing figures.")
+    dropped = [f"{r['name']}: {', '.join(r['unrecognised_lifetime_items'])}" for r in results if r.get("unrecognised_lifetime_items")]
+    if dropped:
+        notes.append("Lifetime items NOT counted because their key is not on the ownership checklist: " + "; ".join(dropped)
+                     + ". Use checklist keys (maintenance_support, consumables, energy_utilities, spares, licences_subscriptions, "
+                       "installation, ongoing_training, disposal, residual_value, switching_cost ...) and run again.")
     if out["unassessed"]:
         notes.append("Options under unassessed could not be costed: see each one's why and expects.")
     if len(ranked) < 2:
