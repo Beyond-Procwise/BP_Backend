@@ -89,6 +89,9 @@ GOVERNED_LIMIT_SEED = {
     # prompt's wording is passed through the output-safety scrubber to its own screen.
     "prompt_engine": {"manifest_retention_days": 7, "wording_read_passthrough": True,
                       "render_retry_seconds": 30},
+    # 2026-10-22 (D-65): on-time tolerances for calc_supplier_scorecard; applied to both databases.
+    "supplier_scorecard": {"otif_late_tolerance_days": 0, "otif_early_tolerance_days": None,
+                           "otif_in_full_tolerance": 0.0},
 }
 
 
