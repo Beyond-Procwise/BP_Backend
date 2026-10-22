@@ -96,7 +96,8 @@ def test_governed_reasoning_reaches_the_model_through_the_driver(monkeypatch):
     msg = GR._chat([{"role": "user", "content": "x"}])
     assert msg == {"role": "assistant", "content": "hi"}
     assert posted["url"] == driver.OLLAMA_CHAT and posted["json"]["tools"] == GR._TOOLS
-    assert posted["json"]["options"] == {"temperature": 0, "num_predict": 2048} and posted["timeout"] == 180
+    from src.services.ollama_client import load_options
+    assert posted["json"]["options"] == {**load_options(), "temperature": 0, "num_predict": 2048} and posted["timeout"] == 180
 
 
 # ---- supplier research ----------------------------------------------------------------------------------
