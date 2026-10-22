@@ -197,3 +197,16 @@ def test_no_email_prefs_no_email():
 
 def test_compose_omits_link_without_base_url():
     assert "Open it" not in compose({"title": "t", "link": "/x/1"})[1]
+
+
+def test_body_comes_from_the_event_when_it_says_what_it_is_about():
+    """A message event carries a preview and context in data['body']; the bell shows that, not
+    the title twice (live, 2026-10-22: body == title for every message notification)."""
+    svc, repo = build()
+    e = DomainEvent(type="requisition.submitted", actor_id="buyer", entity_type="requisition", entity_id="R1",
+                    summary="Jane submitted R1", data={"amount": 60000, "body": "For the Q4 laptops\nAbout requisition R1"})
+    svc.handle(e)
+    assert {r["body"] for r in repo.rows} == {"For the Q4 laptops\nAbout requisition R1"}
+    svc, repo = build()
+    svc.handle(ev())
+    assert {r["body"] for r in repo.rows} == {"Jane submitted R1"}

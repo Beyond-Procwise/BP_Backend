@@ -442,7 +442,9 @@ def act(conn, decision_id: int, *, principal, verb: str, reason: Optional[str], 
         if _same_person(principal, facts.get("requestedBy")):
             raise ApprovalRefused("self_approval",
                                   "You cannot decide on an action your own request triggered.", 403)
-        if not level_name or not deciders.eligible(principal, level_name, mapping):
+        from services.agent_policy import delegation
+        if not level_name or not (deciders.eligible(principal, level_name, mapping)
+                                  or delegation.is_delegate(principal, facts)):
             raise ApprovalRefused("not_eligible",
                                   f"Only someone linked to {level_name or 'this level'} can decide this now.",
                                   403)

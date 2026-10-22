@@ -420,3 +420,26 @@ def test_a_shipping_container_is_product_english_but_a_software_container_is_mec
         assert osafe.is_safe(text), text
     for text in ("The extraction runs in a docker container.", "Each worker is a Kubernetes container pulled from the container registry."):
         assert not osafe.is_safe(text), text
+
+
+# ---- a notification's product link ---------------------------------------------------------
+# The bell's `link` field is a path on purpose: the UI navigates to it. Live, 2026-10-22: every
+# message notification came back link="[withheld]" and the person was told it had nothing to open.
+
+@pytest.mark.parametrize("link", ["/messages/265", "/approvals/123", "/people", "/spendiq/deals/DL-2024-001"])
+def test_a_notification_link_is_let_through(link):
+    assert osafe.scrub_payload({"link": link, "title": "New message from Priya Sharma"})["link"] == link
+
+
+@pytest.mark.parametrize("value", [
+    "http://16.61.116.180:8000/messages/265",     # absolute: not a product path
+    "/messages/265?token=abc",                   # a query string
+    "/proc/bp_message",                          # a table name inside the path
+])
+def test_a_link_that_is_not_a_plain_product_path_is_still_withheld(value):
+    assert osafe.scrub_payload({"link": value})["link"] == osafe.SAFE_FIELD
+
+
+def test_the_allowance_is_for_the_link_key_only():
+    out = osafe.scrub_payload({"href": "/messages/265", "link": "/messages/265"})
+    assert out["href"] == osafe.SAFE_FIELD and out["link"] == "/messages/265"

@@ -37,3 +37,26 @@ def test_attachments_metadata_only():
     for bad in ("x", [{"ref": "r"}], [{"name": " "}], [{"name": "a"}] * (m.MAX_ATTACHMENTS + 1)):
         with pytest.raises(PeopleError):
             m.clean_attachments(bad)
+
+
+# ---- what the recipient's notification says under the title --------------------------------
+
+def test_notification_body_is_the_preview_for_a_direct_message():
+    conv = {"type": "direct", "title": None, "entity_type": None, "entity_id": None}
+    assert m.notification_body(conv, "Can you confirm   the budget?\n\nThanks") == "Can you confirm the budget? Thanks"
+
+
+def test_notification_body_names_the_item_a_thread_is_about():
+    conv = {"type": "entity_thread", "title": "INV-0917 Acme", "entity_type": "approval", "entity_id": "123"}
+    assert m.notification_body(conv, "Is this one ours?") == "Is this one ours?\nAbout approval 123: INV-0917 Acme"
+
+
+def test_notification_body_names_the_group_and_renders_mentions_as_names():
+    conv = {"type": "group", "title": "Q4 renewals", "entity_type": None, "entity_id": None}
+    assert m.notification_body(conv, "@[Nick Geelen](sub-1) your call") == "@Nick Geelen your call\nIn Q4 renewals"
+
+
+def test_notification_body_is_cut_at_the_preview_length():
+    conv = {"type": "direct"}
+    out = m.notification_body(conv, "word " * 100)
+    assert len(out) <= m.PREVIEW_CHARS and out.endswith("…")

@@ -461,6 +461,11 @@ class DecideBody(BaseModel):
     reason: Optional[str] = Field(default=None, max_length=2000)
 
 
+class DelegateBody(BaseModel):
+    to_subject: str = Field(max_length=256)
+    note: Optional[str] = Field(default=None, max_length=2000)
+
+
 class DeciderBody(BaseModel):
     groups: List[Any] = Field(default_factory=list, max_length=50)
     emails: List[Any] = Field(default_factory=list, max_length=200)
@@ -547,6 +552,43 @@ def decide(decision_id: int, body: DecideBody, p: Principal = Depends(gateway_pr
                levelName=out["levelName"], actionId=out["actionId"])
     except Exception:  # noqa: BLE001
         logger.exception("decision %s was saved but its audit record failed", decision_id)
+    return out
+
+
+@router.post("/approvals/{decision_id}/delegate")
+def delegate(decision_id: int, body: DelegateBody, p: Principal = Depends(gateway_principal)):
+    """D-73 A: hand one open approval to a named person. The caller must be able to decide it now
+    (or be an Admin); the receiver must be able to decide it (active, not the requester, limit
+    covers the amount). The hand-off is recorded on the case and the receiver is notified."""
+    from services.agent_policy import delegation
+    role = _require(p, "Viewer", "agent_policy.decide", {"decision": decision_id, "verb": "delegate",
+                                                         "to": body.to_subject})
+
+    def _audit(status: str, summary: str, **details):
+        agent_actions.record_action_or_fail(
+            phase="decide", action_type="agent_policy.delegate", agent="agent_policy_api", status=status,
+            summary=summary, details={"decision": decision_id, "to": body.to_subject, "principal": p.subject,
+                                      **details})
+
+    with _conn() as conn:
+        if not approval_views.readable(conn, decision_id, p, is_admin=role == "Admin"):
+            _audit("refused", f"{p.subject} could not hand on approval {decision_id}: not_found", code="not_found")
+            raise HTTPException(status_code=404, detail="No such approval request.")
+        try:
+            out = delegation.delegate(conn, decision_id, principal=p, to_subject=body.to_subject, note=body.note,
+                                      now=datetime.now(timezone.utc), is_admin=role == "Admin")
+        except approvals.ApprovalRefused as exc:
+            _audit("refused", f"{p.subject} could not hand on approval {decision_id}: {exc.code}", code=exc.code)
+            raise HTTPException(status_code=exc.status, detail=exc.message)
+        except Exception:  # noqa: BLE001
+            logger.exception("handing on approval %s failed", decision_id)
+            _audit("error", f"{p.subject} could not hand on approval {decision_id}: error", code="error")
+            raise HTTPException(status_code=500, detail="The hand-off could not be recorded. Please try again.")
+    try:
+        _audit("done", f"{p.subject} handed approval {decision_id} to {out['delegatedTo']['subject']}",
+               level=out["level"], levelName=out["levelName"])
+    except Exception:  # noqa: BLE001
+        logger.exception("hand-off of %s was saved but its audit record failed", decision_id)
     return out
 
 

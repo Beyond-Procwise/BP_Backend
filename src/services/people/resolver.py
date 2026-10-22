@@ -32,6 +32,8 @@ DEFAULT_TARGETS = {
     # messages name their recipients (explicit / mentioned); no rule adds anyone else
     "message.received": [],
     "comment.mentioned": [],
+    # a hand-off names its receiver (explicit); nobody else is told
+    "approval.delegated": [],
 }
 FALLBACK_TARGETS = ["entity_owner"]
 

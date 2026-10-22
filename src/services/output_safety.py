@@ -444,9 +444,23 @@ def scrub_payload(obj: Any, *, where: str = "") -> Any:
     return obj
 
 
+# A notification's destination inside the product. The bell's ``link`` field IS a path by
+# design ("/messages/265", "/approvals/123"): the UI navigates to it, and the route rule
+# withheld every one of them, so a person clicking a notification was told it had nothing
+# to open (live, 2026-10-22). Only this key, and only the shape of a relative product path
+# (no scheme, no host, no query), is excused from the route rule; a table name, a
+# credential or anything else found in it is still withheld.
+_PRODUCT_LINK_KEYS = {"link"}
+_PRODUCT_LINK = re.compile(r"^/[a-z][a-z0-9-]*(?:/[A-Za-z0-9_.-]+){0,4}$")
+
+
 def _scrub_value(key: str, value: Any, where: str) -> Any:
     if isinstance(value, (dict, list)):
         return scrub_payload(value, where=where)
+    if isinstance(value, str) and key.lower() in _PRODUCT_LINK_KEYS and _PRODUCT_LINK.fullmatch(value):
+        if any(v.kind != "route" for v in inspect(value, prose=False)):
+            return _field_marker(value, prose=False)
+        return value
     if isinstance(value, str):
         is_prose = key.lower() in PROSE_FIELDS
         at = f"{where}.{key}" if where else key

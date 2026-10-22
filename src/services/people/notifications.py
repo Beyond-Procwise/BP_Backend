@@ -126,8 +126,11 @@ class NotificationService:
             prefs = self._prefs_for(event.tenant_id, r.person.subject) or {}
             if not event.mandatory and event.type in prefs.get("muted_events", []):
                 continue
+            # The title is the event's one-line summary; the body is what the event says it is
+            # (a message preview and what it is about), or the summary again when it says nothing.
+            body = str(data.get("body") or event.summary)
             nid = self._repo.insert(event, r.person.subject, r.reason, r.detail, event.summary,
-                                    event.summary, self._link_for(event), event.priority)
+                                    body, self._link_for(event), event.priority)
             done_channels: dict = {}
             if nid is None:                 # replay or retry: only channels not yet sent run again
                 found = self._repo.lookup(event, r.person.subject)
@@ -150,7 +153,8 @@ class NotificationService:
                     self._repo.set_channel_status(nid, ch, "deferred_quiet_hours")
                     continue
                 try:
-                    send(r.person, {"title": event.summary, "detail": r.detail, "link": self._link_for(event)})
+                    send(r.person, {"title": event.summary, "body": body, "detail": r.detail,
+                                    "link": self._link_for(event)})
                     self._repo.set_channel_status(nid, ch, "sent")
                 except ChannelSkipped as skip:
                     self._repo.set_channel_status(nid, ch, f"skipped_{skip}")
