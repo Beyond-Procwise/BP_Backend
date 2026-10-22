@@ -163,3 +163,70 @@ def realised_savings(quoted_unit_price=None, invoiced_unit_price=None,
 )
 def requirement_completeness(requirement=None, required_fields=None):
     return _req_complete(dict(requirement or {}), list(required_fields or []))
+
+
+@formula(
+    "deal.share_pct",
+    version="1.0.0",
+    owner=_OWNER,
+    purpose="One part as a percentage of a whole (a supplier's share of spend, a tail's share of invoices)",
+    effective_from=date(2026, 10, 22),
+    inputs=[
+        Term("part", MONEY, "the part, in the same unit as the whole", required=False),
+        Term("whole", MONEY, "the whole", required=False),
+    ],
+    output=Output("float", PERCENT, "percentage points, 2dp; None against a zero or absent whole"),
+    notes=(
+        "Registered so a share is a calculation the verifier can trace rather than arithmetic the "
+        "model does in its head (live, 2026-10-22: a tail review divided two cube figures and then "
+        "struck the result out as unverifiable). None against a zero or absent whole: a share of "
+        "nothing is not 0 percent."
+    ),
+    golden=[
+        GoldenVector(inputs={"part": 2522861.12, "whole": 17640482.17}, expected=14.3, tolerance=0.01),
+        GoldenVector(inputs={"part": 25.0, "whole": 100.0}, expected=25.0),
+        GoldenVector(inputs={"part": 0.0, "whole": 100.0}, expected=0.0),
+        GoldenVector(inputs={"part": 5.0, "whole": 0.0}, expected=None),
+        GoldenVector(inputs={"part": None, "whole": 100.0}, expected=None),
+    ],
+)
+def share_pct(part=None, whole=None):
+    try:
+        p, w = float(part), float(whole)
+    except (TypeError, ValueError):
+        return None
+    if w == 0:
+        return None
+    return round(p / w * 100.0, 2)
+
+
+@formula(
+    "deal.scaled_total",
+    version="1.0.0",
+    owner=_OWNER,
+    purpose="A unit amount scaled by a count (a monthly value over twelve months, a unit price over a quantity)",
+    effective_from=date(2026, 10, 22),
+    inputs=[
+        Term("unit_value", MONEY, "the amount per unit or per period", required=False),
+        Term("multiplier", COUNT, "how many units or periods", required=False, minimum=0.0),
+    ],
+    output=Output("float", MONEY, "unit_value times multiplier, 2dp; None if either is absent"),
+    notes=(
+        "Registered so a projected or annual total is a traceable calculation rather than a figure "
+        "the model multiplies in its head (live, 2026-10-22: 4,900 a month became 58,800 a year and "
+        "the verifier struck it out). The multiplier is an assumption: it must come from the "
+        "request, a result or the skill's settings, never be chosen by the model."
+    ),
+    golden=[
+        GoldenVector(inputs={"unit_value": 4900.0, "multiplier": 12}, expected=58800.0),
+        GoldenVector(inputs={"unit_value": 19.99, "multiplier": 3}, expected=59.97),
+        GoldenVector(inputs={"unit_value": 100.0, "multiplier": 0}, expected=0.0),
+        GoldenVector(inputs={"unit_value": None, "multiplier": 12}, expected=None),
+    ],
+)
+def scaled_total(unit_value=None, multiplier=None):
+    try:
+        v, m = float(unit_value), float(multiplier)
+    except (TypeError, ValueError):
+        return None
+    return round(v * m, 2)

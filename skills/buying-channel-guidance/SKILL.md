@@ -25,6 +25,7 @@ Not for whether the purchase or approval is permitted (procurement-policy-compli
 - Use `tool:similar_items` for suppliers we already buy the item from and the prices paid
 - Use `tool:supplier_lookup` for the contracted supplier's record and status
 - Use `tool:check_policy` for the approval the value needs on the chosen channel
+- Use `tool:run_calculation` with `deal.scaled_total` to size a recurring need over the period the requester states
 NOT AVAILABLE: create_requisition. the requester raises the requisition themselves; the skill gives the steps and the supplier to name
 NOT AVAILABLE: build_docx. guidance is given as text
 
@@ -35,7 +36,7 @@ Settings this skill reads from its own configuration, named by key and never res
 1. Frame: what, how much, how often, by when.
 2. Read the policy for channel rules and value bands; quote the band the value falls in. Where no rule exists for the case, say so and give the default route (requisition and purchase order).
 3. Check for coverage: a live agreement for the item or category, and suppliers we already buy it from with the prices paid. A covered item goes to the contracted supplier through the catalogue or a requisition against the agreement.
-4. Uncovered: below the configured quote band, requisition with one quote; within it, the quotes the policy requires; above the configured tender band, a sourcing event (hand to rfx-design).
+4. The value for the band is the need over the period: a per-order or per-month amount is scaled with `run_calculation` and `deal.scaled_total` using the number of orders or months the requester states (never a number of months the skill chooses). Uncovered: below the configured quote band, requisition with one quote; within it, the quotes the policy requires; above the configured tender band, a sourcing event (hand to rfx-design).
 5. Card or expense only where the policy allows it for the value and category; a purchase that would need to be split to fit a limit is not split (hand to procurement-policy-compliance).
 6. Give the steps: channel, supplier to name, what to attach, who approves (as the policy replied), and the lead time to expect.
 

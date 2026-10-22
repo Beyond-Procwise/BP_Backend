@@ -24,7 +24,7 @@ Not for what was bought and from whom (spend-analysis), for value claims (saving
 - Use `tool:invoice_reconciliation` for open orders and their invoiced versus uninvoiced value for the scope
 - Use `tool:contract_pipeline` for the contracted commitments ahead in the period
 - Use `tool:obligation_tracker` for scheduled payments and milestones under a contract
-- Use `tool:run_calculation` with `deal.pct_change` for the movement against the prior period and `critic.annualised_rate` for the run rate over the elapsed part of the period
+- Use `tool:run_calculation` with `deal.pct_change` for the movement against the prior period, `deal.scaled_total` for the year-end projection from the monthly rate and the months remaining, and `deal.share_pct` for the share of budget used
 - Use `tool:get_policy` for a governed budget or limit for the scope
 - Use `tool:get_corpus_facts` for the period and totals the corpus holds, so scope and period are stated once
 NOT AVAILABLE: post_accrual. accruals are finance's posting; the skill reports the uninvoiced open order value finance may accrue

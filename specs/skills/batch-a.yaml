@@ -19,11 +19,12 @@
     - "screening_summary: for the screening status of suppliers proposed as strategic"
     - "similar_items: for whether the items a supplier provides have alternatives on our records, which tells leverage from bottleneck"
     - "get_policy: for any segmentation rule or treatment the organisation has set"
+    - "run_calculation: with `deal.share_pct` for a share the cube does not give directly"
   unavailable:
     - "build_docx: the segmentation is given as text and tables"
   workflow:
     - "Frame the scope and period, and read the policy for any segmentation rule; where none exists, use the axes here and say so."
-    - "Read the spend cube by supplier for the period and take each supplier's share from the cube's own share figure; do no arithmetic on it. Suppliers at or above `config.thresholds.strategic_share_pct` of total spend are candidates for strategic or leverage; a supplier the user names as holding a whole category is a candidate on that statement, labelled user-supplied."
+    - "Read the spend cube by supplier for the period and take each supplier's share from the cube's own share figure; a share the cube does not give (a supplier's share of a user-named group) comes from `run_calculation` with `deal.share_pct`, never from arithmetic in the answer. Suppliers at or above `config.thresholds.strategic_share_pct` of total spend are candidates for strategic or leverage; a supplier the user names as holding a whole category is a candidate on that statement, labelled user-supplied."
     - "Judge supply difficulty from the records only: an item with no alternative supplier on record (similar items) is bottleneck territory; the user's list of critical items is added, labelled user-supplied."
     - "Place each supplier: high spend and hard to replace is strategic; low spend and hard to replace is bottleneck; high spend and easy to replace is leverage; the rest is transactional."
     - "For strategic and bottleneck candidates read the contract cover and the screening status; a strategic supplier with no live agreement or an incomplete screening is a finding."
@@ -115,11 +116,12 @@
     - "screening_summary: for the status of the suppliers the tail would move onto"
     - "get_policy: for the buying-channel and card rules and any supplier-count target"
     - "check_policy: for any new agreement the plan proposes"
+    - "run_calculation: with `deal.share_pct` for the tail's share of spend or invoices from the cube's figures"
   unavailable:
     - "build_docx: the plan is given as text and tables"
   workflow:
     - "Frame the scope and read the policy for channels and targets."
-    - "Cut the tail from the cube read by supplier with order set to bottom (and top_n at its maximum, repeated with the period narrowed if the cell count exceeds it): a supplier whose share from the cube is below `config.thresholds.tail_cell_share_pct`, or with fewer than `config.thresholds.min_invoices` invoices in the period, is in the long tail. Report the tail's supplier count and invoice count as the cube gives them; do no arithmetic on shares."
+    - "Cut the tail from the cube read by supplier with order set to bottom (and top_n at its maximum, repeated with the period narrowed if the cell count exceeds it): a supplier whose share from the cube is below `config.thresholds.tail_cell_share_pct`, or with fewer than `config.thresholds.min_invoices` invoices in the period, is in the long tail. Report the tail's supplier count and invoice count as the cube gives them; the tail's share of invoices or of spend comes from `run_calculation` with `deal.share_pct` on the cube's figures, never from arithmetic in the answer."
     - "For each tail supplier (or the largest group of them), look for the same items on record from a contracted supplier (similar items plus contracts). A match is a consolidation candidate; the target's screening status is read."
     - "Items bought repeatedly at low value with no contracted alternative are catalogue candidates; one-off low-value purchases are card or light-channel candidates per policy."
     - "What remains stays, with the reason (specialist, regulated, one-off project)."
@@ -309,6 +311,7 @@
     - "similar_items: for suppliers we already buy the item from and the prices paid"
     - "supplier_lookup: for the contracted supplier's record and status"
     - "check_policy: for the approval the value needs on the chosen channel"
+    - "run_calculation: with `deal.scaled_total` to size a recurring need over the period the requester states"
   unavailable:
     - "create_requisition: the requester raises the requisition themselves; the skill gives the steps and the supplier to name"
     - "build_docx: guidance is given as text"
@@ -316,7 +319,7 @@
     - "Frame: what, how much, how often, by when."
     - "Read the policy for channel rules and value bands; quote the band the value falls in. Where no rule exists for the case, say so and give the default route (requisition and purchase order)."
     - "Check for coverage: a live agreement for the item or category, and suppliers we already buy it from with the prices paid. A covered item goes to the contracted supplier through the catalogue or a requisition against the agreement."
-    - "Uncovered: below the configured quote band, requisition with one quote; within it, the quotes the policy requires; above the configured tender band, a sourcing event (hand to rfx-design)."
+    - "The value for the band is the need over the period: a per-order or per-month amount is scaled with `run_calculation` and `deal.scaled_total` using the number of orders or months the requester states (never a number of months the skill chooses). Uncovered: below the configured quote band, requisition with one quote; within it, the quotes the policy requires; above the configured tender band, a sourcing event (hand to rfx-design)."
     - "Card or expense only where the policy allows it for the value and category; a purchase that would need to be split to fit a limit is not split (hand to procurement-policy-compliance)."
     - "Give the steps: channel, supplier to name, what to attach, who approves (as the policy replied), and the lead time to expect."
   heuristics:

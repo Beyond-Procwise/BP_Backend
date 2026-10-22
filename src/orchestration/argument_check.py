@@ -31,6 +31,9 @@ ASSUMPTION_ARGS = frozenset({
     # deal.pct_change: the two figures compared must be figures the run holds, never a pair the model made up
     # (live, 2026-10-22: invoiced_total 100,000 against po_total 95,000 from nowhere).
     "new", "base",
+    # deal.share_pct and deal.scaled_total: the same rule; a share or a scaled total is only as honest as
+    # the two figures that go in.
+    "part", "whole", "unit_value", "multiplier",
 })
 
 #: Identifiers a model passes to a tool. An id is never worked out: it comes from the request or from

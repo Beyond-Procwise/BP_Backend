@@ -216,3 +216,14 @@ def test_the_checker_refuses_an_invented_supplier_and_tells_the_model_to_ask_or_
     assert r and r["reasonCode"] == "name_not_sourced"
     assert "Acme Logistics" in r["reason"] and "ask the user which supplier" in r["reason"]
     assert check("search_contracts", {"query": "termination"}, SimpleNamespace(calls=[])) is None
+
+
+def test_a_share_or_a_scaled_total_is_computed_only_from_figures_the_run_holds():
+    assert found({"name": "deal.share_pct", "inputs": {"part": 2522861.12, "whole": 17640482.17}}) == [
+        ("inputs.part", 2522861.12), ("inputs.whole", 17640482.17)]
+    cube = call("build_spend_cube", {"total": 17640482.17, "cells": [{"supplier": "Tiny", "amount": 2522861.12}]})
+    assert found({"name": "deal.share_pct", "inputs": {"part": 2522861.12, "whole": 17640482.17}}, calls=[cube]) == []
+    assert found({"name": "deal.scaled_total", "inputs": {"unit_value": 4900, "multiplier": 12}},
+                 task="It is 4,900 now but we will need it every month.") == [("inputs.multiplier", 12)]
+    assert found({"name": "deal.scaled_total", "inputs": {"unit_value": 4900, "multiplier": 12}},
+                 task="It is 4,900 a month for 12 months.") == []

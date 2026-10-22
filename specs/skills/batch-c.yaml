@@ -406,7 +406,7 @@
     - "invoice_reconciliation: for open orders and their invoiced versus uninvoiced value for the scope"
     - "contract_pipeline: for the contracted commitments ahead in the period"
     - "obligation_tracker: for scheduled payments and milestones under a contract"
-    - "run_calculation: with `deal.pct_change` for the movement against the prior period and `critic.annualised_rate` for the run rate over the elapsed part of the period"
+    - "run_calculation: with `deal.pct_change` for the movement against the prior period, `deal.scaled_total` for the year-end projection from the monthly rate and the months remaining, and `deal.share_pct` for the share of budget used"
     - "get_policy: for a governed budget or limit for the scope"
     - "get_corpus_facts: for the period and totals the corpus holds, so scope and period are stated once"
   unavailable:
